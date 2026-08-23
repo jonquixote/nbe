@@ -1,0 +1,68 @@
+{
+  "manifestVersion": "0.2",
+  "network": {
+    "id": "nbe",
+    "name": "News Broadcasting Engine",
+    "logoAssetId": "logo_loop"
+  },
+  "show": {
+    "id": "fixture-show",
+    "title": "Fixture Show",
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30,
+      "colorSpace": "rec709",
+      "aspectRatio": "16:9"
+    },
+    "audio": {
+      "sampleRate": 48000,
+      "loudnessTargetLufs": -16,
+      "truePeakDbtp": -1.5
+    },
+    "fallbackAssetId": "fallback_slate"
+  },
+  "assets": [
+    {
+      "id": "fallback_slate",
+      "kind": "image",
+      "source": "media/fallback.png",
+      "format": "png"
+    },
+    {
+      "id": "logo_loop",
+      "kind": "alphaVideo",
+      "source": "media/logo_loop.mov",
+      "format": "prores4444",
+      "loop": {
+        "periodFrames": 300,
+        "cachePolicy": "auto"
+      }
+    },
+    {
+      "id": "A1_clip",
+      "kind": "video",
+      "source": "media/A1.mp4",
+      "format": "h264",
+      "expectedDurationFrames": 900
+    }
+  ],
+  "rundown": {
+    "segments": [
+      {
+        "id": "A",
+        "title": "Headlines",
+        "subsegments": [
+          {
+            "id": "A1",
+            "title": "Intro clip",
+            "assetId": "A1_clip"
+          }
+        ]
+      }
+    ]
+  },
+  "control": {
+    "bindings": []
+  }
+}
