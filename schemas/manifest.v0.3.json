@@ -1109,6 +1109,17 @@
         "name": {
           "type": "string"
         },
+        "base": {
+          "$ref": "#/$defs/Id"
+        },
+        "mergeMode": {
+          "enum": [
+            "inherit",
+            "replace",
+            "merge"
+          ],
+          "default": "inherit"
+        },
         "elements": {
           "type": "array",
           "items": {
@@ -1314,6 +1325,14 @@
         "autoFollow": {
           "type": "boolean",
           "default": false
+        },
+        "audioPolicy": {
+          "enum": [
+            "clip",
+            "bed",
+            "mute"
+          ],
+          "default": "clip"
         }
       },
       "allOf": [
@@ -1400,6 +1419,11 @@
         "version": {
           "type": "string"
         },
+        "maxMemoryMib": {
+          "type": "integer",
+          "minimum": 16,
+          "default": 64
+        },
         "permissions": {
           "type": "array",
           "items": {
@@ -1414,7 +1438,5 @@
         }
       }
     }
-  },
-  "$id": "https://nbe.local/schemas/manifest.v0.3.json",
-  "title": "NBE Show Manifest v0.3"
+  }
 }
