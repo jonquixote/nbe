@@ -1,6 +1,6 @@
 # NBE SPEC v0.3  
 **News Broadcasting Engine**  
-Status: normative specification — self-contained  
+Status: normative specification — self-contained. Patch level v0.3.1: applies the four v0.3.1 patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).  
 Relationship to earlier versions: this document supersedes SPEC v0.2.5. It consolidates SPEC v0.1, SPEC v0.2, and the v0.2.1 errata (via the v0.2.5 consolidation) and introduces the v0.3 composable broadcast language: the two-axis model, element identity, the state-diff transition engine, overlays, sub-scenes, automation, plugins, quality profiles, and the abuse model. Where this document differs from prior versions, this document wins. Prior versions remain in `docs/` as history.
 
 ---
@@ -35,6 +35,7 @@ The following assumptions are normative unless changed by spec revision:
 22. **Floor device baseline.** The 2019 dual-GPU Intel/Radeon MacBook Pro is the reference floor. The degradation ladder MUST engage gracefully on it.
 23. **Sequence recursion.** Time-axis Sequence nesting is capped at 8 levels; preflight warns beyond 4. This is distinct from the space-axis sub-scene depth cap of 4.
 24. **Multi-output frame sharing.** Outputs share rendered frames with hardware encoders via GPU texture sharing (Metal `IOSurface` / Vulkan external memory) without CPU readback.
+25. **WASM memory ceiling.** Every plugin instance runs under a hard memory limit (default 64 MiB, manifest-configurable via `maxMemoryMib`). Exceeding it MUST terminate the plugin instance and substitute a transparent frame — it MUST NOT crash the render node.
 
 ### 0.2 Phasing honesty note
 
@@ -137,7 +138,7 @@ Generated from the canonical `VOCABULARY.md` ledger. One term, one definition. I
 | Cadence | normative | v0.1 | Source frame-rate character, preserved via frame holds. | |
 | Pulldown | normative | v0.2 | The declared frame-hold pattern for non-house rates (`pattern`, `repeatNthSourceFrame`, `repeatOnePerNSourceFrames`). | |
 | Preflight | normative | v0.1 | The CI-runnable proof that a show package is air-ready. | |
-| Plugin package | normative | v0.3 | A WASM element plugin or WGSL effect plugin with manifest, version pin, and permission list (deny by default). | |
+| Plugin package | normative | v0.3 | A WASM element plugin or WGSL effect plugin with manifest, version pin, memory ceiling, and permission list (deny by default). | |
 
 ## 3.6 Audio
 
@@ -679,6 +680,8 @@ Rules:
 1. Recursion depth cap: 4.
 2. Scenes form a directed acyclic graph. Preflight MUST reject circular references.
 3. A sub-scene renders to its texture at the show resolution unless the element transform declares otherwise.
+
+Sub-scenes are strictly visual pre-compositions. Audio elements declared inside a sub-scene's element list MUST be ignored by the audio engine. If a sub-scene requires audio, it MUST be declared as a discrete audio element in the parent scene, or the sub-scene must be promoted to a full Scene reference on the time axis.
 
 ## 7.8 Scene extension
 
@@ -1900,6 +1903,7 @@ Two sandboxed plugin kinds:
 
 - Effect plugins are strictly fragment shaders operating on bound textures, validated via `naga`. They MUST NOT execute arbitrary compute shaders that bypass the render graph.
 - Element plugins run in a Wasmtime/Wasmer-class runtime with strict WASI capabilities: no network, no disk writes outside designated temp mounts, no ambient authority.
+- The WASM runtime MUST enforce a hard memory limit per plugin instance (default 64 MiB, configurable via `maxMemoryMib` in the manifest). Exceeding this limit MUST terminate the plugin instance and replace its output with a transparent/black frame, without crashing the render node.
 
 ## 14.3 Manifest declaration and permissions
 
@@ -1911,7 +1915,8 @@ Both kinds are manifest-declared (`plugins` array), version-pinned, and permissi
   "kind": "element",
   "source": "plugins/lowerthird_anim.wasm",
   "version": "0.1.0",
-  "permissions": []
+  "permissions": [],
+  "maxMemoryMib": 64
 }
 ```
 
@@ -1924,7 +1929,8 @@ Preflight MUST verify, for every declared plugin:
 1. the package exists and its hash matches,
 2. WGSL shaders compile via `naga`,
 3. WASM modules load and declare only their manifest permissions,
-4. declared permissions are enforceable by the runtime.
+4. declared permissions are enforceable by the runtime,
+5. `maxMemoryMib` is within the enforceable range (≥ 16).
 
 ## 14.5 Frame format (v1)
 
@@ -1949,6 +1955,7 @@ What is new in v0.3:
 5. `Item` kinds: `sceneRef`, `sequenceRef`, `clipRef`, `liveRef`, `slate`.
 6. New definitions: `Scene`, `Overlay`, `Element`, `Animation`, `TransitionPreset`, `AutomationRule`, `Sequence`, `Item`, `Plugin`.
 7. `Asset.kind` gains `wasm` and `wgsl`.
+8. v0.3.1: `Plugin` gains `maxMemoryMib` (integer, ≥ 16, default 64, hard-enforced by the WASM runtime); `Scene` gains `base` and `mergeMode` (scene extension, Section 7.8); `Item` carries `audioPolicy` (`clip`/`bed`/`mute`, default `clip`), preserving the v0.2 subsegment audio behavior through migration.
 
 Migration from v0.2 is mechanical via `nbe-migrate` (Section 6.7). A v0.2 package is rejected by a v0.3 preflight until migrated; this is verified (AC-28).
 
@@ -2929,7 +2936,7 @@ A ticker on the overlay level MUST survive a complex scene move transition untou
 
 ## AC-26 — Plugin sandbox
 
-A permissionless WASM element plugin MUST provably be unable to touch network or disk, verified via WASI capability enforcement.
+A permissionless WASM element plugin MUST provably be unable to touch network or disk, verified via WASI capability enforcement. The runtime MUST also terminate a plugin instance that exceeds its `maxMemoryMib` budget and substitute a transparent frame, without crashing the render node.
 
 ## AC-27 — Degradation order
 
@@ -2994,7 +3001,7 @@ The manifest schema MUST NOT preclude future Channel scheduling, but v1 MUST NOT
 | Companion misconfiguration | Medium | Generate Companion bindings from manifest; preflight validates action names and payload schemas. |
 | OBS baseline comparison unfair | Low/Medium | Define fixed test package, hardware, metrics, and capture method in test harness. |
 | State-diff transition complexity | High | Precompute diffs at arm time; cap sub-scene recursion; enforce DAG; frame-quantized tweens. |
-| WASM/WGSL plugin exploits | High | Strict WASI capabilities; `naga` validation; deny-by-default permissions; AC-26. |
+| WASM/WGSL plugin exploits | High | Strict WASI capabilities; `naga` validation; deny-by-default permissions; per-instance memory ceiling; AC-26. |
 | Floor device thermal throttling | High | Degradation ladder; preview fps drop first; loop eviction; View never degraded. |
 | Automation infinite loops | Medium | Static cycle detection at preflight; runtime self-trigger suppression; global `automation.hold`. |
 | Abuse via guest links/RSS/call-ins | Medium | Signed expiring revocable JWT links; rate limiting; producer-gated admission; audit log. |
@@ -3079,3 +3086,54 @@ loop-budget-accounted
 sandbox-verified
 degradation-ordered
 ```
+
+---
+
+# 27. Unresolved open questions (v0.4 candidates)
+
+The following are unresolved in v0.3 and deferred to v0.4 or later:
+
+1. **Snapshot persistence.** Where are snapshots stored? If the show package is immutable post-preflight, snapshots must be written to a local user-state directory (e.g., `~/.nbe/snapshots/<show-id>/`). The exact serialization format (JSON state dump vs. binary blob) is TBD.
+2. **Multiview layout customization.** The Multiview grid (Section 10.6) is defined, but the layout (e.g., 2x2, 3x3, custom aspect ratios) is currently hardcoded or implicit. A manifest or runtime command schema for Multiview grid topology is needed.
+3. **WASM plugin threading.** Element plugins are currently single-threaded (main thread or dedicated worker). If a plugin requires heavy computation (e.g., fluid simulation), should the WASM sandbox support `wasm-threads`? This introduces shared-memory security implications.
+4. **Caption burn-in timing.** When captions are burned in via a DSK Overlay element (Section 25.2), how is the WebVTT timestamp synchronized with the NBE master clock? NTP drift between the caption source and the master clock needs a defined slew/clamp policy.
+5. **Channel scheduler state.** When the post-v1 Channel scheduler is built, how does it interact with `automation.hold`? Does a scheduled show load bypass the hold, or does the hold freeze the entire channel?
+
+---
+
+# Appendix A — v0.3 schema structural reference (for agent context)
+
+*Note: this appendix is informational, not normative. The byte-exact normative schema lives at `schemas/manifest.v0.3.json`. If this appendix and that file ever disagree, the file wins and the appendix has a bug.*
+
+**Top-level additions:**
+
+- `scenes`: array of `Scene` objects (required).
+- `overlays`: array of `Overlay` objects.
+- `transitions`: array of `TransitionPreset` objects.
+- `automation`: array of `AutomationRule` objects.
+- `plugins`: array of `Plugin` objects.
+- `qualityProfile`: enum `["potato", "consumer", "pro", "reference"]`.
+
+**Key `$defs` additions:**
+
+- `Scene`: `{ id, name?, base?, mergeMode?, elements: [Element], audio? }`
+- `Overlay`: `{ id, elements: [Element] }`
+- `Element`: `{ id, kind, z, visible?, assetId?, feedAssetId?, cameraId?, guestId?, templateId?, fields?, loop?, transform?, opacity?, chromaKey?, audio?, clock?, sceneRef?, pluginId?, children?, enterAnimation?, exitAnimation? }` — `kind` enum: `videoLoop, clip, camera, guest, graphic, ticker, clock, sceneRef, group, plugin`. Conditional requirements: `videoLoop`/`clip` → `assetId`; `camera` → `cameraId`; `guest` → `guestId`; `graphic`/`ticker` → `templateId`; `sceneRef` → `sceneRef`; `plugin` → `pluginId`; `group` → `children`.
+- `Animation`: `{ durationFrames, delayFrames?, easing, bezier? }` — easing enum: `linear, easeIn, easeOut, easeInOut, cubicBezier, spring`.
+- `TransitionPreset`: `{ id, kind?, durationFrames?, easing?, elementOverrides? }` — kind enum: `cut, mix, wipe, sting, move, dve`.
+- `AutomationRule`: `{ id, trigger: { kind, params? }, conditions?, action: { command, payload? }, enabled? }` — trigger kinds: `mediaEnd, mediaStart, timer, timeOfDay, audioLevel, hotkey, rssKeyword, streamHealth, stateChange`.
+- `Plugin`: `{ id, kind: effect|element, source, version?, maxMemoryMib?, permissions }` — `maxMemoryMib` integer ≥ 16, default 64; permissions default `[]` (deny by default).
+- `Sequence`: `{ id, title?, label?, items: [Item] }` (recursive via `sequenceRef`).
+- `Item`: `{ id, kind, sceneRef?, sequenceRef?, assetId?, sourceId?, durationFrames?, autoFollow?, audioPolicy? }` — kind enum: `sceneRef, sequenceRef, clipRef, liveRef, slate`. Note: a `clipRef`-kind item references its clip via `assetId`; a `liveRef`-kind item references its live source via `sourceId`.
+
+**Command API endpoints added in v0.3:**
+
+- `view.take`, `view.cut`, `view.fallback` (with `program.*` deprecated aliases)
+- `scene.arm`, `scene.apply`
+- `overlay.show`, `overlay.hide`
+- `automation.enable`, `automation.disable`, `automation.hold`
+- `snapshot.save`, `snapshot.recall`
+- `marker.add`
+- `plugin.reload`
+- `sequence.arm/unarm`, `item.arm/unarm/stop`
+- `element.toggle/set` (with `layer.*` deprecated aliases)
