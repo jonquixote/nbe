@@ -1,0 +1,66 @@
+{
+  "manifestVersion": "0.3",
+  "network": {
+    "id": "nbe",
+    "name": "News Broadcasting Engine"
+  },
+  "show": {
+    "id": "fixture-show",
+    "title": "Fixture Show",
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30,
+      "colorSpace": "rec709",
+      "aspectRatio": "16:9"
+    },
+    "audio": {
+      "sampleRate": 48000,
+      "loudnessTargetLufs": -16,
+      "truePeakDbtp": -1.5
+    },
+    "fallbackAssetId": "fallback_slate"
+  },
+  "assets": [
+    {
+      "id": "fallback_slate",
+      "kind": "image",
+      "source": "media/fallback.png",
+      "format": "png"
+    },
+    {
+      "id": "A1_clip",
+      "kind": "video",
+      "source": "media/A1.mp4",
+      "format": "h264",
+      "expectedDurationFrames": 900
+    }
+  ],
+  "scenes": [
+    {
+      "id": "SCN_A1",
+      "elements": [
+        {
+          "id": "main_clip",
+          "kind": "clip",
+          "z": 1,
+          "assetId": "A1_clip"
+        }
+      ]
+    }
+  ],
+  "rundown": {
+    "id": "R",
+    "title": "Root rundown",
+    "items": [
+      {
+        "id": "A1",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_A1"
+      }
+    ]
+  },
+  "control": {
+    "bindings": []
+  }
+}
