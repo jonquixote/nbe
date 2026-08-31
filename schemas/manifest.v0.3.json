@@ -1,0 +1,1420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "network",
+    "show",
+    "assets",
+    "scenes",
+    "rundown",
+    "control"
+  ],
+  "properties": {
+    "manifestVersion": {
+      "const": "0.3"
+    },
+    "network": {
+      "$ref": "#/$defs/Network"
+    },
+    "channel": {
+      "$ref": "#/$defs/Channel"
+    },
+    "show": {
+      "$ref": "#/$defs/Show"
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Asset"
+      }
+    },
+    "templates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphicTemplate"
+      }
+    },
+    "rundown": {
+      "$ref": "#/$defs/Sequence"
+    },
+    "control": {
+      "$ref": "#/$defs/Control"
+    },
+    "features": {
+      "$ref": "#/$defs/Features"
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Scene"
+      }
+    },
+    "overlays": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Overlay"
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TransitionPreset"
+      }
+    },
+    "automation": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AutomationRule"
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Plugin"
+      }
+    },
+    "qualityProfile": {
+      "enum": [
+        "potato",
+        "consumer",
+        "pro",
+        "reference"
+      ]
+    }
+  },
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "Network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logoAssetId": {
+          "$ref": "#/$defs/Id"
+        },
+        "fallbackAudioAssetId": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "Channel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": "string"
+        },
+        "futureScheduler": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Show": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "video",
+        "audio",
+        "fallbackAssetId"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "episodeCode": {
+          "type": "string"
+        },
+        "video": {
+          "$ref": "#/$defs/VideoSpec"
+        },
+        "audio": {
+          "$ref": "#/$defs/AudioSpec"
+        },
+        "transitions": {
+          "$ref": "#/$defs/TransitionDefaults"
+        },
+        "fallbackAssetId": {
+          "$ref": "#/$defs/Id"
+        },
+        "outputs": {
+          "$ref": "#/$defs/OutputDefaults"
+        }
+      }
+    },
+    "VideoSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "frameRate",
+        "colorSpace"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 640,
+          "maximum": 8192
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 360,
+          "maximum": 8192
+        },
+        "frameRate": {
+          "enum": [
+            30,
+            60
+          ]
+        },
+        "colorSpace": {
+          "enum": [
+            "rec709"
+          ]
+        },
+        "aspectRatio": {
+          "const": "16:9"
+        }
+      }
+    },
+    "AudioSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampleRate",
+        "loudnessTargetLufs",
+        "truePeakDbtp"
+      ],
+      "properties": {
+        "sampleRate": {
+          "const": 48000
+        },
+        "loudnessTargetLufs": {
+          "type": "number",
+          "default": -16
+        },
+        "truePeakDbtp": {
+          "type": "number",
+          "default": -1.5
+        },
+        "defaultLanguage": {
+          "type": "string"
+        }
+      }
+    },
+    "TransitionDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultTake": {
+          "enum": [
+            "cut",
+            "mix"
+          ],
+          "default": "cut"
+        },
+        "mixDurationFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 15
+        }
+      }
+    },
+    "OutputDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "container": {
+              "enum": [
+                "fragmentedMp4",
+                "matroska"
+              ],
+              "default": "fragmentedMp4"
+            },
+            "directory": {
+              "type": "string"
+            },
+            "isolation": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "tracks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "protocol": {
+              "enum": [
+                "rtmp",
+                "srt",
+                "whip"
+              ]
+            },
+            "videoBitrateKbps": {
+              "type": "integer",
+              "minimum": 500,
+              "maximum": 50000
+            },
+            "audioBitrateKbps": {
+              "type": "integer",
+              "minimum": 96,
+              "maximum": 320
+            }
+          }
+        },
+        "preview": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "protocol": {
+              "enum": [
+                "whep",
+                "mjpeg"
+              ],
+              "default": "whep"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "Asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "video",
+            "alphaVideo",
+            "audio",
+            "image",
+            "font",
+            "rss",
+            "wasm",
+            "wgsl"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "format": {
+          "enum": [
+            "h264",
+            "prores4444",
+            "hapAlpha",
+            "pngSequence",
+            "aac",
+            "pcm",
+            "wav",
+            "png",
+            "svg",
+            "ttf",
+            "otf",
+            "rss"
+          ]
+        },
+        "cadence": {
+          "enum": [
+            "preserve",
+            "interpolate"
+          ],
+          "default": "preserve"
+        },
+        "sourceFrameRate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "expectedDurationFrames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pulldown": {
+          "$ref": "#/$defs/Pulldown"
+        },
+        "loop": {
+          "$ref": "#/$defs/LoopMetadata"
+        },
+        "loudness": {
+          "$ref": "#/$defs/LoudnessReport"
+        }
+      }
+    },
+    "Pulldown": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "pattern"
+          ],
+          "properties": {
+            "mode": {
+              "const": "pattern"
+            },
+            "pattern": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "n"
+          ],
+          "properties": {
+            "mode": {
+              "const": "repeatNthSourceFrame"
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 2
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "n"
+          ],
+          "properties": {
+            "mode": {
+              "const": "repeatOnePerNSourceFrames"
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 2
+            }
+          }
+        }
+      ]
+    },
+    "LoopMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "periodFrames"
+      ],
+      "properties": {
+        "periodFrames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t0Frames": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "seamless": {
+          "type": "boolean",
+          "default": true
+        },
+        "cachePolicy": {
+          "enum": [
+            "auto",
+            "vram",
+            "stream"
+          ],
+          "default": "auto"
+        },
+        "vramBudgetMib": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "textureFormat": {
+          "enum": [
+            "auto",
+            "nv12",
+            "rgba8",
+            "nv12Alpha",
+            "bc7"
+          ],
+          "default": "auto"
+        }
+      }
+    },
+    "LoudnessReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "integratedLufs": {
+          "type": "number"
+        },
+        "truePeakDbtp": {
+          "type": "number"
+        },
+        "loudnessRange": {
+          "type": "number"
+        },
+        "measuredBy": {
+          "type": "string"
+        }
+      }
+    },
+    "GraphicTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "lowerThirdHeadline",
+            "lowerThirdName",
+            "breakingBanner",
+            "ticker",
+            "generic"
+          ]
+        },
+        "fontAssetIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "multiline": {
+                "type": "boolean",
+                "default": false
+              },
+              "direction": {
+                "enum": [
+                  "auto",
+                  "ltr",
+                  "rtl"
+                ],
+                "default": "auto"
+              },
+              "maxLength": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "Transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": -2,
+          "maximum": 3,
+          "default": 0
+        },
+        "y": {
+          "type": "number",
+          "minimum": -2,
+          "maximum": 3,
+          "default": 0
+        },
+        "w": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1
+        },
+        "h": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1
+        },
+        "crop": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "u": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "v": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "w": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "h": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "ChromaKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "color": {
+          "enum": [
+            "green",
+            "blue",
+            "custom"
+          ],
+          "default": "green"
+        },
+        "customColorHex": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "softness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "spillSuppression": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "edgeFeather": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "garbageMatte": {
+          "$ref": "#/$defs/Transform"
+        }
+      }
+    },
+    "LayerAudio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bus": {
+          "enum": [
+            "clip",
+            "guest",
+            "sfx",
+            "music",
+            "mic"
+          ],
+          "default": "clip"
+        },
+        "gainDb": {
+          "type": "number",
+          "minimum": -60,
+          "maximum": 12
+        },
+        "muted": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "ClockConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "wall",
+            "showElapsed"
+          ],
+          "default": "wall"
+        },
+        "timezone": {
+          "type": "string",
+          "default": "local"
+        },
+        "format": {
+          "enum": [
+            "HH:mm",
+            "HH:mm:ss",
+            "hh:mm A",
+            "locale"
+          ],
+          "default": "HH:mm:ss"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "blinkColon": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "Control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindings"
+      ],
+      "properties": {
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ControlBinding"
+          }
+        },
+        "companion": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "ControlBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "description": {
+          "type": "string"
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "companionKey",
+                "hotkey",
+                "midi",
+                "webButton",
+                "osc"
+              ]
+            },
+            "page": {
+              "type": "integer"
+            },
+            "bank": {
+              "type": "integer"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ndi": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      }
+    },
+    "Element": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "z"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "videoLoop",
+            "clip",
+            "camera",
+            "guest",
+            "graphic",
+            "ticker",
+            "clock",
+            "sceneRef",
+            "group",
+            "plugin"
+          ]
+        },
+        "z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "visible": {
+          "type": "boolean",
+          "default": true
+        },
+        "assetId": {
+          "$ref": "#/$defs/Id"
+        },
+        "feedAssetId": {
+          "$ref": "#/$defs/Id"
+        },
+        "cameraId": {
+          "type": "string"
+        },
+        "guestId": {
+          "type": "string"
+        },
+        "templateId": {
+          "$ref": "#/$defs/Id"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "loop": {
+          "$ref": "#/$defs/LoopMetadata"
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform"
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1
+        },
+        "chromaKey": {
+          "$ref": "#/$defs/ChromaKey"
+        },
+        "audio": {
+          "$ref": "#/$defs/LayerAudio"
+        },
+        "clock": {
+          "$ref": "#/$defs/ClockConfig"
+        },
+        "sceneRef": {
+          "$ref": "#/$defs/Id"
+        },
+        "pluginId": {
+          "$ref": "#/$defs/Id"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "enterAnimation": {
+          "$ref": "#/$defs/Animation"
+        },
+        "exitAnimation": {
+          "$ref": "#/$defs/Animation"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "videoLoop"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "assetId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "clip"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "assetId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "camera"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cameraId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "guest"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "guestId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "graphic"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "templateId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "ticker"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "templateId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sceneRef"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sceneRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "plugin"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pluginId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "group"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "children"
+            ]
+          }
+        }
+      ]
+    },
+    "Animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "durationFrames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "delayFrames": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "easing": {
+          "enum": [
+            "linear",
+            "easeIn",
+            "easeOut",
+            "easeInOut",
+            "cubicBezier",
+            "spring"
+          ],
+          "default": "easeInOut"
+        },
+        "bezier": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "Scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "elements"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": "string"
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Element"
+          }
+        },
+        "audio": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Overlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "elements"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Element"
+          }
+        }
+      }
+    },
+    "TransitionPreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "cut",
+            "mix",
+            "wipe",
+            "sting",
+            "move",
+            "dve"
+          ]
+        },
+        "durationFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "easing": {
+          "enum": [
+            "linear",
+            "easeIn",
+            "easeOut",
+            "easeInOut",
+            "cubicBezier",
+            "spring"
+          ]
+        },
+        "elementOverrides": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "AutomationRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "trigger",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "mediaEnd",
+                "mediaStart",
+                "timer",
+                "timeOfDay",
+                "audioLevel",
+                "hotkey",
+                "rssKeyword",
+                "streamHealth",
+                "stateChange"
+              ]
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "payload": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "Sequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "items"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "title": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        }
+      }
+    },
+    "Item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "sceneRef",
+            "sequenceRef",
+            "clipRef",
+            "liveRef",
+            "slate"
+          ]
+        },
+        "sceneRef": {
+          "$ref": "#/$defs/Id"
+        },
+        "sequenceRef": {
+          "$ref": "#/$defs/Id"
+        },
+        "assetId": {
+          "$ref": "#/$defs/Id"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "durationFrames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoFollow": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sceneRef"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sceneRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sequenceRef"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sequenceRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "clipRef"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "assetId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "liveRef"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sourceId"
+            ]
+          }
+        }
+      ]
+    },
+    "Plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "effect",
+            "element"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "network",
+              "disk",
+              "camera",
+              "microphone"
+            ]
+          },
+          "default": []
+        }
+      }
+    }
+  },
+  "$id": "https://nbe.local/schemas/manifest.v0.3.json",
+  "title": "NBE Show Manifest v0.3"
+}
