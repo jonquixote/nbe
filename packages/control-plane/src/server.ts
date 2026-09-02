@@ -20,7 +20,7 @@ import {
   resolveCommand,
   type Role,
 } from "./protocol.js";
-import { MockRenderBridge } from "./render-bridge.js";
+import { MockRenderBridge, WsRenderBridge, type RenderBridge, type RenderDirective } from "./render-bridge.js";
 import type { ControlPlaneState } from "./state.js";
 import type { PersistenceHooks } from "./persistence.js";
 import { buildTick, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
@@ -110,7 +110,8 @@ interface ClientSession {
 export interface ControlPlaneServer {
   http: Server;
   port: number;
-  bridge: MockRenderBridge;
+  bridge: RenderBridge;
+  wsBridge: WsRenderBridge;
   close(): Promise<void>;
 }
 
@@ -121,13 +122,19 @@ export interface ServerOptions {
   audit: AuditLog;
   state: ControlPlaneState;
   persistence: PersistenceHooks;
-  bridge?: MockRenderBridge;
+  /**
+
+   * Inject a specific bridge (tests use MockRenderBridge); defaults to the
+   * production WsRenderBridge fan-out.
+   */
+  bridge?: RenderBridge;
 }
 
 export async function createControlPlaneServer(opts: ServerOptions): Promise<ControlPlaneServer> {
   const { state, audit, auth } = opts;
   const world: WorldTelemetry = newWorldTelemetry();
-  const bridge = opts.bridge ?? new MockRenderBridge();
+  const wsBridge = new WsRenderBridge();
+  const bridge: RenderBridge = opts.bridge ?? wsBridge;
   const rateLimiter = new RateLimiter();
 
   const deps: DispatchDeps = { state, bridge, persistence: opts.persistence, rateLimiter };
@@ -195,6 +202,16 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     };
     clients.set(connId, session);
 
+    // Render-role sessions receive directives: register a fan-out sender.
+    let unregisterRender: (() => void) | null = null;
+    if (session.role === "render") {
+      const renderSender = (frame: RenderDirective): void => {
+        if (session.closed) return;
+        ws.send(JSON.stringify(frame));
+      };
+      unregisterRender = wsBridge.register(renderSender);
+    }
+
     const startTelemetry = (intervalMs: number): void => {
       if (session.telemetryTimer) clearInterval(session.telemetryTimer);
       session.telemetryTimer = setInterval(() => {
@@ -225,11 +242,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     ws.on("close", () => {
       session.closed = true;
       stopTelemetry();
+      unregisterRender?.();
       clients.delete(connId);
     });
     ws.on("error", () => {
       session.closed = true;
       stopTelemetry();
+      unregisterRender?.();
       clients.delete(connId);
     });
 
@@ -329,6 +348,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     http,
     port: (http.address() as { port: number }).port,
     bridge,
+    wsBridge,
     async close() {
       for (const s of clients.values()) {
         s.closed = true;

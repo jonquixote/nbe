@@ -22,7 +22,7 @@ import {
   type Envelope,
   type Role,
 } from "./protocol.js";
-import type { MockRenderBridge } from "./render-bridge.js";
+import type { RenderBridge } from "./render-bridge.js";
 import type { ControlPlaneState } from "./state.js";
 
 export interface PersistHooks {
@@ -44,7 +44,7 @@ export const SHOW_STOP_FORCE_WARNING =
 
 export interface DispatchDeps {
   state: ControlPlaneState;
-  bridge: MockRenderBridge;
+  bridge: RenderBridge;
   persistence: PersistHooks;
   /** test seam: how long show.stop waits for graceful output shutdown */
   showStopGraceMs?: number;
@@ -153,7 +153,7 @@ function roleAllowed(role: Role, command: CommandName): boolean {
 
 export interface HandlerCtx {
   state: ControlPlaneState;
-  bridge: MockRenderBridge;
+  bridge: RenderBridge;
   persistence: PersistHooks;
   /** The command's own stateVersion (assigned by the dispatcher bump). */
   stateVersion: number;
