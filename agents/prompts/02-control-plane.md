@@ -9,14 +9,18 @@ Read these first:
 - `docs/spec.v0.3.md` — Sections 5, 16, 17 are your normative contract. 10.1 for telemetry fields, 10.7 for the audit log, 3 for the glossary.
 - `VOCABULARY.md` — term ledger. View, never Program. Element, never Layer.
 - `agents/prompts/01-bootstrap-core-preflight.md` — the build order this follows.
+- `docs/implementation-standards.md` — the NBE Implementation Standards; this prompt must comply.
+- `docs/prompt-01-definition-of-done.md` — Prompt 01 is locked; do not reopen its behaviours.
+- `agents/prompts/02a-architecture-addendum.md` — normative architecture decisions and semantics that must be pinned before proceeding.
 
 ## Quality bar
 
 This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
 
-- **Schema-driven typed models:** This prompt introduces the TypeScript wire protocol (envelope, command set, error-code registry) and the item/scene state machine; these must be round-trip tested and enum-audited against the Section 16 command/error tables.
+- **Schema-driven typed models:** This prompt introduces the TypeScript wire protocol (envelope, command set, error-code registry) and the item/scene state machine; these must be round-trip tested and enum-audited against the Section 16 command/error tables (see Standards §1). Concretely: for every command in Section 16, define a zod schema, serialize a sample payload to JSON, deserialize it back, and assert equality; for the error-code registry, list every code in Section 16, map each to a TS enum member, and verify no omissions or mismatches.
 - **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2).
 - **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+- **Vocabulary discipline:** All new code must use `View`, `Element`, `Sequence`, `Item`. The strings `program` and `layer` may appear only in the alias table and its tests.
 
 ## Step 1: Project scaffold
 
@@ -75,12 +79,14 @@ Every handler follows the same pipeline:
 
 - `system.telemetry.subscribe` starts a per-client 1-second broadcast of the Section 10.1 field shape, including `qualityProfile`, `degradationRung`, `automationHold`, and any deprecation warnings since the last tick.
 - `system.telemetry.unsubscribe` stops it.
+- Include a test that sends a deprecated `program.take` command and verifies the next telemetry tick includes a deprecation warning.
 
 ## Step 8: Render bridge (src/render-bridge.ts)
 
 - Define the directive protocol the future `nbe-engine` render node will consume: command name, resolved target references, payload, and the `stateVersion` it was issued at.
 - Ship a loopback/mock bridge that accepts directives and records them for tests.
 - The control plane MUST NOT block on the bridge: bridge writes are fire-and-forget with a bounded queue and overflow logging.
+- The loopback/mock bridge must expose a test hook that lets tests assert which directives were received, in order, with their `stateVersion`. This hook is required for the CI gate; it does not introduce engine dependencies.
 
 ## Step 9: Tests and CI
 
@@ -112,9 +118,16 @@ Add a `control-plane` job to `.github/workflows/ci.yml`:
       - run: npm test --prefix packages/control-plane
 ```
 
+The `control-plane` job must fail if any of the following are not true:
+
+1. `npx tsc --noEmit -p packages/control-plane` passes.
+2. All `tsx --test` suites pass.
+3. The mock bridge test hook confirms that directives are recorded in order with correct `stateVersion`s.
+
 ## Constraints
 
 - No engine dependencies and no video anywhere in this package. The render bridge is an interface with a mock implementation.
+- All architecture decisions and semantics in `agents/prompts/02a-architecture-addendum.md` are normative for this prompt.
 - Every command is schema-validated before any state mutation. Never mutate, then validate.
 - `tsc` strict, `tsx --test` green, and the CI job must pass.
 - Vocabulary discipline: `View`, `Element`, `Sequence`, `Item`. The strings `program` and `layer` appear only in the alias table and its tests.
