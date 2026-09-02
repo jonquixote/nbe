@@ -9,6 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+jsonschema = "0.52.1"
 
 [lints]
 workspace = true
