@@ -29,6 +29,9 @@ jobs:
           grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json
   control-plane:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/control-plane
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,6 +39,7 @@ jobs:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build -p nbe-preflight
-      - run: npm ci --prefix packages/control-plane
-      - run: npx tsc --noEmit -p packages/control-plane
-      - run: npm test --prefix packages/control-plane
+        working-directory: .
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
