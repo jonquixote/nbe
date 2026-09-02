@@ -27,3 +27,19 @@ jobs:
           if [ "$code" -ne 2 ]; then echo "expected exit 2, got $code"; exit 1; fi
           grep -q 'migrationRequired' tests/fixtures/valid_show/preflight_report.json
           grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json
+  control-plane:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/control-plane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p nbe-preflight
+        working-directory: .
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test

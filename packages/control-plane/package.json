@@ -1,12 +1,29 @@
 {
-  "name": "@nbe/control-plane",
-  "version": "0.2.0",
+  "name": "nbe-control-plane",
   "private": true,
+  "version": "0.3.0",
   "type": "module",
-  "description": "NBE rundown engine and WebSocket command bus (SPEC v0.2 section 4)",
-  "engines": { "node": ">=20" },
+  "description": "NBE control plane — authoritative show-state owner and WebSocket command bus (SPEC v0.3.1 Sections 5, 16, 17)",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "node src/index.js",
-    "test": "node --test"
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "test": "node --import tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "uuid": "^11.1.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "json-schema-to-typescript": "^16.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.0"
   }
 }
