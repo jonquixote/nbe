@@ -12,7 +12,6 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<Channel>,
     pub show: Show,
-    #[serde(default)]
     pub assets: Vec<Asset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<GraphicTemplate>,
@@ -54,7 +53,7 @@ pub struct Network {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Channel {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,12 +89,29 @@ pub struct VideoSpec {
     pub aspect_ratio: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "u32", into = "u32")]
 pub enum FrameRate {
-    #[serde(rename = "30")]
     Fps30,
-    #[serde(rename = "60")]
     Fps60,
+}
+
+impl From<u32> for FrameRate {
+    fn from(v: u32) -> Self {
+        match v {
+            60 => Self::Fps60,
+            _ => Self::Fps30,
+        }
+    }
+}
+
+impl From<FrameRate> for u32 {
+    fn from(f: FrameRate) -> u32 {
+        match f {
+            FrameRate::Fps30 => 30,
+            FrameRate::Fps60 => 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -327,6 +343,7 @@ pub enum CachePolicy {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum TextureFormat {
     #[default]
+    #[serde(rename = "auto")]
     Auto,
     #[serde(rename = "nv12")]
     Nv12,
@@ -510,6 +527,7 @@ pub enum ClockFormat {
     #[serde(rename = "HH:mm")]
     HhMm,
     #[default]
+    #[serde(rename = "HH:mm:ss")]
     HhMmSs,
     #[serde(rename = "hh:mm A")]
     HhMmA,

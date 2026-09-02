@@ -17,6 +17,11 @@ pub enum ValidationError {
     )]
     MigrationRequired { found: String },
 
+    /// The manifest has no `manifestVersion` field at all. This is a
+    /// malformed manifest, not a migration target.
+    #[error("malformed manifest: no `manifestVersion` field present")]
+    MissingVersion,
+
     /// The manifest failed JSON Schema validation.
     #[error("manifest schema validation failed:\n{details}")]
     SchemaViolation { details: String },
@@ -26,29 +31,34 @@ pub enum ValidationError {
     SchemaCompile(String),
 }
 
-/// Return a compiled validator for the embedded schema.
-fn compiled_validator() -> Result<jsonschema::Validator, ValidationError> {
-    let schema: serde_json::Value = serde_json::from_str(SCHEMA_JSON)
-        .map_err(|e| ValidationError::SchemaCompile(e.to_string()))?;
-    jsonschema::validator_for(&schema).map_err(|e| ValidationError::SchemaCompile(e.to_string()))
+/// Return the compiled validator for the embedded schema, compiled once.
+fn compiled_validator() -> Result<&'static jsonschema::Validator, ValidationError> {
+    static VALIDATOR: std::sync::OnceLock<Result<jsonschema::Validator, String>> =
+        std::sync::OnceLock::new();
+    let result = VALIDATOR.get_or_init(|| {
+        let schema: serde_json::Value =
+            serde_json::from_str(SCHEMA_JSON).map_err(|e| e.to_string())?;
+        jsonschema::validator_for(&schema).map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(v) => Ok(v),
+        Err(e) => Err(ValidationError::SchemaCompile(e.clone())),
+    }
 }
 
 /// Check only the version gate. Cheap; runs before schema validation.
 ///
 /// A manifest whose `manifestVersion` is not `"0.3"` is a migration target,
 /// not a malformed manifest — it gets a dedicated error so callers can
-/// give actionable guidance.
+/// give actionable guidance. A missing field is malformed instead.
 pub fn check_version(json: &serde_json::Value) -> Result<(), ValidationError> {
-    let found = json
-        .get("manifestVersion")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if found != "0.3" {
-        return Err(ValidationError::MigrationRequired {
-            found: found.to_string(),
-        });
+    match json.get("manifestVersion").and_then(|v| v.as_str()) {
+        None => Err(ValidationError::MissingVersion),
+        Some("0.3") => Ok(()),
+        Some(other) => Err(ValidationError::MigrationRequired {
+            found: other.to_string(),
+        }),
     }
-    Ok(())
 }
 
 /// Validate a manifest value: version gate first, then JSON Schema.
@@ -133,11 +143,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_version_yields_migration_required() {
+    fn missing_version_is_malformed_not_migration() {
         let mut m = minimal_valid_manifest();
         m.as_object_mut().unwrap().remove("manifestVersion");
         let err = validate_manifest(&m).unwrap_err();
-        assert!(matches!(err, ValidationError::MigrationRequired { .. }));
+        assert!(matches!(err, ValidationError::MissingVersion));
     }
 
     #[test]

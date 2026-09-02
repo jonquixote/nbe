@@ -933,7 +933,6 @@ dependencies = [
 name = "nbe-core"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "jsonschema",
  "serde",
  "serde_json",

@@ -47,6 +47,9 @@ fn run(package_path: &Path) -> Result<(PreflightReport, bool)> {
                 ValidationError::MigrationRequired { .. } => {
                     report.push_error(format!("migrationRequired: {e}"));
                 }
+                ValidationError::MissingVersion => {
+                    report.push_error(format!("malformedManifest: {e}"));
+                }
                 ValidationError::SchemaViolation { .. } => {
                     report.push_error(e.to_string());
                 }

@@ -5,3 +5,5 @@ dist/
 *.log
 .env
 __pycache__/
+# CI/local preflight writes reports into fixture packages; keep the tree clean.
+tests/fixtures/**/preflight_report.json

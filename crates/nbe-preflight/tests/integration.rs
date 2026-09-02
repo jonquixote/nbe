@@ -1,16 +1,10 @@
-//! Integration test: a package whose manifest references a missing asset
-//! must exit 2 (SPEC Section 19.1, seeded failure #1 in Section 19.3).
+//! Integration tests for nbe-preflight (SPEC Section 19).
+//! Exit codes: 0 air-ready, 1 warnings only, 2 errors.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn cargo_bin() -> PathBuf {
-    // Built by cargo; tests run from the crate dir.
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    target_dir.join("debug").join("nbe-preflight")
-}
+const BIN: &str = env!("CARGO_BIN_EXE_nbe-preflight");
 
 fn write_manifest(dir: &Path, manifest: serde_json::Value) {
     std::fs::write(
@@ -58,8 +52,7 @@ fn missing_asset_exits_2() {
     );
     // Deliberately do NOT create media/fallback.png.
 
-    let bin = cargo_bin();
-    let output = Command::new(bin)
+    let output = Command::new(BIN)
         .arg("--package-path")
         .arg(pkg)
         .output()
@@ -100,8 +93,7 @@ fn v02_manifest_exits_2_with_migration_guidance() {
     std::fs::create_dir_all(pkg.join("media")).unwrap();
     std::fs::write(pkg.join("media/fallback.png"), b"not-a-real-png").unwrap();
 
-    let bin = cargo_bin();
-    let output = Command::new(bin)
+    let output = Command::new(BIN)
         .arg("--package-path")
         .arg(pkg)
         .output()
@@ -133,8 +125,7 @@ fn valid_package_exits_0() {
     std::fs::create_dir_all(pkg.join("media")).unwrap();
     std::fs::write(pkg.join("media/fallback.png"), b"not-a-real-png").unwrap();
 
-    let bin = cargo_bin();
-    let output = Command::new(bin)
+    let output = Command::new(BIN)
         .arg("--package-path")
         .arg(pkg)
         .output()
@@ -147,4 +138,21 @@ fn valid_package_exits_0() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let report_text = std::fs::read_to_string(pkg.join("preflight_report.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["manifestValid"], true);
+    assert_eq!(report["airReady"], true);
+    assert_eq!(report["errors"], serde_json::json!([]));
+}
+
+/// The exit-1 / `--allow-warnings` path is wired but unreachable today:
+/// nothing in the current code paths calls `push_warning`.
+/// The first prompt that introduces a warning producer MUST replace this
+/// ignored test with a live one (a package producing only warnings exits 1
+/// without the flag, exits 0 with it).
+#[test]
+#[ignore = "no warning producer exists yet; first warning producer must implement this test"]
+fn warnings_only_exits_1_without_flag_0_with_it() {
+    unimplemented!("wire this when the first warning producer lands");
 }
