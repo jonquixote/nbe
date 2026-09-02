@@ -16,4 +16,14 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show
+      - name: v0.3 fixture passes
+        run: |
+          cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show_v0.3
+          grep -q '"airReady": true' tests/fixtures/valid_show_v0.3/preflight_report.json
+      - name: v0.2 fixture is rejected (migration gate)
+        run: |
+          code=0
+          cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show || code=$?
+          if [ "$code" -ne 2 ]; then echo "expected exit 2, got $code"; exit 1; fi
+          grep -q 'migrationRequired' tests/fixtures/valid_show/preflight_report.json
+          grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json

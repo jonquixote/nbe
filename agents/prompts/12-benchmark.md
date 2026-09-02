@@ -9,6 +9,14 @@ Read these first:
 - `docs/spec.v0.3.md` — Section 12 is your contract. The comparison table in 12.1, the reference manifest in 12.2, the publication rule in 12.3.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the benchmark harness typed model (reference workload, metrics, report); these must be round-trip tested and enum-audited against the Section 12.1/12.2 definitions.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the drift-check and measurement-completeness invariants.
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: the benchmark harness, the reference workload artifacts, the report template. Forbidden: engine changes (this prompt touches nothing under `crates/`), benchmark claims that cannot be reproduced from the committed artifacts.

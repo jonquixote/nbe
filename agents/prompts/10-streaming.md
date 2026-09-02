@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/09-recording.md` — the encode-session pattern you share.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the streaming-output typed model (protocol and stream-state enums); these must be round-trip tested and enum-audited against the OutputDefaults.stream definition and Section 9.4.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the reconnect and AC-10 WAN-loss invariants.
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: RTMP and SRT per `outputs.stream.protocol`, using the Section 9.4 stream shape. Forbidden: WHIP output (a later contribution-output prompt), CPU encode, any stream work on the render thread.

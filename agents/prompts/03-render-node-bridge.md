@@ -10,6 +10,14 @@ Read these first:
 - `VOCABULARY.md` — term ledger. View, never Program. Element, never Layer.
 - `agents/prompts/02-control-plane.md` — defines the directive protocol you consume.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the render-node directive typed model (`RenderCommand` and the telemetry shape); both must be round-trip tested and enum-audited against the Prompt 02 bridge protocol.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 1: The render-node process
 
 - Give `crates/nbe-engine` a binary target: `src/main.rs` (binary name `nbe-engine`). Keep `src/lib.rs` for future compositor modules.

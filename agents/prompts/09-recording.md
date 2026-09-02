@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/05-video-decode.md` — the decode side of the IOSurface/Metal interop you now use for encode.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the recording-output typed model (container enum, fragment policy); these must be round-trip tested and enum-audited against the OutputDefaults.record definition.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the SIGKILL crash-safety invariant (AC-6).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: VideoToolbox H.264 hardware encode of the composited View plus the master audio bus, written to fragmented MP4 (default) or Matroska. Forbidden: RTMP/SRT streaming (Prompt 10), ISO recording (the `isolation` hook is reserved — master only in v1), CPU x264 anywhere, GPU readback of frames.

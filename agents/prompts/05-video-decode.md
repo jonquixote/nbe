@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/04-basic-compositor.md` — the render loop you are feeding textures into.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the loop-cache typed model and the frame-selection/pulldown enums; these must be round-trip tested and enum-audited against the LoopMetadata/Pulldown definitions, with the decode fixtures driving exact CI gates.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: VideoToolbox hardware decode on macOS for H.264 clips and ProRes 4444 alpha loops, PNG-sequence alpha as fallback. Forbidden: audio (Prompt 06), camera/guest ingest, the encoder, HAP (later), HEVC, any software decode in the live path. The engine never repairs media live — out-of-spec media was already rejected by preflight (Assumption 3).

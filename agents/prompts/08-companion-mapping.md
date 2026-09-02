@@ -10,6 +10,14 @@ Read these first:
 - `VOCABULARY.md` — term ledger. A Binding is the manifest-level trigger→action mapping; an OS-level hotkey is not a Binding.
 - `agents/prompts/02-control-plane.md` — the command pipeline you are adding a door to.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the binding generator and the HTTP command-endpoint typed model; the binding trigger/action enums must be round-trip tested and enum-audited against the ControlBinding definition.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: Bitfocus Companion driving the Stream Deck XL through the control plane. Forbidden forever: a custom Stream Deck plugin (Assumption 6 — locked decision, not a preference).
