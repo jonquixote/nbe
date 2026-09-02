@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/05-video-decode.md` — the clip pipeline you are attaching audio to.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the audio bus graph and the audio-transition-mode typed model; the bus and mode enums must be round-trip tested and enum-audited against the Section 8.1/8.7.3 tables.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the click-free and mix-minus behavioural invariants.
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: `cpal` for cross-platform device I/O (CoreAudio underneath on macOS), 48 kHz float32, the mic input via the audio interface, clip audio from the Prompt 05 pipeline. The guest bus exists but is synthetic for now — real WebRTC guest audio arrives with the guest prompt. Forbidden: WebRTC, the encoder, plugins.

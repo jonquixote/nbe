@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/04-basic-compositor.md` — the render loop and overlay level you are rendering into.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the template/clock/TextDirection typed model; these enums must be round-trip tested and enum-audited against the GraphicTemplate/TemplateField/ClockConfig definitions.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the RTL/Unicode and overlay-persistence invariants.
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: `glyphon` (cosmic-text shaping) on `wgpu`, packaged font assets (`kind: font`, ttf/otf) from the show package. Forbidden: host-system font fallback (Assumption 11), per-frame text relayout (Section 6.5), HTML/browser rendering (the rejected path), RSS fetching inside the engine (that is the control plane's job).

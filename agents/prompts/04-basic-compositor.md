@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/03-render-node-bridge.md` — the process, clock, and watchdog skeleton you are filling in.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the wgpu render-scene graph and the quality-profile/`degradationRung` typed state; the quality-profile and element-kind enums must be round-trip tested and enum-audited against the manifest Element model.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: `wgpu`, the `image` crate (PNG/JPEG decode at load time), Metal on macOS. Forbidden: video decode (Prompt 05), audio (later), camera/guest ingest (later), text/template rendering (the ticker/lower-third prompt), plugins, move-class transitions. Elements in play: `slate` items (generated), image-backed `clip` elements (held stills), and solid-fill `graphic` elements.

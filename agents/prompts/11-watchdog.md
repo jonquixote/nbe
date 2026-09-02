@@ -10,6 +10,14 @@ Read these first:
 - `agents/prompts/01-foundation.md` (metrics) and `03-compositor.md` (telemetry) — the signals you consume.
 - `VOCABULARY.md` — term ledger.
 
+## Quality bar
+
+This prompt complies with the NBE Implementation Standards (`docs/implementation-standards.md`). Specifically:
+
+- **Schema-driven typed models:** This prompt introduces the degradation-ladder typed state (rung and fallback-tier enums, reason codes); these must be round-trip tested and enum-audited against the Section 9.6/10.5 definitions.
+- **Strict CI contracts:** Any new binary or observable behaviour must have an exact CI gate (exit codes, key strings, behavioural invariants) (see Standards §2), including the shed-order and restoration/hysteresis invariants (AC-27).
+- **Prompt structure compliance:** This prompt explicitly lists Forbidden changes, New tests required, and CI changes required (see Standards §3).
+
 ## Step 0: Scope discipline
 
 Allowed now: detection, fallback, reporting, and restoration for GPU oversubscription. Forbidden: changes to the compositor's per-frame design (Prompt 03 stands), any watchdog work on the render thread, and any auto-fallback that touches the primary program layer.
