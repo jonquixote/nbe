@@ -22,6 +22,10 @@ This prompt complies with the NBE Implementation Standards (`docs/implementation
 
 Allowed now: VideoToolbox H.264 hardware encode of the composited View plus the master audio bus, written to fragmented MP4 (default) or Matroska. Forbidden: RTMP/SRT streaming (Prompt 10), ISO recording (the `isolation` hook is reserved — master only in v1), CPU x264 anywhere, GPU readback of frames.
 
+## Note (carried over from Prompt 03 review — do not ignore)
+
+The `appliedStateVersion` ack the engine emits in Prompt 03's `show.stop`/`record.stop`/`stream.stop` handlers currently fires as soon as the directives are applied because there are no real outputs in Prompt 03 — the "stop" is trivially executed. Once this prompt wires actual dedicated encoder sessions, the §5.9.5 ack MUST move behind them: the engine may only send `appliedStateVersion` after the encoder session has actually shut down. Acknowledging before the outputs stop makes the control plane's 2-second graceful window a lie. Track this when `record.start`/`record.stop` becomes real.
+
 ## Step 1: The encode session
 
 - VideoToolbox H.264 hardware encode fed by the compositor's shared GPU frames via the IOSurface path — Section 9.7: one composite, one GPU frame, N encoder sessions sharing it. Never recomposite, never read back to CPU.

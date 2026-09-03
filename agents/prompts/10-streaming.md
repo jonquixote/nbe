@@ -22,6 +22,10 @@ This prompt complies with the NBE Implementation Standards (`docs/implementation
 
 Allowed now: RTMP and SRT per `outputs.stream.protocol`, using the Section 9.4 stream shape. Forbidden: WHIP output (a later contribution-output prompt), CPU encode, any stream work on the render thread.
 
+## Note (carried over from Prompt 03 review — do not ignore)
+
+The `appliedStateVersion` ack in Prompt 03's `stream.stop`-side handling (`show.stop` path) fires on application, before the actual stream session is torn down. When this prompt introduces the real publisher, the ack MUST wait for the transport to be torn down (session gone, RTMP/SRT closed). §5.9.5 requires the ack to reflect outputs actually stopped, not merely politics.
+
 ## Step 1: The stream encode session
 
 - VideoToolbox H.264 High, 1080p30, 6–12 Mbps recommended, AAC 48 kHz 192 kbps, 1-second keyframe interval — per Section 9.4, fed by the shared GPU frames per Section 9.7. Never recomposite; never read back to CPU.
