@@ -37,6 +37,7 @@ export const ErrorCodeSchema = z.enum([
   "E_TIMEOUT",
   "E_TURN",
   "E_ICE",
+  "E_RATE_LIMITED",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 
@@ -135,7 +136,9 @@ export const CommandPayloadSchemas = {
   // 16.1 show
   "show.load": z.object({ packagePath: z.string().min(1), mode: z.enum(["load", "reload"]).optional() }).strict(),
   "show.preflight": z.object({ strict: z.boolean().optional() }).strict(),
-  "show.start": z.object({ startClock: z.boolean().optional() }).strict(),
+  "show.start": z
+    .object({ startClock: z.boolean().optional(), allowWarnings: z.boolean().optional() })
+    .strict(),
   "show.stop": z.object({ quiesceOutputs: z.boolean().default(true), force: z.boolean().default(false) }).strict(),
   "show.unload": z.object({}).strict(),
 
@@ -169,6 +172,7 @@ export const CommandPayloadSchemas = {
   "item.arm": z.object({ itemId: id }).strict(),
   "item.unarm": z.object({ itemId: id }).strict(),
   "item.stop": z.object({ itemId: id }).strict(),
+  "item.reset": z.object({ itemId: id }).strict(),
 
   // 16.5 element/graphic
   "element.toggle": z.object({ elementId: id, scope: z.string().optional(), visible: z.boolean().optional() }).strict(),
@@ -408,9 +412,39 @@ export const ItemLifecycleFrameSchema = z
   .strict();
 export type ItemLifecycleFrame = z.infer<typeof ItemLifecycleFrameSchema>;
 
+/** SPEC §5.9.3: the engine asks for a fresh snapshot. */
+export const ResyncRequestFrameSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    kind: z.literal("resyncRequest"),
+    reason: z.enum(["seqGap", "reconnect", "internal"]),
+  })
+  .strict();
+export type ResyncRequestFrame = z.infer<typeof ResyncRequestFrameSchema>;
+
 export const EngineFrameSchema = z.discriminatedUnion("kind", [
   EngineTelemetryFrameSchema,
   AppliedStateVersionFrameSchema,
   ItemLifecycleFrameSchema,
+  ResyncRequestFrameSchema,
 ]);
+
+/**
+ * SPEC §5.4.1 server-push frames. Not responses: no `requestId`, never
+ * confused with the Section 5.4 response shapes.
+ */
+export interface StateChangeFrame {
+  v: typeof PROTOCOL_VERSION;
+  kind: "stateChange";
+  stateVersion: number;
+  changed: string[];
+  state: Record<string, unknown>;
+}
+
+/**
+ * SPEC §5.9.4: the directive-only command name that carries the full
+ * snapshot. Deliberately absent from `CommandPayloadSchemas` — no client may
+ * issue it.
+ */
+export const RESYNC_COMMAND = "show.resync" as const;
 export type EngineFrame = z.infer<typeof EngineFrameSchema>;

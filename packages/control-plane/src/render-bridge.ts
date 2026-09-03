@@ -89,6 +89,12 @@ export class MockRenderBridge implements RenderBridge {
  */
 export type RenderSender = (frame: RenderDirective) => boolean;
 
+/** What `register()` hands back: how to leave, and how to address this session alone. */
+export interface RenderRegistration {
+  unregister(): void;
+  sendDirect(directive: PartialDirective): boolean;
+}
+
 interface Session {
   send: RenderSender;
   seq: number;
@@ -110,16 +116,39 @@ export class WsRenderBridge implements RenderBridge {
   // counters for bookkeeping only; per-session seq lives in Session
   private droppedTotal = 0;
 
-  register(send: RenderSender): () => void {
+  register(send: RenderSender): RenderRegistration {
     const id = Symbol("render-session");
     this.sessions.set(id, { send, seq: 0, dropped: 0 });
     let done = false;
-    return () => {
-      if (done) return;
-      done = true;
-      const removed = this.sessions.get(id);
-      if (removed) this.droppedTotal += removed.dropped;
-      this.sessions.delete(id);
+    return {
+      unregister: () => {
+        if (done) return;
+        done = true;
+        const removed = this.sessions.get(id);
+        if (removed) this.droppedTotal += removed.dropped;
+        this.sessions.delete(id);
+      },
+      /**
+       * Send to this session only, consuming this session's `seq`.
+       * `show.resync` uses it: a snapshot is addressed to the connection that
+       * needs it, never fanned out to nodes that are already current.
+       */
+      sendDirect: (directive: PartialDirective): boolean => {
+        const session = this.sessions.get(id);
+        if (!session) return false;
+        const frame = makeDirective(directive, session.seq++);
+        try {
+          const ok = session.send(frame);
+          if (!ok) {
+            session.dropped += 1;
+            this.droppedTotal += 1;
+          }
+          return ok;
+        } catch (e) {
+          console.warn(`render-bridge: direct send failed: ${String(e)}`);
+          return false;
+        }
+      },
     };
   }
 

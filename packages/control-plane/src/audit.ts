@@ -26,6 +26,8 @@ export interface AuditRecord {
   errorCode?: ErrorCode | null;
   stateVersionBefore?: number;
   stateVersionAfter?: number;
+  /** Why a handshake failed. Belongs here, never in the reply to the peer. */
+  reason?: string | null;
 }
 
 export class AuditLog {
@@ -34,6 +36,19 @@ export class AuditLog {
   constructor(path?: string | undefined) {
     this.path = path;
     if (path) mkdirSync(dirname(path), { recursive: true });
+  }
+
+  /**
+   * SPEC §10.7.1: a control plane with no audit destination MUST refuse to
+   * start rather than run unaudited. Call this at boot, not per record — an
+   * in-memory-only audit log satisfies nothing the section exists for.
+   */
+  assertConfigured(): void {
+    if (!this.path) {
+      throw new Error(
+        "audit log destination is not configured (set NBE_AUDIT_LOG); refusing to start unaudited (SPEC §10.7.1)",
+      );
+    }
   }
 
   record(rec: Omit<AuditRecord, "ts"> & { ts?: number }): AuditRecord {

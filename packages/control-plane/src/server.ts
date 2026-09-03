@@ -18,10 +18,16 @@ import {
   errorResponse,
   okResponse,
   resolveCommand,
+  RESYNC_COMMAND,
   type Role,
 } from "./protocol.js";
-import { MockRenderBridge, WsRenderBridge, type RenderBridge, type RenderDirective } from "./render-bridge.js";
-import type { ControlPlaneState } from "./state.js";
+import {
+  WsRenderBridge,
+  type RenderBridge,
+  type RenderDirective,
+  type RenderRegistration,
+} from "./render-bridge.js";
+import type { ControlPlaneState, DeprecationRecord } from "./state.js";
 import type { PersistenceHooks } from "./persistence.js";
 import { buildTick, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
 
@@ -105,6 +111,14 @@ interface ClientSession {
   closed: boolean;
   /** Commands are processed strictly in arrival order. */
   tail: Promise<void>;
+  /** Pushes a server-initiated frame (SPEC §5.4.1); false when dropped. */
+  push: (frame: unknown) => boolean;
+  /** Render sessions only: this session's own directive channel. */
+  render: { registration: RenderRegistration; lastApplied: number | null } | null;
+  /** Deprecation warnings this subscriber has not yet been shown. */
+  pendingDeprecations: DeprecationRecord[];
+  /** Drops this connection. `http.close()` waits forever on live sockets. */
+  terminate: () => void;
 }
 
 export interface ControlPlaneServer {
@@ -124,6 +138,10 @@ export interface ServerOptions {
   persistence: PersistenceHooks;
   /** Inject a specific bridge (tests use MockRenderBridge); defaults to the production WsRenderBridge fan-out. */
   bridge?: RenderBridge;
+  /** SPEC §16.1 graceful window; shortened in tests. Default 2000 ms. */
+  showStopGraceMs?: number;
+  /** Warning sink; defaults to console.warn. Tests assert exact strings. */
+  warn?: (message: string) => void;
 }
 
 export async function createControlPlaneServer(opts: ServerOptions): Promise<ControlPlaneServer> {
@@ -133,14 +151,100 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const bridge: RenderBridge = opts.bridge ?? wsBridge;
   const rateLimiter = new RateLimiter();
 
-  const deps: DispatchDeps = { state, bridge, persistence: opts.persistence, rateLimiter };
-  const registry = buildRegistry(deps);
   const clients = new Map<string, ClientSession>();
+
+  // -- SPEC §5.9.5: the quiescence acknowledgement -------------------------
+  // `show.stop` waits for a render node to confirm it applied the stop
+  // directives. Waiters resolve on the ack, or false on timeout / no node.
+  const ackWaiters = new Set<{ version: number; resolve: (acked: boolean) => void }>();
+
+  function noteApplied(session: ClientSession, version: number): void {
+    if (!session.render) return;
+    const prev = session.render.lastApplied;
+    if (prev !== null && version <= prev) return; // stale ack: log and ignore
+    session.render.lastApplied = version;
+    for (const waiter of [...ackWaiters]) {
+      if (version >= waiter.version) {
+        ackWaiters.delete(waiter);
+        waiter.resolve(true);
+      }
+    }
+  }
+
+  function renderSessions(): ClientSession[] {
+    return [...clients.values()].filter((c) => c.render !== null && !c.closed);
+  }
+
+  async function waitForGrace(ms: number, version: number): Promise<boolean> {
+    const nodes = renderSessions();
+    if (nodes.length === 0) return false; // nothing can acknowledge; force it
+    if (nodes.some((n) => (n.render!.lastApplied ?? -1) >= version)) return true;
+    return new Promise<boolean>((resolve) => {
+      const waiter = { version, resolve };
+      ackWaiters.add(waiter);
+      const timer = setTimeout(() => {
+        ackWaiters.delete(waiter);
+        resolve(false);
+      }, ms);
+      timer.unref?.();
+    });
+  }
+
+  const deps: DispatchDeps = {
+    state,
+    bridge,
+    persistence: opts.persistence,
+    rateLimiter,
+    showStopGraceMs: opts.showStopGraceMs ?? 2000,
+    waitForGrace,
+    emitDirectivesNow: (directives, stateVersion) => {
+      for (const d of directives) {
+        bridge.send({ command: d.command, target: d.target ?? {}, payload: d.payload, stateVersion });
+      }
+    },
+    warn: opts.warn ?? ((m) => console.warn(m)),
+  };
+  const registry = buildRegistry(deps);
+
+  /** SPEC §5.4.1: one stateChange frame per accepted command, to observers. */
+  function broadcastStateChange(stateVersion: number, changed: string[]): void {
+    const frame = {
+      v: PROTOCOL_VERSION,
+      kind: "stateChange" as const,
+      stateVersion,
+      changed,
+      state: state.statusSnapshot(renderNodeStatus()),
+    };
+    for (const client of clients.values()) {
+      if (client.closed || client.render !== null) continue; // render nodes get directives, not state frames
+      client.push(frame);
+    }
+  }
+
+  function renderNodeStatus(): { connected: boolean; clockState: string; lastAppliedStateVersion: number | null } {
+    const nodes = renderSessions();
+    const fresh = world.last !== null && Date.now() - world.last.receivedAt <= 2000;
+    return {
+      connected: nodes.length > 0 && fresh,
+      clockState: fresh ? (state.showState === "RUNNING" ? "RUNNING" : "STOPPED") : "UNKNOWN",
+      lastAppliedStateVersion: nodes.length ? (nodes[0]!.render!.lastApplied ?? null) : null,
+    };
+  }
+
+  /** SPEC §5.9.4: the full snapshot, addressed to one connection. */
+  function sendResync(session: ClientSession): void {
+    session.render?.registration.sendDirect({
+      command: RESYNC_COMMAND,
+      target: {},
+      payload: state.resyncSnapshot(),
+      stateVersion: state.stateVersion,
+    });
+  }
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "GET" && req.url === `${WS_PATH}/status`) {
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ v: PROTOCOL_VERSION, ok: true, ...state.statusSnapshot() }));
+      res.end(JSON.stringify({ v: PROTOCOL_VERSION, ok: true, ...state.statusSnapshot(renderNodeStatus()) }));
       return;
     }
     res.statusCode = 404;
@@ -167,9 +271,12 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         role: null,
         tokenId: null,
         remote: req.socket.remoteAddress ?? null,
+        reason: ar.reason ?? "auth failed",
       });
+      // SPEC §5.3: the reason returned to an unauthenticated peer is generic;
+      // the specific cause goes to the audit log above.
       const frame = JSON.stringify(
-        errorResponse(randomUUID(), state.stateVersion, "E_AUTH", ar.reason ?? "auth failed"),
+        errorResponse(randomUUID(), state.stateVersion, "E_AUTH", "authentication failed"),
       );
       socket.write(
         `HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(frame)}\r\n\r\n${frame}`,
@@ -195,11 +302,19 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       telemetryTimer: null,
       closed: false,
       tail: Promise.resolve(),
+      push: (frame: unknown): boolean => {
+        if (session.closed) return false;
+        if (ws.bufferedAmount > 256 * 1024) return false; // droppable under backpressure (§5.4.1)
+        ws.send(JSON.stringify(frame));
+        return true;
+      },
+      render: null,
+      pendingDeprecations: [],
+      terminate: () => ws.terminate(),
     };
     clients.set(connId, session);
 
     // Render-role sessions receive directives: register a fan-out sender.
-    let unregisterRender: (() => void) | null = null;
     if (session.role === "render") {
       const renderSender = (frame: RenderDirective): boolean => {
         if (session.closed) return false;
@@ -207,7 +322,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         ws.send(JSON.stringify(frame));
         return true;
       };
-      unregisterRender = wsBridge.register(renderSender);
+      session.render = { registration: wsBridge.register(renderSender), lastApplied: null };
+      // SPEC §5.9.4: show.resync goes out before any other directive on this
+      // connection. Directives issued while no node was connected are never
+      // replayed — the snapshot is the recovery mechanism.
+      sendResync(session);
     }
 
     const startTelemetry = (intervalMs: number): void => {
@@ -215,7 +334,17 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       session.telemetryTimer = setInterval(() => {
         if (session.closed) return;
         if (ws.bufferedAmount > 256 * 1024) return; // backpressure: coalesce
-        ws.send(JSON.stringify({ v: PROTOCOL_VERSION, kind: "telemetry", data: buildTick(state, world, Date.now()) }));
+        // Each subscriber drains its OWN cursor: a shared drain means the
+        // first tick to fire steals the warning from every other subscriber.
+        const mine = session.pendingDeprecations;
+        session.pendingDeprecations = [];
+        ws.send(
+          JSON.stringify({
+            v: PROTOCOL_VERSION,
+            kind: "telemetry",
+            data: { ...buildTick(state, world, Date.now()), deprecationWarnings: mine },
+          }),
+        );
       }, intervalMs);
       session.telemetryTimer.unref?.();
     };
@@ -240,13 +369,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     ws.on("close", () => {
       session.closed = true;
       stopTelemetry();
-      unregisterRender?.();
+      session.render?.registration.unregister();
       clients.delete(connId);
     });
     ws.on("error", () => {
       session.closed = true;
       stopTelemetry();
-      unregisterRender?.();
+      session.render?.registration.unregister();
       clients.delete(connId);
     });
 
@@ -266,6 +395,12 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         const frame = engine.data;
         if (frame.kind === "engineTelemetry") {
           ingestEngineFrame(world, frame, Date.now());
+        } else if (frame.kind === "appliedStateVersion") {
+          // SPEC §5.9.5: the signal show.stop's grace window waits for.
+          noteApplied(session, frame.stateVersion);
+        } else if (frame.kind === "resyncRequest") {
+          // SPEC §5.9.4: the engine lost continuity; hand it the snapshot.
+          sendResync(session);
         } else if (frame.kind === "itemEvent") {
           const before = state.stateVersion;
           if (frame.event === "end") state.markDone(frame.itemRef);
@@ -315,6 +450,15 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           stateVersionBefore: before,
           stateVersionAfter: out.stateVersion,
         });
+        // Fan deprecation warnings into every subscriber's own cursor.
+        for (const rec of state.drainDeprecations()) {
+          for (const client of clients.values()) {
+            if (!client.closed && client.render === null) client.pendingDeprecations.push(rec);
+          }
+        }
+        // SPEC §5.4.1: exactly one stateChange per accepted command, carrying
+        // the response's stateVersion and observable no later than it.
+        broadcastStateChange(out.stateVersion, [alias?.command ?? envelope.command]);
         // Command responses are never dropped (addendum §2.8).
         ws.send(JSON.stringify(okResponse(envelope.id, out.stateVersion, out.data)));
       } catch (err) {
@@ -351,7 +495,14 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       for (const s of clients.values()) {
         s.closed = true;
         if (s.telemetryTimer) clearInterval(s.telemetryTimer);
+        s.render?.registration.unregister();
+        // Without this, http.close() never resolves: an open WebSocket is an
+        // open connection, and the server waits for it indefinitely.
+        s.terminate();
       }
+      clients.clear();
+      for (const waiter of ackWaiters) waiter.resolve(false);
+      ackWaiters.clear();
       wss.close();
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },

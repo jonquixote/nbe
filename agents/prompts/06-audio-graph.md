@@ -1,6 +1,6 @@
 # Agent Prompt 06 — Audio Graph (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Section 8 (the audio engine, entire), Section 11.5 (drift policy), Section 7.13 (non-blocking rule), AC-8 (drift), AC-13 (soundboard latency), AC-14 (loudness), AC-18 (mix-minus isolation), AC-19 (click-free). Prerequisites: Agent Prompts 01–05 merged (video playing under the master clock).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Section 8 (the audio engine, entire), Section 11.5 (drift policy), Section 7.13 (non-blocking rule), AC-8 (drift), AC-13 (soundboard latency), AC-14 (loudness), AC-18 (mix-minus isolation), AC-19 (click-free). Prerequisites: Agent Prompts 01–05 merged (video playing under the master clock).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the audio engine: the bus graph, the real-time callback, ducking, the soundboard, click-free transitions, mix-minus, and drift correction. Audio breaks more live shows than video does — this is the prompt where that stops being true.
 

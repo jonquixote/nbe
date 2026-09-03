@@ -1,6 +1,6 @@
 # Agent Prompt 02 — Control Plane (packages/control-plane)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 5 (control plane), 16 (command API), 17 (state machine), 10.1 (telemetry), 10.7 (audit log), 3 (glossary). Prerequisite: Agent Prompt 01 merged (`nbe-core` validates manifests against `schemas/manifest.v0.3.json`).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 5 (control plane), 16 (command API), 17 (state machine), 10.1 (telemetry), 10.7 (audit log), 3 (glossary). Prerequisite: Agent Prompt 01 merged (`nbe-core` validates manifests against `schemas/manifest.v0.3.json`).**
 
 You are a senior TypeScript engineer building the `nbe` broadcast engine. Build the control plane: the authoritative show-state owner and the single WebSocket command bus that every client (operator UI, producer UI, iPhone, Companion bridge, render node) talks to.
 

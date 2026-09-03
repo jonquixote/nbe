@@ -1,6 +1,6 @@
 # Agent Prompt 07 — Graphics: Ticker & Lower-Third Templates (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 6.5 (graphics and fonts), 7.10 (overlay level), 10.7 (RSS sanitize/rate-limit), 16.5 (graphic commands), 16.6 (overlay commands), 16.7 (ticker commands), 16.13 (clock.configure), AC-15 (RTL/Unicode), AC-24 (overlay persistence). Prerequisites: Agent Prompts 01–06 merged (compositor rendering video on the master clock, audio graph live).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 6.5 (graphics and fonts), 7.10 (overlay level), 10.7 (RSS sanitize/rate-limit), 16.5 (graphic commands), 16.6 (overlay commands), 16.7 (ticker commands), 16.13 (clock.configure), AC-15 (RTL/Unicode), AC-24 (overlay persistence). Prerequisites: Agent Prompts 01–06 merged (compositor rendering video on the master clock, audio graph live).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the graphics layer: text and templates rendered to GPU textures, the scrolling ticker, lower thirds, the breaking banner, and the clock. This is where the View starts looking like a news network.
 

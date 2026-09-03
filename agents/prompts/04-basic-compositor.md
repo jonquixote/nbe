@@ -1,6 +1,6 @@
 # Agent Prompt 04 — Basic View/Preview Compositor (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 7.1 (constraints), 7.2 (render model), 7.3 (element kinds), 7.9 + 7.9.1 (transitions, take latency), 7.10 (overlay level), 7.13 (frame budget), 7.14 (fallback), 10.2/10.3 (dropped frames, watchdog), 10.5 (quality profiles/degradation ladder), 11 (master clock). Prerequisites: Agent Prompts 01–03 merged (validator, control plane, render-node bridge with master clock and fallback residency).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 7.1 (constraints), 7.2 (render model), 7.3 (element kinds), 7.9 + 7.9.1 (transitions, take latency), 7.10 (overlay level), 7.13 (frame budget), 7.14 (fallback), 10.2/10.3 (dropped frames, watchdog), 10.5 (quality profiles/degradation ladder), 11 (master clock). Prerequisites: Agent Prompts 01–03 merged (validator, control plane, render-node bridge with master clock and fallback residency).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. **This prompt is the first GPU work in the project.** Bring up the `wgpu` compositor in `nbe-engine`: a master-clock-driven render loop producing the View and Preview targets, compositing slate, image, and solid-graphic elements, with cut and mix transitions, the fallback slate rendered and one frame away, and real dropped-frame accounting.
 

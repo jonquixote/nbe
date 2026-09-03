@@ -12,7 +12,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "test": "node --import tsx --test src/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:manifest-types": "node scripts/gen-manifest-types.mjs"
   },
   "dependencies": {
     "uuid": "^11.1.0",

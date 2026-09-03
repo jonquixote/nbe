@@ -1,6 +1,8 @@
 # Agent Prompt 03 — Render-Node Command Bridge (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 5.3 (render role), 5.4 (envelope), 7.13 (frame budget), 7.14 (fallback slate), 10 (telemetry/health/watchdog), 11 (master clock). Prerequisites: Agent Prompt 01 (`nbe-core` validates manifests) and Agent Prompt 02 (control plane with render bridge) merged.**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 5.3 (render role), 5.4 (envelope), 5.9 (the render channel — directive frame, engine frames, `seq`, resync, quiescence ack), 7.13 (frame budget), 7.14 (fallback slate), 10.1.1 (telemetry ownership), 10.3 (watchdog), 11 (master clock). Prerequisites: Agent Prompt 01 (`nbe-core` validates manifests), Agent Prompt 02 (control plane), and Agent Prompt 02c (render-channel control-plane half — see Step 0) merged.**
+
+> The render channel was promoted from `02a-architecture-addendum.md` into the spec at v0.3.2 (§5.9). Where this prompt and the addendum differ, **the spec wins** — the addendum is now a historical record of how those decisions were reached.
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt brings the `nbe-engine` crate to life as the render-node process: it connects to the control plane as a `render`-role client, receives render directives, runs the master clock, and reports health and telemetry back. **No GPU work happens in this prompt** — no wgpu, no decode, no compositing. That is Prompt 04. This prompt is the nervous system of the render node: bridge, clock, health.
 
@@ -30,9 +32,23 @@ This prompt complies with the NBE Implementation Standards (`docs/implementation
 - The WebSocket client runs on its own tokio task. The master clock and telemetry run on theirs. Per Section 7.13, control-plane I/O MUST never block the (future) render loop — structure now so it can't later.
 - Reconnect with exponential backoff on connection loss. A control-plane outage MUST NOT stop the engine: the engine keeps its last known state and keeps ticking (local survivability, Section 9.5 analog).
 
+## Step 0: Prerequisite — the control-plane half must exist first
+
+**Do not start this prompt until Prompt 02c has landed.** Steps 2a, 3a, and 4a below consume three control-plane behaviours that do not exist in `packages/control-plane` as of this writing:
+
+| Needed | Current state |
+|---|---|
+| `show.resync` directive on every render connect | Not implemented; not a Section 16 command — it is a directive-only command name (SPEC §5.9.4). |
+| `appliedStateVersion` handled and awaited | `AppliedStateVersionFrameSchema` exists in `src/protocol.ts` and parses, but `src/server.ts` has no branch for it — the frame is silently discarded. |
+| `show.stop` awaiting that ack | `waitForGrace` in `src/commands/show.ts` is an optional test seam that production never sets, so the 2-second window elapses instantly. |
+
+Verify each of the three before starting: connect a `render`-role session and confirm a `show.resync` directive arrives; send an `appliedStateVersion` frame and confirm the control plane records it. If they are absent, stop and report — building the engine half against a control plane that cannot answer produces a green test suite and a dead link, which is exactly how the Prompt 02 bridge blockers happened twice.
+
+Normative references for all three: SPEC v0.3.2 §5.9 (render channel), §5.9.4 (reconnect resync), §5.9.5 (quiescence acknowledgement).
+
 ## Step 2a: Reconnect resync (NEW — mandatory)
 
-A bounded, fire-and-forget bridge plus an engine that reconnects means directives issued during the outage are lost and the engine could come back on-air showing the wrong item. This MUST be pinned:
+A bounded, fire-and-forget bridge plus an engine that reconnects means directives issued during the outage are lost and the engine could come back on-air showing the wrong item. SPEC §5.9.4 is the contract; this prompt implements the engine half:
 
 1. On **every** render-role connection (initial connect AND reconnect), the control plane sends a `show.resync` directive containing a full snapshot: current `viewItem`, `previewItem`, item/scene states, visible overlays, `automationHold`, and the issuing `stateVersion`. The engine applies this snapshot and confirms with `appliedStateVersion`.
 2. The render node, on reconnect, MUST NOT assume its previous state is still current — it waits for `show.resync` before trusting any subsequent directive. Between reconnect and resync it holds the last applied frame.
@@ -41,8 +57,8 @@ A bounded, fire-and-forget bridge plus an engine that reconnects means directive
 ## Step 3: Directive intake
 
 - Parse render directives per the Prompt 02 bridge protocol: command name, resolved target references, payload, and the `stateVersion` the directive was issued at.
-- Handle at minimum: `show.load` (read the package, verify fallback residency per Section 7.14 — the fallback asset MUST be resident in memory after show load; **do not** re-run full manifest validation here, that is `nbe-core`/`nbe-preflight`'s job — the control plane already validated it, and only fail if the on-disk asset it needs is missing), `show.start`, `show.stop` (execute the quiesce directives `record.stop`/`stream.stop` inferred from the control plane's output quarantine — do NOT re-derive the Section 16.1 truth table, that is control-plane policy), `view.take`, `view.cut`, `view.fallback`.
-- **Validation authority:** the control plane is authoritative for manifest validity (it ran `nbe-preflight`). The engine's own checks are limited to what it needs to operate: fallback residency and opening the referenced assets. If the control plane and engine disagree (asset validated but cannot be opened), the ENGINE is fatal — it logs `E_DECODE`/`E_ENGINE` on its side and reports via telemetry; the control plane treats that as authoritative (engine failure wins for a live show, per Section 7.13's trust the engine).
+- Handle at minimum: `show.load` (read the package, verify fallback residency per Section 7.14 — the fallback asset MUST be resident in memory after show load; **do not** re-run full manifest validation here, that is `nbe-core`/`nbe-preflight`'s job — the control plane already validated it, and only fail if the on-disk asset it needs is missing), `show.start`, `show.stop` (execute the `record.stop`/`stream.stop` directives the control plane sends as part of quiescence — do NOT re-derive the Section 16.1 truth table, that is control-plane policy), `view.take`, `view.cut`, `view.fallback`.
+- **Validation authority:** the control plane is authoritative for manifest validity (it ran `nbe-preflight`). The engine's own checks are limited to what it needs to operate: fallback residency and opening the referenced assets. If the control plane and engine disagree (asset validated but cannot be opened), the ENGINE is fatal — it logs `E_DECODE`/`E_ENGINE` on its side and reports via telemetry; the control plane treats that as authoritative — a package that validates statically but cannot be decoded at runtime is not airworthy, and only the engine can know that.
 - Directives are fire-and-forget: the engine does not block command responses. Instead, the engine reports the last applied `stateVersion` through Step 3a's `appliedStateVersion` frame (the ack that makes Step 4's `show.stop` grace window real).
 - Directives arriving out of order (a `stateVersion` older than the last applied) are logged and skipped.
 
@@ -54,7 +70,8 @@ These frames are a separate protocol layered on the same WebSocket connection �
 - **`seq` semantics (pin these, do not leave ambiguous):**
   - `seq` is a **per-connection** monotonic counter maintained by the control plane on each `render`-role session, starting at `0` when that connection is established.
   - It resets to `0` on every (re)connect. The render node MUST treat `seq` as a continuity check **within a single connection only**. A fresh connection starting at `seq 0` is a "joined here" marker, NOT a "lost N directives" signal.
-- The render node detects loss by `seq` discontinuity within one connection and by the `stateVersion` gap; on any discontinuity it MUST NOT guess — it requests a resync snapshot (see Step 2a).
+- The render node detects loss by `seq` discontinuity within one connection and by the `stateVersion` gap; on any discontinuity it MUST NOT guess — it sends `resyncRequest` and waits (see Step 2a).
+  - **`resyncRequest`** — `{ v, kind: "resyncRequest", reason: "seqGap" | "reconnect" | "internal" }` (SPEC §5.9.3). This is the engine→server frame that makes "request a resync" actionable; without it the requirement is unimplementable. The control plane answers with a fresh `show.resync` on that connection.
 - **Engine → server frames (accept only from `render`-role sessions):**
   - `engineTelemetry` — the Section 10.1 shape (see Step 5 for ownership).
   - `appliedStateVersion` — `{ v, kind:"appliedStateVersion", stateVersion }`: the engine reports the last directive `stateVersion` it applied. This is the signal the control plane awaits to know the show is quiesced; **without it, `show.stop`'s 2-second window is never satisfied in production.** The engine MUST send one after applying a quiesce-triggering directive (`record.stop`, `stream.stop`, `show.stop`) once it confirms the outputs have actually stopped.

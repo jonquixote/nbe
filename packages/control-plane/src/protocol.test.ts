@@ -4,97 +4,45 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { CommandPayloadSchemas, CommandNames, ErrorCodeSchema, EnvelopeSchema } from "./protocol.js";
 
-// The authoritative Section 16 error-code table, reworked here so a drift
-// between this list and the registry fails the test.
-const SECTION_16_ERROR_CODES = [
-  "E_BAD_PAYLOAD",
-  "E_FORBIDDEN_STATE",
-  "E_NOT_FOUND",
-  "E_ASSET_MISSING",
-  "E_DECODE",
-  "E_ENGINE",
-  "E_VERSION_CONFLICT",
-  "E_UNSUPPORTED",
-  "E_UNSUPPORTED_FEATURE",
-  "E_AUTH",
-  "E_NO_HARDWARE_ENCODER",
-  "E_NETWORK",
-  "E_PREFLIGHT_FAILED",
-  "E_AUDIO",
-  "E_DISK",
-  "E_TIMEOUT",
-  "E_TURN",
-  "E_ICE",
-] as const;
+// The Section 16 tables are parsed OUT OF THE SPEC at test time. The lists
+// used to be copied here by hand, which meant the spec could move to v0.3.2 —
+// adding `item.reset` and `E_RATE_LIMITED` — while every test stayed green.
+// Parsing makes spec drift a red build instead of a silent divergence.
+
+const SPEC_PATH = new URL("../../../docs/spec.v0.3.md", import.meta.url);
+
+function section16(): string {
+  const spec = readFileSync(SPEC_PATH, "utf8");
+  return spec.slice(spec.indexOf("# 16. Command API"), spec.indexOf("# 17. State machine"));
+}
+
+/** Command names from the leading cell of every Section 16 table row. */
+function specCommands(): string[] {
+  const rows = section16().matchAll(/^\|\s*`([a-z][a-zA-Z.]+\.[a-zA-Z.]+)`\s*\|/gm);
+  return [...new Set([...rows].map((m) => m[1]!))];
+}
+
+/** Error codes from the Section 16 registry table. */
+function specErrorCodes(): string[] {
+  const rows = section16().matchAll(/^\|\s*`(E_[A-Z_]+)`\s*\|/gm);
+  return [...new Set([...rows].map((m) => m[1]!))];
+}
+
+test("the spec tables are parseable (guards the two tests below)", () => {
+  // A regex that silently matches nothing would make both audits vacuous.
+  assert.ok(specCommands().length >= 50, `parsed only ${specCommands().length} commands from Section 16`);
+  assert.ok(specErrorCodes().length >= 15, `parsed only ${specErrorCodes().length} error codes`);
+});
 
 test("error-code registry matches Section 16 exactly", () => {
-  assert.deepEqual([...ErrorCodeSchema.options].sort(), [...SECTION_16_ERROR_CODES].sort());
+  assert.deepEqual([...ErrorCodeSchema.options].sort(), specErrorCodes().sort());
 });
 
 test("every Section 16 command has a payload schema", () => {
-  // The Section 16 command surface, enumerated by hand so a schema that
-  // silently drops a command is caught here.
-  const expected = [
-    "show.load",
-    "show.preflight",
-    "show.start",
-    "show.stop",
-    "show.unload",
-    "preview.set",
-    "view.take",
-    "view.cut",
-    "view.fallback",
-    "scene.arm",
-    "scene.apply",
-    "sequence.arm",
-    "sequence.unarm",
-    "item.arm",
-    "item.unarm",
-    "item.stop",
-    "element.toggle",
-    "element.set",
-    "graphic.show",
-    "graphic.hide",
-    "graphic.update",
-    "breaking.show",
-    "breaking.hide",
-    "overlay.show",
-    "overlay.hide",
-    "ticker.setSource",
-    "ticker.override",
-    "ticker.clearOverride",
-    "ticker.refreshRss",
-    "soundboard.play",
-    "soundboard.stop",
-    "soundboard.stopAll",
-    "audio.bus.set",
-    "audio.duck",
-    "guest.mute",
-    "guest.connect",
-    "guest.disconnect",
-    "guest.setLayout",
-    "guest.placeholder",
-    "guest.configureReturn",
-    "guest.getTurn",
-    "automation.enable",
-    "automation.disable",
-    "automation.hold",
-    "snapshot.save",
-    "snapshot.recall",
-    "marker.add",
-    "plugin.reload",
-    "clock.configure",
-    "record.start",
-    "record.stop",
-    "stream.start",
-    "stream.stop",
-    "system.status",
-    "system.telemetry.subscribe",
-    "system.telemetry.unsubscribe",
-  ];
-  assert.deepEqual([...CommandNames].sort(), expected.sort());
+  assert.deepEqual([...CommandNames].sort(), specCommands().sort());
 });
 
 // A canonical sample payload per command family; each must round-trip
@@ -116,6 +64,7 @@ const SAMPLE_PAYLOADS: Record<string, unknown> = {
   "item.arm": { itemId: "A1" },
   "item.unarm": { itemId: "A1" },
   "item.stop": { itemId: "A1" },
+  "item.reset": { itemId: "A1" },
   "element.toggle": { elementId: "lowerThird" },
   "element.set": { elementId: "lowerThird", patch: { opacity: 0.8 } },
   "graphic.show": { templateId: "lower_third", fields: { text: "Hello" } },

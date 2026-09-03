@@ -46,10 +46,23 @@ export interface DispatchDeps {
   state: ControlPlaneState;
   bridge: RenderBridge;
   persistence: PersistHooks;
-  /** test seam: how long show.stop waits for graceful output shutdown */
+  /** how long show.stop waits for the engine's quiescence ack (SPEC §5.9.5) */
   showStopGraceMs?: number;
-  /** waits for graceful shutdown; default resolves immediately */
-  waitForGrace?: (ms: number) => Promise<void>;
+  /**
+   * Waits for an `appliedStateVersion` >= `stateVersion` from a render node.
+   * Resolves true when acknowledged in time, false on timeout or when no
+   * render node is connected. Supplied in production by the server.
+   */
+  waitForGrace?: (ms: number, stateVersion: number) => Promise<boolean>;
+  /**
+   * Emits directives immediately, at the given stateVersion, before the
+   * handler returns. `show.stop` needs this: the engine cannot acknowledge
+   * a stop it has not been told about.
+   */
+  emitDirectivesNow?: (
+    directives: Array<{ command: string; target?: Record<string, unknown>; payload: Record<string, unknown> }>,
+    stateVersion: number,
+  ) => void;
   rateLimiter?: RateLimiter;
   warn?: (message: string) => void;
 }
@@ -80,6 +93,7 @@ const OPERATOR_COMMANDS = new Set([
   "item.arm",
   "item.unarm",
   "item.stop",
+  "item.reset",
   "element.toggle",
   "element.set",
   "graphic.show",
@@ -114,7 +128,8 @@ const OPERATOR_COMMANDS = new Set([
   "record.stop",
   "stream.start",
   "stream.stop",
-  "plugin.reload",
+  // `plugin.reload` is admin-only (SPEC §16.0): it loads code, which makes it
+  // a configuration action rather than a live one.
 ]);
 
 const PRODUCER_COMMANDS = new Set([
@@ -268,7 +283,10 @@ export async function dispatch(
   // 5. rate limiting (Section 10.7: ticker flood protection)
   const family = command.split(".")[0] ?? command;
   if (deps.rateLimiter && !deps.rateLimiter.allow(opts.connectionId, family)) {
-    throw new CpError("E_FORBIDDEN_STATE", `rate limited: ${command}`);
+    // SPEC §16 registry: E_RATE_LIMITED is distinct from E_FORBIDDEN_STATE.
+    // The command was well-formed and permitted, merely too frequent, and
+    // this rejection mutates nothing and bumps nothing.
+    throw new CpError("E_RATE_LIMITED", `rate limited: ${command}`);
   }
 
   // 6. handler: preconditions + mutation (mutations happen inside; guards first)

@@ -1,6 +1,6 @@
 # Agent Prompt 05 — Video Decode Integration (crates/nbe-engine + nbe-preflight)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 6.2 (mezzanine format), 7.2 (render model), 7.13 (frame budget), 12 (deterministic loops — the whole section), 18 (cadence), 21 (decode-session risk), AC-9 (loop wrap), AC-21 (loop budget math), AC-3/AC-4 (preflight). Prerequisites: Agent Prompts 01–04 merged (validator, control plane, bridge, compositor rendering slates/images on the master clock).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 6.2 (mezzanine format), 7.2 (render model), 7.13 (frame budget), 12 (deterministic loops — the whole section), 18 (cadence), 21 (decode-session risk), AC-9 (loop wrap), AC-21 (loop budget math), AC-3/AC-4 (preflight). Prerequisites: Agent Prompts 01–04 merged (validator, control plane, bridge, compositor rendering slates/images on the master clock).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt integrates hardware video decode: video-backed `clip` elements play, `videoLoop` elements loop deterministically, and the loop cache becomes real. The same decode infrastructure deepens `nbe-preflight` so the decode-based checks from SPEC Section 19 finally run.
 

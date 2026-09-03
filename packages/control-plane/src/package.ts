@@ -78,7 +78,14 @@ function readReport(packagePath: string): PreflightReportShape | null {
  * Exit 0 or 1 => package loads (warnings are surfaced, not fatal, per SPEC
  * 19.1 — e.g. loudness approaching tolerance must not block a load).
  */
-export async function loadPackage(packagePath: string, opts: { allowWarnings?: boolean } = {}): Promise<PackageInfo> {
+export interface LoadedPackage {
+  pkg: PackageInfo;
+  /** The preflight exit code: 0 air-ready, 1 warnings only (SPEC 19.1). */
+  exitCode: number;
+  warnings: string[];
+}
+
+export async function loadPackage(packagePath: string, opts: { allowWarnings?: boolean } = {}): Promise<LoadedPackage> {
   const pre = await runPreflight(packagePath, opts);
   if (pre.exitCode === 2) {
     const why = pre.report?.errors.join("; ") || pre.stderr || "preflight failed";
@@ -120,7 +127,7 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
     allElements.some((el) => el.kind === "ticker") || (manifest.templates ?? []).some((t) => t.kind === "ticker");
   const clockElements = new Set(allElements.filter((el) => el.kind === "clock").map((el) => el.id));
 
-  return {
+  const pkg: PackageInfo = {
     packagePath,
     showId: manifest.show.id,
     items,
@@ -148,7 +155,10 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
       ]),
     ),
     fallbackAssetId: manifest.show.fallbackAssetId,
+    qualityProfile: manifest.qualityProfile,
   };
+
+  return { pkg, exitCode: pre.exitCode, warnings: pre.report?.warnings ?? [] };
 }
 
 function indexSequence(
