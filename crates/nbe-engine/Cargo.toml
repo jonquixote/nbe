@@ -5,6 +5,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nbe-protocol = { path = "../nbe-protocol" }
+nbe-core = { path = "../nbe-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "handshake", "url"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
