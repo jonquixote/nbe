@@ -238,3 +238,30 @@ async fn item_end_emitted_after_timed_duration() {
         out.len()
     );
 }
+
+#[tokio::test]
+async fn superseded_take_emits_no_late_item_end() {
+    // 03b Step 5: the old take's end must never fire after a new take.
+    let (handler, state, outgoing) = make_engine();
+    state.clock.lock().unwrap().start();
+    let first = directive(
+        "view.take",
+        3,
+        serde_json::json!({ "transition": "cut", "durationFrames": 3 }),
+        serde_json::json!({ "itemRef": "A1" }),
+    );
+    handler.apply(&first).await.unwrap();
+    let second = directive(
+        "view.take",
+        4,
+        serde_json::json!({ "transition": "cut", "durationFrames": 900 }),
+        serde_json::json!({ "itemRef": "B1" }),
+    );
+    handler.apply(&second).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let out = outgoing.drain();
+    assert!(
+        !out.iter().any(|f| matches!(f, nbe_protocol::EngineFrame::ItemEvent { event: nbe_protocol::ItemEvent::End, item_ref, .. } if item_ref == "A1")),
+        "late itemEvent possibly fired for superseded take"
+    );
+}

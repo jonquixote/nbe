@@ -24,9 +24,12 @@ pub enum DirectiveError {
 }
 
 /// Tracks the currently playing timed item so a superseding take cancels its
-/// end event.
+/// end event. Uses a generation counter: any new take bumps the generation,
+/// and the spawned end-task checks "am I still the current playback?" before
+/// emitting. Without this the `itemEvent: end` fires for the superseded take
+/// even after a new take replaced it — a documented guarantee that must exist.
 pub struct PlaybackTracker {
-    current: Mutex<Option<String>>,
+    current: Mutex<Option<(String, u64)>>,
 }
 
 impl PlaybackTracker {
@@ -35,8 +38,16 @@ impl PlaybackTracker {
             current: Mutex::new(None),
         }
     }
-    fn cancel(&self) {
-        *self.current.lock().unwrap() = None;
+    /// Publish a new playing item; returns the generation for the timer.
+    fn begin(&self, item_ref: &str) -> u64 {
+        let mut cur = self.current.lock().unwrap();
+        let generation = cur.take().map(|(_, g)| g + 1).unwrap_or(0);
+        *cur = Some((item_ref.to_string(), generation));
+        generation
+    }
+    /// True if (item_ref, generation) is still the recorded playback.
+    fn is_current(&self, item_ref: &str, generation: u64) -> bool {
+        matches!(&*self.current.lock().unwrap(), Some((item, g)) if item == item_ref && *g == generation)
     }
 }
 
@@ -68,7 +79,12 @@ impl DirectiveHandler {
                 debug!(command = other, "directive ignored (no engine effect)");
             }
         }
+        // Ack every applied directive (SPEC 5.9.3: appliedStateVersion is the
+        // engine's most recent applied stateVersion — the honest signal for
+        // /status and the show.stop grace window). One emission point, called
+        // exactly once per applied directive.
         self.state.set_last_applied(d.state_version);
+        self.ack(d.state_version);
         Ok(())
     }
 
@@ -91,11 +107,11 @@ impl DirectiveHandler {
     }
 
     /// show.stop arrives with the quiesce stop directives already emitted by
-    /// the control plane (SPEC §5.9.5). The engine applies them and then acks.
-    fn on_show_stop(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    /// the control plane (SPEC §5.9.5). The engine applies them; the ack is
+    /// emitted by `apply` on the way out, once output stopping is real.
+    fn on_show_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
         self.state.clock.lock().unwrap().stop();
         // Outputs are stubs in this prompt; the protocol shape is the point.
-        self.ack(d.state_version);
         Ok(())
     }
 
@@ -106,9 +122,9 @@ impl DirectiveHandler {
             .and_then(|v| v.as_str())
             .or_else(|| d.target.get("sceneId").and_then(|v| v.as_str()));
         if let Some(r) = item_ref {
-            self.playing.cancel();
+            let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
-                self.schedule_done(r.to_string(), frames);
+                self.schedule_done(r.to_string(), frames, generation);
             }
         }
         Ok(())
@@ -133,7 +149,6 @@ impl DirectiveHandler {
             self.state.fallback_active.store(true, Ordering::SeqCst);
         }
         self.state.set_last_applied(d.state_version);
-        self.ack(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
         Ok(())
     }
@@ -147,14 +162,19 @@ impl DirectiveHandler {
         });
     }
 
-    fn schedule_done(&self, item_ref: String, duration_frames: u32) {
+    fn schedule_done(&self, item_ref: String, duration_frames: u32, generation: u64) {
         let state = self.state.clone();
         let outgoing = self.outgoing.clone();
+        let tracker = self.playing.clone();
         let rate = state.clock.lock().unwrap().house_rate();
         tokio::spawn(async move {
             let ms = (duration_frames as f64 / rate as f64 * 1000.0) as u64;
             sleep(Duration::from_millis(ms)).await;
             if !state.is_running() {
+                return;
+            }
+            // A superseding take bumped the generation; do not emit a stale end.
+            if !tracker.is_current(&item_ref, generation) {
                 return;
             }
             outgoing.push(EngineFrame::ItemEvent {

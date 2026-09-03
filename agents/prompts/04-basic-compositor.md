@@ -58,6 +58,7 @@ Allowed now: `wgpu`, the `image` crate (PNG/JPEG decode at load time), Metal on 
 
 - A dropped frame is a VIEW frame not submitted by its deadline (Section 10.2): count `droppedFramesTotal`. Preview misses are logged separately and never counted.
 - The watchdog now watches real frames: a miss by more than 1 frame logs the fault, increments the fault counter, and activates the fallback slate if the fault affects the View (Section 10.3).
+- **Note (carried over from Prompt 03 review): the watchdog module in `crates/nbe-engine` (from Prompt 03) has no caller yet — nothing reads the state it publishes. Prompt 04 owns wiring it: plug `Watchdog::report_frame` into the real render loop before generating frames. The Prompt 03 build is a mechanism test only.**
 
 ## Step 8: Degradation ladder, rung 1
 

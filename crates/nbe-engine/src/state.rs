@@ -17,8 +17,6 @@ pub struct EngineState {
     pub clock: Mutex<MasterClock>,
     /// last applied stateVersion (what the control plane is signaling about)
     pub last_applied_state_version: AtomicU64,
-    /// dir seq from last applied directive on this connection (per-connection!)
-    pub last_seq: AtomicU64,
     /// package path loaded by show.load (used by fallback residency check)
     pub package_path: Mutex<Option<String>>,
     /// resident fallback slate (path + loaded bytes), loaded at show.load
@@ -39,7 +37,6 @@ impl EngineState {
         Self {
             clock: Mutex::new(MasterClock::new(house_rate)),
             last_applied_state_version: AtomicU64::new(0),
-            last_seq: AtomicU64::new(0),
             package_path: Mutex::new(None),
             fallback: Mutex::new(None),
             fallback_active: AtomicBool::new(false),
@@ -71,12 +68,6 @@ impl EngineState {
 
     pub fn last_applied(&self) -> u64 {
         self.last_applied_state_version.load(Ordering::SeqCst)
-    }
-
-    /// Note an applied directive seq; returns the previous seq for gap
-    /// detection by the caller (which owns reconnect logic).
-    pub fn note_seq(&self, seq: u64) -> u64 {
-        self.last_seq.swap(seq, Ordering::SeqCst)
     }
 }
 

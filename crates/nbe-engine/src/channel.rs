@@ -35,6 +35,57 @@ impl Default for EngineConfig {
     }
 }
 
+/// Per-connection state. The gate: directives are dropped until `show.resync`
+/// arrives (Step 2a). The `expected_seq` is per-connection — the control
+/// plane resets its `seq` on each reconnect (§5.9.2), so a connection-local
+/// expectation is the only meaningful one. A prior connection's seq must
+/// never reach into the next one, or the second connection spends its life
+/// in spurious gaps.
+pub(crate) struct ConnectionGate {
+    resynced: bool,
+    expected_seq: Option<u64>,
+}
+
+/// What the gate decided about a frame. Testable in isolation (Step 4 covers
+/// all four outcomes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateDecision {
+    Accept,
+    WaitForResync,
+    StaleStateVersion,
+    SeqGap,
+}
+
+impl ConnectionGate {
+    fn new() -> Self {
+        Self {
+            resynced: false,
+            expected_seq: None,
+        }
+    }
+
+    fn on_resync(&mut self, frame: &DirectiveFrame) {
+        self.resynced = true;
+        self.expected_seq = Some(frame.seq + 1);
+    }
+
+    fn classify(&mut self, frame: &DirectiveFrame, applied_state_version: u64) -> GateDecision {
+        if !self.resynced {
+            return GateDecision::WaitForResync;
+        }
+        if frame.state_version <= applied_state_version {
+            return GateDecision::StaleStateVersion;
+        }
+        if let Some(expect) = self.expected_seq {
+            if frame.seq != expect {
+                return GateDecision::SeqGap;
+            }
+            self.expected_seq = Some(expect + 1);
+        }
+        GateDecision::Accept
+    }
+}
+
 /// The engine-side channel master. Owns the connection and the four tasks
 /// that share it.
 pub struct RenderChannel {
@@ -71,16 +122,19 @@ impl RenderChannel {
         let outgoing = self.outgoing.clone();
         let interval = Duration::from_millis(self.cfg.telemetry_interval_ms);
 
-        // Task 1: outbound engine frames + telemetry tick.
+        // Task 1: outbound engine frames + telemetry tick. Bound to the
+        // connection's lifetime — pump_tasks.abort() on drop-out (Step 2).
         let out_tx = tx.clone();
-        tokio::spawn(async move {
+        let pump_state = state.clone();
+        let pump_outgoing = outgoing.clone();
+        let pump = tokio::spawn(async move {
             loop {
-                for frame in outgoing.drain() {
+                for frame in pump_outgoing.drain() {
                     if let Ok(s) = serde_json::to_string(&frame) {
                         let _ = out_tx.send(s).await;
                     }
                 }
-                let tick = build_tick(&state);
+                let tick = build_tick(&pump_state);
                 if let Ok(s) = serde_json::to_string(&tick) {
                     let _ = out_tx.send(s).await;
                 }
@@ -88,9 +142,9 @@ impl RenderChannel {
             }
         });
 
-        // Task 2: send loop onto the WS (async).
+        // Task 2: send loop onto the WS.
         let mut wss = wss;
-        tokio::spawn(async move {
+        let sender = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 if wss.send(Message::Text(msg.into())).await.is_err() {
                     error!("ws send failed");
@@ -101,11 +155,9 @@ impl RenderChannel {
 
         // Task 3 (this task): inbound directive processing. Never do anything
         // synchronized from here — only hand work to the handler.
-        let state = self.state.clone();
-        let outgoing = self.outgoing.clone();
         let handler = DirectiveHandler::new(state.clone(), self.outgoing.clone());
         let mut reader = wsr;
-        let mut resynced = false;
+        let mut gate = ConnectionGate::new();
 
         while let Some(item) = reader.next().await {
             let msg = match item {
@@ -130,47 +182,42 @@ impl RenderChannel {
                 }
             };
             if frame.command == nbe_protocol::command::RESYNC {
+                gate.on_resync(&frame);
                 handler.apply(&frame).await?;
-                resynced = true;
                 continue;
             }
-            if !resynced {
-                warn!(command = %frame.command, "directive before resync; dropping");
-                continue;
+            let decision = gate.classify(&frame, state.last_applied());
+            match decision {
+                GateDecision::WaitForResync => {
+                    warn!(command = %frame.command, "directive before resync; dropping");
+                    continue;
+                }
+                GateDecision::StaleStateVersion => {
+                    warn!(sv = frame.state_version, "stale stateVersion; skipping");
+                    continue;
+                }
+                GateDecision::SeqGap => {
+                    warn!(
+                        seq = frame.seq,
+                        "seq gap; requesting resync (never infer from a drop)"
+                    );
+                    self.outgoing
+                        .push(nbe_protocol::EngineFrame::ResyncRequest {
+                            v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                            reason: nbe_protocol::ResyncReason::SeqGap,
+                        });
+                    continue;
+                }
+                GateDecision::Accept => { /* fall through to apply */ }
             }
-            // Out-of-order stateVersion: skip and log (Step 3).
-            let applied = self.state.last_applied();
-            if frame.state_version <= applied {
-                warn!(
-                    sv = frame.state_version,
-                    applied, "stale stateVersion; skipping"
-                );
-                continue;
-            }
-            // seq gap = directives dropped on the wire; never infer — resync.
-            let prev_seq = self
-                .state
-                .last_seq
-                .load(std::sync::atomic::Ordering::SeqCst);
-            if frame.seq != 0 && frame.seq != prev_seq + 1 {
-                warn!(
-                    have = prev_seq,
-                    got = frame.seq,
-                    "seq gap; requesting resync"
-                );
-                outgoing.push(nbe_protocol::EngineFrame::ResyncRequest {
-                    v: nbe_protocol::PROTOCOL_VERSION.to_string(),
-                    reason: nbe_protocol::ResyncReason::SeqGap,
-                });
-                continue;
-            }
-            self.state.note_seq(frame.seq);
+            let _ = &frame;
             if let Err(e) = handler.apply(&frame).await {
-                // A directive fails only when what it names cannot be executed.
-                // Log and carry on; engine keeps last known state.
                 warn!(err = %e, command = %frame.command, "directive failed");
             }
         }
+        // The two spawned tasks must not outlive the connection (Step 2).
+        pump.abort();
+        sender.abort();
         Err(anyhow::anyhow!("control plane closed"))
     }
 }
@@ -181,11 +228,19 @@ pub async fn run_forever(cfg: EngineConfig, state: SharedEngineState, outgoing: 
     let mut delay_ms = 100u64;
     loop {
         let ch = RenderChannel::new(cfg_clone(&cfg), state.clone(), outgoing.clone());
+        let connect_started = std::time::Instant::now();
         match ch.run().await {
             Ok(()) => {
+                warn!("control plane connection ended cleanly; reconnecting");
                 delay_ms = 100;
             }
             Err(e) => {
+                // A connection that survived at least one full backoff window
+                // before failing is "a successful connect" — reset the backoff.
+                let connected_ms = connect_started.elapsed().as_millis() as u64;
+                if connected_ms >= delay_ms {
+                    delay_ms = 100;
+                }
                 warn!(err = %e, delay_ms, "control plane connection dropped; reconnecting");
             }
         }
@@ -200,5 +255,85 @@ fn cfg_clone(c: &EngineConfig) -> EngineConfig {
         token: c.token.clone(),
         house_rate: c.house_rate,
         telemetry_interval_ms: c.telemetry_interval_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nbe_protocol::{command, DirectiveKind, PROTOCOL_VERSION};
+
+    fn mk(command: &str, seq: u64, sv: u64) -> DirectiveFrame {
+        DirectiveFrame {
+            v: PROTOCOL_VERSION.into(),
+            kind: DirectiveKind::Directive,
+            seq,
+            state_version: sv,
+            command: command.into(),
+            target: serde_json::json!({}),
+            payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn gate_blocks_all_until_resync() {
+        let mut g = ConnectionGate::new();
+        assert_eq!(
+            g.classify(&mk("view.take", 0, 1), 0),
+            GateDecision::WaitForResync
+        );
+    }
+
+    #[test]
+    fn gate_accepts_after_resync_and_tracks_seq() {
+        let mut g = ConnectionGate::new();
+        g.on_resync(&mk(command::RESYNC, 0, 10));
+        assert_eq!(
+            g.classify(&mk("show.start", 1, 11), 10),
+            GateDecision::Accept
+        );
+        assert_eq!(
+            g.classify(&mk("show.stop", 2, 12), 11),
+            GateDecision::Accept
+        );
+    }
+
+    #[test]
+    fn gate_rejects_stale_stateversion() {
+        let mut g = ConnectionGate::new();
+        g.on_resync(&mk(command::RESYNC, 0, 10));
+        assert_eq!(
+            g.classify(&mk("view.take", 1, 5), 10),
+            GateDecision::StaleStateVersion
+        );
+    }
+
+    #[test]
+    fn gate_detects_seq_gap_and_never_guesses() {
+        let mut g = ConnectionGate::new();
+        g.on_resync(&mk(command::RESYNC, 0, 10));
+        // expected seq 1; got 3
+        assert_eq!(
+            g.classify(&mk("show.stop", 3, 11), 10),
+            GateDecision::SeqGap
+        );
+    }
+
+    #[test]
+    fn a_fresh_gate_forgets_prior_connection() {
+        let mut g1 = ConnectionGate::new();
+        g1.on_resync(&mk(command::RESYNC, 0, 20));
+        g1.classify(&mk("show.start", 1, 21), 20);
+        // New connection: seq resets to 0, resync resets expectations.
+        let mut g2 = ConnectionGate::new();
+        assert_eq!(
+            g1.classify(&mk("view.take", 2, 22), 20),
+            GateDecision::Accept
+        );
+        // Late directive from the second connection must wait for its resync.
+        assert_eq!(
+            g2.classify(&mk("view.take", 5, 30), 20),
+            GateDecision::WaitForResync
+        );
     }
 }

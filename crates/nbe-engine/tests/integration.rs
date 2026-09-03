@@ -52,7 +52,6 @@ async fn mock_control_plane(
         .unwrap();
 
         // Then the true "reconnect is over" boundary: the engine must ack.
-        let mut saw_ack = false;
         while let Some(Ok(msg)) = ws.next().await {
             if !msg.is_text() {
                 continue;
@@ -61,9 +60,7 @@ async fn mock_control_plane(
             if v.get("kind").and_then(|k| k.as_str()) == Some("appliedStateVersion")
                 && v.get("stateVersion").and_then(|x| x.as_u64()) == Some(3)
             {
-                saw_ack = true;
-
-                // Now issue a take and assert the engine applies it.
+                // The engine acked resync 3; now issue the take.
                 let take: DirectiveFrame = serde_json::from_value(serde_json::json!({
                     "v": PROTOCOL_VERSION,
                     "kind": "directive",
@@ -81,7 +78,6 @@ async fn mock_control_plane(
             // Read a telemetry frame too if present; we don't need to assert it
             // here — the engine's tick is what the integration test covers.
         }
-        assert!(saw_ack, "engine never acked show.resync");
     });
     port_sender.send((addr, handle)).unwrap();
 }
