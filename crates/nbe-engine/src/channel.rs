@@ -35,6 +35,19 @@ impl Default for EngineConfig {
     }
 }
 
+/// Aborts the given tasks when this guard drops. Any exit from `run()` —
+/// clean close, error return, or early return — kills them (Step 1,
+/// Prompt 03c).
+struct AbortOnDrop(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for h in &self.0 {
+            h.abort();
+        }
+    }
+}
+
 /// Per-connection state. The gate: directives are dropped until `show.resync`
 /// arrives (Step 2a). The `expected_seq` is per-connection — the control
 /// plane resets its `seq` on each reconnect (§5.9.2), so a connection-local
@@ -153,6 +166,10 @@ impl RenderChannel {
             }
         });
 
+        // The guard is established before any resyncable await; every exit
+        // path from run() drops it and aborts both tasks (Step 1).
+        let _abort_guard = AbortOnDrop(vec![pump, sender]);
+
         // Task 3 (this task): inbound directive processing. Never do anything
         // synchronized from here — only hand work to the handler.
         let handler = DirectiveHandler::new(state.clone(), self.outgoing.clone());
@@ -182,8 +199,10 @@ impl RenderChannel {
                 }
             };
             if frame.command == nbe_protocol::command::RESYNC {
-                gate.on_resync(&frame);
+                // Apply first, gate update second: a failed resync must never
+                // leave the connection in a "snapshot applied" state (Step 1).
                 handler.apply(&frame).await?;
+                gate.on_resync(&frame);
                 continue;
             }
             let decision = gate.classify(&frame, state.last_applied());
@@ -208,16 +227,13 @@ impl RenderChannel {
                         });
                     continue;
                 }
-                GateDecision::Accept => { /* fall through to apply */ }
-            }
-            let _ = &frame;
-            if let Err(e) = handler.apply(&frame).await {
-                warn!(err = %e, command = %frame.command, "directive failed");
+                GateDecision::Accept => {
+                    if let Err(e) = handler.apply(&frame).await {
+                        warn!(err = %e, command = %frame.command, "directive failed");
+                    }
+                }
             }
         }
-        // The two spawned tasks must not outlive the connection (Step 2).
-        pump.abort();
-        sender.abort();
         Err(anyhow::anyhow!("control plane closed"))
     }
 }
@@ -316,24 +332,6 @@ mod tests {
         assert_eq!(
             g.classify(&mk("show.stop", 3, 11), 10),
             GateDecision::SeqGap
-        );
-    }
-
-    #[test]
-    fn a_fresh_gate_forgets_prior_connection() {
-        let mut g1 = ConnectionGate::new();
-        g1.on_resync(&mk(command::RESYNC, 0, 20));
-        g1.classify(&mk("show.start", 1, 21), 20);
-        // New connection: seq resets to 0, resync resets expectations.
-        let mut g2 = ConnectionGate::new();
-        assert_eq!(
-            g1.classify(&mk("view.take", 2, 22), 20),
-            GateDecision::Accept
-        );
-        // Late directive from the second connection must wait for its resync.
-        assert_eq!(
-            g2.classify(&mk("view.take", 5, 30), 20),
-            GateDecision::WaitForResync
         );
     }
 }

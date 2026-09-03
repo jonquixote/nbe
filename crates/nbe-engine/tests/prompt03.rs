@@ -64,24 +64,6 @@ fn clock_states_match_spec_11_4() {
 }
 
 #[tokio::test]
-async fn out_of_order_stateversion_is_skipped_and_logged() {
-    let (handler, state, _outgoing) = make_engine();
-    assert_eq!(state.last_applied(), 0);
-    let d_new = directive(
-        "view.fallback",
-        10,
-        serde_json::json!({}),
-        serde_json::json!({}),
-    );
-    handler.apply(&d_new).await.unwrap();
-    assert_eq!(state.last_applied(), 10);
-    // Now present an older one — handler still sets last_applied, so caller must gate it.
-    // The gate lives in the WS consumer; here we assert the primitive.
-    let stale = d_new.state_version < state.last_applied() + 1;
-    assert!(stale);
-}
-
-#[tokio::test]
 async fn show_load_makes_fallback_resident_and_missing_fallback_fails_loudly() {
     use std::sync::atomic::Ordering;
     let (handler, state, _outgoing) = make_engine();

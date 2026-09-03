@@ -1,8 +1,7 @@
-//! Prompt 03 Step 7 integration + reconnect repro: engine connects, resyncs,
-//! applies, loses the connection, reconnects and STILL applies (the 03b
-//! reconnect-deafness repro). A test that used to hang green now must pass.
+//! Prompt 03 Step 7 integration + 03b reconnect repro + 03c rewritten
+//! per-directive ack contract test (reads frames off the wire, not the queue).
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{command::RESYNC, DirectiveFrame, PROTOCOL_VERSION};
@@ -48,91 +47,78 @@ fn make_resync(state_version: u64, seq: u64) -> serde_json::Value {
     })
 }
 
-/// A control-plane double that fully services connection 1, drops it, then
-/// services connection 2 with a fresh resync followed by a take.
-async fn mock_two_connection_server(
-    ready: tokio::sync::oneshot::Sender<SocketAddr>,
-) -> JoinHandle<()> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+/// Wire-side recorder: the engine's client goes through this mock, which
+/// captures incoming appliedStateVersion frames as they arrive.
+struct MockServer {
+    acks: Arc<std::sync::Mutex<Vec<u64>>>,
+}
 
-    let handle = tokio::spawn(async move {
-        // Connection 1: resync, send take, close.
-        let (sock, _) = listener.accept().await.unwrap();
-        let mut ws = accept_async(sock).await.unwrap();
-        let r = serde_json::from_value::<DirectiveFrame>(make_resync(1, 0)).unwrap();
-        ws.send(Message::Text(serde_json::to_string(&r).unwrap().into()))
-            .await
-            .unwrap();
-        let t1 = serde_json::from_value::<DirectiveFrame>(make_take(1, 2)).unwrap();
-        ws.send(Message::Text(serde_json::to_string(&t1).unwrap().into()))
-            .await
-            .unwrap();
-        // drop the socket
-        drop(ws);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+impl MockServer {
+    fn new() -> Self {
+        Self {
+            acks: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
 
-        // Connection 2: resync, then take (seq 0, stateVersion 3).
-        let (sock2, _) = listener.accept().await.unwrap();
-        let mut ws2 = accept_async(sock2).await.unwrap();
-        let r2 = serde_json::from_value::<DirectiveFrame>(make_resync(3, 0)).unwrap();
-        ws2.send(Message::Text(serde_json::to_string(&r2).unwrap().into()))
-            .await
-            .unwrap();
-        // A moment to allow the engine to ack and settle on the new conn.
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let t2 = serde_json::from_value::<DirectiveFrame>(make_take(1, 4)).unwrap();
-        ws2.send(Message::Text(serde_json::to_string(&t2).unwrap().into()))
-            .await
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        drop(ws2);
-    });
+    async fn run(&self, ready: tokio::sync::oneshot::Sender<SocketAddr>) -> JoinHandle<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acks = self.acks.clone();
+        let handle = tokio::spawn(async move {
+            for connection in 0..2u32 {
+                let (sock, _) = listener.accept().await.unwrap();
+                let mut ws = accept_async(sock).await.unwrap();
+                let resync: DirectiveFrame =
+                    serde_json::from_value(make_resync(1 + connection as u64 * 2, 0)).unwrap();
+                ws.send(Message::Text(
+                    serde_json::to_string(&resync).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+                // Small grace so the engine's ack drains.
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                // Send a take so the engine can ack it too.
+                let take: DirectiveFrame =
+                    serde_json::from_value(make_take(1, 2 + connection as u64 * 2)).unwrap();
+                ws.send(Message::Text(serde_json::to_string(&take).unwrap().into()))
+                    .await
+                    .unwrap();
 
-    ready.send(addr).unwrap();
-    handle
+                // Collect any wire frames from the engine into acks.
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+                let local_acks = acks.clone();
+                while tokio::time::Instant::now() < deadline {
+                    match tokio::time::timeout(Duration::from_millis(30), ws.next()).await {
+                        Ok(Some(Ok(msg))) if msg.is_text() => {
+                            if let Ok(v) =
+                                serde_json::from_str::<serde_json::Value>(msg.to_text().unwrap())
+                            {
+                                if v.get("kind").and_then(|k| k.as_str())
+                                    == Some("appliedStateVersion")
+                                {
+                                    if let Some(sv) = v.get("stateVersion").and_then(|x| x.as_u64())
+                                    {
+                                        local_acks.lock().unwrap().push(sv);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                drop(ws);
+            }
+        });
+        ready.send(addr).unwrap();
+        handle
+    }
 }
 
 #[tokio::test]
 async fn engine_applies_directives_after_reconnect() {
+    let mock = MockServer::new();
     let (tx, rx) = tokio::sync::oneshot::channel::<SocketAddr>();
-    let server_handle = mock_two_connection_server(tx).await;
-    let addr = rx.await.unwrap();
-
-    let state: Arc<EngineState> = Arc::new(EngineState::new(30));
-    let outgoing: Arc<OutgoingQueue> = Arc::new(Default::default());
-    let cfg = EngineConfig {
-        control_plane_url: format!("ws://{}/nbe/v0.3", addr),
-        token: "render-token".into(),
-        house_rate: 30,
-        telemetry_interval_ms: 10,
-    };
-    let st_clone = state.clone();
-    let eng = tokio::spawn(channel::run_forever(cfg, st_clone, outgoing));
-
-    // The second connection's take must land — the reconnect-deafness
-    // regression fires when this assert times out at sv=2 forever.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while state.last_applied() < 4 {
-        if tokio::time::Instant::now() > deadline {
-            panic!(
-                "engine never applied the post-reconnect directive; last_applied={}",
-                state.last_applied()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(state.last_applied(), 4);
-    eng.abort();
-    server_handle.abort();
-}
-
-#[tokio::test]
-async fn engine_ack_includes_every_applied_directive() {
-    // Covers the Step 3 ack contract: after two applied directives, the
-    // pump's outgoing queue carries two acks.
-    let (tx, rx) = tokio::sync::oneshot::channel::<SocketAddr>();
-    let listener_handle = mock_two_connection_server(tx).await;
+    let server_handle = mock.run(tx).await;
     let addr = rx.await.unwrap();
 
     let state: Arc<EngineState> = Arc::new(EngineState::new(30));
@@ -144,30 +130,49 @@ async fn engine_ack_includes_every_applied_directive() {
         telemetry_interval_ms: 10,
     };
     let st = state.clone();
-    let out = outgoing.clone();
-    let engine = tokio::spawn(channel::run_forever(cfg, st, out));
+    let engine = tokio::spawn(channel::run_forever(cfg, st, outgoing.clone()));
 
+    // Wait for the engine to apply the server's second take (sv 4).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while state.last_applied() < 4 {
         if tokio::time::Instant::now() > deadline {
-            break;
+            panic!(
+                "engine never applied the post-reconnect directive; last_applied={}",
+                state.last_applied()
+            );
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let frames = outgoing.drain();
-    let acks: Vec<u64> = frames
-        .into_iter()
-        .filter_map(|f| match f {
-            nbe_protocol::EngineFrame::AppliedStateVersion { state_version, .. } => {
-                Some(state_version)
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(
-        !acks.is_empty(),
-        "engine must ack at least the applied directives"
-    );
+    assert_eq!(state.last_applied(), 4);
     engine.abort();
-    listener_handle.abort();
+    server_handle.abort();
+}
+
+/// 03c Step 3: read acks off the wire — not the shared queue. Per-directive
+/// acking means ack [1, 3] for the resyncs and [2, 4] for the takes, in order.
+#[tokio::test]
+async fn every_applied_directive_produces_an_ack_on_the_wire() {
+    let mock = MockServer::new();
+    let (tx, rx) = tokio::sync::oneshot::channel::<SocketAddr>();
+    let server_handle = mock.run(tx).await;
+    let addr = rx.await.unwrap();
+
+    let state = Arc::new(EngineState::new(30));
+    let outgoing: Arc<OutgoingQueue> = Arc::new(Default::default());
+    let cfg = EngineConfig {
+        control_plane_url: format!("ws://{}/nbe/v0.3", addr),
+        token: "render-token".into(),
+        house_rate: 30,
+        telemetry_interval_ms: 10,
+    };
+    let st = state.clone();
+    let engine = tokio::spawn(channel::run_forever(cfg, st, outgoing));
+
+    // Wait long enough for both connections to complete their ack collection.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let acks = mock.acks.lock().unwrap().clone();
+    assert_eq!(acks.len(), 4, "expected exactly 4 acks, got {acks:?}");
+    assert_eq!(acks, vec![1, 2, 3, 4], "acks must be in apply order");
+    engine.abort();
+    server_handle.abort();
 }
