@@ -24,10 +24,9 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
             .fallback_active
             .load(std::sync::atomic::Ordering::SeqCst),
         degradation_rung: 0,
-        // The effective profile comes from the wgpu adapter probe, which
-        // arrives with the compositor in Prompt 04. Until then the control
-        // plane reports the manifest's requested profile (SPEC §10.1.1).
-        quality_profile: None,
+        // Effective probe result from GPU init, capped by the manifest's
+        // requested profile. The engine is the engine — it is authoritative.
+        quality_profile: *state.quality_profile.lock().unwrap(),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

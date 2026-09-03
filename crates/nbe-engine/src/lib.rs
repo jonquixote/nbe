@@ -7,6 +7,8 @@
 pub mod channel;
 pub mod clock;
 pub mod directive;
+pub mod gpu;
+pub mod render;
 pub mod state;
 pub mod telemetry;
 pub mod watchdog;

@@ -25,6 +25,13 @@ pub struct EngineState {
     pub fallback_active: AtomicBool,
     /// engine start time (telemetry)
     pub started_at: Instant,
+    /// The effective quality profile, set once by the Prompt 04 probe.
+    pub quality_profile: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
+    /// What the engine is showing on its view bus: the taken item's reference.
+    /// Directive handlers update it; the render loop reads it.
+    pub view_item: std::sync::Mutex<Option<String>>,
+    /// The armed preview item, for the preview bus.
+    pub preview_item: std::sync::Mutex<Option<String>>,
 }
 
 pub struct FallbackSlate {
@@ -41,6 +48,9 @@ impl EngineState {
             fallback: Mutex::new(None),
             fallback_active: AtomicBool::new(false),
             started_at: Instant::now(),
+            quality_profile: std::sync::Mutex::new(None),
+            view_item: std::sync::Mutex::new(None),
+            preview_item: std::sync::Mutex::new(None),
         }
     }
 

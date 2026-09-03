@@ -4,6 +4,7 @@
 //! other tasks can read state.
 
 use nbe_engine::channel::{self, EngineConfig};
+use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
 use std::sync::Arc;
 
@@ -30,7 +31,22 @@ async fn main() -> anyhow::Result<()> {
         telemetry_interval_ms: 1000,
     };
 
+    // The render loop exists the moment GPU init succeeds. Start it as
+    // its own task before the channel so a control-plane outage cannot delay
+    // first-frame warm-up. It ticks only while the master clock is RUNNING.
+    let mut render = RenderLoop::new(state.clone(), house_rate, None).await?;
+    let render_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            if render_state.is_running() {
+                if let Err(e) = render.next_frame().await {
+                    tracing::error!(err = %e, "render frame failed");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+
     channel::run_forever(cfg, state, outgoing).await;
-    // unreachable: run_forever loops on reconnect
     Ok(())
 }

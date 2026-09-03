@@ -122,6 +122,8 @@ impl DirectiveHandler {
             .and_then(|v| v.as_str())
             .or_else(|| d.target.get("sceneId").and_then(|v| v.as_str()));
         if let Some(r) = item_ref {
+            // Record the visible item so the render loop can resolve it (04).
+            *self.state.view_item.lock().unwrap() = Some(r.to_string());
             let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
                 self.schedule_done(r.to_string(), frames, generation);
@@ -132,6 +134,7 @@ impl DirectiveHandler {
 
     fn on_fallback(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
         self.state.fallback_active.store(true, Ordering::SeqCst);
+        *self.state.view_item.lock().unwrap() = None; // on fallback, view shows the slate
         Ok(())
     }
 
@@ -147,6 +150,12 @@ impl DirectiveHandler {
         }
         if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
             self.state.fallback_active.store(true, Ordering::SeqCst);
+        }
+        if let Some(vi) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
+            *self.state.view_item.lock().unwrap() = Some(vi.to_string());
+        }
+        if let Some(pi) = snapshot.get("previewItem").and_then(|v| v.as_str()) {
+            *self.state.preview_item.lock().unwrap() = Some(pi.to_string());
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
