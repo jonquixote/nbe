@@ -30,21 +30,34 @@ This prompt complies with the NBE Implementation Standards (`docs/implementation
 - The WebSocket client runs on its own tokio task. The master clock and telemetry run on theirs. Per Section 7.13, control-plane I/O MUST never block the (future) render loop — structure now so it can't later.
 - Reconnect with exponential backoff on connection loss. A control-plane outage MUST NOT stop the engine: the engine keeps its last known state and keeps ticking (local survivability, Section 9.5 analog).
 
+## Step 2a: Reconnect resync (NEW — mandatory)
+
+A bounded, fire-and-forget bridge plus an engine that reconnects means directives issued during the outage are lost and the engine could come back on-air showing the wrong item. This MUST be pinned:
+
+1. On **every** render-role connection (initial connect AND reconnect), the control plane sends a `show.resync` directive containing a full snapshot: current `viewItem`, `previewItem`, item/scene states, visible overlays, `automationHold`, and the issuing `stateVersion`. The engine applies this snapshot and confirms with `appliedStateVersion`.
+2. The render node, on reconnect, MUST NOT assume its previous state is still current — it waits for `show.resync` before trusting any subsequent directive. Between reconnect and resync it holds the last applied frame.
+3. Test: drop the connection mid-show, reconnect, assert the engine receives `show.resync` and applies it; assert a directive issued during the outage is NOT replayed and the resynced `stateVersion` is the latest.
+
 ## Step 3: Directive intake
 
 - Parse render directives per the Prompt 02 bridge protocol: command name, resolved target references, payload, and the `stateVersion` the directive was issued at.
-- Handle at minimum: `show.load` (read the package, validate via `nbe-core`, verify fallback residency per Section 7.14 — the fallback asset MUST be resident in memory after show load), `show.start`, `show.stop` (including the quiescence truth table), `view.take`, `view.cut`, `view.fallback`.
-- Directives are fire-and-forget: the engine does not block command responses. Instead, the engine reports the last applied `stateVersion` through its health/telemetry reporting (Step 5).
+- Handle at minimum: `show.load` (read the package, verify fallback residency per Section 7.14 — the fallback asset MUST be resident in memory after show load; **do not** re-run full manifest validation here, that is `nbe-core`/`nbe-preflight`'s job — the control plane already validated it, and only fail if the on-disk asset it needs is missing), `show.start`, `show.stop` (execute the quiesce directives `record.stop`/`stream.stop` inferred from the control plane's output quarantine — do NOT re-derive the Section 16.1 truth table, that is control-plane policy), `view.take`, `view.cut`, `view.fallback`.
+- **Validation authority:** the control plane is authoritative for manifest validity (it ran `nbe-preflight`). The engine's own checks are limited to what it needs to operate: fallback residency and opening the referenced assets. If the control plane and engine disagree (asset validated but cannot be opened), the ENGINE is fatal — it logs `E_DECODE`/`E_ENGINE` on its side and reports via telemetry; the control plane treats that as authoritative (engine failure wins for a live show, per Section 7.13's trust the engine).
+- Directives are fire-and-forget: the engine does not block command responses. Instead, the engine reports the last applied `stateVersion` through Step 3a's `appliedStateVersion` frame (the ack that makes Step 4's `show.stop` grace window real).
 - Directives arriving out of order (a `stateVersion` older than the last applied) are logged and skipped.
 
 ## Step 3a: Pin the wire frame schemas (addendum §1.1)
 
 These frames are a separate protocol layered on the same WebSocket connection — they are NOT the Section 5.4 command envelope. Define Rust types (serde) for each and round-trip test serialize/deserialize against JSON.
 
-- **Server → engine directive frame:** `{ "v": "0.3", "kind": "directive", "seq": 91, "stateVersion": 413, "command": "view.take", "target": {}, "payload": {} }`. `target` is the resolved references object, `payload` is command-specific, `seq` is a monotonic per-connection sequence.
+- **Server → engine directive frame:** `{ "v": "0.3", "kind": "directive", "seq": 91, "stateVersion": 413, "command": "view.take", "target": {}, "payload": {} }`. `target` is the resolved references object, `payload` is command-specific.
+- **`seq` semantics (pin these, do not leave ambiguous):**
+  - `seq` is a **per-connection** monotonic counter maintained by the control plane on each `render`-role session, starting at `0` when that connection is established.
+  - It resets to `0` on every (re)connect. The render node MUST treat `seq` as a continuity check **within a single connection only**. A fresh connection starting at `seq 0` is a "joined here" marker, NOT a "lost N directives" signal.
+- The render node detects loss by `seq` discontinuity within one connection and by the `stateVersion` gap; on any discontinuity it MUST NOT guess — it requests a resync snapshot (see Step 2a).
 - **Engine → server frames (accept only from `render`-role sessions):**
   - `engineTelemetry` — the Section 10.1 shape (see Step 5 for ownership).
-  - `appliedStateVersion` — `{ v, kind:"appliedStateVersion", stateVersion }`: the engine reports the last directive `stateVersion` it applied.
+  - `appliedStateVersion` — `{ v, kind:"appliedStateVersion", stateVersion }`: the engine reports the last directive `stateVersion` it applied. This is the signal the control plane awaits to know the show is quiesced; **without it, `show.stop`'s 2-second window is never satisfied in production.** The engine MUST send one after applying a quiesce-triggering directive (`record.stop`, `stream.stop`, `show.stop`) once it confirms the outputs have actually stopped.
   - `itemEvent` — `{ v, kind:"itemEvent", itemRef, event: "end"|"decodeError"|"deviceLoss"|"missing", detail? }`; these make the `PLAYING -> DONE` and `-> MISSING/ERROR` rows of the Section 17.3 table reachable.
 - Enum-audit every frame kind and every error code against the Section 16 registry; map each to a Rust variant; fail on omission or mismatch.
 
@@ -55,6 +68,16 @@ Implement SPEC Section 11:
 - Monotonic system clock; epoch set by `show.start`; `masterFrame = floor(elapsedSeconds * houseFrameRate)` (30 fps default).
 - Clock states `STOPPED` and `RUNNING` (Section 11.4); `HELD` and `SLAVE` are reserved.
 - The clock ticks and is queryable internally. Frame production arrives in Prompt 04; here the clock already drives telemetry's `masterClockFrame`.
+- The render node's own state machine (this prompt's responsibility) is the **clock finite-state machine** — `STOPPED`, `RUNNING` (with `HELD`/`SLAVE` reserved) — plus directive-application state (last applied `stateVersion`, last applied directive seq). This is NOT `IDLE`/`ARMED`/`VIEW`/`TRANSITIONING`, which are control-plane **scene** states (Section 17.2) owned by Prompt 02. Do not conflate them.
+
+## Step 4a: show.stop grace window (depends on the appliedStateVersion ack)
+
+`show.stop`'s 2-second window is only real if the engine confirms it quiesced. Pin it:
+
+1. Control plane sends `record.stop` / `stream.stop` directives (per Prompt 02's quiescence decision, engine just executes).
+2. Engine stops the outputs and sends `appliedStateVersion` for the stop directive's `stateVersion`.
+3. Control plane awaits that `appliedStateVersion`. If it arrives within 2 s, the stop is graceful; if not, control plane force-stops and logs the exact warning `show.stop: graceful output shutdown exceeded 2 s; force-stopping outputs`.
+4. The engine MUST NOT send `appliedStateVersion` for a quiesce directive until the outputs are actually quiesced — an early ack would defeat the window.
 
 ## Step 5: Health and telemetry reporting (addendum §1.2 ownership)
 
@@ -70,9 +93,11 @@ Implement SPEC Section 11:
 ## Step 7: Tests
 
 - Unit: master-clock math (known elapsed times → exact frame numbers at 30 fps; `STOPPED` never advances), directive parsing, out-of-order `stateVersion` rejection, fallback residency check fails loudly when the asset is missing, frame round-trip (serialize sample → deserialize → assert equality) for every directive and engine frame, and enum audit of frame kinds / error codes.
-- **Render-node state machine (total coverage):** parse the relevant state-transition table from `docs/spec.v0.3.md` for the render node's states (`IDLE`, `ARMED`, `VIEW`, `TRANSITIONING`) — assert EVERY legal transition executes and EVERY illegal transition is rejected. This turns "sampled illegal transitions" into complete coverage, as in Prompt 02.
-- **Telemetry staleness test:** simulate a stale engine connection (no engine frame within the threshold) and verify the control plane emits stub values for the engine-owned fields plus `engineConnected: false`; then send a fresh frame and verify real values + `engineConnected: true`.
-- Integration: boot a test WebSocket server speaking the Prompt 02 bridge protocol (directive + engine frames), connect the engine, send `show.load` → `show.start` → `view.take`, assert ordered application and telemetry with an advancing `masterClockFrame`, and that the mock bridge records directives in order with correct `stateVersion`s.
+- **Clock finite-state machine (total coverage):** parse the Section 11.4 clock states (`STOPPED`, `RUNNING`; `HELD`/`SLAVE` reserved) from `docs/spec.v0.3.md` — assert EVERY legal transition executes and EVERY illegal transition is rejected. (Do NOT test `IDLE`/`ARMED`/`VIEW`/`TRANSITIONING` here; those are control-plane scene states, out of scope for the Rust engine.)
+- **Reconnect resync test:** drop the connection mid-show, reconnect, assert the engine receives `show.resync`, applies it, and confirms with `appliedStateVersion` matching the latest `stateVersion`; assert a directive issued during the outage is not replayed.
+- **AppliedStateVersion ack test:** issue a quiesce directive and assert the control plane only considers the engine quiesced after it sends `appliedStateVersion` for that directive's `stateVersion` — and that the engine does NOT ack before outputs are actually stopped.
+- Integration: boot a test WebSocket server speaking the Prompt 02 bridge protocol (directive + engine frames), connect the engine, send `show.load` → `show.start` → `view.take`, assert ordered application and telemetry with an advancing `masterClockFrame`.
+- **Telemetry staleness:** the merge (engine-owned fields vs. stubs + `engineConnected: false`) is implemented in the TypeScript control plane (`packages/control-plane/src/telemetry.ts`), NOT in this Rust prompt. That test belongs in a Prompt-02 follow-up; if this prompt must still verify the contract, declare it explicitly as a cross-language integration test with the TypeScript owner named (Prompt 02) and the control plane side asserting it.
 - No new CI job needed: the existing `rust` job covers `nbe-engine` as a workspace member. Confirm `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all pass.
 
 ## Step 8: CI expectations (lock these)
@@ -82,8 +107,8 @@ The `rust` job MUST stay green; the following gates are explicit and MUST NOT re
 1. `cargo fmt --all -- --check` passes.
 2. `cargo clippy --workspace --all-targets -- -D warnings` passes.
 3. `cargo test --workspace` passes.
-4. The new render-node tests — frame round-trip, directive/engine enum audit, render-node state-machine total coverage, telemetry staleness — all pass.
-5. If the mock bridge is exercised in this prompt, the test hook confirms directives are recorded in order with correct `stateVersion`s.
+4. The new render-node tests — frame round-trip, directive/engine enum audit, clock finite-state-machine total coverage, reconnect resync, appliedStateVersion ack — all pass.
+5. The mock-bridge ordering guarantee (directives recorded in order with correct `stateVersion`s) is a **TypeScript** control-plane guarantee from Prompt 02; it is enforced by the control-plane CI job (`npm test`), not the `rust` job. Do not add it here — if it must be cross-validated, declare it explicitly as a cross-language integration gate owned by Prompt 02.
 
 ## Step 9: Spec gaps — explicit disposition (addendum §3)
 

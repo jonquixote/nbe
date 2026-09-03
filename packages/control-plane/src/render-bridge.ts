@@ -7,14 +7,16 @@
 import { PROTOCOL_VERSION } from "./protocol.js";
 
 /**
- * A directive handed to the render node. Matches the pinned frame B4.EXACTLY:
+ * A directive handed to the render node. Matches the pinned frame:
  * a separate protocol from the Section 5.4 command envelope, layered on the
- * same WebSocket connection.
+ * same WebSocket connection. `seq` is a per-connection monotonic counter and
+ * resets to 0 when a connection is (re)established, so gap detection is
+ * meaningful within a single connection only.
  */
 export interface RenderDirective {
   v: typeof PROTOCOL_VERSION;
   kind: "directive";
-  /** Monotonic per-connection sequence (the WsRenderBridge increments it). */
+  /** Per-connection monotonic sequence; resets to 0 on (re)connect. */
   seq: number;
   /** stateVersion the directive was issued at. */
   stateVersion: number;
@@ -24,21 +26,21 @@ export interface RenderDirective {
   payload: Record<string, unknown>;
 }
 
+/** The command fields a bridge implementation supplies; v/kind/seq are added by the bridge. */
+export type PartialDirective = Pick<RenderDirective, "command" | "target" | "payload" | "stateVersion">;
+
 export type RenderBridge = {
-  send(directive: Omit<RenderDirective, "v" | "kind" | "seq">): void;
+  send(directive: PartialDirective): void;
 };
 
 /** Builds a full frame when a bridge only supplies the command fields. */
-export function makeDirective(partial: Omit<RenderDirective, "v" | "kind" | "seq">, seq: number): RenderDirective {
+export function makeDirective(partial: PartialDirective, seq: number): RenderDirective {
   return { v: PROTOCOL_VERSION, kind: "directive", seq, ...partial };
 }
 
 // ---------------------------------------------------------------------------
 // Mock (loopback, test hook)
 // ---------------------------------------------------------------------------
-
-/** Minimal partial-frame type used by callers for clarity. */
-export type PartialDirective = Omit<RenderDirective, "v" | "kind" | "seq">;
 
 /**
  * The loopback/mock bridge. Records every directive in receipt order.
@@ -82,46 +84,71 @@ export class MockRenderBridge implements RenderBridge {
 // ---------------------------------------------------------------------------
 
 /**
+ * A registered render session's outbound hook. Returns true when the frame was
+ * handed to the socket, false when it was dropped (backpressure) or errored.
+ */
+export type RenderSender = (frame: RenderDirective) => boolean;
+
+interface Session {
+  send: RenderSender;
+  seq: number;
+  dropped: number;
+}
+
+/**
  * Fan-out bridge: sends each directive to every registered render-role
- * session. Sessions register (on connect) and unregister (on close); each
- * gets a monotonically increasing `seq` so a render node can detect loss.
+ * session. Each session keeps its OWN `seq` counter (resetting to 0 on
+ * connect), so a node that joins mid-show starts at seq 0 and gap detection
+ * never conflates "joined late" with "lost directives".
+ *
+ * Bounded/backpressure: the underlying sender (server.ts) checks
+ * `ws.bufferedAmount` and returns false when the socket is too far behind;
+ * the bridge counts those drops and logs. Overflow never blocks dispatch.
  */
 export class WsRenderBridge implements RenderBridge {
-  private senders = new Set<(frame: RenderDirective) => void>();
-  private seqCounter = 0;
-  private dropped = 0;
+  private sessions = new Map<symbol, Session>();
+  // counters for bookkeeping only; per-session seq lives in Session
+  private droppedTotal = 0;
 
-  /** Register a render session's send function; returns an unregister fn. */
-  register(send: (frame: RenderDirective) => void): () => void {
-    this.senders.add(send);
+  register(send: RenderSender): () => void {
+    const id = Symbol("render-session");
+    this.sessions.set(id, { send, seq: 0, dropped: 0 });
     let done = false;
     return () => {
       if (done) return;
       done = true;
-      this.senders.delete(send);
+      const removed = this.sessions.get(id);
+      if (removed) this.droppedTotal += removed.dropped;
+      this.sessions.delete(id);
     };
   }
 
   send(directive: PartialDirective): void {
-    const frame = makeDirective(directive, this.seqCounter++);
-    if (this.senders.size === 0) {
-      this.dropped += 1;
+    if (this.sessions.size === 0) {
+      this.droppedTotal += 1;
       return; // no render node connected; dropping is intentional, never blocks
     }
-    for (const send of this.senders) {
+    for (const session of this.sessions.values()) {
+      const frame = makeDirective(directive, session.seq++);
+      let ok = false;
       try {
-        send(frame);
+        ok = session.send(frame);
       } catch (e) {
         console.warn(`render-bridge: send failed: ${String(e)}`);
+      }
+      if (!ok) {
+        session.dropped += 1;
+        this.droppedTotal += 1;
+        console.warn(`render-bridge: dropping directive ${directive.command} (backpressure)`);
       }
     }
   }
 
   renderNodeCount(): number {
-    return this.senders.size;
+    return this.sessions.size;
   }
 
   droppedCount(): number {
-    return this.dropped;
+    return this.droppedTotal;
   }
 }

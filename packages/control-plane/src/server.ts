@@ -122,11 +122,7 @@ export interface ServerOptions {
   audit: AuditLog;
   state: ControlPlaneState;
   persistence: PersistenceHooks;
-  /**
-
-   * Inject a specific bridge (tests use MockRenderBridge); defaults to the
-   * production WsRenderBridge fan-out.
-   */
+  /** Inject a specific bridge (tests use MockRenderBridge); defaults to the production WsRenderBridge fan-out. */
   bridge?: RenderBridge;
 }
 
@@ -205,9 +201,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     // Render-role sessions receive directives: register a fan-out sender.
     let unregisterRender: (() => void) | null = null;
     if (session.role === "render") {
-      const renderSender = (frame: RenderDirective): void => {
-        if (session.closed) return;
+      const renderSender = (frame: RenderDirective): boolean => {
+        if (session.closed) return false;
+        if (ws.bufferedAmount > 256 * 1024) return false; // backpressure: drop, never block dispatch
         ws.send(JSON.stringify(frame));
+        return true;
       };
       unregisterRender = wsBridge.register(renderSender);
     }
