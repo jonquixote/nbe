@@ -133,9 +133,13 @@ Work through the addendum's spec gaps and state, in the completion message, whet
 
 - Implements a workaround (and documents it), or
 - Flags it as **not in scope for this prompt; requires spec revision.** Specifically weigh:
-  - Nested `sequenceRef` resolution (no registry in the v0.3 manifest) — out of scope: a schema change is spec work.
-  - Rate-limit error code (Section 16 has no flood-protection failure mode).
-  - `crates/nbe-protocol` status: mirror the wire protocol with a Rust enum audit, or flag for deletion.
+  - Nested `sequenceRef` resolution (no registry in the v0.3 manifest) — out of scope: a schema change is spec work, deferred to v0.4. SPEC §16.4 records the disposition; do not invent a nesting convention.
+  - `crates/nbe-protocol` status: mirror the wire protocol with a Rust enum audit, or flag for deletion. **Decide this before writing any Rust frame types** — it determines whether they live in `nbe-protocol` or `nbe-engine`.
+
+Gaps closed since this prompt was written, listed so they are not re-litigated:
+
+  - **Rate-limit error code — CLOSED.** `E_RATE_LIMITED` is in the SPEC v0.3.2 §16 registry and implemented by Prompt 02c. The enum audit in Step 3a must include it.
+  - **Render channel, resync, and quiescence ack — CLOSED.** Promoted into SPEC §5.9 and implemented control-plane-side by Prompt 02c (see Step 0).
 
 Do not silently paper over any gap.
 

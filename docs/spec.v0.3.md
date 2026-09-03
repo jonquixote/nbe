@@ -2592,6 +2592,7 @@ States:
 | `PLAYING` | decode error | failure | `ERROR` | fallback if view |
 | `DONE` | `reset`/`arm` | asset valid | `READY` or `ARMED` | reset counters |
 | `MISSING` | asset restored | preflight pass | `READY` | clear alert |
+| `MISSING` | `reset` | operator asserts the asset is back | `READY` | clear alert |
 | `MISSING` | unrecoverable | manual reset | `ERROR` | alert |
 | `ERROR` | `reset` | recoverable | `READY` | clear fault |
 | `ERROR` | unrecoverable | none | remains `ERROR` | require reload |
