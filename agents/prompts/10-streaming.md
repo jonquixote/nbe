@@ -1,6 +1,6 @@
 # Agent Prompt 10 — Streaming Output (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 9.2 (hardware encode), 9.4 (streaming), 9.5 (local network survivability), 9.7 (multi-output unification), 16.14 (output commands), AC-10 (internet-loss survivability). Prerequisites: Agent Prompts 01–09 merged (compositor + recording both live on shared frames).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 9.2 (hardware encode), 9.4 (streaming), 9.5 (local network survivability), 9.7 (multi-output unification), 16.14 (output commands), AC-10 (internet-loss survivability). Prerequisites: Agent Prompts 01–09 merged (compositor + recording both live on shared frames).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the streaming output: the show goes out to the world over RTMP or SRT, hardware-encoded from the same shared frames the recorder uses, with a reconnect loop that never takes the local show down with it.
 

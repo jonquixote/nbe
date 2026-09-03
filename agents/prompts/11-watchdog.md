@@ -1,6 +1,6 @@
 # Agent Prompt 11 — Performance Watchdog & Fallback (crates/nbe-engine)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 9.6 (GPU oversubscription fallback), 10.1 (telemetry), 10.4 (structured logging), 20.5 (performance acceptance). Prerequisites: Agent Prompts 01–10 merged (compositor, telemetry, and outputs all live).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 9.6 (GPU oversubscription fallback), 10.1 (telemetry), 10.4 (structured logging), 20.5 (performance acceptance). Prerequisites: Agent Prompts 01–10 merged (compositor, telemetry, and outputs all live).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the watchdog: the engine notices it is oversubscribed, sheds the least-important work before the show stutters, says so loudly, and puts the work back when there is headroom.
 

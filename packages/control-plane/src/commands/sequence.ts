@@ -58,6 +58,18 @@ export function sequenceHandlers(reg: CommandRegistry, _deps: DispatchDeps): voi
       return {};
     },
   });
+
+  // Section 16.4 (new in SPEC v0.3.2): the command that produces the
+  // Section 17.3 `reset` event. Without it DONE/MISSING/ERROR are terminal
+  // for every client and a single failed item forces a show reload.
+  reg.set("item.reset", {
+    forward: true,
+    handler: (ctx, payload): HandlerOutput => {
+      const itemId = String(payload.itemId);
+      ctx.state.resetItem(itemId);
+      return { data: { itemId, state: "READY" } };
+    },
+  });
 }
 
 function collectItemIds(

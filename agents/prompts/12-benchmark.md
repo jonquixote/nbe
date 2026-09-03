@@ -1,6 +1,6 @@
 # Agent Prompt 12 — OBS Baseline Benchmark Harness (tools/bench)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Section 12 (12.1 metrics, 12.2 reference manifest, 12.3 artifact publication), Section 20.5 (performance acceptance). Prerequisites: Agent Prompts 01–11 merged — nbe must already pass Section 20.5 before these numbers mean anything.**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Section 12 (12.1 metrics, 12.2 reference manifest, 12.3 artifact publication), Section 20.5 (performance acceptance). Prerequisites: Agent Prompts 01–11 merged — nbe must already pass Section 20.5 before these numbers mean anything.**
 
 You are a senior Rust engineer building the `nbe` benchmark harness. This prompt does not change the engine. It builds the instrument that compares nbe against OBS on the same machine, and the report that publishes the result — including the parts where OBS wins.
 

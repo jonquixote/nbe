@@ -1,6 +1,6 @@
 # Agent Prompt 01 — Bootstrap nbe-core & nbe-preflight
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) · `schemas/manifest.v0.3.json` · fixtures `tests/fixtures/valid_show_v0.3/` (must pass) and `tests/fixtures/valid_show/` (v0.2 — must be rejected).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) · `schemas/manifest.v0.3.json` · fixtures `tests/fixtures/valid_show_v0.3/` (must pass) and `tests/fixtures/valid_show/` (v0.2 — must be rejected).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. Bootstrap the `nbe-core` and `nbe-preflight` crates. The workspace `Cargo.toml` and `schemas/manifest.v0.3.json` already exist in the repository root.
 

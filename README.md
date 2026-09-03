@@ -2,13 +2,13 @@
 
 Manifest-driven live news playout system: a Rust/wgpu real-time compositor driven by a TypeScript control plane. Built for an independent, self-hosted worker news network.
 
-**Status:** founding scaffold. Normative spec: **SPEC v0.3** (`docs/spec.v0.3.md`; `SPEC.md` is the signpost) — the self-contained composable broadcast language: two-axis model, state-diff transitions, overlays, automation, plugins, quality profiles, abuse model.
+**Status:** founding scaffold. Normative spec: **SPEC v0.3.2** (`docs/spec.v0.3.md`; `SPEC.md` is the signpost) — the self-contained composable broadcast language: two-axis model, state-diff transitions, overlays, automation, plugins, quality profiles, abuse model. The v0.3.2 patch level adds the render-channel protocol, server-push frame shapes, and the command authorization matrix.
 
 ## Specification
 
 | Document | Role |
 |---|---|
-| `docs/spec.v0.3.md` | Current normative specification (v0.3, self-contained) |
+| `docs/spec.v0.3.md` | Current normative specification (v0.3, patch level v0.3.2, self-contained) |
 | `SPEC.md` | Signpost to the current version |
 | `schemas/manifest.v0.3.json` | Normative show-manifest JSON Schema (byte-exact artifact, CI-validated) |
 | `schemas/manifest.v0.2.json` | Prior schema version |

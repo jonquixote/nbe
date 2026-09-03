@@ -1,6 +1,6 @@
 # Agent Prompt 13 — Swift Operator Shell (apps/nbe-macos)
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — the operator surface (Section 11), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10). Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the operator surface (Section 11), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10). Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
 
 You are a senior macOS engineer building the `nbe` operator shell: a native Swift app that embeds the engine and gives a human hands on it. The shell has no brain. Every button is a Section 16 command; every indicator is Section 10 telemetry; every pixel of state comes from `show.getState`.
 

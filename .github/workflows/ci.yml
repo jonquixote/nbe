@@ -42,4 +42,25 @@ jobs:
         working-directory: .
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: npm test
+      - name: generated manifest types match the schema
+        run: |
+          npm run gen:manifest-types
+          git diff --exit-code src/generated
+      - name: vocabulary discipline (program/layer only in the alias table)
+        working-directory: .
+        run: |
+          hits=$(grep -rn "program\.\|layer\." packages/control-plane/src \
+            --include=*.ts \
+            | grep -v "src/protocol.ts" \
+            | grep -v "\.test\.ts" \
+            | grep -v "^\s*//" || true)
+          if [ -n "$hits" ]; then echo "vocabulary violation:"; echo "$hits"; exit 1; fi
+      - name: tests pass and actually run
+        run: |
+          npm test 2>&1 | tee /tmp/cp-test.log
+          passed=$(grep -E "^# pass " /tmp/cp-test.log | awk '{print $3}')
+          failed=$(grep -E "^# fail " /tmp/cp-test.log | awk '{print $3}')
+          echo "passed=$passed failed=$failed"
+          if [ "${failed:-1}" -ne 0 ]; then echo "expected 0 failures"; exit 1; fi
+          # A glob that matches nothing must not pass as a green build.
+          if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi

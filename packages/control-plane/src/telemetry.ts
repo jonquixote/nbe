@@ -69,7 +69,10 @@ export function buildTick(
     automationHold: state.automationHold,
     qualityProfile: null,
     engineConnected: engineFresh,
-    deprecationWarnings: state.drainDeprecations(),
+    // Deprecation warnings are per-subscriber: the server fans each accepted
+    // deprecated command into every subscriber's own cursor and fills this in.
+    // A shared drain here would hand the warning to whichever tick fired first.
+    deprecationWarnings: [],
   };
 }
 

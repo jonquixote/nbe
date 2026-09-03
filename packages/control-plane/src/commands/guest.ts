@@ -1,7 +1,7 @@
 //! Section 16.9 — guest commands.
 
 import { CpError } from "../protocol.js";
-import { randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.js";
 
 export function guestHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
@@ -75,18 +75,23 @@ export function guestHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
     handler: (ctx, payload): HandlerOutput => {
       mustGuest(ctxStateOf(ctx), String(payload.guestId));
       const ttlSec = (payload.ttlSec as number) ?? 600;
-      // Time-limited, per-guest credentials. The TURN server endpoint comes
-      // from node config; absent config we vend a local default per spec's
-      // self-hosted-first posture.
+      const secret = process.env.NBE_TURN_SECRET;
+      const uris = (process.env.NBE_TURN_URIS ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+      // SPEC §9.6.2: without a configured shared secret there is no credential
+      // that any TURN server would accept. Failing here is honest; vending a
+      // placeholder defers the failure to ICE, mid-show, where it is
+      // indistinguishable from a network fault.
+      if (!secret || uris.length === 0) {
+        throw new CpError(
+          "E_UNSUPPORTED_FEATURE",
+          "TURN vending is not configured (set NBE_TURN_SECRET and NBE_TURN_URIS)",
+        );
+      }
+      // coturn long-term-credential REST convention.
       const expiry = Math.floor(Date.now() / 1000) + ttlSec;
-      return {
-        data: {
-          uris: ["turn:turn.nbe.local:3478?transport=udp"],
-          username: `${expiry}:${String(payload.guestId)}`,
-          credential: randomBytes(24).toString("base64url"),
-          ttlSec,
-        },
-      };
+      const username = `${expiry}:${String(payload.guestId)}`;
+      const credential = createHmac("sha1", secret).update(username).digest("base64");
+      return { data: { uris, username, credential, ttlSec } };
     },
   });
 }

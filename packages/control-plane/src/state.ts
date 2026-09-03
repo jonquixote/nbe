@@ -44,6 +44,8 @@ export interface PackageElement {
 export interface PackageInfo {
   packagePath: string;
   showId: string;
+  /** Section 10.1 telemetry field, declared by the manifest. */
+  qualityProfile: string | undefined;
   items: Map<string, PackageItem>;
   sequences: Set<string>;
   scenes: Map<string, { elements: PackageElement[] }>;
@@ -109,6 +111,8 @@ export class ControlPlaneState {
   showState: ShowState = "UNLOADED";
   pkg: PackageInfo | null = null;
   preflightPassed = false;
+  /** Warnings from the last preflight (exit 1); gates show.start per §16.1. */
+  preflightWarnings: string[] = [];
   lastError: string | null = null;
 
   viewItem: string | null = null;
@@ -261,10 +265,44 @@ export class ControlPlaneState {
     if (this.viewItem === itemRef) this.fallbackActive = true;
   }
 
-  /** ERROR/MISSING/DONE -> READY. */
+  /**
+   * DONE/MISSING/ERROR -> READY (Section 16.4 `item.reset`, Section 17.3
+   * `reset` rows). An item marked unrecoverable stays in ERROR — the
+   * "unrecoverable / remains ERROR / require reload" row.
+   */
   resetItem(itemRef: string): void {
     this.requireItem(itemRef);
+    const cur = this.itemStateOf(itemRef);
+    if (cur !== "DONE" && cur !== "MISSING" && cur !== "ERROR") {
+      throw new CpError("E_FORBIDDEN_STATE", `item ${itemRef} is ${cur}, nothing to reset`);
+    }
+    if (this.unrecoverableItems.has(itemRef)) {
+      throw new CpError("E_FORBIDDEN_STATE", `item ${itemRef} is unrecoverable; reload the show`);
+    }
     this.itemStates.set(itemRef, "READY");
+  }
+
+  /** Items the engine reported as unrecoverable; reset cannot clear them. */
+  unrecoverableItems = new Set<string>();
+
+  /**
+   * SPEC §5.9.4: the authoritative snapshot sent as `show.resync` on every
+   * render-role connection. This — not a replayed backlog — is how a render
+   * node recovers.
+   */
+  resyncSnapshot(): Record<string, unknown> {
+    return {
+      showState: this.showState,
+      packagePath: this.pkg?.packagePath ?? null,
+      viewItem: this.viewItem,
+      previewItem: this.previewItem,
+      itemStates: Object.fromEntries(this.itemStates),
+      sceneStates: Object.fromEntries(this.sceneStates),
+      visibleOverlays: Array.from(this.visibleOverlays),
+      automationHold: this.automationHold,
+      fallbackActive: this.fallbackActive,
+      stateVersion: this.stateVersion,
+    };
   }
 
   // -- Section 17.2 scene states ------------------------------------------------
@@ -317,6 +355,8 @@ export class ControlPlaneState {
     this.itemStates.clear();
     this.sceneStates.clear();
     this.fallbackActive = false;
+    this.qualityProfile = pkg.qualityProfile ?? null;
+    this.unrecoverableItems.clear();
     for (const id of pkg.automationRules) this.automationRules.set(id, true);
   }
 
@@ -336,11 +376,25 @@ export class ControlPlaneState {
 
   // -- status / snapshots for persistence and the health endpoint ---------------
 
-  statusSnapshot(): Record<string, unknown> {
+  /**
+   * SPEC §10.4 requires seven things: show load state, master clock state,
+   * render node health, stream health, recording health, preflight state,
+   * last error. `renderNode` is supplied by the caller because the engine
+   * report lives in the telemetry cache, not in this object.
+   */
+  statusSnapshot(
+    renderNode: { connected: boolean; clockState: string; lastAppliedStateVersion: number | null } = {
+      connected: false,
+      clockState: "UNKNOWN",
+      lastAppliedStateVersion: null,
+    },
+  ): Record<string, unknown> {
     return {
       showState: this.showState,
       package: this.pkg ? { path: this.pkg.packagePath } : null,
       preflightPassed: this.preflightPassed,
+      masterClockState: renderNode.clockState,
+      renderNode,
       stateVersion: this.stateVersion,
       viewItem: this.viewItem,
       previewItem: this.previewItem,
@@ -348,9 +402,13 @@ export class ControlPlaneState {
       recordState: this.recordState,
       streamState: this.streamState,
       automationHold: this.automationHold,
+      qualityProfile: this.qualityProfile,
       lastError: this.lastError,
     };
   }
+
+  /** Section 10.1 control-plane-owned field, read from the loaded manifest. */
+  qualityProfile: string | null = null;
 
   manifestIdentity(): ManifestIdentity | null {
     if (!this.pkg) return null;

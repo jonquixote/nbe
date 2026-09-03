@@ -1,6 +1,27 @@
 # NBE SPEC v0.3  
 **News Broadcasting Engine**  
-Status: normative specification — self-contained. Patch level v0.3.1: applies the four v0.3.1 patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).  
+Status: normative specification — self-contained. Patch level v0.3.2.
+
+v0.3.1 applied four patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).
+
+v0.3.2 is a clarification release: it writes down contracts that were already required but left implicit, and that implementers were therefore inventing. No behaviour that v0.3.1 defined has changed. New and amended material:
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | Server-push frame envelope (`stateChange`, `telemetry`) — Section 5.1 §5 required these events with no frame shape defined. | 5.4.1 (new) |
+| 2 | The render channel: directive frame, engine→control-plane frames, `seq` semantics, reconnect resync. Section 5.2 drew the render node without a protocol. | 5.9 (new) |
+| 3 | `show.stop` quiescence acknowledgement — "wait up to 2 seconds" never said what signals shutdown. | 16.1, 5.9.4 |
+| 4 | `E_RATE_LIMITED` — Section 10.7 mandates flood protection with no failure mode in the registry. | 16 registry |
+| 5 | Handshake rejection: HTTP 401 before upgrade is now the normative path, replacing the unachievable "error frame then close". | 5.3 |
+| 6 | Command authorization matrix — the role table was prose, so implementers inferred per-command permissions. | 16.0 (new) |
+| 7 | Item-reference grammar formalized (ABNF + which forms each command accepts). | 5.7 |
+| 8 | `item.reset` — Section 17.3's `reset` event had no command, leaving `ERROR`/`MISSING` terminal via the API. | 16.4 |
+| 9 | TURN credential derivation — the response shape had no derivation rule, so vended credentials could not authenticate. | 9.6.2 |
+| 10 | `show.start` warnings policy against the Section 19.1 exit codes. | 16.1 |
+| 11 | Audit record shape and retention. | 10.7 |
+| 12 | `sequenceRef` declared reserved-unresolvable in v0.3 (no sequence registry exists in the schema). | 16.4 |
+
+`schemas/manifest.v0.3.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.  
 Relationship to earlier versions: this document supersedes SPEC v0.2.5. It consolidates SPEC v0.1, SPEC v0.2, and the v0.2.1 errata (via the v0.2.5 consolidation) and introduces the v0.3 composable broadcast language: the two-axis model, element identity, the state-diff transition engine, overlays, sub-scenes, automation, plugins, quality profiles, and the abuse model. Where this document differs from prior versions, this document wins. Prior versions remain in `docs/` as history.
 
 ---
@@ -294,6 +315,14 @@ Roles:
 | `admin` | all commands, config, auth |
 | `render` | internal render-node directive channel |
 
+The prose above states each role's intent. The normative per-command permissions are the matrix in Section 16.0; where prose and matrix disagree, the matrix wins.
+
+The token is authoritative for the role. `X-NBE-Role` is client-asserted and MUST be verified against the role the token resolves to; a mismatch is a handshake failure. Token comparison MUST be constant-time, and an empty or absent token MUST NOT resolve to any role.
+
+**Handshake rejection (normative, amended in v0.3.2).** A failed handshake MUST be rejected before the WebSocket upgrade completes, with HTTP `401 Unauthorized` and a JSON body carrying the Section 5.4 error response shape and code `E_AUTH`. The rejection reason returned to the peer MUST be generic; the specific reason (unknown token, role mismatch, expired credential) is written to the audit log, not to the unauthenticated caller.
+
+> v0.3.1 required the server to "close the socket with an `E_AUTH` error frame first." That is not achievable when the connection is refused at the HTTP upgrade, which is the correct layer to refuse it at. v0.3.2 replaces that requirement with the 401 path above.
+
 ## 5.4 Message envelope
 
 All client-to-server command messages MUST use this envelope:
@@ -345,6 +374,42 @@ Error response:
 }
 ```
 
+## 5.4.1 Server-push frames (normative, new in v0.3.2)
+
+Section 5.1 §5 requires the control plane to emit state-change events to all connected clients, and Section 10.1 requires telemetry at least once per second. Both are **server-initiated** frames: they are not responses, they carry no `requestId`, and they MUST NOT be confused with the Section 5.4 response shapes.
+
+Every server-initiated frame carries a `kind` discriminator:
+
+```json
+{
+  "v": "0.3",
+  "kind": "stateChange",
+  "stateVersion": 413,
+  "changed": ["viewItem", "previewItem", "itemStates"],
+  "state": {}
+}
+```
+
+```json
+{
+  "v": "0.3",
+  "kind": "telemetry",
+  "data": {}
+}
+```
+
+| Frame | When | Payload |
+|---|---|---|
+| `stateChange` | Once per accepted command, after the `stateVersion` bump, to every connected client whose role may observe the affected state. | `stateVersion`, `changed` (array of changed top-level keys), `state` (the changed subset, or the full snapshot when `changed` is absent). |
+| `telemetry` | On the subscriber's interval, to clients that ran `system.telemetry.subscribe`. | `data`: the Section 10.1 field shape. |
+
+Rules:
+
+1. Exactly one `stateChange` frame per accepted command. A command that mutates nothing (a no-op or a rejected command) MUST NOT emit one.
+2. A `stateChange` frame MUST carry the same `stateVersion` that the command's success response carried, and MUST be observable no later than that response.
+3. Push frames are droppable under backpressure; command responses are not. A client that cannot keep up MAY have `telemetry` frames coalesced or skipped, and MUST be disconnected rather than buffered without bound. A client that missed a `stateChange` recovers with `system.status`.
+4. `kind` is reserved on server-initiated frames only. Client-to-server command envelopes MUST NOT carry `kind`; the render channel frames of Section 5.9 are the one exception and are accepted only from `render`-role sessions.
+
 ## 5.5 State versioning
 
 The control plane MUST maintain a monotonically increasing integer `stateVersion`.
@@ -390,6 +455,34 @@ Commands use item references:
 
 Subsegment IDs SHOULD match the `A1`, `A2`, `B1`, etc. convention.
 
+### 5.7.1 Reference grammar (normative, new in v0.3.2)
+
+```abnf
+reference   = bare-id / prefixed
+bare-id     = id                       ; a Sequence or Item id
+prefixed    = kind ":" scoped-id
+kind        = "element" / "scene" / "overlay" / "guest" / "camera"
+scoped-id   = id [ "." id ]            ; the dotted form scopes an element to an item
+id          = 1*( ALPHA / DIGIT / "_" / "-" )
+```
+
+A reference resolves against the loaded package. Resolution rules:
+
+1. A bare id resolves against the Item index first, then the Sequence index. If it matches neither, the command fails with `E_NOT_FOUND`.
+2. `element:<item>.<element>` resolves the element within the scene active for that item; `element:<element>` resolves within the current View scene. An id that exists in the manifest but not in the addressed scope is `E_NOT_FOUND`, not a silent no-op.
+3. `scene:`, `overlay:`, `guest:`, and `camera:` resolve against their respective indexes.
+4. A reference that parses but names an unknown prefix MUST fail with `E_BAD_PAYLOAD`, not `E_NOT_FOUND` — a malformed reference is a payload defect.
+
+Which forms each command accepts:
+
+| Payload field | Accepted forms |
+|---|---|
+| `itemRef` (`preview.set`, `view.cut`) | bare id only |
+| `itemId`, `sequenceId`, `sceneId`, `overlayId`, `guestId`, `elementId`, `templateId`, `assetId`, `ruleId`, `pluginId` | bare id only — these are typed fields, not references |
+| Automation rule `target`, render-directive `target` | any `reference` form |
+
+Typed id fields are deliberately not references: a command that names a `sceneId` accepts `SCN_A1`, never `scene:SCN_A1`. The prefixed forms exist for contexts that address heterogeneous targets.
+
 ## 5.8 Operator topology (normative)
 
 The anchor drives. A producer or second operator MAY join remotely.
@@ -397,6 +490,71 @@ The anchor drives. A producer or second operator MAY join remotely.
 The View is a served endpoint: any authorized client watches it over WHEP (Section 9.6) with hardware decode, in a browser or on a phone. Virtual-camera patterns are forbidden: the engine MUST NOT do GPU-readback detours to make the View visible to a remote operator.
 
 Guest onboarding is one link, no install, browser capture — obs.ninja-class UX — with the mix-minus return and TURN vending built in (Sections 8.6, 9.6).
+
+## 5.9 The render channel (normative, new in v0.3.2)
+
+Section 5.2 requires all control traffic to pass through the control plane, and shows the render node hanging off it. This section defines the protocol on that link. It is not a second transport: the render node connects to the same endpoint as every other client (Section 5.3), authenticates with a token that resolves to the `render` role, and then exchanges the frames below.
+
+Render-channel frames are distinct from the Section 5.4 command envelope. A `render`-role session MUST NOT issue commands; a non-`render` session MUST NOT receive directives.
+
+### 5.9.1 Directive frame (control plane → render node)
+
+```json
+{
+  "v": "0.3",
+  "kind": "directive",
+  "seq": 91,
+  "stateVersion": 413,
+  "command": "view.take",
+  "target": {},
+  "payload": {}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `seq` | Per-connection monotonic counter, starting at `0` when that connection is established. |
+| `stateVersion` | The `stateVersion` the directive was issued at. Every directive emitted for one command carries that command's version. |
+| `command` | The command name that produced this directive. |
+| `target` | Resolved references (Section 5.7.1) — resolved by the control plane, never re-resolved by the engine. |
+| `payload` | Fully resolved parameters. Names that require lookup (for example a transition `preset`) MUST be resolved before emission; the engine never resolves policy. |
+
+Delivery is fire-and-forget: emitting a directive MUST NOT block command processing. The outbound path MUST be bounded — a render node that cannot keep up has its directives dropped and counted, never buffered without bound (the Section 5.4.1 §3 rule).
+
+### 5.9.2 `seq` semantics
+
+`seq` is a continuity check **within a single connection**. It resets to `0` on every connect and reconnect. A fresh connection beginning at `seq 0` means "joined here", never "lost N directives". A gap in `seq` within one connection means directives were dropped, and the node MUST request a resync (Section 5.9.3) rather than infer the missing state.
+
+### 5.9.3 Engine → control plane frames
+
+Accepted only from `render`-role sessions; from any other role they MUST be ignored and the attempt audited.
+
+| `kind` | Shape | Meaning |
+|---|---|---|
+| `engineTelemetry` | Section 10.1 fields the engine owns (Section 10.1.1) | Reported at 1 Hz. |
+| `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
+| `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
+| `resyncRequest` | `{ v, kind, reason }` where `reason` is `seqGap` \| `reconnect` \| `internal` | The engine asks for a full snapshot. |
+
+Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
+
+### 5.9.4 Reconnect and resync
+
+A bounded, fire-and-forget channel plus a reconnecting engine means directives issued during an outage are gone. Guessing is not acceptable on air. Therefore:
+
+1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, `viewItem`, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
+2. Between connecting and receiving `show.resync`, the render node MUST hold its last applied output and MUST NOT apply any later directive.
+3. The engine confirms with `appliedStateVersion` carrying the snapshot's `stateVersion`.
+4. Directives issued while no render node was connected MUST NOT be replayed. The snapshot, not the backlog, is the recovery mechanism.
+5. On `resyncRequest`, the control plane MUST send a fresh `show.resync` on that connection.
+
+### 5.9.5 Quiescence acknowledgement
+
+`show.stop`'s graceful window (Section 16.1) is only meaningful if something signals that outputs actually stopped. That signal is `appliedStateVersion`:
+
+1. The control plane emits `record.stop` / `stream.stop` directives at the stop command's `stateVersion`.
+2. The engine stops the outputs, and only once they are actually stopped sends `appliedStateVersion` for that `stateVersion`. An early acknowledgement defeats the window and is a defect.
+3. The control plane waits up to 2 seconds for that acknowledgement. Arriving in time is a graceful stop; timing out forces the stop and logs the warning named in Section 16.1.
 
 ---
 
@@ -1298,6 +1456,18 @@ ICE failure MUST return `E_ICE`.
 
 Self-hosted TURN (e.g., coturn via environment configuration) is the default posture. Managed TURN provider integrations are a later option (Section 25).
 
+**Credential derivation (normative, new in v0.3.2).** The shape above is not enough to produce a credential that a TURN server will accept. Vended credentials MUST follow the long-term-credential REST convention:
+
+```text
+username   = <unixExpiry> ":" <guestId>
+credential = base64( HMAC-SHA1( sharedSecret, username ) )
+ttlSec     = <unixExpiry> - now
+```
+
+where `sharedSecret` is the TURN server's configured static-auth secret, held by the control plane and never returned to a client.
+
+A control plane with no TURN secret configured MUST fail `guest.getTurn` with `E_UNSUPPORTED_FEATURE` and MUST NOT return placeholder or randomly generated credentials. Fabricated credentials are worse than an explicit failure: they defer the error to ICE, mid-show, where it is indistinguishable from a network fault.
+
 ### 9.6.3 NDI feature flag
 
 NDI is optional.
@@ -1389,6 +1559,19 @@ Telemetry fields:
 }
 ```
 
+### 10.1.1 Field ownership and the merge (normative, new in v0.3.2)
+
+Two processes hold the truth for different fields, and the control plane is the single emitter. Ownership:
+
+| Owner | Fields |
+|---|---|
+| Control plane | `viewItem`, `previewItem`, `automationHold`, `qualityProfile`, `streamState`, `recordState` (as commanded) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung` |
+
+The render node reports its fields over `engineTelemetry` (Section 5.9.3) at 1 Hz. The control plane caches the last report with its arrival time and merges. When no report has arrived within the staleness threshold (default 2 seconds), the engine-owned fields report stub values and the tick carries `engineConnected: false`.
+
+The emitted field shape is always complete. A telemetry consumer MUST never see a missing field, whatever the engine's state — an absent field and a stubbed field are different failures and only one of them is diagnosable.
+
 ## 10.2 Dropped-frame definition
 
 A dropped frame is any VIEW frame not presented/submitted by its master-clock deadline.
@@ -1462,6 +1645,29 @@ This is a worker-network broadcast system; assume hostile attention.
 2. **Ticker**: rate limiting on RSS and manual injection (flood protection). RSS text remains sanitized display text, never markup (Assumption 13).
 3. **Call-ins**: guest admission is always producer-gated; there is no anonymous path to air.
 4. **Audit log**: append-only structured JSON log of all control-plane actions and auth events, retained locally.
+
+### 10.7.1 Audit record shape (normative, new in v0.3.2)
+
+"Structured JSON" is not a contract for an artifact that exists to be read after an incident. One JSON object per line, append-only:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `ts` | yes | Unix milliseconds. |
+| `kind` | yes | `command` \| `auth` \| `automation` \| `engine`. |
+| `outcome` | yes | `ok` \| `rejected`. |
+| `role` | yes | The role the token resolved to; `null` for a failed handshake. |
+| `tokenId` | yes | A stable non-reversible token identifier (e.g. a truncated hash). The token itself MUST NOT be logged. |
+| `remote` | auth records | Peer address. |
+| `requestId` | command records | The envelope `id`. |
+| `command` | command records | The canonical command name. |
+| `rawCommand` | when aliased | The deprecated name as sent (Assumption 17). |
+| `errorCode` | rejected records | The Section 16 code. |
+| `stateVersionBefore` / `stateVersionAfter` | command records | The version either side of the attempt. |
+| `reason` | rejected auth | Why the handshake failed — this detail belongs here, never in the response to the peer (Section 5.3). |
+
+Every attempt is recorded, not every success: **rejected commands, role denials, and failed handshakes MUST be written**. An audit log that contains only permitted actions cannot answer the question it exists for. Automation actions are recorded with `kind: "automation"` (AC-25 §4).
+
+Retention is local and operator-controlled. The log MUST be durable across a control-plane crash to the same degree as the show state: an implementation that buffers audit records in memory and loses them on abnormal exit does not satisfy this section. If the configured destination is unavailable at boot, the control plane MUST refuse to start rather than run unaudited.
 
 ## 10.8 Failure UI
 
@@ -1989,6 +2195,41 @@ Error code registry (normative):
 | `E_TIMEOUT` | Operation timed out (reserved for async network boundaries: TURN vending, WHIP handshake, RSS fetches). |
 | `E_TURN` | TURN credential vending failure. |
 | `E_ICE` | WebRTC ICE failure. |
+| `E_RATE_LIMITED` | The caller exceeded a rate limit (Section 10.7 flood protection). New in v0.3.2. |
+
+`E_RATE_LIMITED` is distinct from `E_FORBIDDEN_STATE` and MUST NOT be substituted for it: an operator whose ticker injection is throttled needs to know the command was well-formed, permitted, and merely too frequent. A rate-limited command MUST NOT mutate state and MUST NOT bump `stateVersion`.
+
+## 16.0 Command authorization matrix (normative, new in v0.3.2)
+
+The Section 5.3 role descriptions are intent, not a contract; this matrix is the contract. A role may issue a command only where marked. `admin` may issue every command and is omitted from the table. `render` may issue none — it is a receive-and-report channel (Section 5.9), and a command arriving on a `render` session MUST fail with `E_AUTH`.
+
+| Command family | `monitor` | `operator` | `producer` |
+|---|:--:|:--:|:--:|
+| `show.load`, `show.preflight`, `show.unload` | — | — | ✓ |
+| `show.start` | — | — | — |
+| `show.stop` | — | ✓ | — |
+| `preview.*`, `view.*` | — | ✓ | — |
+| `scene.*`, `sequence.*`, `item.*` | — | ✓ | — |
+| `element.*`, `graphic.*`, `breaking.*`, `overlay.*` | — | ✓ | — |
+| `ticker.*` | — | ✓ | ✓ |
+| `soundboard.*`, `audio.*`, `guest.mute` | — | ✓ | — |
+| `guest.connect`, `guest.disconnect` | — | — | ✓ |
+| `guest.setLayout`, `guest.placeholder`, `guest.configureReturn`, `guest.getTurn` | — | ✓ | — |
+| `automation.*` | — | ✓ | — |
+| `snapshot.*` | — | ✓ | — |
+| `marker.add` | — | ✓ | ✓ |
+| `clock.configure` | — | ✓ | — |
+| `plugin.reload` | — | — | — |
+| `record.*`, `stream.*` | — | ✓ | — |
+| `system.status`, `system.telemetry.*` | ✓ | ✓ | ✓ |
+
+Three permissions are deliberate and were previously ambiguous:
+
+1. **`show.start` is admin-only.** Starting a show commits to air; the operator's authority begins once the show is running.
+2. **`show.stop` is available to the operator.** Stopping is the emergency path, and gating it behind an absent admin is a worse failure than an unnecessary stop.
+3. **`plugin.reload` is admin-only.** It loads code, which makes it a configuration action, not a live one.
+
+Guest admission stays producer-gated (Section 10.7 §3): `guest.connect` is a producer/admin command precisely so no operator-level path to air exists.
 
 ## 16.1 Show commands
 
@@ -1996,7 +2237,7 @@ Error code registry (normative):
 |---|---|---|---|---|
 | `show.load` | `{ packagePath: string, mode?: "load"\|"reload" }` | no live view | show `UNLOADED -> LOADED` | `E_BAD_PAYLOAD`, `E_NOT_FOUND`, `E_ENGINE` |
 | `show.preflight` | `{ strict?: boolean }` | show loaded | sets preflight state | `E_PREFLIGHT_FAILED` |
-| `show.start` | `{ startClock?: boolean }` | preflight passed | show `LOADED -> RUNNING`, clock `STOPPED -> RUNNING` | `E_FORBIDDEN_STATE` |
+| `show.start` | `{ startClock?: boolean, allowWarnings?: boolean }` | preflight passed (see below) | show `LOADED -> RUNNING`, clock `STOPPED -> RUNNING` | `E_FORBIDDEN_STATE` |
 | `show.stop` | see below | show running unless force | show `RUNNING -> STOPPED`; outputs quiesced | `E_FORBIDDEN_STATE`, `E_DISK`, `E_NETWORK` |
 | `show.unload` | `{}` | not live | show `LOADED/RUNNING -> UNLOADED` | `E_FORBIDDEN_STATE` |
 
@@ -2026,6 +2267,18 @@ When `show.stop` is received:
 | any | any | no | stop show |
 
 Recording remains crash-safe because fragmented MP4 or MKV fragments are already written.
+
+**What "graceful" means (normative, clarified in v0.3.2).** Step 3's two-second wait is a wait for the render node's `appliedStateVersion` acknowledgement of the stop directives, per Section 5.9.5. An implementation that waits for nothing, or that treats its own state mutation as the acknowledgement, does not implement this step: the timeout branch must be reachable in production, not only under test. On timeout the engine force-stops outputs and logs a warning naming the elapsed window.
+
+**`show.start` and preflight warnings (normative, clarified in v0.3.2).** Against the Section 19.1 exit codes:
+
+| Preflight outcome | `show.start` |
+|---|---|
+| exit `0` (air-ready) | permitted |
+| exit `1` (warnings only) | refused with `E_FORBIDDEN_STATE` unless `allowWarnings: true` is passed explicitly |
+| exit `2` (errors) | refused with `E_FORBIDDEN_STATE` |
+
+A warnings-only package is loadable — warnings exist to be seen and judged — but going to air on one is an explicit operator decision, never an inference. `airReady` remains true only at exit `0` (SPEC 19.1).
 
 ## 16.2 View/Preview commands
 
@@ -2084,6 +2337,17 @@ If `preset` is present, the named transition preset supplies kind, duration, eas
 | `item.arm` | `{ itemId: string }` | item exists | item `READY -> ARMED` | `E_NOT_FOUND`, `E_ASSET_MISSING` |
 | `item.unarm` | `{ itemId: string }` | armed | item `ARMED -> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
 | `item.stop` | `{ itemId: string }` | playing | item `PLAYING -> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+| `item.reset` | `{ itemId: string }` | item in `DONE`, `MISSING`, or `ERROR` | item `-> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+
+`item.reset` is new in v0.3.2. Section 17.3 has always defined `reset` transitions out of `DONE`, `MISSING`, and `ERROR`, but no command produced that event, so those states were terminal for any client — an item that failed once could not be recovered without reloading the show. `item.reset` on an unrecoverable `ERROR` MUST leave the item in `ERROR` (the Section 17.3 "unrecoverable" row) and report `E_FORBIDDEN_STATE`.
+
+**`sequenceRef` is reserved in v0.3 (recorded in v0.3.2).** `Item.kind = "sequenceRef"` and the `sequence.*` commands describe nested sequences, but `schemas/manifest.v0.3.json` declares exactly one Sequence — `rundown` — whose `items` are Items, not Sequences. There is no registry to resolve a `sequenceRef` against. Until a schema revision introduces one:
+
+1. A manifest MAY carry `kind: "sequenceRef"` items; preflight MUST warn that they cannot be resolved.
+2. `sequence.arm` / `sequence.unarm` resolve only `rundown`; any other `sequenceId` fails with `E_NOT_FOUND`.
+3. Implementations MUST NOT invent a nesting convention to fill the gap.
+
+`VOCABULARY.md` defines Sequence as "a recursive, ordered container of Items", which the v0.3 schema does not yet express. The ledger describes the target; the schema is normative for what exists today. Closing this is a v0.4 schema revision.
 
 ## 16.5 Element/graphic commands
 
@@ -2331,6 +2595,8 @@ States:
 | `MISSING` | unrecoverable | manual reset | `ERROR` | alert |
 | `ERROR` | `reset` | recoverable | `READY` | clear fault |
 | `ERROR` | unrecoverable | none | remains `ERROR` | require reload |
+
+Event sources (clarified in v0.3.2): `arm`, `unarm`, `take`, `stop`, and `reset` are produced by the Section 16 commands of the same name (`reset` by `item.reset`, Section 16.4). "asset missing detected", "decode error", "end reached", and "device loss" are produced by the render node's `itemEvent` frames (Section 5.9.3) — the control plane never synthesizes them, because it never touches media.
 
 ## 17.4 Automation hold interaction
 

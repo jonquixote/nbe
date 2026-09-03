@@ -2,7 +2,7 @@
 
 Addendum to Agent Prompt 02 — architecture decisions and semantics that must be pinned before implementation proceeds.
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — Sections 5, 10.1, 10.4, 10.7, 13, 16, 17. Applies to `agents/prompts/02-control-plane.md` and every prompt that consumes the control plane (03 render node, 08 Companion, 13 operator shell).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 5, 10.1, 10.4, 10.7, 13, 16, 17. Applies to `agents/prompts/02-control-plane.md` and every prompt that consumes the control plane (03 render node, 08 Companion, 13 operator shell).**
 
 Read alongside:
 

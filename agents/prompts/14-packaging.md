@@ -1,6 +1,6 @@
 # Agent Prompt 14 — Packaging & Release Pipeline
 
-**Targets: SPEC v0.3.1 (`docs/spec.v0.3.md`) — the build/release requirements (Section 22) and distribution promises. Prerequisites: Agent Prompt 13 merged (there is an app to ship).**
+**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the build/release requirements (Section 22) and distribution promises. Prerequisites: Agent Prompt 13 merged (there is an app to ship).**
 
 You are a senior macOS release engineer building the `nbe` shipping pipeline: a tagged commit in, a signed, notarized, stapled app out, with checksums, that launches clean under Gatekeeper on a fresh Mac.
 
