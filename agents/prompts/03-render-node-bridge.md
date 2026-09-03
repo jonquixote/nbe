@@ -27,6 +27,25 @@ This prompt complies with the NBE Implementation Standards (`docs/implementation
 - Dependencies from the workspace: `tokio`, `tracing`, `tracing-subscriber`, `serde`, `serde_json`, `anyhow`, `thiserror`. Add `tokio-tungstenite` for the WebSocket client.
 - Boot: load config (control-plane URL default `ws://127.0.0.1:8462/nbe/v0.3`, auth token, role `render`), connect with the Section 5.3 handshake (`Authorization: Bearer <token>`, `X-NBE-Role: render`).
 
+## Step 1a: The wire types already exist — use them, do not redefine them
+
+`crates/nbe-protocol` is the Rust mirror of the wire protocol (SPEC §5.4, §5.4.1, §5.9, §16). It is populated and audited; `nbe-engine` depends on it and **MUST NOT** define its own envelope, error, directive, or engine-frame types.
+
+What it gives you:
+
+| Type | Covers |
+|---|---|
+| `Envelope`, `Response`, `ErrorBody`, `ErrorCode` | SPEC §5.4 command envelope and responses; the complete §16 error registry including `E_RATE_LIMITED` |
+| `PushFrame` | §5.4.1 `stateChange` / `telemetry` |
+| `DirectiveFrame`, `DirectiveKind` | §5.9.1, with `seq` semantics documented on the type |
+| `EngineFrame`, `EngineTelemetry`, `ItemEvent`, `ResyncReason` | §5.9.3 — the four frames the engine sends |
+| `command::ALL`, `command::RESYNC`, `command::is_known` | the §16 command surface; `show.resync` is deliberately excluded from `ALL` because no client may issue it |
+| `Role`, `PROTOCOL_VERSION`, `WS_PATH`, `DEFAULT_PORT` | §5.3 connection constants |
+
+`crates/nbe-protocol/tests/mirror.rs` already enforces the Standards §1 obligations for these types in three layers: serde round-trips, an audit against the spec's Section 16 tables, and a **direct audit against `packages/control-plane/src/protocol.ts`** so a command or code added on one side and forgotten on the other fails `cargo test`. Step 7's "frame round-trip and enum audit" requirement is therefore already satisfied for the mirrored types — **extend `mirror.rs` when you add anything to the wire, and do not duplicate those tests in `nbe-engine`.** What remains for this prompt is the engine's *behaviour*: clock math, directive application ordering, resync handling, watchdog.
+
+Add the dependency: `nbe-protocol = { path = "../nbe-protocol" }`.
+
 ## Step 2: Connection discipline
 
 - The WebSocket client runs on its own tokio task. The master clock and telemetry run on theirs. Per Section 7.13, control-plane I/O MUST never block the (future) render loop — structure now so it can't later.
@@ -64,7 +83,7 @@ A bounded, fire-and-forget bridge plus an engine that reconnects means directive
 
 ## Step 3a: Pin the wire frame schemas (addendum §1.1)
 
-These frames are a separate protocol layered on the same WebSocket connection — they are NOT the Section 5.4 command envelope. Define Rust types (serde) for each and round-trip test serialize/deserialize against JSON.
+These frames are a separate protocol layered on the same WebSocket connection — they are NOT the Section 5.4 command envelope. **The Rust types already exist in `crates/nbe-protocol` (Step 1a); this section documents the contract they implement.** Read it to know what the bytes mean, not to re-declare them.
 
 - **Server → engine directive frame:** `{ "v": "0.3", "kind": "directive", "seq": 91, "stateVersion": 413, "command": "view.take", "target": {}, "payload": {} }`. `target` is the resolved references object, `payload` is command-specific.
 - **`seq` semantics (pin these, do not leave ambiguous):**
@@ -134,7 +153,7 @@ Work through the addendum's spec gaps and state, in the completion message, whet
 - Implements a workaround (and documents it), or
 - Flags it as **not in scope for this prompt; requires spec revision.** Specifically weigh:
   - Nested `sequenceRef` resolution (no registry in the v0.3 manifest) — out of scope: a schema change is spec work, deferred to v0.4. SPEC §16.4 records the disposition; do not invent a nesting convention.
-  - `crates/nbe-protocol` status: mirror the wire protocol with a Rust enum audit, or flag for deletion. **Decide this before writing any Rust frame types** — it determines whether they live in `nbe-protocol` or `nbe-engine`.
+  - `crates/nbe-protocol` status — **DECIDED: mirror.** See Step 1a; the crate is populated and audited. Do not define frame types in `nbe-engine`.
 
 Gaps closed since this prompt was written, listed so they are not re-litigated:
 
