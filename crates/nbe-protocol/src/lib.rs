@@ -349,6 +349,46 @@ pub struct EngineTelemetry {
     pub master_clock_drift_ms: f64,
     pub fallback_active: bool,
     pub degradation_rung: u32,
+    /// The **effective** profile from the startup probe, capped by the
+    /// manifest's requested profile (SPEC §10.1.1, §10.5). `None` before the
+    /// probe has run — the control plane then reports the requested profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_profile: Option<QualityProfile>,
+}
+
+/// SPEC §10.5 quality profiles, in ascending capability order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityProfile {
+    Potato,
+    Consumer,
+    Pro,
+    Reference,
+}
+
+impl QualityProfile {
+    /// Every profile, ascending. Audited against the manifest schema enum.
+    pub const ALL: &'static [QualityProfile] = &[
+        QualityProfile::Potato,
+        QualityProfile::Consumer,
+        QualityProfile::Pro,
+        QualityProfile::Reference,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QualityProfile::Potato => "potato",
+            QualityProfile::Consumer => "consumer",
+            QualityProfile::Pro => "pro",
+            QualityProfile::Reference => "reference",
+        }
+    }
+
+    /// The effective profile never exceeds what the show requested
+    /// (SPEC §10.1.1): fast hardware does not promote a `consumer` show.
+    pub fn capped_by(self, requested: QualityProfile) -> QualityProfile {
+        self.min(requested)
+    }
 }
 
 /// Why the engine is asking for a snapshot (SPEC 5.9.3).

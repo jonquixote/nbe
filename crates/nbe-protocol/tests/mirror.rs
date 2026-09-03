@@ -184,6 +184,7 @@ fn render_channel_frames_round_trip() {
             master_clock_drift_ms: 0.2,
             fallback_active: false,
             degradation_rung: 0,
+            quality_profile: Some(QualityProfile::Consumer),
         },
     });
     round_trip(&PushFrame::StateChange {
@@ -326,6 +327,75 @@ fn rust_and_typescript_agree_on_the_error_registry() {
     assert_eq!(
         ours, ts_codes,
         "Rust and TypeScript error registries diverged"
+    );
+}
+
+#[test]
+fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
+    // The frame-kind audit below does not look inside the frames. Telemetry is
+    // the frame most likely to grow a field on one side only (Prompt 04 adds
+    // qualityProfile; 05 will add decodeSessions values, 09/10 the output
+    // fields), so audit its key set directly.
+    let sample = EngineTelemetry {
+        master_clock_frame: 0,
+        dropped_frames_total: 0,
+        render_gpu_time_ms: 0.0,
+        decode_sessions: 0,
+        vram_used_mib: 0.0,
+        texture_cache_used_mib: 0.0,
+        stream_buffer_ms: 0.0,
+        record_space_mib: 0.0,
+        master_clock_drift_ms: 0.0,
+        fallback_active: false,
+        degradation_rung: 0,
+        quality_profile: Some(QualityProfile::Consumer),
+    };
+    let value = serde_json::to_value(&sample).expect("serializes");
+    let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();
+
+    let ts = ts_protocol();
+    let start = ts
+        .find("EngineTelemetryFrameSchema")
+        .expect("engine telemetry schema present");
+    let end = ts[start..].find(".strict()").expect("schema terminates") + start;
+    let block = &ts[start..end];
+    for field in &ours {
+        assert!(
+            block.contains(&format!("{field}:")),
+            "TypeScript engineTelemetry has no `{field}` field"
+        );
+    }
+}
+
+#[test]
+fn quality_profile_matches_the_manifest_schema_enum() {
+    // SPEC §10.5 and schemas/manifest.v0.3.json must agree on the spelling.
+    let schema = std::fs::read_to_string(repo_root().join("schemas/manifest.v0.3.json"))
+        .expect("schema is readable");
+    let schema: serde_json::Value = serde_json::from_str(&schema).expect("schema parses");
+    let declared: BTreeSet<String> = schema["properties"]["qualityProfile"]["enum"]
+        .as_array()
+        .expect("qualityProfile enum present")
+        .iter()
+        .map(|v| v.as_str().expect("string").to_string())
+        .collect();
+    let ours: BTreeSet<String> = QualityProfile::ALL
+        .iter()
+        .map(|p| p.as_str().to_string())
+        .collect();
+    assert_eq!(ours, declared);
+}
+
+#[test]
+fn effective_quality_profile_never_exceeds_the_requested_one() {
+    // SPEC §10.1.1: fast hardware does not promote a `consumer` show.
+    assert_eq!(
+        QualityProfile::Reference.capped_by(QualityProfile::Consumer),
+        QualityProfile::Consumer
+    );
+    assert_eq!(
+        QualityProfile::Potato.capped_by(QualityProfile::Reference),
+        QualityProfile::Potato
     );
 }
 

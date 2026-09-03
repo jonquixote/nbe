@@ -317,6 +317,59 @@ async function fetchStatus(): Promise<Record<string, unknown>> {
 }
 
 // ---------------------------------------------------------------------------
+// §10.1.1 qualityProfile: effective (engine) over requested (manifest)
+// ---------------------------------------------------------------------------
+
+test("qualityProfile reports the engine's effective profile, falling back to the manifest's", async () => {
+  const ws = conn("admin", ADMIN);
+  await connect(ws);
+  const ticks = collect(ws, "telemetry");
+
+  // Requested profile, with no engine report yet.
+  state.qualityProfile = "pro";
+  const sub = await send(ws, "system.telemetry.subscribe", { intervalMs: 100 });
+  assert.equal(sub.status, "ok");
+  await until(() => ticks.length >= 1, 2000);
+  assert.equal(
+    (ticks.at(-1)!.data as Record<string, unknown>).qualityProfile,
+    "pro",
+    "with no engine report the control plane reports what the show asked for",
+  );
+
+  // A render node reports a lower effective profile; it wins.
+  const render = conn("render", RENDER);
+  await connect(render);
+  render.send(
+    JSON.stringify({
+      v: "0.3",
+      kind: "engineTelemetry",
+      ts: Date.now(),
+      masterClockFrame: 10,
+      droppedFramesTotal: 0,
+      renderGpuTimeMs: 4.2,
+      decodeSessions: 0,
+      vramUsedMib: 100,
+      textureCacheUsedMib: 0,
+      streamBufferMs: 0,
+      recordSpaceMib: 0,
+      masterClockDriftMs: 0,
+      fallbackActive: false,
+      degradationRung: 0,
+      qualityProfile: "consumer",
+    }),
+  );
+  const before = ticks.length;
+  await until(
+    () =>
+      ticks.length > before &&
+      (ticks.at(-1)!.data as Record<string, unknown>).qualityProfile === "consumer",
+    2000,
+  );
+  ws.close();
+  render.close();
+});
+
+// ---------------------------------------------------------------------------
 // §10.4 status completeness
 // ---------------------------------------------------------------------------
 

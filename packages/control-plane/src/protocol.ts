@@ -388,6 +388,13 @@ export const EngineTelemetryFrameSchema = z
     masterClockDriftMs: z.number(),
     fallbackActive: z.boolean(),
     degradationRung: z.number().int(),
+    /**
+     * The effective profile from the engine's startup probe (SPEC §10.5),
+     * capped by the manifest's requested profile (§10.1.1). Optional: absent
+     * before the probe has run, in which case the control plane reports the
+     * requested profile.
+     */
+    qualityProfile: z.enum(["potato", "consumer", "pro", "reference"]).optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

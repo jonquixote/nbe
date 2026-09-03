@@ -67,7 +67,10 @@ export function buildTick(
     streamState: state.streamState,
     recordState: state.recordState,
     automationHold: state.automationHold,
-    qualityProfile: null,
+    // SPEC §10.1.1: the engine's probed (effective) profile wins while its
+    // report is fresh; otherwise the manifest's requested profile is the only
+    // honest answer the control plane has.
+    qualityProfile: f?.qualityProfile ?? state.qualityProfile,
     engineConnected: engineFresh,
     // Deprecation warnings are per-subscriber: the server fans each accepted
     // deprecated command into every subscriber's own cursor and fills this in.

@@ -1565,8 +1565,17 @@ Two processes hold the truth for different fields, and the control plane is the 
 
 | Owner | Fields |
 |---|---|
-| Control plane | `viewItem`, `previewItem`, `automationHold`, `qualityProfile`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung` |
+| Control plane | `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective) |
+
+**`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
+
+| Source | Meaning |
+|---|---|
+| `manifest.qualityProfile` | The **requested** profile — what the show asks for. |
+| The render node's startup probe (Section 10.5) | The **effective** profile — what this hardware can actually sustain. |
+
+The effective profile MUST NOT exceed the requested one: a show asking for `consumer` never gets promoted to `pro` because the machine is fast. The engine reports the effective profile in `engineTelemetry`, and the control plane emits that value when the engine report is fresh, falling back to the requested profile when it is stale or absent (with `engineConnected: false` already signalling why). A control plane running with no render node reports what the show asked for, which is the only honest answer available to it.
 
 The render node reports its fields over `engineTelemetry` (Section 5.9.3) at 1 Hz. The control plane caches the last report with its arrival time and merges. When no report has arrived within the staleness threshold (default 2 seconds), the engine-owned fields report stub values and the tick carries `engineConnected: false`.
 
@@ -1619,6 +1628,8 @@ The engine probes hardware at startup and selects a named quality profile:
 ```text
 potato | consumer | pro | reference
 ```
+
+The probe selects the **effective** profile, capped by the manifest's requested profile (Section 10.1.1). The engine reports it in `engineTelemetry`; the control plane does not second-guess it.
 
 Normative yield order under sustained load:
 
