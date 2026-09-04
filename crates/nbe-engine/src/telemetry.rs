@@ -12,7 +12,9 @@ use nbe_protocol::{EngineFrame, EngineTelemetry};
 pub fn build_tick(state: &EngineState) -> EngineFrame {
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
-        dropped_frames_total: 0,
+        dropped_frames_total: state
+            .dropped_frames_total
+            .load(std::sync::atomic::Ordering::SeqCst),
         render_gpu_time_ms: 0.0,
         decode_sessions: 0,
         vram_used_mib: 0.0,
@@ -23,11 +25,10 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
         fallback_active: state
             .fallback_active
             .load(std::sync::atomic::Ordering::SeqCst),
-        degradation_rung: 0,
-        // The effective profile comes from the wgpu adapter probe, which
-        // arrives with the compositor in Prompt 04. Until then the control
-        // plane reports the manifest's requested profile (SPEC §10.1.1).
-        quality_profile: None,
+        degradation_rung: state.degradation_rung(),
+        // Effective probe result from GPU init, capped by the manifest's
+        // requested profile. The engine is the engine — it is authoritative.
+        quality_profile: *state.quality_profile.lock().unwrap(),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

@@ -16,6 +16,18 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: GPU/render tests actually ran (Prompt 04)
+        # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
+        # If zero tests ran, the render gate is silently absent and CI passes
+        # with no GPU exercise.
+        run: |
+          out=$(cargo test -p nbe-engine --test prompt04 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/.*: ([0-9]+) passed.*/\1/')
+          if [ -z "$ran" ] || [ "$ran" -eq 0 ]; then
+            echo "expected at least one prompt04 test to run"; exit 1
+          fi
       - name: v0.3 fixture passes
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show_v0.3
