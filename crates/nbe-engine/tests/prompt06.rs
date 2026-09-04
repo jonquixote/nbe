@@ -1247,62 +1247,30 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
     );
 }
 
-#[test]
-fn the_engine_binary_actually_starts_the_audio_driver() {
-    // This spawns the real binary and waits for the driver to announce itself.
-    //
-    // The previous version of this gate searched main.rs for the text
-    // `audio_driver::spawn(`. An independent pass defeated it four ways — the
-    // call inside a string literal, inside `if false`, behind `#[cfg(any())]`,
-    // behind `#[cfg(test)]` — each leaving 116/116 green, clippy clean, and
-    // the engine never starting the driver. A substring test over source
-    // cannot tell a reachable call from a token sequence, so it is gone. This
-    // observes the running process instead, and the only way to pass it is to
-    // start the driver.
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nbe-engine"))
-        .env("NBE_RENDER_TOKEN", "test-token")
-        .env("NBE_CP_URL", "ws://127.0.0.1:1/nbe/v0.3") // nothing listening, by design
-        .env("RUST_LOG", "info")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the engine binary must be runnable");
-
-    let mut out = child.stdout.take().expect("stdout piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        let mut chunk = [0u8; 1024];
-        loop {
-            match out.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                    if buf.contains("audio driver started") {
-                        let _ = tx.send(true);
-                        return;
-                    }
-                }
-            }
-        }
-        let _ = tx.send(false);
-    });
-
-    let started = rx
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .unwrap_or(false);
-    let _ = child.kill();
-    let _ = child.wait();
-
-    assert!(
-        started,
-        "the engine binary must start the audio driver; without it the audio \
-         graph is a mechanism nothing drives (SPEC §8.9)"
-    );
-}
+// The engine-binary wiring gate used to live here. It is gone, deliberately.
+//
+// Three versions were written and three were defeated by an independent pass:
+//   v1  searched main.rs for `audio_driver::spawn(` as source text — beaten by
+//       a comment, a string literal, `if false`, and `#[cfg(any())]`.
+//   v2  logged "audio driver started" from `spawn` — beaten by replacing the
+//       spawn with that one `tracing::info!` line. 117/117 green, no driver.
+//   v3  logged "audio driver cycling" with a rendered-sample count, from
+//       inside the run loop after real work — beaten by writing
+//       `tracing::info!(rendered_samples = 1600, "audio driver cycling")`.
+//
+// The lesson is structural, not incremental: text a process prints is free to
+// forge, so a gate that reads source text or log text can never prove that
+// work happened. v3 failed for the same reason v1 did.
+//
+// The gate now lives in [RI-1]'s dress rehearsal
+// (`packages/control-plane/src/dress-rehearsal.test.ts`), which observes an
+// EFFECT across the process boundary: `busPeakDbfs` arriving in telemetry from
+// this binary over the real protocol. `EngineState::bus_peaks` is empty at
+// construction and only `AudioDriver::publish` — reachable solely from
+// `cycle()` — ever fills it. Faking that means running the driver.
+//
+// A defeatable gate is worse than none: it reports confidence it has not
+// earned, which is the exact failure this review exists to find.
 
 #[test]
 fn the_drain_is_bounded_so_a_flood_cannot_starve_a_block() {

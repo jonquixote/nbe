@@ -189,12 +189,6 @@ pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHand
         Box::new(NullSink::new(block_frames)),
         house_rate,
     );
-    // Logged so the gate on this wiring can be a real one: a test spawns the
-    // engine binary and waits for this line. The previous gate searched
-    // main.rs for the call as text, which an independent pass defeated four
-    // ways (a string literal, `if false`, `#[cfg(any())]`, `#[cfg(test)]`) —
-    // each leaving the suite green with the driver never started.
-    tracing::info!("audio driver started");
     tokio::spawn(run(driver, state))
 }
 
@@ -207,6 +201,7 @@ pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHand
 pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
     let block = driver.block_duration();
     let mut next = std::time::Instant::now();
+    let mut cycles: u64 = 0;
     loop {
         let now = std::time::Instant::now();
         if next > now {
@@ -214,6 +209,18 @@ pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
         }
         let master_frame = state.master_frame().unwrap_or(0);
         driver.cycle(master_frame);
+
+        // An operational breadcrumb, not a gate. Three test gates were built
+        // on log lines like this one and all three were defeated by writing
+        // the line by hand — see the note in tests/prompt06.rs. The wiring is
+        // gated by [RI-1]'s dress rehearsal, which observes telemetry.
+        cycles += 1;
+        if cycles == 1 {
+            tracing::info!(
+                rendered_samples = driver.graph.rendered_samples(),
+                "audio driver cycling"
+            );
+        }
         next += block;
         // Fell behind: resynchronize rather than spiral, and count the gap.
         let now = std::time::Instant::now();

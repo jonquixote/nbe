@@ -279,6 +279,28 @@ test("[RI-1] step 2: show.load, and a render node acknowledges it", async () => 
   );
 });
 
+test("[RI-1] the engine binary is actually running its audio driver", async () => {
+  // This is the wiring gate that three Rust tests failed to be. It observes an
+  // EFFECT, not text: `EngineState::bus_peaks` is empty at construction and is
+  // only ever written by `AudioDriver::publish`, reachable solely from
+  // `cycle()`. So bus keys arriving in telemetry from a separately-spawned
+  // binary, over the real protocol, cannot be forged by printing a line.
+  const tick = await untilTelemetry("a telemetry tick carrying bus peaks", (t) => {
+    const peaks = (t["data"] as Record<string, unknown> | undefined)?.["busPeakDbfs"] as
+      | Record<string, number>
+      | undefined;
+    return peaks !== undefined && Object.keys(peaks).length > 0;
+  });
+  const peaks = (tick["data"] as Record<string, unknown>)["busPeakDbfs"] as Record<
+    string,
+    number
+  >;
+  assert.ok(
+    Object.keys(peaks).length >= 8,
+    `the driver must publish every §8.1 bus, saw ${JSON.stringify(Object.keys(peaks))}`,
+  );
+});
+
 test("[RI-1] step 3: show.start runs the clock", async () => {
   await ok("show.start", { startClock: true });
   assert.ok(
