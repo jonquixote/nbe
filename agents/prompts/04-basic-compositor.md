@@ -66,9 +66,9 @@ Scope note on vocabulary: `slate` is an **Item** kind (`Item.kind`); `clip`, `gr
 - `mix`: whole-frame crossfade between outgoing and incoming bus frames over `durationFrames` (default 15), quantized to master-clock boundaries.
 - State-diff precompute (move-class transitions) is post-MVP. Do not build it here.
 
-## Step 5: The overlay level
+## Step 5: The overlay level — DEFERRED
 
-Implement `View = overlay(transition(sceneA, sceneB))` (SPEC §7.10). Manifest-declared overlay elements composite after the transition and persist across it. Image and graphic overlay elements only; the ticker arrives in Prompt 07.
+`View = overlay(transition(sceneA, sceneB))` (SPEC §7.10) is **deferred out of Prompt 04**. There are no overlay sources to composite until lower-thirds and the ticker land in Prompt 07, so building the overlay level here would ship an untestable pass with nothing to draw into it. The composition order stays normative in the spec; **Prompt 07 owns implementing it**, and its first overlay element is the acceptance case.
 
 ## Step 6: Fallback, rendered
 
@@ -85,9 +85,9 @@ The fallback slate is **already resident in memory** after `show.load` (`EngineS
 
 Implement rung 0 (healthy) and rung 1 (preview frame rate halves) of the SPEC §10.5 ladder. Under sustained missed deadlines the preview degrades first; **the View is never degraded**. Report `degradationRung` in telemetry. The remaining rungs land with their features.
 
-## Step 9: Output targets
+## Step 9: Output targets — DEFERRED
 
-Render to local display per SPEC §9.1: a wgpu surface showing View full-screen, plus a preview display (second window or split view). No encoder — record and stream are Prompts 09 and 10.
+A wgpu display surface is **deferred out of Prompt 04**. Render nodes are headless: the View texture's real consumer is the encoder path, which arrives with recording (Prompt 09) and streaming (Prompt 10), and operators watch the View over WHEP per SPEC §5.8 rather than at a window on the render machine. Prompt 04 renders to textures with readback, which is what both the encoder and the tests need. **Prompt 09 owns the first real consumer of the View target**; a local monitor window, if ever wanted, belongs with the operator shell in Prompt 13.
 
 ## Step 10: Tests
 

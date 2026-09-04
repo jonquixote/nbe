@@ -7,6 +7,7 @@ use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,19 +32,38 @@ async fn main() -> anyhow::Result<()> {
         telemetry_interval_ms: 1000,
     };
 
-    // The render loop exists the moment GPU init succeeds. Start it as
-    // its own task before the channel so a control-plane outage cannot delay
-    // first-frame warm-up. It ticks only while the master clock is RUNNING.
-    let mut render = RenderLoop::new(state.clone(), house_rate, None).await?;
+    // The render loop runs on its own task, driven by master-clock frame
+    // boundaries — not a spin. It renders even while the clock is STOPPED so
+    // the operator always has a picture (the fallback slate).
+    let mut render = RenderLoop::new(state.clone(), None).await?;
     let render_state = state.clone();
     tokio::spawn(async move {
+        let frame_budget = Duration::from_secs_f64(1.0 / house_rate as f64);
+        let mut next_boundary = Instant::now();
+        let mut stopped_frame: u64 = 0;
         loop {
-            if render_state.is_running() {
-                if let Err(e) = render.next_frame().await {
-                    tracing::error!(err = %e, "render frame failed");
-                }
+            let now = Instant::now();
+            if next_boundary > now {
+                tokio::time::sleep(next_boundary - now).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let (frame, deadline) = match render_state.master_frame() {
+                // RUNNING: the master clock owns the frame number and the
+                // deadline is real.
+                Some(f) => (f, Some(frame_budget)),
+                // STOPPED: still render, but a missed deadline is meaningless
+                // when no show clock is running, so nothing is counted.
+                None => {
+                    stopped_frame = stopped_frame.wrapping_add(1);
+                    (stopped_frame, None)
+                }
+            };
+            let _ = render.render_frame(frame, deadline);
+            next_boundary += frame_budget;
+            // If we fell far behind, resynchronize rather than spiral.
+            let now = Instant::now();
+            if next_boundary < now {
+                next_boundary = now + frame_budget;
+            }
         }
     });
 

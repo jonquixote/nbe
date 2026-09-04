@@ -39,6 +39,51 @@ impl Gpu {
         })
     }
 
+    /// A render target / sampled texture in the engine's working format.
+    pub fn make_texture(&self, width: u32, height: u32, label: &str) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
+    /// Upload RGBA8 pixels into a texture. Called at load time, never in the
+    /// per-frame path (SPEC §7.13).
+    pub fn upload_rgba(&self, tex: &wgpu::Texture, width: u32, height: u32, rgba: &[u8]) {
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     /// Copy a 32-bit RGBA texture back to CPU memory.
     /// Caller is responsible for awaiting completion (poll + map callback).
     pub async fn readback_rgba(&self, tex: &wgpu::Texture) -> Vec<u8> {

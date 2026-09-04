@@ -32,6 +32,19 @@ pub struct EngineState {
     pub view_item: std::sync::Mutex<Option<String>>,
     /// The armed preview item, for the preview bus.
     pub preview_item: std::sync::Mutex<Option<String>>,
+    /// The indexed package: scenes, items, decoded images (Prompt 04).
+    pub package: Mutex<Option<crate::scene::PackageIndex>>,
+    /// Bumped on every successful `show.load` so the renderer knows to
+    /// re-upload its texture cache at a load boundary, never per frame.
+    pub package_generation: AtomicU64,
+    /// The running View transition, if any (Prompt 04 Step 2).
+    pub transition: Mutex<Option<crate::scene::Transition>>,
+    /// View frames not submitted by their deadline (SPEC §10.2).
+    pub dropped_frames_total: AtomicU64,
+    /// Preview misses: logged, never counted as dropped frames.
+    pub preview_missed: AtomicU64,
+    /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
+    degradation_rung: AtomicU64,
 }
 
 pub struct FallbackSlate {
@@ -51,6 +64,53 @@ impl EngineState {
             quality_profile: std::sync::Mutex::new(None),
             view_item: std::sync::Mutex::new(None),
             preview_item: std::sync::Mutex::new(None),
+            package: Mutex::new(None),
+            package_generation: AtomicU64::new(0),
+            transition: Mutex::new(None),
+            dropped_frames_total: AtomicU64::new(0),
+            preview_missed: AtomicU64::new(0),
+            degradation_rung: AtomicU64::new(0),
+        }
+    }
+
+    pub fn rung(&self) -> crate::render::Rung {
+        match self.degradation_rung.load(Ordering::SeqCst) {
+            0 => crate::render::Rung::Nominal,
+            _ => crate::render::Rung::PreviewHalfRate,
+        }
+    }
+
+    pub fn set_rung(&self, rung: crate::render::Rung) {
+        self.degradation_rung.store(rung as u64, Ordering::SeqCst);
+    }
+
+    pub fn degradation_rung(&self) -> u32 {
+        self.degradation_rung.load(Ordering::SeqCst) as u32
+    }
+
+    /// The slate the View shows when the fallback engages. Decoded from the
+    /// resident bytes Prompt 03 loaded; an asset that will not decode yields a
+    /// generated slate, because "no picture" is not an option on air
+    /// (SPEC §7.14).
+    pub fn fallback_image(&self) -> crate::scene::DecodedImage {
+        let guard = self.fallback.lock().unwrap();
+        let decoded = guard
+            .as_ref()
+            .and_then(|f| crate::scene::DecodedImage::decode(&f.bytes));
+        match decoded {
+            Some(img) => img,
+            None => {
+                if guard.is_some() {
+                    tracing::warn!(
+                        "fallback asset is not a decodable image; using a generated slate"
+                    );
+                }
+                crate::scene::DecodedImage::generated_slate(
+                    crate::render::VIEW_W,
+                    crate::render::VIEW_H,
+                    [191, 89, 13, 255],
+                )
+            }
         }
     }
 

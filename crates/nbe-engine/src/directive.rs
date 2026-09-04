@@ -97,7 +97,33 @@ impl DirectiveHandler {
         *self.state.package_path.lock().unwrap() = Some(path.to_string());
         let fallback = load_fallback_asset(path)?;
         *self.state.fallback.lock().unwrap() = Some(fallback);
-        info!(path, "show.load: package ready, fallback resident");
+
+        // Prompt 04: index the package and decode its image assets here, at
+        // load time — never in the render loop (SPEC §7.13). Validity was
+        // already decided by the control plane's preflight.
+        let root = std::path::Path::new(path);
+        let manifest: serde_json::Value = serde_json::from_reader(
+            std::fs::File::open(root.join("manifest.json"))
+                .map_err(|e| DirectiveError::Invalid(format!("cannot open manifest: {e}")))?,
+        )
+        .map_err(|e| DirectiveError::Invalid(format!("manifest not valid JSON: {e}")))?;
+        let index = crate::scene::PackageIndex::build(&manifest, root);
+
+        // Step 5: the manifest's requested profile caps the probe result.
+        // Read the probe into a local first: a guard held in an `if let`
+        // scrutinee lives for the whole block, and re-locking it inside would
+        // deadlock.
+        let probed = *self.state.quality_profile.lock().unwrap();
+        if let (Some(requested), Some(probed)) = (index.requested_quality, probed) {
+            *self.state.quality_profile.lock().unwrap() = Some(probed.capped_by(requested));
+        }
+
+        *self.state.package.lock().unwrap() = Some(index);
+        self.state.package_generation.fetch_add(1, Ordering::SeqCst);
+        *self.state.view_item.lock().unwrap() = None;
+        *self.state.preview_item.lock().unwrap() = None;
+        *self.state.transition.lock().unwrap() = None;
+        info!(path, "show.load: package indexed, fallback resident");
         Ok(())
     }
 
@@ -122,7 +148,31 @@ impl DirectiveHandler {
             .and_then(|v| v.as_str())
             .or_else(|| d.target.get("sceneId").and_then(|v| v.as_str()));
         if let Some(r) = item_ref {
-            // Record the visible item so the render loop can resolve it (04).
+            // Prompt 04 Step 2: the transition the control plane already
+            // resolved (SPEC §16.2 — never re-resolved here) takes effect on
+            // the NEXT frame boundary, never mid-frame.
+            let previous = self.state.view_item.lock().unwrap().clone();
+            let kind = match d.payload.get("transition").and_then(|v| v.as_str()) {
+                Some("mix") => crate::scene::TransitionKind::Mix,
+                _ => crate::scene::TransitionKind::Cut,
+            };
+            let transition_frames = d
+                .payload
+                .get("durationFrames")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(if kind == crate::scene::TransitionKind::Mix {
+                    15
+                } else {
+                    0
+                });
+            let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+            *self.state.transition.lock().unwrap() = Some(crate::scene::Transition {
+                from_item: previous,
+                to_item: r.to_string(),
+                kind,
+                duration_frames: transition_frames,
+                start_frame,
+            });
             *self.state.view_item.lock().unwrap() = Some(r.to_string());
             let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
