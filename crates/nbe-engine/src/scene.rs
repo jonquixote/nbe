@@ -53,6 +53,14 @@ pub enum LayerSource {
     Solid([f32; 4]),
     /// A decoded image, addressed by asset id.
     Image(String),
+    /// A decoded video asset, addressed by asset id. Which frame is shown is
+    /// a function of the master clock, resolved by the render loop
+    /// (SPEC §12.1) — the layer only names the source.
+    Video {
+        asset_id: String,
+        /// Whether the element loops (`videoLoop`) or plays once (`clip`).
+        looping: bool,
+    },
 }
 
 /// One composited element, already ordered and resolved.
@@ -92,6 +100,11 @@ pub struct PackageIndex {
     pub asset_kind: HashMap<String, String>,
     /// The manifest's requested quality profile (SPEC §10.1.1).
     pub requested_quality: Option<nbe_protocol::QualityProfile>,
+    /// asset id → source path, for assets decoded after indexing (video).
+    pub asset_source: HashMap<String, String>,
+    /// asset id → declared `loop.periodFrames` (SPEC §12.9: the manifest's
+    /// declaration takes precedence over the decoded frame count).
+    pub declared_loop_period: HashMap<String, u32>,
 }
 
 /// One element, reduced to what this prompt can draw.
@@ -134,8 +147,17 @@ impl PackageIndex {
                 continue;
             };
             idx.asset_kind.insert(id.to_string(), kind.to_string());
+            idx.asset_source.insert(id.to_string(), src.to_string());
+            if let Some(period) = asset
+                .get("loop")
+                .and_then(|l| l.get("periodFrames"))
+                .and_then(|v| v.as_u64())
+            {
+                idx.declared_loop_period
+                    .insert(id.to_string(), period as u32);
+            }
             if kind != "image" {
-                continue; // video decode is Prompt 05; a scope boundary, not a fault
+                continue; // video is decoded by `video.rs`, not here
             }
             match std::fs::read(package_root.join(src)).ok().as_deref() {
                 Some(bytes) => match DecodedImage::decode(bytes) {
@@ -170,6 +192,34 @@ impl PackageIndex {
 
         index_sequence(manifest.get("rundown"), &mut idx);
         idx
+    }
+
+    /// Which rundown items would show this asset: asset → elements using it →
+    /// scenes containing those elements → items referencing those scenes.
+    ///
+    /// A decode failure has to be attributed to something the control plane's
+    /// §17.3 machine tracks. That machine tracks Items; an asset id is
+    /// unresolvable to it, so a fault reported against an asset cannot drive
+    /// anything to `ERROR`.
+    pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
+        let scenes: Vec<&String> = self
+            .scenes
+            .iter()
+            .filter(|(_, elements)| {
+                elements
+                    .iter()
+                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut items: Vec<String> = self
+            .item_scene
+            .iter()
+            .filter(|(_, scene)| scenes.contains(scene))
+            .map(|(item, _)| item.clone())
+            .collect();
+        items.sort();
+        items
     }
 
     /// Resolve one item reference to drawable layers. An item that resolves to
@@ -212,13 +262,13 @@ impl PackageIndex {
                     Some("image") if self.images.contains_key(asset) => {
                         LayerSource::Image(asset.to_string())
                     }
-                    Some("video") | Some("alphaVideo") => {
-                        // Prompt 05 owns video. A scope boundary, not a decode
-                        // fault: reporting it as one would drive the item to
-                        // ERROR in the control plane's §17.3 machine.
-                        tracing::info!(element = %e.id, asset, "video element unsupported until Prompt 05");
-                        return None;
-                    }
+                    // Prompt 05: video is drawn. The scope boundary Prompt 04
+                    // drew is gone; a genuine decode failure is now a fault the
+                    // caller reports as `itemEvent: decodeError`.
+                    Some("video") | Some("alphaVideo") => LayerSource::Video {
+                        asset_id: asset.to_string(),
+                        looping: e.kind == "videoLoop",
+                    },
                     _ => return None,
                 }
             }
@@ -260,8 +310,17 @@ fn index_sequence(sequence: Option<&serde_json::Value>, idx: &mut PackageIndex) 
 }
 
 fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
-    let id = e.get("id").and_then(|v| v.as_str())?.to_string();
-    let kind = e.get("kind").and_then(|v| v.as_str())?.to_string();
+    // Lenient on air, but never silent: an element dropped here is a piece of
+    // the picture that will not be there, and someone will be looking at a
+    // black frame wondering why.
+    let Some(id) = e.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+        tracing::warn!(element = %e, "scene element has no id; skipping");
+        return None;
+    };
+    let Some(kind) = e.get("kind").and_then(|v| v.as_str()).map(str::to_string) else {
+        tracing::warn!(element = %id, "scene element has no kind; skipping");
+        return None;
+    };
     let z = e.get("z").and_then(|v| v.as_i64()).unwrap_or(0);
     let visible = e.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
     let opacity = e.get("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
@@ -331,6 +390,9 @@ pub enum TransitionKind {
 #[derive(Debug, Clone)]
 pub struct Transition {
     pub from_item: Option<String>,
+    /// The master frame the OUTGOING item went on air. A mix renders both
+    /// scenes, and each must be read at its own point in its own timeline.
+    pub from_start_frame: u64,
     pub to_item: String,
     pub kind: TransitionKind,
     pub duration_frames: u64,

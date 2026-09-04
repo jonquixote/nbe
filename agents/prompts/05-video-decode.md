@@ -121,6 +121,25 @@ Headless, using the generated fixtures. Each test names the production path it c
 
 The existing `rust` job covers this crate. It must stay green with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`. Extend the fixture gates so the new seeded-failure fixtures assert **exact** exit codes and report contents, in the style of the existing v0.2/v0.3 gates. Both CI jobs now echo their test summaries in a collapsed group — that output is the audit trail your report quotes.
 
+## Deferred out of Prompt 05, recorded here
+
+**§12.8 streaming read-ahead thread.** The §12.8 *policy* is implemented — the
+cache plans `Streaming` when a loop exceeds its budget, computes the mandated
+`max(2 × GOP, 60)` read-ahead window, and holds the last resident frame rather
+than blocking the render thread. The background refill thread that keeps that
+window ahead of the playhead is **not** built: a streamed loop currently shows
+its resident window and then holds.
+
+*Trigger condition:* this is the first lever to pull when streamed loops miss
+deadlines. Until a show actually carries a loop larger than its budget, a
+refill thread would be untested machinery coordinating decode with GPU upload
+across threads — the kind of code that looks right and fails on air.
+
+**Item start frame across a resync.** SPEC §5.9.4's snapshot names *what* is on
+air but not *since when*, so a resynced timed item resumes from its first frame
+rather than from where it actually was. Closing this needs a snapshot field
+(`viewItemStartFrame`), which is a spec revision, not prompt work.
+
 ## Constraints
 
 **Forbidden changes:**

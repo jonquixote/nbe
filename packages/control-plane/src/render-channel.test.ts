@@ -37,7 +37,7 @@ function makePackage(): string {
   const dir = mkdtempSync(join(tmpdir(), "nbe-02c-"));
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "media", "fallback.png"), "png");
-  writeFileSync(join(dir, "media", "A1.mp4"), "mp4");
+  writeFileSync(join(dir, "media", "A1.png"), "png");
   writeFileSync(
     join(dir, "manifest.json"),
     JSON.stringify({
@@ -53,7 +53,10 @@ function makePackage(): string {
       qualityProfile: "consumer",
       assets: [
         { id: "fallback", kind: "image", source: "media/fallback.png" },
-        { id: "A1_clip", kind: "video", source: "media/A1.mp4" },
+        // An image, not video: these packages exercise the command bus, not
+        // media. Prompt 05 gave preflight real decode, so a placeholder file
+        // declared as video is now correctly rejected.
+        { id: "A1_clip", kind: "image", source: "media/A1.png" },
       ],
       scenes: [{ id: "SCN_A1", elements: [{ id: "main", kind: "clip", z: 1, assetId: "A1_clip" }] }],
       rundown: { id: "R", items: [{ id: "A1", kind: "sceneRef", sceneRef: "SCN_A1" }] },

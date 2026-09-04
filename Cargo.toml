@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/nbe-core",
+    "crates/nbe-decode",
     "crates/nbe-engine",
     "crates/nbe-preflight",
     "crates/nbe-protocol",
@@ -24,7 +25,13 @@ clap = { version = "4", features = ["derive"] }
 # jsonschema: add via `cargo add jsonschema --package nbe-core` (see agents/prompts/01-bootstrap-core-preflight.md)
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny`, not `forbid`: the render node needs Objective-C FFI to reach
+# VideoToolbox for hardware decode (Prompt 05), and `forbid` cannot be
+# relaxed even for a single module. The exception is exactly one crate —
+# `crates/nbe-decode` — whose `src/lib.rs` carries `#[allow(unsafe_code)]`
+# with its justification. Every other crate remains denied, and CI fails if
+# `allow(unsafe_code)` appears anywhere outside that crate.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

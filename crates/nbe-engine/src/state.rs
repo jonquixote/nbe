@@ -25,11 +25,21 @@ pub struct EngineState {
     pub fallback_active: AtomicBool,
     /// engine start time (telemetry)
     pub started_at: Instant,
-    /// The effective quality profile, set once by the Prompt 04 probe.
+    /// The effective quality profile: probe capped by request. Written only
+    /// by `publish_quality_profile`.
     pub quality_profile: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
+    /// What the hardware probe found (SPEC §10.5).
+    pub probed_quality: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
+    /// What the manifest asked for (SPEC §10.1.1).
+    pub requested_quality: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
     /// What the engine is showing on its view bus: the taken item's reference.
     /// Directive handlers update it; the render loop reads it.
     pub view_item: std::sync::Mutex<Option<String>>,
+    /// The master frame `view_item` went on air — SPEC §12.1's `t0`.
+    ///
+    /// Without this the compositor reads every clip at `frame` rather than
+    /// `frame - t0`, so a take at master frame N starts the clip N frames in.
+    pub view_item_start_frame: AtomicU64,
     /// The armed preview item, for the preview bus.
     pub preview_item: std::sync::Mutex<Option<String>>,
     /// The indexed package: scenes, items, decoded images (Prompt 04).
@@ -39,6 +49,10 @@ pub struct EngineState {
     pub package_generation: AtomicU64,
     /// The running View transition, if any (Prompt 04 Step 2).
     pub transition: Mutex<Option<crate::scene::Transition>>,
+    /// Decoded video assets for the loaded package (Prompt 05).
+    pub video: Mutex<crate::video::VideoLibrary>,
+    /// The decode-session pool; its counts are what telemetry reports.
+    pub sessions: crate::video::SessionPool,
     /// View frames not submitted by their deadline (SPEC §10.2).
     pub dropped_frames_total: AtomicU64,
     /// Preview misses: logged, never counted as dropped frames.
@@ -62,14 +76,63 @@ impl EngineState {
             fallback_active: AtomicBool::new(false),
             started_at: Instant::now(),
             quality_profile: std::sync::Mutex::new(None),
+            probed_quality: std::sync::Mutex::new(None),
+            requested_quality: std::sync::Mutex::new(None),
             view_item: std::sync::Mutex::new(None),
+            view_item_start_frame: AtomicU64::new(0),
             preview_item: std::sync::Mutex::new(None),
             package: Mutex::new(None),
             package_generation: AtomicU64::new(0),
             transition: Mutex::new(None),
+            video: Mutex::new(crate::video::VideoLibrary::default()),
+            sessions: crate::video::SessionPool::new(),
             dropped_frames_total: AtomicU64::new(0),
             preview_missed: AtomicU64::new(0),
             degradation_rung: AtomicU64::new(0),
+        }
+    }
+
+    /// Publish the effective quality profile: the probe result capped by the
+    /// manifest's request (SPEC §10.1.1).
+    ///
+    /// Both inputs live here, and the cap is applied at publish time rather
+    /// than at load time, so a later GPU re-init (device loss) that re-probes
+    /// cannot silently drop the cap.
+    pub fn publish_quality_profile(&self) {
+        let probed = *self.probed_quality.lock().unwrap();
+        let requested = *self.requested_quality.lock().unwrap();
+        let effective = match (probed, requested) {
+            (Some(p), Some(r)) => Some(p.capped_by(r)),
+            (Some(p), None) => Some(p),
+            _ => None,
+        };
+        *self.quality_profile.lock().unwrap() = effective;
+    }
+
+    /// Record what the hardware probe found, then republish.
+    pub fn set_probed_quality(&self, probed: nbe_protocol::QualityProfile) {
+        *self.probed_quality.lock().unwrap() = Some(probed);
+        self.publish_quality_profile();
+    }
+
+    /// Record what the manifest asked for, then republish.
+    pub fn set_requested_quality(&self, requested: Option<nbe_protocol::QualityProfile>) {
+        *self.requested_quality.lock().unwrap() = requested;
+        self.publish_quality_profile();
+    }
+
+    /// One consistent read of everything the renderer needs for a frame.
+    ///
+    /// Taken in one place so the View and Preview cannot disagree about which
+    /// item is on air, and so decode threads writing to this state cannot be
+    /// observed halfway.
+    pub fn frame_snapshot(&self) -> FrameSnapshot {
+        FrameSnapshot {
+            view_item: self.view_item.lock().unwrap().clone(),
+            view_item_start_frame: self.view_item_start_frame.load(Ordering::SeqCst),
+            preview_item: self.preview_item.lock().unwrap().clone(),
+            transition: self.transition.lock().unwrap().clone(),
+            fallback_active: self.fallback_active.load(Ordering::SeqCst),
         }
     }
 
@@ -139,6 +202,17 @@ impl EngineState {
     pub fn last_applied(&self) -> u64 {
         self.last_applied_state_version.load(Ordering::SeqCst)
     }
+}
+
+/// One frame's worth of show state, read once (Prompt 05 Step 8).
+#[derive(Debug, Clone)]
+pub struct FrameSnapshot {
+    pub view_item: Option<String>,
+    /// SPEC §12.1's `t0` for the View bus item.
+    pub view_item_start_frame: u64,
+    pub preview_item: Option<String>,
+    pub transition: Option<crate::scene::Transition>,
+    pub fallback_active: bool,
 }
 
 /// What the directive handler needs to emit back to the control plane.

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 nbe-core = { path = "../nbe-core" }
+nbe-decode = { path = "../nbe-decode" }
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

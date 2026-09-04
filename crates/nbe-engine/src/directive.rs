@@ -11,6 +11,10 @@ use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
+/// GOP length assumed when the manifest does not declare one; feeds the
+/// §12.8 read-ahead minimum.
+const DEFAULT_GOP_FRAMES: u32 = 30;
+
 #[derive(Debug, Error)]
 pub enum DirectiveError {
     #[error("no package loaded: {0}")]
@@ -109,14 +113,76 @@ impl DirectiveHandler {
         .map_err(|e| DirectiveError::Invalid(format!("manifest not valid JSON: {e}")))?;
         let index = crate::scene::PackageIndex::build(&manifest, root);
 
-        // Step 5: the manifest's requested profile caps the probe result.
-        // Read the probe into a local first: a guard held in an `if let`
-        // scrutinee lives for the whole block, and re-locking it inside would
-        // deadlock.
-        let probed = *self.state.quality_profile.lock().unwrap();
-        if let (Some(requested), Some(probed)) = (index.requested_quality, probed) {
-            *self.state.quality_profile.lock().unwrap() = Some(probed.capped_by(requested));
+        // Record what the show asked for; the cap is applied at publish time
+        // (SPEC §10.1.1), so the order of probe and load does not matter.
+        self.state.set_requested_quality(index.requested_quality);
+
+        // Prompt 05: decode the package's video assets here, at load time.
+        // A genuine decode failure IS a fault — unlike Prompt 04's scope
+        // boundary — and is reported as `itemEvent: decodeError` so the
+        // control plane can drive the item to ERROR (SPEC §5.9.3, §17.3).
+        let budget = crate::loop_cache::CacheBudget {
+            per_loop_mib: 1024,
+            total_mib: 4096,
+            recommended_working_set_mib: None,
+        };
+        let mut library = crate::video::VideoLibrary::default();
+        for (asset_id, kind) in &index.asset_kind {
+            if kind != "video" && kind != "alphaVideo" {
+                continue;
+            }
+            let Some(src) = index.asset_source.get(asset_id) else {
+                continue;
+            };
+            let declared = index.declared_loop_period.get(asset_id).copied();
+            match crate::video::load_video_asset(
+                asset_id,
+                &root.join(src),
+                &self.state.sessions,
+                budget,
+                declared,
+                DEFAULT_GOP_FRAMES,
+            ) {
+                Ok(asset) => {
+                    info!(
+                        asset = %asset_id,
+                        frames = asset.frames.len(),
+                        rate = asset.source_frame_rate,
+                        "video asset decoded"
+                    );
+                    library.assets.insert(asset_id.clone(), asset);
+                }
+                Err(e) => {
+                    // The full reason — path and platform error — stays in the
+                    // engine's log. The frame that crosses the render channel
+                    // carries a stable token instead, the same discipline the
+                    // control plane uses for auth failures (SPEC §5.3).
+                    tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
+                    library.failures.insert(asset_id.clone(), e.to_string());
+
+                    // `itemEvent` is addressed to a rundown Item, because that
+                    // is what the §17.3 state machine tracks. Reporting an
+                    // asset id here would produce a fault the control plane
+                    // cannot attribute to anything.
+                    let affected = index.items_using_asset(asset_id);
+                    if affected.is_empty() {
+                        tracing::warn!(
+                            asset = %asset_id,
+                            "decode failure affects no rundown item; nothing to report"
+                        );
+                    }
+                    for item_ref in affected {
+                        self.outgoing.push(EngineFrame::ItemEvent {
+                            v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                            item_ref,
+                            event: ItemEvent::DecodeError,
+                            detail: Some(e.kind_token().to_string()),
+                        });
+                    }
+                }
+            }
         }
+        *self.state.video.lock().unwrap() = library;
 
         *self.state.package.lock().unwrap() = Some(index);
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);
@@ -166,14 +232,25 @@ impl DirectiveHandler {
                     0
                 });
             let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+            // SPEC §12.1: the incoming item's timeline starts at the frame it
+            // goes on air, and the outgoing item keeps reading from its own
+            // start for the length of a mix.
+            let previous_start = self
+                .state
+                .view_item_start_frame
+                .load(std::sync::atomic::Ordering::SeqCst);
             *self.state.transition.lock().unwrap() = Some(crate::scene::Transition {
                 from_item: previous,
+                from_start_frame: previous_start,
                 to_item: r.to_string(),
                 kind,
                 duration_frames: transition_frames,
                 start_frame,
             });
             *self.state.view_item.lock().unwrap() = Some(r.to_string());
+            self.state
+                .view_item_start_frame
+                .store(start_frame, std::sync::atomic::Ordering::SeqCst);
             let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
                 self.schedule_done(r.to_string(), frames, generation);
@@ -203,6 +280,14 @@ impl DirectiveHandler {
         }
         if let Some(vi) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
             *self.state.view_item.lock().unwrap() = Some(vi.to_string());
+            // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
+            // so a resynced timed item resumes from its first frame rather
+            // than guessing an origin. Recorded as a spec gap in
+            // agents/prompts/05-video-decode.md.
+            let now = self.state.master_frame().unwrap_or(0);
+            self.state
+                .view_item_start_frame
+                .store(now, std::sync::atomic::Ordering::SeqCst);
         }
         if let Some(pi) = snapshot.get("previewItem").and_then(|v| v.as_str()) {
             *self.state.preview_item.lock().unwrap() = Some(pi.to_string());

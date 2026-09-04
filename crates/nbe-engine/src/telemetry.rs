@@ -16,7 +16,7 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
             .dropped_frames_total
             .load(std::sync::atomic::Ordering::SeqCst),
         render_gpu_time_ms: 0.0,
-        decode_sessions: 0,
+        decode_sessions: state.sessions.peak(),
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
         stream_buffer_ms: 0.0,
