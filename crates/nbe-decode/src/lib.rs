@@ -23,8 +23,9 @@ use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo, AVURLAsset,
 };
 use objc2_core_video::{
-    kCVPixelBufferPixelFormatTypeKey, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
-    CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    kCVPixelBufferPixelFormatTypeKey, kCVReturnSuccess, CVPixelBufferGetBaseAddress,
+    CVPixelBufferGetBytesPerRow, CVPixelBufferGetDataSize, CVPixelBufferGetHeight,
+    CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
@@ -34,6 +35,27 @@ use thiserror::Error;
 /// `kCVPixelFormatType_32BGRA`, the format the reader is asked for.
 const PIXEL_FORMAT_32BGRA: u32 = 0x42475241; // 'BGRA'
 
+/// The largest frame this decoder will accept, per side.
+///
+/// Show media is attacker-influenced input (SPEC §10.7 assumes hostile
+/// attention), and the pixel loop below reads through a raw pointer. A frame
+/// larger than this is refused rather than trusted: it is far beyond any
+/// house format, and the ceiling keeps the byte arithmetic provably in range.
+const MAX_FRAME_DIMENSION: u32 = 16384;
+
+/// Bytes one RGBA frame needs, or `None` if the dimensions are implausible or
+/// the arithmetic would overflow.
+///
+/// Split out so the bound is testable without a decoder.
+fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
+    if width == 0 || height == 0 || width > MAX_FRAME_DIMENSION || height > MAX_FRAME_DIMENSION {
+        return None;
+    }
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)
+}
+
 #[derive(Debug, Error)]
 pub enum DecodeError {
     #[error("no video track in {0}")]
@@ -42,6 +64,22 @@ pub enum DecodeError {
     Open { path: String, reason: String },
     #[error("decode failed for {path}: {reason}")]
     Failed { path: String, reason: String },
+}
+
+impl DecodeError {
+    /// A stable, path-free token for this failure.
+    ///
+    /// The full message names a filesystem path and a platform error, which
+    /// belong in the engine's own log. What crosses the render channel and
+    /// ends up in operator-facing state is this token: enough to tell the
+    /// classes of failure apart, without leaking the render node's layout.
+    pub fn kind_token(&self) -> &'static str {
+        match self {
+            DecodeError::NoVideoTrack(_) => "noVideoTrack",
+            DecodeError::Open { .. } => "openFailed",
+            DecodeError::Failed { .. } => "decodeFailed",
+        }
+    }
 }
 
 /// One decoded frame, addressed by its presentation index.
@@ -200,25 +238,84 @@ impl DecodeSession {
 
             let width = CVPixelBufferGetWidth(&image) as u32;
             let height = CVPixelBufferGetHeight(&image) as u32;
-            CVPixelBufferLockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly);
+
+            // Everything below reads through a raw pointer, so every
+            // assumption the loop depends on is checked first rather than
+            // trusted from the media.
+
+            // 1. The format must be what we asked for. A different layout
+            //    (planar YUV, say) has a different meaning for "4 bytes per
+            //    pixel", and reading it as BGRA would walk off the plane.
+            let format = CVPixelBufferGetPixelFormatType(&image);
+            if format != PIXEL_FORMAT_32BGRA {
+                return Err(DecodeError::Failed {
+                    path: self.path.clone(),
+                    reason: format!("expected 32BGRA pixel buffers, got format {format:#010x}"),
+                });
+            }
+
+            // 2. The dimensions must be plausible and the allocation must not
+            //    overflow.
+            let Some(len) = rgba_byte_len(width, height) else {
+                return Err(DecodeError::Failed {
+                    path: self.path.clone(),
+                    reason: format!("implausible frame dimensions {width}x{height}"),
+                });
+            };
+
+            // 3. The lock must succeed. Reading the base address of a buffer
+            //    that failed to lock is undefined behaviour, not an empty
+            //    frame.
+            let lock = CVPixelBufferLockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly);
+            if lock != kCVReturnSuccess {
+                return Err(DecodeError::Failed {
+                    path: self.path.clone(),
+                    reason: format!("could not lock pixel buffer (CVReturn {lock})"),
+                });
+            }
+            // From here to the unlock, every exit must unlock: the guard does
+            // it on drop so an early return or a panic cannot leak the lock.
+            let _unlock = PixelBufferLock { buffer: &image };
+
             let base = CVPixelBufferGetBaseAddress(&image);
             let stride = CVPixelBufferGetBytesPerRow(&image);
-            let mut rgba = vec![0u8; (width * height * 4) as usize];
-            if !base.is_null() {
-                let src = base as *const u8;
-                for row in 0..height as usize {
-                    for col in 0..width as usize {
-                        let s = src.add(row * stride + col * 4);
-                        let d = (row * width as usize + col) * 4;
-                        // BGRA (what we asked the reader for) → RGBA.
-                        rgba[d] = *s.add(2);
-                        rgba[d + 1] = *s.add(1);
-                        rgba[d + 2] = *s;
-                        rgba[d + 3] = *s.add(3);
-                    }
+            let data_size = CVPixelBufferGetDataSize(&image);
+            let row_bytes = width as usize * 4;
+
+            // 4. The buffer must actually contain the bytes the loop will
+            //    read: a full row per row, and the last row must fit.
+            let last_byte = stride
+                .checked_mul(height.saturating_sub(1) as usize)
+                .and_then(|off| off.checked_add(row_bytes));
+            let readable = !base.is_null()
+                && stride >= row_bytes
+                && matches!(last_byte, Some(needed) if needed <= data_size);
+            if !readable {
+                return Err(DecodeError::Failed {
+                    path: self.path.clone(),
+                    reason: format!(
+                        "pixel buffer too small for {width}x{height}: stride {stride}, data size {data_size}"
+                    ),
+                });
+            }
+
+            let mut rgba = vec![0u8; len];
+            let src = base as *const u8;
+            for row in 0..height as usize {
+                for col in 0..width as usize {
+                    // In range by the checks above: row < height, col < width,
+                    // stride >= width*4, and stride*(height-1)+width*4 fits
+                    // inside the buffer's data size.
+                    let s = src.add(row * stride + col * 4);
+                    let d = (row * width as usize + col) * 4;
+                    // BGRA (what we asked the reader for) → RGBA.
+                    rgba[d] = *s.add(2);
+                    rgba[d + 1] = *s.add(1);
+                    rgba[d + 2] = *s;
+                    rgba[d + 3] = *s.add(3);
                 }
             }
-            CVPixelBufferUnlockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly);
+            drop(_unlock);
 
             let index = self.next_index;
             self.next_index += 1;
@@ -301,6 +398,20 @@ pub fn probe_asset(path: &Path, limit: usize) -> Result<AssetProbe, DecodeError>
     })
 }
 
+/// Unlocks a pixel buffer when dropped, so no path between lock and unlock
+/// can leak the lock — including an early return or a panic.
+struct PixelBufferLock<'a> {
+    buffer: &'a objc2_core_video::CVPixelBuffer,
+}
+
+impl Drop for PixelBufferLock<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            CVPixelBufferUnlockBaseAddress(self.buffer, CVPixelBufferLockFlags::ReadOnly);
+        }
+    }
+}
+
 /// Master-clock frame selection (SPEC §12.1, Prompt 05 Step 3).
 ///
 /// A clip does not run on its own clock: the frame shown at master frame `f`
@@ -366,4 +477,36 @@ pub fn cadence_holds(pattern: &[u64]) -> Vec<u64> {
         holds.push(run);
     }
     holds
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_byte_len_refuses_overflow_and_absurd_dimensions() {
+        assert_eq!(rgba_byte_len(1920, 1080), Some(1920 * 1080 * 4));
+        assert_eq!(rgba_byte_len(0, 1080), None, "zero width");
+        assert_eq!(rgba_byte_len(1920, 0), None, "zero height");
+        assert_eq!(
+            rgba_byte_len(u32::MAX, u32::MAX),
+            None,
+            "an overflowing product must not become a small allocation"
+        );
+        assert_eq!(
+            rgba_byte_len(MAX_FRAME_DIMENSION + 1, 8),
+            None,
+            "beyond the accepted ceiling"
+        );
+        assert!(rgba_byte_len(MAX_FRAME_DIMENSION, MAX_FRAME_DIMENSION).is_some());
+    }
+
+    #[test]
+    fn clip_and_loop_selection_are_pure() {
+        assert_eq!(clip_source_index(10, 10, 5), Some(0));
+        assert_eq!(clip_source_index(14, 10, 5), Some(4));
+        assert_eq!(clip_source_index(15, 10, 5), None);
+        assert_eq!(loop_source_index(15, 10, 5), Some(0));
+        assert_eq!(loop_source_index(15, 10, 0), None);
+    }
 }

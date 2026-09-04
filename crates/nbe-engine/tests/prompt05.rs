@@ -335,6 +335,28 @@ async fn a_decode_failure_is_reported_as_an_item_event() {
         )),
         "a genuine decode failure is a fault, not a scope boundary: {frames:?}"
     );
+
+    // The frame must not carry the render node's filesystem layout. The full
+    // reason stays in the engine's log; the wire gets a stable token.
+    let detail = frames
+        .iter()
+        .find_map(|f| match f {
+            nbe_protocol::EngineFrame::ItemEvent {
+                event: nbe_protocol::ItemEvent::DecodeError,
+                detail,
+                ..
+            } => detail.clone(),
+            _ => None,
+        })
+        .expect("the fault frame carries a detail");
+    assert!(
+        !detail.contains('/') && !detail.contains(".mp4"),
+        "decodeError detail must not leak a path: {detail:?}"
+    );
+    assert!(
+        ["noVideoTrack", "openFailed", "decodeFailed"].contains(&detail.as_str()),
+        "expected a stable token, got {detail:?}"
+    );
 }
 
 #[tokio::test]

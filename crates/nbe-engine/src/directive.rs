@@ -153,13 +153,17 @@ impl DirectiveHandler {
                     library.assets.insert(asset_id.clone(), asset);
                 }
                 Err(e) => {
+                    // The full reason — path and platform error — stays in the
+                    // engine's log. The frame that crosses the render channel
+                    // carries a stable token instead, the same discipline the
+                    // control plane uses for auth failures (SPEC §5.3).
                     tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
                     library.failures.insert(asset_id.clone(), e.to_string());
                     self.outgoing.push(EngineFrame::ItemEvent {
                         v: nbe_protocol::PROTOCOL_VERSION.to_string(),
                         item_ref: asset_id.clone(),
                         event: ItemEvent::DecodeError,
-                        detail: Some(e.to_string()),
+                        detail: Some(e.kind_token().to_string()),
                     });
                 }
             }
