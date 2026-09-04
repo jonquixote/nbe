@@ -18,7 +18,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -131,13 +131,13 @@ async function ok(
 /** Wait until a telemetry tick satisfies `pred`, or fail with what was seen. */
 async function untilTelemetry(
   what: string,
-  pred: (t: Record<string, unknown>) => boolean,
+  pred: (t: Record<string, unknown>, index: number) => boolean,
   ms: number = TELEMETRY_MS,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + ms;
   const seen = ticks.length;
   while (Date.now() < deadline) {
-    const hit = ticks.slice(seen).find(pred);
+    const hit = ticks.slice(seen).find((t, i) => pred(t, seen + i));
     if (hit) return hit;
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -267,6 +267,21 @@ after(async () => {
 });
 
 test("[RI-1] step 1: preflight passes on the dress package with a populated report", () => {
+  // RUNS preflight. The first version only read `preflight_report.json` off
+  // disk — a gitignored file written as a side effect of step 2's `show.load`,
+  // which runs AFTER this step. On a clean checkout it failed ENOENT; on any
+  // later run it passed against whatever the previous run left behind. It
+  // proved a JSON file existed and said `airReady`, which a hand-written file
+  // satisfies equally well.
+  const bin = resolve(import.meta.dirname, "../../../target/debug/nbe-preflight");
+  assert.ok(existsSync(bin), `nbe-preflight must be built: ${bin}`);
+  const run = spawnSync(bin, ["--package-path", PKG], { encoding: "utf8" });
+  assert.equal(
+    run.status,
+    0,
+    `preflight must exit 0 on the dress package; got ${run.status}: ${run.stderr}`,
+  );
+
   const report = JSON.parse(
     readFileSync(join(PKG, "preflight_report.json"), "utf8"),
   ) as Record<string, unknown>;
@@ -392,11 +407,37 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
 });
 
 test("[RI-1] step 7: an audio.bus.set is reflected on the next tick", async () => {
+  // The predicate here used to be `() => true`, which asserts nothing at all:
+  // the step passed with `audio.bus.set` a complete no-op, while its name
+  // claimed the change was "reflected on the next tick".
+  //
+  // What is actually observable on the wire is that the command is accepted,
+  // that the engine keeps publishing bus meters afterwards (so the graph
+  // survived the change rather than wedging), and that the show keeps running.
+  // The gain value itself is not in telemetry — §10.1 carries peaks, not
+  // per-bus gain — so asserting a level here would be asserting a number the
+  // protocol does not send. The graph-level behaviour is gated by the engine
+  // suite (`audio_directives_parse_into_intents_and_apply_to_the_graph`).
+  const before = ticks.length;
   await ok("audio.bus.set", { bus: "music", gainDb: -20 });
-  // The command is accepted by the control plane and applied by the engine;
-  // what this asserts is that the round trip completes and the show survives
-  // it — the graph-level gain behaviour is covered by the engine suite.
-  await untilTelemetry("a tick after the bus change", () => true);
+  const after = await untilTelemetry(
+    "a tick carrying live bus meters after the bus change",
+    (t, i) => {
+      if (i < before) return false;
+      const peaks = (t["data"] as Record<string, unknown> | undefined)?.["busPeakDbfs"] as
+        | Record<string, number>
+        | undefined;
+      return peaks !== undefined && Object.keys(peaks).length >= 8;
+    },
+  );
+  assert.ok(
+    showStates.includes("RUNNING"),
+    "the show must still be running after an audio.bus.set",
+  );
+  assert.ok(
+    (after["data"] as Record<string, unknown>)["engineConnected"] === true,
+    "the engine must still be connected after an audio.bus.set",
+  );
 });
 
 test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () => {

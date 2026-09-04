@@ -437,3 +437,60 @@ Measured again, and worse than §3.2 recorded: a standalone rehearsal run compet
 The charter requires the gate be green in CI **twice consecutively**, and states that a real-time gate that flakes is not a gate. A 46 s step whose worst case under contention is unbounded cannot meet that bar by raising the timeout.
 
 **Disposition — Prompt 07, as a prerequisite to making the rehearsal a required gate.** The fix is not a bigger number; it is to stop `show.load` doing 46 s of decode. Options, in the order I would try them: run preflight's decode checks in release even when the workspace is a debug build; cache the preflight report by package hash so a repeated load of an unchanged package is a read; or narrow the rehearsal fixture's decode surface. Recorded here rather than fixed, because it is scheduling work on the CI job as much as engine work.
+
+
+---
+
+## 13. Pass 5, and a correction to §11 of this report
+
+An independent falsification pass over the whole branch confirmed **six of seven** of its gates (cadence at unit *and* pixel level, the silent-item collision, §10.3 engagement, the underrun branch, the item-end guard) and found eleven more issues. Three were serious. One is a correction to this document.
+
+### 13.1 Correction — §11.1 over-claimed on a single observation
+
+§11.1 reported "step 6 flipped **green**" and "**The show has sound**", and elsewhere this report says "the 3 failures" while listing four. The reviewer measured `busPeakDbfs.clip` and `.sfx` at −120 dBFS on every run they made, and a failure set that **changed between runs**.
+
+Re-measured here, three consecutive runs, reading the rehearsal's own telemetry artifact:
+
+```
+run 1   peak clip -20.9   sfx -21.0   master -15.1
+run 2   peak clip -20.9   sfx -21.0   master -15.1
+run 3   peak clip -20.9   sfx -20.9   master -15.1
+```
+
+**The P0 fix is real: audio reaches the buses.** What §11.1 got wrong was the conclusion drawn from it. The audio only becomes audible at telemetry tick 33, `masterClockFrame` 63 — *after* step 4's two-tick window has closed and while `viewItem` has already moved on to A2. So the level is right and the timing is wrong, and step 4 fails for the clock-start reason (R5), not for the item→asset reason.
+
+Step 6 is genuinely **intermittent**: it passed in three consecutive runs here and failed in the fourth, and the reviewer saw it fail 4/4. That is consistent with R2 — bus meters are a 33 ms window sampled at 1 Hz, so a 0.4 s stab is a coin toss. This report said so in §3.5 and then leaned on a single green observation of exactly that test. That was the error: **an intermittent green is not evidence, and I treated one as if it were.**
+
+The honest statement of the rehearsal's state: **9 of 12**, with steps 3 and 4 failing consistently (R5), and step 6 or the underrun gate failing intermittently (R2, R4).
+
+### 13.2 F2 — the P0's rule was wrong for any scene with a backdrop
+
+`item_audio_asset` picked "the lowest-z element with an asset". For the most ordinary scene shape there is — a background image at z=0 with the clip above it — that returns the **image**, the audio library misses, and the item is silent. The P0, re-opened for every scene with a backplate. Measured before the fix: `item_audio_asset("A1") = Some("bg")`. Every fixture in the repo was single-element, so nothing caught it. Now filtered to kinds that can carry audio (`video`, `alphaVideo`, `audio`) and to visible elements.
+
+### 13.3 F1 — the P0 shipped with no gate at all
+
+`item_audio_asset` and `item_audio_map` had exactly one caller and **zero test callers**. Making the function return `None` — reverting the P0 entirely — left 123/123 green, as did dropping the `state.item_audio` write at `show.load`. Both halves are now gated, and the resolution test uses a two-element scene so 13.2 cannot regress silently.
+
+### 13.4 F3 — CI could not run the rehearsal, and the gate it replaced was gone
+
+The `control-plane` job builds `nbe-preflight` and **never `nbe-engine`**. With the binary absent the rehearsal fails 12 of 12 on its `before()` hook. Since this branch also deleted the Rust wiring gate and redirected that claim to the rehearsal (§3.10), the net position was: **no CI-executable gate proved the engine binary starts its audio driver.** The job now builds `nbe-engine`.
+
+### 13.5 F4 — step 1 was reading a file step 2 writes
+
+Step 1 only `readFileSync`'d `preflight_report.json` — a gitignored file produced as a side effect of step 2's `show.load`, which runs *after* it. On a clean checkout it failed `ENOENT`; on any later run it passed against the previous run's leftovers. It proved a JSON file said `airReady`, which a hand-written file satisfies equally. It now **runs** `nbe-preflight` and asserts exit 0, verified from a clean state with the report deleted first.
+
+This also explains the baseline disagreement: this report's "3 failures" was measured on a tree where an earlier run had already written that file.
+
+### 13.6 F6 — a step whose predicate was `true`
+
+`step 7: an audio.bus.set is reflected on the next tick` awaited `untilTelemetry(..., () => true)`. It asserted nothing and passed with `audio.bus.set` a complete no-op. It now requires a tick published *after* the command that still carries all eight bus meters and an engine still connected — with a note that the gain value itself is deliberately not asserted, because §10.1 carries peaks and not per-bus gain, and asserting a number the protocol never sends is how the last four defeatable gates happened.
+
+### 13.7 F7 — nothing reconciled the manifest's house rate with the engine's
+
+The engine takes its rate from `NBE_HOUSE_RATE` (default 30); `show.load` never compared it with the manifest's `show.video.frameRate`. A 25 fps package loaded without that variable mapped every non-house-rate asset against 30 — the cadence bug's twin, arriving from the other side — and no path detected it. `PackageIndex` now carries `declared_house_rate` and `show.load` logs an **error** on mismatch. The deeper question, whether the engine should adopt the manifest's rate or refuse the package, is a wire/contract decision recorded as a **v0.4-outline candidate**.
+
+### 13.8 Accepted without change
+
+- **F9** — `cadence_pattern` now derives from `source_index_at`, so the 2,3,2,3 assertion is a tautology over the production function rather than an independent cross-check. Deliberate: an independent re-implementation is what let the helper drift from the renderer for six prompts. The pixel-readback test is the independent check.
+- **F10** — `step 5: a 15-frame mix drops no frames` passes if the mix does nothing. True, and it is a "nothing bad happened" assertion by design; the mix's own behaviour is gated in the engine suite.
+- **F8, F11** — the rehearsal does not rebuild or freshness-check the engine binary, and `item_audio_asset` now respects `visible` (F11 fixed in passing). Binary freshness is a CI-ordering concern, now partly addressed by F3's build step.

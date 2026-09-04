@@ -105,6 +105,14 @@ pub struct PackageIndex {
     /// asset id → declared `loop.periodFrames` (SPEC §12.9: the manifest's
     /// declaration takes precedence over the decoded frame count).
     pub declared_loop_period: HashMap<String, u32>,
+    /// The house rate the manifest declares (`show.video.frameRate`).
+    ///
+    /// Carried so the engine can check it against the rate it is actually
+    /// running. Nothing reconciled the two before: the engine takes its rate
+    /// from `NBE_HOUSE_RATE` (default 30) and never looked at the manifest, so
+    /// a 25 fps package loaded without that variable mapped every
+    /// non-house-rate asset against 30 and no path detected it.
+    pub declared_house_rate: Option<u32>,
 }
 
 /// One element, reduced to what this prompt can draw.
@@ -130,6 +138,12 @@ impl PackageIndex {
                 .get("qualityProfile")
                 .and_then(|v| v.as_str())
                 .and_then(parse_quality),
+            declared_house_rate: manifest
+                .get("show")
+                .and_then(|sh| sh.get("video"))
+                .and_then(|v| v.get("frameRate"))
+                .and_then(|v| v.as_u64())
+                .map(|r| r as u32),
             ..Default::default()
         };
 

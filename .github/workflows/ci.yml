@@ -90,6 +90,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build -p nbe-preflight
         working-directory: .
+        # The dress rehearsal ([RI-1]) spawns the real engine binary. Without
+        # this the rehearsal's `before()` hook fails on a missing binary and
+        # every one of its steps goes red for a reason unrelated to the show —
+        # measured: 12 of 12 failing with the binary absent.
+      - run: cargo build -p nbe-engine
+        working-directory: .
       - run: npm ci
       - run: npx tsc --noEmit
       - name: generated manifest types match the schema
