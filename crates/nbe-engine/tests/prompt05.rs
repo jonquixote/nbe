@@ -377,6 +377,102 @@ async fn a_12_fps_source_spans_30_house_frames_in_the_rendered_picture() {
     );
 }
 
+#[test]
+fn an_items_audio_resolves_to_the_asset_its_scene_actually_shows() {
+    // The P0's gate, which the P0 commit did not have: `item_audio_asset` and
+    // `item_audio_map` had exactly one caller (`directive.rs`) and ZERO test
+    // callers, so making the function return `None` -- reverting the fix
+    // entirely -- left the whole suite green.
+    //
+    // Also the backplate case. The first version of the rule was "the lowest-z
+    // element with an asset", which returns the BACKGROUND IMAGE for the most
+    // ordinary scene shape there is, misses in the audio library, and leaves
+    // the item silent: the P0 re-opened for any scene with a backdrop. Every
+    // fixture in the repo was single-element, so nothing caught it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("media")).unwrap();
+    std::fs::copy(media("cfr_30.mp4"), dir.path().join("media/clip.mp4")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        8,
+        8,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.path().join("media/bg.png"), &png).unwrap();
+
+    std::fs::write(
+        dir.path().join("manifest.json"),
+        serde_json::json!({
+            "manifestVersion": "0.3",
+            "network": { "id": "nbe", "name": "T" },
+            "show": {
+                "id": "s", "title": "T",
+                "video": { "width": 640, "height": 360, "frameRate": 30, "colorSpace": "rec709" },
+                "audio": { "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 },
+                "fallbackAssetId": "bg"
+            },
+            "control": { "bindings": [] },
+            "assets": [
+                { "id": "bg", "kind": "image", "source": "media/bg.png", "format": "png" },
+                { "id": "A1_clip", "kind": "video", "source": "media/clip.mp4", "format": "h264" }
+            ],
+            "scenes": [{
+                "id": "SCN_A1",
+                "elements": [
+                    // The backplate sits BELOW the clip, which is the whole point.
+                    { "id": "backdrop", "kind": "graphic", "z": 0, "assetId": "bg",
+                      "templateId": "TPL" },
+                    { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+                ]
+            }],
+            "templates": [{ "id": "TPL", "kind": "generic" }],
+            "rundown": { "id": "R", "items": [
+                { "id": "A1", "kind": "sceneRef", "sceneRef": "SCN_A1" }
+            ]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let idx = nbe_engine::scene::PackageIndex::build(
+        &serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(dir.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap(),
+        dir.path(),
+    );
+
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "the item's audio is the clip its scene shows, not the image beneath it"
+    );
+    assert_eq!(
+        idx.item_audio_map().get("A1").map(String::as_str),
+        Some("A1_clip"),
+        "and the map built at show.load must agree"
+    );
+}
+
+#[tokio::test]
+async fn a_take_installs_the_audio_of_the_asset_its_item_shows() {
+    // The other half of the P0's gate: the resolution must reach the engine's
+    // state, where the take path reads it. Dropping the `state.item_audio`
+    // write at show.load also left the suite green.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "av_tone.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+
+    let resolved = state.item_audio.lock().unwrap().clone();
+    assert_eq!(
+        resolved.get("A1").map(String::as_str),
+        Some("clip"),
+        "show.load must publish item -> audio-asset resolution; got {resolved:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_decode_failure_is_reported_as_an_item_event() {
     let dir = tempfile::tempdir().unwrap();

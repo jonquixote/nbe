@@ -215,16 +215,35 @@ impl PackageIndex {
     /// this kind of walk on the frame path, and a take must not depend on a
     /// map lookup that can fail silently.
     ///
-    /// Picks the lowest-z element with an asset, which is the clip a scene is
-    /// built around; overlay elements sit above it and carry their own audio
-    /// policy (SPEC §7.10, Prompt 07's work).
+    /// Picks the lowest-z element whose asset can CARRY audio. Kind matters:
+    /// "the lowest-z element with an asset" was the first version of this rule
+    /// and it is wrong for the most ordinary scene shape there is — a
+    /// background image at z=0 with the clip above it. That returns the image,
+    /// `library.get("bg_image")` misses, and the item is silent: the P0
+    /// re-opened for every scene with a backplate. Measured before the fix:
+    /// `item_audio_asset("A1")` returned `Some("bg")`. Every fixture in the
+    /// repo was single-element, so nothing caught it.
+    ///
+    /// Overlay elements sit above the clip and carry their own audio policy
+    /// (SPEC §7.10, Prompt 07's work).
     pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
         let scene = self.item_scene.get(item_ref)?;
         let elements = self.scenes.get(scene)?;
         elements
             .iter()
-            .find(|e| e.asset_id.is_some())
-            .and_then(|e| e.asset_id.clone())
+            .filter(|e| e.visible)
+            .filter_map(|e| e.asset_id.as_deref())
+            .find(|asset| self.asset_carries_audio(asset))
+            .map(str::to_string)
+    }
+
+    /// Whether an asset kind can carry an audio track at all (SPEC §6.3).
+    /// Images, fonts, RSS and plugin binaries cannot.
+    fn asset_carries_audio(&self, asset_id: &str) -> bool {
+        matches!(
+            self.asset_kind.get(asset_id).map(String::as_str),
+            Some("video") | Some("alphaVideo") | Some("audio")
+        )
     }
 
     /// item ref → the asset whose audio that item plays, for every item in the
