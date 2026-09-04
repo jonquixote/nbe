@@ -35,6 +35,11 @@ pub struct EngineState {
     /// What the engine is showing on its view bus: the taken item's reference.
     /// Directive handlers update it; the render loop reads it.
     pub view_item: std::sync::Mutex<Option<String>>,
+    /// The master frame `view_item` went on air — SPEC §12.1's `t0`.
+    ///
+    /// Without this the compositor reads every clip at `frame` rather than
+    /// `frame - t0`, so a take at master frame N starts the clip N frames in.
+    pub view_item_start_frame: AtomicU64,
     /// The armed preview item, for the preview bus.
     pub preview_item: std::sync::Mutex<Option<String>>,
     /// The indexed package: scenes, items, decoded images (Prompt 04).
@@ -74,6 +79,7 @@ impl EngineState {
             probed_quality: std::sync::Mutex::new(None),
             requested_quality: std::sync::Mutex::new(None),
             view_item: std::sync::Mutex::new(None),
+            view_item_start_frame: AtomicU64::new(0),
             preview_item: std::sync::Mutex::new(None),
             package: Mutex::new(None),
             package_generation: AtomicU64::new(0),
@@ -123,6 +129,7 @@ impl EngineState {
     pub fn frame_snapshot(&self) -> FrameSnapshot {
         FrameSnapshot {
             view_item: self.view_item.lock().unwrap().clone(),
+            view_item_start_frame: self.view_item_start_frame.load(Ordering::SeqCst),
             preview_item: self.preview_item.lock().unwrap().clone(),
             transition: self.transition.lock().unwrap().clone(),
             fallback_active: self.fallback_active.load(Ordering::SeqCst),
@@ -201,6 +208,8 @@ impl EngineState {
 #[derive(Debug, Clone)]
 pub struct FrameSnapshot {
     pub view_item: Option<String>,
+    /// SPEC §12.1's `t0` for the View bus item.
+    pub view_item_start_frame: u64,
     pub preview_item: Option<String>,
     pub transition: Option<crate::scene::Transition>,
     pub fallback_active: bool,

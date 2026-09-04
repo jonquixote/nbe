@@ -62,6 +62,22 @@ The `appliedStateVersion` ack the engine emits in Prompt 03's `show.stop`/`recor
 
 CI: the existing `rust` job on macos-14 covers this (Metal and VideoToolbox are available; the kill test runs there). `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` all pass.
 
+## Inherited from Prompt 05: zero-copy IOSurface → Metal
+
+Prompt 05 deferred zero-copy decode handoff and said so. Today a decoded
+`CVPixelBuffer` is copied to CPU memory on the decode thread and uploaded as
+RGBA8. SPEC §7.13's actual rule holds — the copy happens at load/read-ahead
+time, never in the render loop — but the copy is real work, and **Prompt 09 is
+where it starts to cost**: the encoder is the second consumer of the same
+frames, and a readback-plus-upload per frame per consumer is the pattern the
+spec calls out as forbidden for the View (SPEC §5.8's no-GPU-readback rule).
+
+Implement it here: IOSurface-backed `CVPixelBuffer` → `MTLTexture` →
+`wgpu::hal` texture import, so decode, compositing, and encode share one
+surface. The measurement that justifies it is in this prompt's benchmark: if
+encode plus decode fits the frame budget at the target profile without it, say
+so and defer again with numbers.
+
 ## Constraints
 
 - No streaming, no ISO tracks, no CPU encode, no readback. Recording is a shared-frame encoder session, nothing more.

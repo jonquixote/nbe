@@ -116,7 +116,7 @@ pub struct AssetProbe {
 ///
 /// Sessions are a bounded resource: VideoToolbox limits how many can be
 /// active at once, which SPEC §24 names as a high-severity risk. The pool in
-/// `session.rs` owns the cap; this type owns one session.
+/// `nbe-engine/src/video.rs` owns the cap; this type owns one session.
 pub struct DecodeSession {
     reader: Retained<AVAssetReader>,
     output: Retained<AVAssetReaderTrackOutput>,
@@ -436,8 +436,12 @@ pub fn loop_source_index(master_frame: u64, t0: u64, period_frames: u64) -> Opti
     if period_frames == 0 {
         return None;
     }
-    let elapsed = master_frame.saturating_sub(t0);
-    Some(elapsed % period_frames)
+    // Mathematical modulo, not a saturating subtraction: SPEC §12.1 defines
+    // `frame(t) = (F - t0) mod P` over the whole timeline, so a loop armed at
+    // a future t0 pre-rolls into its own cycle rather than pinning to frame 0.
+    // Saturating here would silently freeze every pre-roll frame on frame 0.
+    let elapsed = (master_frame as i128) - (t0 as i128);
+    Some(elapsed.rem_euclid(period_frames as i128) as u64)
 }
 
 /// Cadence hold pattern for a source slower than the house rate (SPEC §18,
@@ -508,5 +512,16 @@ mod tests {
         assert_eq!(clip_source_index(15, 10, 5), None);
         assert_eq!(loop_source_index(15, 10, 5), Some(0));
         assert_eq!(loop_source_index(15, 10, 0), None);
+    }
+
+    #[test]
+    fn a_loop_pre_rolls_by_mathematical_modulo() {
+        // SPEC §12.1 is defined over the whole timeline. Before t0 the loop is
+        // mid-cycle, not frozen on frame 0 — which is what a saturating
+        // subtraction would produce.
+        assert_eq!(loop_source_index(8, 10, 5), Some(3), "2 frames before t0");
+        assert_eq!(loop_source_index(9, 10, 5), Some(4), "1 frame before t0");
+        assert_eq!(loop_source_index(10, 10, 5), Some(0), "at t0");
+        assert_eq!(loop_source_index(5, 10, 5), Some(0), "one full cycle early");
     }
 }

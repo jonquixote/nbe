@@ -33,6 +33,14 @@ const UNIFORM_STRIDE: u64 = 256;
 /// Maximum layers composited in one frame.
 const MAX_LAYERS: u64 = 64;
 
+/// One bus's contribution to a frame: what to draw, how opaque, and the
+/// master frame its item went on air (SPEC §12.1's `t0`).
+pub struct BusScene {
+    pub scene: ResolvedScene,
+    pub alpha: f32,
+    pub t0: u64,
+}
+
 /// One video asset's resident frames, indexed by ring slot (SPEC §12.7).
 struct VideoRing {
     textures: Vec<wgpu::Texture>,
@@ -321,31 +329,54 @@ impl RenderLoop {
     /// The bus inputs are read once into a `FrameSnapshot` before the package
     /// is touched: taking four locks across a frame invited a torn read the
     /// moment decode threads started writing to the same state.
-    pub fn scene_for(&self, bus: Bus, frame: u64) -> Vec<(ResolvedScene, f32)> {
+    pub fn scene_for(&self, bus: Bus, frame: u64) -> Vec<BusScene> {
         let snapshot = self.state.frame_snapshot();
         let index = self.state.package.lock().unwrap();
         let Some(index) = index.as_ref() else {
             return Vec::new();
         };
         if bus == Bus::Preview {
-            return vec![(index.resolve(snapshot.preview_item.as_deref()), 1.0)];
+            // Preview has no take, so its item has been "on air" since the
+            // engine saw it: read it from its own first frame.
+            return vec![BusScene {
+                scene: index.resolve(snapshot.preview_item.as_deref()),
+                alpha: 1.0,
+                t0: 0,
+            }];
         }
         match snapshot.transition {
             // Before the boundary the transition was issued for, the outgoing
             // item is still what is on air: no transition begins mid-frame.
             Some(t) if frame < t.start_frame => {
-                vec![(index.resolve(t.from_item.as_deref()), 1.0)]
+                vec![BusScene {
+                    scene: index.resolve(t.from_item.as_deref()),
+                    alpha: 1.0,
+                    t0: t.from_start_frame,
+                }]
             }
             Some(t) if t.kind == TransitionKind::Mix && !t.is_complete(frame) => {
                 let alpha = t.progress(frame);
                 let mut out = Vec::new();
                 if let Some(from) = t.from_item.as_deref() {
-                    out.push((index.resolve(Some(from)), 1.0));
+                    // The outgoing scene keeps reading from its own start.
+                    out.push(BusScene {
+                        scene: index.resolve(Some(from)),
+                        alpha: 1.0,
+                        t0: t.from_start_frame,
+                    });
                 }
-                out.push((index.resolve(Some(&t.to_item)), alpha));
+                out.push(BusScene {
+                    scene: index.resolve(Some(&t.to_item)),
+                    alpha,
+                    t0: t.start_frame,
+                });
                 out
             }
-            _ => vec![(index.resolve(snapshot.view_item.as_deref()), 1.0)],
+            _ => vec![BusScene {
+                scene: index.resolve(snapshot.view_item.as_deref()),
+                alpha: 1.0,
+                t0: snapshot.view_item_start_frame,
+            }],
         }
     }
 
@@ -369,9 +400,9 @@ impl RenderLoop {
                 },
             ));
         } else {
-            for (scene, alpha) in self.scene_for(bus, frame) {
-                for layer in scene.layers {
-                    if let Some(d) = self.draw_for(&layer, alpha, frame) {
+            for bus_scene in self.scene_for(bus, frame) {
+                for layer in bus_scene.scene.layers {
+                    if let Some(d) = self.draw_for(&layer, bus_scene.alpha, frame, bus_scene.t0) {
                         draws.push(d);
                     }
                 }
@@ -450,6 +481,7 @@ impl RenderLoop {
         layer: &Layer,
         alpha: f32,
         frame: u64,
+        t0: u64,
     ) -> Option<(wgpu::Texture, LayerUniform)> {
         let (tex, mut color) = match &layer.source {
             LayerSource::Solid(c) => (self.white.clone(), *c),
@@ -458,10 +490,13 @@ impl RenderLoop {
             // clock. The ring textures were uploaded at load; this is a lookup.
             LayerSource::Video { asset_id, looping } => {
                 let ring = self.video_rings.get(asset_id)?;
+                // SPEC §12.1: source frame is a function of the master clock
+                // AND the frame this item went on air. Passing 0 here reads a
+                // clip taken at master frame N from source frame N.
                 let source_index = if *looping {
-                    crate::decode::loop_source_index(frame, 0, ring.period_frames as u64)?
+                    crate::decode::loop_source_index(frame, t0, ring.period_frames as u64)?
                 } else {
-                    crate::decode::clip_source_index(frame, 0, ring.period_frames as u64)?
+                    crate::decode::clip_source_index(frame, t0, ring.period_frames as u64)?
                 };
                 let slot = crate::loop_cache::texture_slot(source_index, ring.period_frames)?;
                 let tex = ring

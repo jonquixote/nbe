@@ -159,12 +159,26 @@ impl DirectiveHandler {
                     // control plane uses for auth failures (SPEC §5.3).
                     tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
                     library.failures.insert(asset_id.clone(), e.to_string());
-                    self.outgoing.push(EngineFrame::ItemEvent {
-                        v: nbe_protocol::PROTOCOL_VERSION.to_string(),
-                        item_ref: asset_id.clone(),
-                        event: ItemEvent::DecodeError,
-                        detail: Some(e.kind_token().to_string()),
-                    });
+
+                    // `itemEvent` is addressed to a rundown Item, because that
+                    // is what the §17.3 state machine tracks. Reporting an
+                    // asset id here would produce a fault the control plane
+                    // cannot attribute to anything.
+                    let affected = index.items_using_asset(asset_id);
+                    if affected.is_empty() {
+                        tracing::warn!(
+                            asset = %asset_id,
+                            "decode failure affects no rundown item; nothing to report"
+                        );
+                    }
+                    for item_ref in affected {
+                        self.outgoing.push(EngineFrame::ItemEvent {
+                            v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                            item_ref,
+                            event: ItemEvent::DecodeError,
+                            detail: Some(e.kind_token().to_string()),
+                        });
+                    }
                 }
             }
         }
@@ -218,14 +232,25 @@ impl DirectiveHandler {
                     0
                 });
             let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+            // SPEC §12.1: the incoming item's timeline starts at the frame it
+            // goes on air, and the outgoing item keeps reading from its own
+            // start for the length of a mix.
+            let previous_start = self
+                .state
+                .view_item_start_frame
+                .load(std::sync::atomic::Ordering::SeqCst);
             *self.state.transition.lock().unwrap() = Some(crate::scene::Transition {
                 from_item: previous,
+                from_start_frame: previous_start,
                 to_item: r.to_string(),
                 kind,
                 duration_frames: transition_frames,
                 start_frame,
             });
             *self.state.view_item.lock().unwrap() = Some(r.to_string());
+            self.state
+                .view_item_start_frame
+                .store(start_frame, std::sync::atomic::Ordering::SeqCst);
             let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
                 self.schedule_done(r.to_string(), frames, generation);
@@ -255,6 +280,14 @@ impl DirectiveHandler {
         }
         if let Some(vi) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
             *self.state.view_item.lock().unwrap() = Some(vi.to_string());
+            // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
+            // so a resynced timed item resumes from its first frame rather
+            // than guessing an origin. Recorded as a spec gap in
+            // agents/prompts/05-video-decode.md.
+            let now = self.state.master_frame().unwrap_or(0);
+            self.state
+                .view_item_start_frame
+                .store(now, std::sync::atomic::Ordering::SeqCst);
         }
         if let Some(pi) = snapshot.get("previewItem").and_then(|v| v.as_str()) {
             *self.state.preview_item.lock().unwrap() = Some(pi.to_string());

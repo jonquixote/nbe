@@ -194,6 +194,34 @@ impl PackageIndex {
         idx
     }
 
+    /// Which rundown items would show this asset: asset → elements using it →
+    /// scenes containing those elements → items referencing those scenes.
+    ///
+    /// A decode failure has to be attributed to something the control plane's
+    /// §17.3 machine tracks. That machine tracks Items; an asset id is
+    /// unresolvable to it, so a fault reported against an asset cannot drive
+    /// anything to `ERROR`.
+    pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
+        let scenes: Vec<&String> = self
+            .scenes
+            .iter()
+            .filter(|(_, elements)| {
+                elements
+                    .iter()
+                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut items: Vec<String> = self
+            .item_scene
+            .iter()
+            .filter(|(_, scene)| scenes.contains(scene))
+            .map(|(item, _)| item.clone())
+            .collect();
+        items.sort();
+        items
+    }
+
     /// Resolve one item reference to drawable layers. An item that resolves to
     /// nothing yields an empty scene, which renders as black — a defined
     /// picture, not an error.
@@ -362,6 +390,9 @@ pub enum TransitionKind {
 #[derive(Debug, Clone)]
 pub struct Transition {
     pub from_item: Option<String>,
+    /// The master frame the OUTGOING item went on air. A mix renders both
+    /// scenes, and each must be read at its own point in its own timeline.
+    pub from_start_frame: u64,
     pub to_item: String,
     pub kind: TransitionKind,
     pub duration_frames: u64,

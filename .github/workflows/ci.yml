@@ -14,6 +14,20 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
+      - name: the unsafe exception stays in crates/nbe-decode
+        run: |
+          # The workspace denies unsafe_code (root Cargo.toml). Exactly one
+          # crate is allowed to opt out, because Objective-C FFI cannot exist
+          # without it. Anywhere else, an opt-out is a policy change wearing
+          # an attribute, and this gate refuses it.
+          hits=$(grep -rn "allow(unsafe_code)" crates/ --include=*.rs \
+            | grep -v "^crates/nbe-decode/" || true)
+          if [ -n "$hits" ]; then
+            echo "allow(unsafe_code) outside crates/nbe-decode:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "unsafe exception confined to crates/nbe-decode"
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |

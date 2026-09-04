@@ -81,7 +81,11 @@ fn write_video_package(dir: &Path, clip: &str, loop_period: Option<u32>) {
                 clip_asset
             ],
             "scenes": [{ "id": "SCN", "elements": [
-                { "id": "main", "kind": "clip", "z": 1, "assetId": "clip" }
+                // A declared loop period makes this a looping element; without
+                // one it is a clip that plays once.
+                { "id": "main",
+                  "kind": if loop_period.is_some() { "videoLoop" } else { "clip" },
+                  "z": 1, "assetId": "clip" }
             ]}],
             "rundown": { "id": "R", "items": [
                 { "id": "A1", "kind": "sceneRef", "sceneRef": "SCN" }
@@ -357,6 +361,25 @@ async fn a_decode_failure_is_reported_as_an_item_event() {
         ["noVideoTrack", "openFailed", "decodeFailed"].contains(&detail.as_str()),
         "expected a stable token, got {detail:?}"
     );
+
+    // The frame must name a rundown Item — that is what the control plane's
+    // §17.3 machine tracks. An asset id is unresolvable to it.
+    let item_ref = frames
+        .iter()
+        .find_map(|f| match f {
+            nbe_protocol::EngineFrame::ItemEvent {
+                event: nbe_protocol::ItemEvent::DecodeError,
+                item_ref,
+                ..
+            } => Some(item_ref.clone()),
+            _ => None,
+        })
+        .expect("the fault frame names something");
+    assert_eq!(
+        item_ref, "A1",
+        "decodeError must be attributed to the rundown item that shows the \
+         asset, not to the asset id"
+    );
 }
 
 #[tokio::test]
@@ -372,5 +395,111 @@ async fn an_undecodable_video_leaves_the_view_black_rather_than_crashing() {
         centre_px(&render.readback_view().await),
         [0, 0, 0, 255],
         "a failed asset renders nothing; the engine keeps running"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SPEC §12.1 — `t0`: a clip taken at master frame N starts at ITS frame 0.
+// Path: DirectiveHandler::on_take -> view_item_start_frame -> scene_for ->
+// draw_for -> clip_source_index.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_take_at_a_nonzero_master_frame_starts_the_clip_at_its_own_frame_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "cfr_30.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+
+    // The show has been running a while: the take lands at master frame 500,
+    // far past the clip's own length.
+    let handler = DirectiveHandler::new(state.clone(), Arc::new(OutgoingQueue::default()));
+    state.clock.lock().unwrap().start();
+    state
+        .view_item_start_frame
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    handler
+        .apply(&directive(
+            "view.take",
+            2,
+            serde_json::json!({ "itemRef": "A1" }),
+            serde_json::json!({ "transition": "cut" }),
+        ))
+        .await
+        .unwrap();
+    // Rewrite the transition's start to a large frame: the take's own arrival
+    // frame is wall-clock dependent, and this test is about the arithmetic.
+    let start: u64 = 500;
+    {
+        let mut t = state.transition.lock().unwrap();
+        let t = t.as_mut().unwrap();
+        t.start_frame = start;
+    }
+    state
+        .view_item_start_frame
+        .store(start, std::sync::atomic::Ordering::SeqCst);
+
+    // On its first on-air frame the clip shows ITS frame 0, which is red.
+    render.render_frame(start, None);
+    let px = centre_px(&render.readback_view().await);
+    assert!(
+        px[0] > 200 && px[1] < 60,
+        "a clip taken at master frame {start} must start at its own frame 0 \
+         (red), got {px:?} — t0 is being ignored"
+    );
+
+    // Fifteen frames later it shows source frame 15, which is green.
+    render.render_frame(start + 15, None);
+    let px = centre_px(&render.readback_view().await);
+    assert!(
+        px[1] > 200 && px[0] < 60,
+        "15 frames after the take the clip must show its frame 15 (green), \
+         got {px:?}"
+    );
+
+    // And past its length it has run out rather than wrapping.
+    render.render_frame(start + 40, None);
+    let px = centre_px(&render.readback_view().await);
+    assert_eq!(
+        px,
+        [0, 0, 0, 255],
+        "a clip past its last frame renders nothing, not a wrapped frame"
+    );
+}
+
+#[tokio::test]
+async fn a_loop_taken_late_wraps_from_its_own_start() {
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "loop_10.mp4", Some(10));
+    let (state, _out) = load(dir.path()).await;
+    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+
+    let start: u64 = 1000;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+    state
+        .view_item_start_frame
+        .store(start, std::sync::atomic::Ordering::SeqCst);
+
+    // The frame at t0 and one full period later must be identical, and the
+    // frame one period earlier too: §12.1 holds over the whole timeline.
+    render.render_frame(start, None);
+    let at_t0 = centre_px(&render.readback_view().await);
+    render.render_frame(start + 10, None);
+    let one_period_later = centre_px(&render.readback_view().await);
+    render.render_frame(start - 10, None);
+    let one_period_earlier = centre_px(&render.readback_view().await);
+
+    assert_eq!(at_t0, one_period_later, "a loop repeats every period");
+    assert_eq!(
+        at_t0, one_period_earlier,
+        "pre-roll uses mathematical modulo, not a saturating subtraction"
+    );
+
+    // A mid-cycle frame differs, so the equality above is not vacuous.
+    render.render_frame(start + 5, None);
+    assert_ne!(
+        at_t0,
+        centre_px(&render.readback_view().await),
+        "the loop fixture must have distinguishable frames"
     );
 }

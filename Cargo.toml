@@ -27,10 +27,10 @@ clap = { version = "4", features = ["derive"] }
 [workspace.lints.rust]
 # `deny`, not `forbid`: the render node needs Objective-C FFI to reach
 # VideoToolbox for hardware decode (Prompt 05), and `forbid` cannot be
-# relaxed even for a single module. The exception is exactly one module —
-# `crates/nbe-engine/src/decode.rs` — which carries `#[allow(unsafe_code)]`
-# with its justification. Every other crate and module remains denied, and a
-# new `unsafe` block anywhere else is still a build failure.
+# relaxed even for a single module. The exception is exactly one crate —
+# `crates/nbe-decode` — whose `src/lib.rs` carries `#[allow(unsafe_code)]`
+# with its justification. Every other crate remains denied, and CI fails if
+# `allow(unsafe_code)` appears anywhere outside that crate.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
