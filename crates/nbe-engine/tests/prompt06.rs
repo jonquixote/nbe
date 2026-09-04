@@ -342,16 +342,22 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
     // Immediate, but not a click: §8.7.1 ramps the voice in over the 5 ms
     // floor. Starting a voice at full scale — the click the code comment names
     // — left 116/116 green, since it is audible even sooner.
-    let head = buf[0].abs();
+    // Measured over a window, not at sample 0: buf[0] of a 1 kHz tone is
+    // sin(0) = 0 whatever the gain does, which is how the first version of
+    // this assertion passed with the ramp deleted.
     let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(
         peak > 0.5,
         "precondition: the stab must reach full level, got {peak:.3}"
     );
+    let win = (SAMPLE_RATE as f32 * MIN_RAMP_MS / 1000.0) as usize / 5;
+    let early = buf[..win * CHANNELS]
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(
-        head < peak * 0.1,
-        "a trigger must ramp in, not start at full scale: first sample \
-         {head:.4} against a peak of {peak:.3}"
+        early < peak * 0.3,
+        "a trigger must ramp in, not start at full scale: the first {win} \
+         samples reach {early:.3} against a settled peak of {peak:.3}"
     );
     // Report the measured number, which is what the AC is about.
     println!(
