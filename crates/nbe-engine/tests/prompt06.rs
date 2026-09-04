@@ -165,6 +165,13 @@ fn muting_a_bus_ramps_instead_of_stepping() {
         "muting must not add a discontinuity: baseline {baseline:.1} dBFS, \
          muting {muted:.1} dBFS"
     );
+    // And the mute must have happened. Comparing discontinuities alone, a
+    // `set_muted` that does nothing is indistinguishable from one that ramps.
+    let settled = settled_peak_dbfs(&render_across_change(&mut g, 12, |_| {}));
+    assert!(
+        settled < -60.0,
+        "the bus must actually be muted; still at {settled:.1} dBFS"
+    );
     println!("mute: baseline {baseline:.1} dBFS, during mute {muted:.1} dBFS");
 }
 
@@ -182,12 +189,20 @@ fn a_gain_change_of_60_db_never_steps() {
     // A 1 Hz source is near-DC, so its own slope is negligible and any jump in
     // the output is the gain change's doing. A step would move the full 0.9 in
     // one sample (about -1 dBFS); a 5 ms ramp of the same size is far below.
-    let worst = worst_discontinuity_dbfs(&render_across_change(&mut g, 0, |g| {
+    let before = settled_peak_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    let worst = worst_discontinuity_dbfs(&render_across_change(&mut g, 2, |g| {
         g.bus_mut(BusId::Clip).set_gain_db(-60.0, 5.0);
     }));
     assert!(
         worst < -40.0,
         "a -60 dB gain change must ramp, not step; worst jump was {worst:.1} dBFS"
+    );
+    // And the gain must have moved. Without this a `set_gain_db` that does
+    // nothing passes the discontinuity bar trivially.
+    let after = settled_peak_dbfs(&render_across_change(&mut g, 4, |_| {}));
+    assert!(
+        before - after > 50.0,
+        "the gain change must land: {before:.1} -> {after:.1} dBFS"
     );
     println!("60 dB change over 5 ms: worst jump {worst:.1} dBFS");
 }
@@ -203,7 +218,19 @@ fn stopping_a_soundboard_voice_ramps_it_out() {
     // cut left this test green. 442.5 Hz puts sample 4800 a quarter cycle
     // later, at the peak — maximum step for a cut, minimum slope for the
     // baseline, which is the only place the two are distinguishable.
-    let samples = tone_samples(442.5, 0.8, SAMPLE_RATE as usize);
+    const HZ: f32 = 442.5;
+    // Guard the test's own power. The discrimination exists only because the
+    // join sits a quarter cycle off zero; it requires hz = 2.5 (mod 10) given
+    // BLOCK and a join at voice sample 3*BLOCK. Changing HOUSE_RATE, BLOCK, or
+    // the number of preceding renders would silently blind this test instead
+    // of failing it, so assert the condition rather than trusting the comment.
+    let join_phase = (HZ * (3 * BLOCK) as f32 / SAMPLE_RATE as f32).fract();
+    assert!(
+        (join_phase - 0.25).abs() < 0.05 || (join_phase - 0.75).abs() < 0.05,
+        "this test only discriminates a cut from a ramp when the join lands \
+         near a waveform peak; phase is {join_phase:.3} of a cycle"
+    );
+    let samples = tone_samples(HZ, 0.8, SAMPLE_RATE as usize);
     let id = g.trigger("stab", samples, 0.0);
 
     // Baseline: the voice running, no change at the join. The tone's own slope
@@ -288,15 +315,18 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
     let mut buf = buffer(budget_frames);
     g.render(&mut buf, 0);
 
+    // `position` cannot exceed the buffer, so `first_audible < budget_frames`
+    // was tautological — the `expect` was doing all the work. Assert the AC's
+    // real bar instead: audible within a couple of samples of the trigger.
     let first_audible = buf
         .as_chunks::<CHANNELS>()
         .0
         .iter()
         .position(|f| f.iter().any(|s| s.abs() > 0.001))
-        .expect("the trigger must produce output inside the budget");
+        .expect("the trigger must produce output inside the 20 ms budget");
     assert!(
-        first_audible < budget_frames,
-        "AC-13: first audible sample at frame {first_audible} of {budget_frames}"
+        first_audible <= 2,
+        "AC-13: a trigger is audible immediately, not {first_audible} samples in"
     );
     // Report the measured number, which is what the AC is about.
     println!(
@@ -359,6 +389,15 @@ fn ducking_leaves_mic_and_guest_alone() {
     // test and left here.
     let mic_before = mic_settled_level(false);
     let mic_after = mic_settled_level(true);
+    // Absolute guard first. `linear_to_db` floors at -120 rather than -inf, so
+    // silence-vs-silence reads as a delta of 0.0 and passes every relative
+    // assertion below: deleting the guest summing loop from `render()`
+    // entirely — no remote guest ever heard on the program mix — left the
+    // whole suite green. A delta is only evidence if the signal is there.
+    assert!(
+        mic_before > -20.0,
+        "precondition: the mic must be audible in the program mix, got {mic_before:.1} dBFS"
+    );
     assert!(
         (mic_before - mic_after).abs() < 0.5,
         "SPEC §8.3: ducking must not touch the mic bus ({mic_before:.1} -> {mic_after:.1})"
@@ -368,6 +407,11 @@ fn ducking_leaves_mic_and_guest_alone() {
     // bus was ever created here.
     let guest_before = guest_settled_level(false);
     let guest_after = guest_settled_level(true);
+    assert!(
+        guest_before > -20.0,
+        "precondition: a guest must be audible in the program mix, got \
+         {guest_before:.1} dBFS — SPEC §8.1 sums guest buses into master"
+    );
     assert!(
         (guest_before - guest_after).abs() < 0.5,
         "SPEC §8.3: ducking must not touch a guest bus ({guest_before:.1} -> {guest_after:.1})"
@@ -1053,11 +1097,83 @@ fn the_engine_binary_spawns_the_audio_driver() {
     // if that becomes true again.
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("src/main.rs is readable");
+    // Comments stripped first. A raw `contains` over the file text is defeated
+    // by two slashes: commenting the call out (and dropping the now-unused
+    // import, which is what silences clippy) passed the entire gate — the exact
+    // regression this test exists to prevent, with 115/115 green.
+    let code = strip_comments(&src);
     assert!(
-        src.contains("audio_driver::spawn("),
+        code.contains("audio_driver::spawn("),
         "src/main.rs must call audio_driver::spawn; without it the audio graph \
          is a mechanism nothing drives (SPEC §8.9)"
     );
+}
+
+/// Rust source with `//` and `/* */` comments removed, so a source assertion
+/// cannot be satisfied by commented-out code. String literals are preserved.
+fn strip_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut it = src.chars().peekable();
+    let (mut line, mut block, mut string) = (false, 0usize, false);
+    while let Some(c) = it.next() {
+        if line {
+            if c == '\n' {
+                line = false;
+                out.push(c);
+            }
+        } else if block > 0 {
+            match (c, it.peek()) {
+                ('*', Some('/')) => {
+                    it.next();
+                    block -= 1;
+                }
+                ('/', Some('*')) => {
+                    it.next();
+                    block += 1;
+                }
+                ('\n', _) => out.push(c),
+                _ => {}
+            }
+        } else if string {
+            out.push(c);
+            match c {
+                '\\' => {
+                    if let Some(n) = it.next() {
+                        out.push(n);
+                    }
+                }
+                '"' => string = false,
+                _ => {}
+            }
+        } else {
+            match (c, it.peek()) {
+                ('/', Some('/')) => {
+                    it.next();
+                    line = true;
+                }
+                ('/', Some('*')) => {
+                    it.next();
+                    block = 1;
+                }
+                _ => {
+                    out.push(c);
+                    if c == '"' {
+                        string = true;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn comment_stripping_does_not_see_commented_out_code() {
+    // The gate above is only as good as this function.
+    assert!(strip_comments("a();\n// b();\n").contains("a("));
+    assert!(!strip_comments("a();\n// b();\n").contains("b("));
+    assert!(!strip_comments("/* b(); */ a();").contains("b("));
+    assert!(strip_comments(r#"let s = "// b()"; a();"#).contains("b()"));
 }
 
 #[test]
@@ -1125,11 +1241,15 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
         }],
         &library,
     );
-    let audible = settled_peak_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    let base_buf = render_across_change(&mut g, 0, |_| {});
+    let audible = settled_peak_dbfs(&base_buf);
     assert!(
         audible > -20.0,
         "the taken item should be audible: {audible:.1}"
     );
+    // The tone's own slope, measured — not an absolute bar. `worst < -20.0`
+    // was cleared by the 440 Hz slope (-26.7 dBFS) whatever the code did.
+    let baseline = worst_discontinuity_dbfs(&base_buf);
 
     // Now a muted take of the same item.
     let buf = render_across_change(&mut g, 2, |g| {
@@ -1153,7 +1273,14 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
     // And it got there by ramping (§8.7.1).
     let worst = worst_discontinuity_dbfs(&buf);
     assert!(
-        worst < -20.0,
-        "a muted take must ramp, not step; worst jump {worst:.1} dBFS"
+        worst <= baseline + 1.0,
+        "a muted take must ramp, not step: baseline {baseline:.1} dBFS, \
+         muted take {worst:.1} dBFS"
     );
+    // What this test gates is `swap_source_through_silence` (removing it fails
+    // here). `set_gain_db`'s own ramp is gated by
+    // `a_gain_change_of_60_db_never_steps`, whose near-DC source makes a step
+    // unmissable; this join cannot see it, because the swap has already taken
+    // the bus through silence by the time the gain moves.
+    println!("muted take: baseline {baseline:.1} dBFS, muted {worst:.1} dBFS");
 }
