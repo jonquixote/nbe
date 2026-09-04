@@ -358,3 +358,55 @@ cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
 ```
 
 The control-plane count now includes the dress rehearsal. **The 3 failures are the review's own open findings** (R1 ×2, R4), not regressions: they are the assertions that prove the show has no sound. The rehearsal is not yet wired into CI as a required gate — doing so is Prompt 07's first task, after R1 is fixed, because a gate that is red on merge day teaches people to ignore it.
+
+
+---
+
+## 11. P0 fix and the target-hardware answer
+
+### 11.1 The P0 is fixed, and the fix is proven on the wire
+
+`PackageIndex::item_audio_asset` walks item → scene → elements → asset (the forward direction of `items_using_asset`), and `item_audio_map` runs it **once at `show.load`** into `EngineState::item_audio`. `AudioCommand::TakeItem` carries the resolved `asset_id`; the take path does a map lookup, never a graph walk (§7.13). `None` is a legitimate answer — a graphic-only scene is silent — as distinct from the silent miss it replaced.
+
+Verified end to end, from the rehearsal's own artifacts:
+
+```
+audio asset resident asset=A1_clip frames=240000
+audio asset resident asset=stab_sfx frames=19200
+item audio resolved items=3
+```
+
+| Bus | Before the fix | After |
+|---|---|---|
+| `clip` | −120 dBFS at every tick of the whole show | **−21.0 dBFS** while the clip plays |
+| `sfx` | −120 dBFS always | **−20.9 dBFS** on the stab; step 6 flipped **green** |
+
+**The show has sound.** Of the three red assertions the P0 was meant to flip, one flipped (step 6). Two remain red for a *different* cause, described next — not for the item→asset miss, which is closed.
+
+### 11.2 Finding R6 (new) — `appliedStateVersion` freezes after the resync
+
+The artifacts show `renderNode.lastAppliedStateVersion: 1` on every `stateChange` frame through `show.start` (sv 3) and both takes (sv 5, sv 7). The engine log's last acknowledgement is `show.resync applied sv=1`. Directives *are* being applied — the clock starts, the takes land, audio plays — but the engine stops reporting `appliedStateVersion` after the initial resync.
+
+Consequences: §5.9.5's quiescence acknowledgement can never fire, so `show.stop` always takes the forced path rather than the acknowledged one; and the charter's "gapless `appliedStateVersion` per connection" gate cannot be satisfied by construction. Step 10 passes today only because it measures elapsed time against the grace window, and the forced path also completes inside it.
+
+**Disposition: Prompt 07 fix list, alongside R5.** They are the same area — the engine's directive-acknowledgement and clock-start timing — and R5 (`masterClockFrame` sits at 0 for several ticks after `show.start`, so a take's audio reads a negative offset until the clock catches up) is what keeps step 4 and the gate red.
+
+### 11.3 The target-hardware answer
+
+Settled during the pause and recorded in v0.4 outline §0: **the Intel MacBook Pro is the target, not a fallback.** The founding proof is that this engine runs a show the machine could not serve under OBS. `docs/hardware-baseline.txt` is therefore the reference envelope, not a sample, and `[RI-2]`'s arithmetic is arithmetic against the real machine.
+
+Two consequences already actioned here:
+
+1. **Adapter selection is now a decision, not a default.** `Gpu::init` asks for `PowerPreference::HighPerformance` and logs what it got. Observed on the target machine:
+
+   ```
+   gpu adapter selected adapter=AMD Radeon Pro 555X backend=Metal device_type=DiscreteGpu quality=Consumer
+   ```
+
+   Honest measurement: with the *default* preference this machine also returns the discrete adapter today, so the line changes no behaviour here right now. It is still correct to make — the default is a heuristic that varies with wgpu version, macOS version and power state, and on a dual-GPU machine that choice should be named. The log line is the evidence either way, and the rehearsal report quotes it.
+
+2. **The format ladder is load-bearing, not cosmetic** (outline §0). One 10-second RGBA8 loop is 2,373 MiB against a 1536 MB integrated ceiling and a 4 GB discrete one, so NV12-vs-RGBA8 selection decides which shows are legal on this machine. That is now a v0.4 confirmed-content item rather than a candidate.
+
+### 11.4 The mission test
+
+Per outline §0, the dress rehearsal and the 30-minute AC-5 soak, green **on this Intel machine**, are the proof the project exists to produce — a release gate, not a curiosity. The rehearsal now stands at **9 of 12**, with the three remaining reds being R5, R6 and the underrun gate, all dispositioned to Prompt 07.

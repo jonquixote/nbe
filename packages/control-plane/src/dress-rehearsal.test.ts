@@ -19,7 +19,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
@@ -248,6 +248,19 @@ before(async () => {
 });
 
 after(async () => {
+  // Failure artifacts, per the charter: a real-time gate that fails without
+  // evidence costs a re-run to learn anything. Written unconditionally and
+  // cheap; CI uploads the directory.
+  try {
+    const dir = resolve(import.meta.dirname, "../../../target/dress-rehearsal");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "engine.log"), engineLog.join(""));
+    writeFileSync(join(dir, "telemetry.jsonl"), ticks.map((t) => JSON.stringify(t)).join("\n"));
+    writeFileSync(join(dir, "pushes.jsonl"), pushes.map((f) => JSON.stringify(f)).join("\n"));
+    writeFileSync(join(dir, "show-states.json"), JSON.stringify(showStates, null, 2));
+  } catch {
+    // Artifacts are diagnostics, never a reason to fail the gate.
+  }
   engine?.kill("SIGKILL");
   ws?.close();
   if (server) await server.close();
