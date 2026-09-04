@@ -20,7 +20,8 @@
 use objc2::rc::Retained;
 use objc2::AnyThread;
 use objc2_av_foundation::{
-    AVAsset, AVAssetReader, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo, AVURLAsset,
+    AVAsset, AVAssetReader, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeAudio,
+    AVMediaTypeVideo, AVURLAsset,
 };
 use objc2_core_video::{
     kCVPixelBufferPixelFormatTypeKey, kCVReturnSuccess, CVPixelBufferGetBaseAddress,
@@ -409,6 +410,176 @@ impl Drop for PixelBufferLock<'_> {
         unsafe {
             CVPixelBufferUnlockBaseAddress(self.buffer, CVPixelBufferLockFlags::ReadOnly);
         }
+    }
+}
+
+/// Decoded audio: interleaved stereo float32 at the engine's rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioTrack {
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Interleaved samples, `channels` per frame.
+    pub samples: Vec<f32>,
+}
+
+impl AudioTrack {
+    pub fn frames(&self) -> usize {
+        if self.channels == 0 {
+            0
+        } else {
+            self.samples.len() / self.channels as usize
+        }
+    }
+}
+
+/// The engine's internal audio format (SPEC §8.1).
+pub const ENGINE_SAMPLE_RATE: u32 = 48_000;
+pub const ENGINE_CHANNELS: u16 = 2;
+
+/// Ceiling on decoded audio, so a malformed or hostile asset cannot exhaust
+/// memory: 30 minutes of stereo float32 at 48 kHz is about 690 MiB, and no
+/// show item is longer than that.
+const MAX_AUDIO_SAMPLES: usize = ENGINE_SAMPLE_RATE as usize * 60 * 30 * 2;
+
+/// Decode an asset's audio track to 48 kHz interleaved stereo float32.
+///
+/// Called at load/arm time, never at take time (SPEC §8.9). Returns `Ok(None)`
+/// when the asset simply has no audio track — a silent clip is not a fault.
+pub fn decode_audio(path: &Path) -> Result<Option<AudioTrack>, DecodeError> {
+    let path_str = path.display().to_string();
+    unsafe {
+        let ns_path = NSString::from_str(&path_str);
+        let url = NSURL::fileURLWithPath(&ns_path);
+        let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
+        let asset_ref: &AVAsset = &asset;
+
+        #[allow(deprecated)]
+        let tracks = asset_ref.tracksWithMediaType(AVMediaTypeAudio.expect("AVMediaTypeAudio"));
+        let Some(track) = tracks.firstObject() else {
+            return Ok(None);
+        };
+
+        let reader = AVAssetReader::assetReaderWithAsset_error(asset_ref).map_err(|e| {
+            DecodeError::Open {
+                path: path_str.clone(),
+                reason: e.localizedDescription().to_string(),
+            }
+        })?;
+
+        // Ask for exactly the engine's format: the conversion runs in the
+        // decode pipeline, not in our code, and not on the audio thread.
+        let settings = audio_output_settings();
+        let output = AVAssetReaderTrackOutput::initWithTrack_outputSettings(
+            AVAssetReaderTrackOutput::alloc(),
+            &track,
+            Some(&settings),
+        );
+        if !reader.canAddOutput(&output) {
+            return Err(DecodeError::Open {
+                path: path_str,
+                reason: "reader rejected the audio output".into(),
+            });
+        }
+        reader.addOutput(&output);
+        if !reader.startReading() {
+            return Err(DecodeError::Failed {
+                path: path_str.clone(),
+                reason: reader
+                    .error()
+                    .map(|e| e.localizedDescription().to_string())
+                    .unwrap_or_else(|| "startReading refused".into()),
+            });
+        }
+
+        let mut samples: Vec<f32> = Vec::new();
+        while let Some(sample) = output.copyNextSampleBuffer() {
+            let Some(block) = sample.data_buffer() else {
+                continue;
+            };
+            let len = block.data_length();
+            if len == 0 {
+                continue;
+            }
+            // Bound the total before reserving: an asset reporting an absurd
+            // length must be refused, not allocated for.
+            if samples.len() + len / 4 > MAX_AUDIO_SAMPLES {
+                return Err(DecodeError::Failed {
+                    path: path_str,
+                    reason: format!("audio track exceeds the {MAX_AUDIO_SAMPLES}-sample ceiling"),
+                });
+            }
+            let mut bytes = vec![0u8; len];
+            let dst = std::ptr::NonNull::new(bytes.as_mut_ptr().cast::<std::ffi::c_void>())
+                .expect("a freshly allocated buffer is non-null");
+            let rc = block.copy_data_bytes(0, len, dst);
+            if rc != 0 {
+                return Err(DecodeError::Failed {
+                    path: path_str,
+                    reason: format!("could not copy audio block bytes (OSStatus {rc})"),
+                });
+            }
+            // The reader was asked for float32; a partial trailing sample is
+            // dropped rather than read past the buffer.
+            for chunk in bytes.as_chunks::<4>().0 {
+                samples.push(f32::from_le_bytes(*chunk));
+            }
+        }
+
+        if let Some(err) = reader.error() {
+            return Err(DecodeError::Failed {
+                path: path_str,
+                reason: err.localizedDescription().to_string(),
+            });
+        }
+
+        Ok(Some(AudioTrack {
+            sample_rate: ENGINE_SAMPLE_RATE,
+            channels: ENGINE_CHANNELS,
+            samples,
+        }))
+    }
+}
+
+/// Output settings asking for 48 kHz stereo float32 linear PCM.
+unsafe fn audio_output_settings() -> Retained<NSDictionary<NSString, objc2::runtime::AnyObject>> {
+    {
+        let key = |s: &str| NSString::from_str(s);
+        let fmt_key = key("AVFormatIDKey");
+        let rate_key = key("AVSampleRateKey");
+        let chan_key = key("AVNumberOfChannelsKey");
+        let float_key = key("AVLinearPCMIsFloatKey");
+        let depth_key = key("AVLinearPCMBitDepthKey");
+        let big_endian_key = key("AVLinearPCMIsBigEndianKey");
+        let non_interleaved_key = key("AVLinearPCMIsNonInterleaved");
+
+        // kAudioFormatLinearPCM
+        let fmt = NSNumber::new_u32(0x6C70_636D); // 'lpcm'
+        let rate = NSNumber::new_f64(ENGINE_SAMPLE_RATE as f64);
+        let chans = NSNumber::new_u32(ENGINE_CHANNELS as u32);
+        let yes = NSNumber::new_bool(true);
+        let no = NSNumber::new_bool(false);
+        let depth = NSNumber::new_u32(32);
+
+        NSDictionary::from_slices::<NSString>(
+            &[
+                &fmt_key,
+                &rate_key,
+                &chan_key,
+                &float_key,
+                &depth_key,
+                &big_endian_key,
+                &non_interleaved_key,
+            ],
+            &[
+                &*fmt as &_,
+                &*rate as &_,
+                &*chans as &_,
+                &*yes as &_,
+                &*depth as &_,
+                &*no as &_,
+                &*no as &_,
+            ],
+        )
     }
 }
 

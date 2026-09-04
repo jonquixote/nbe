@@ -1,6 +1,6 @@
 # NBE SPEC v0.3  
 **News Broadcasting Engine**  
-Status: normative specification — self-contained. Patch level v0.3.2.
+Status: normative specification — self-contained. Patch level v0.3.3.
 
 v0.3.1 applied four patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).
 
@@ -21,7 +21,17 @@ v0.3.2 is a clarification release: it writes down contracts that were already re
 | 11 | Audit record shape and retention. | 10.7 |
 | 12 | `sequenceRef` declared reserved-unresolvable in v0.3 (no sequence registry exists in the schema). | 16.4 |
 
-`schemas/manifest.v0.3.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.  
+`schemas/manifest.v0.3.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.
+
+v0.3.3 answers three questions the audio engine cannot be built without, and which nothing in v0.3.2 addressed:
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | How audio follows the master clock, and the real-time thread discipline that makes it possible. | 8.9 (new) |
+| 2 | The audio fault class. `underrun` appeared nowhere in the spec, and §10.1 carried no audio field, so a glitched show had nothing to report and no defined relationship to the watchdog. | 8.10 (new), 10.1, 10.1.1 |
+| 3 | That the Section 10.3 watchdog is a **video** watchdog: an audio underrun must not black the View. | 10.3 |
+
+`schemas/manifest.v0.3.json` is unchanged by v0.3.3.  
 Relationship to earlier versions: this document supersedes SPEC v0.2.5. It consolidates SPEC v0.1, SPEC v0.2, and the v0.2.1 errata (via the v0.2.5 consolidation) and introduces the v0.3 composable broadcast language: the two-axis model, element identity, the state-diff transition engine, overlays, sub-scenes, automation, plugins, quality profiles, and the abuse model. Where this document differs from prior versions, this document wins. Prior versions remain in `docs/` as history.
 
 ---
@@ -1296,6 +1306,70 @@ For live camera and guest sources:
 
 ---
 
+## 8.9 Audio and the master clock (normative, new in v0.3.3)
+
+Section 8.1 requires audio to be synchronized to the master show clock, and
+Section 11.5.1 sets the tolerance. This section says how, because the audio
+device does not run on the show's clock and cannot be made to.
+
+**There is one clock.** The master show clock (Section 11) is authoritative for
+what should be heard, exactly as it is for what should be seen. The audio
+device's callback is a *cadence*, not a clock: it asks for N samples whenever
+the hardware is ready, at a rate that drifts against every other clock in the
+machine.
+
+The mapping is the same discipline Section 12.1 applies to video:
+
+```text
+sampleForMasterFrame(F) = (F - t0) * sampleRate / houseFrameRate
+```
+
+A clip's audio is read at the sample offset its item's position implies — never
+from a playback cursor that advances on its own. A source that has been on air
+for `F - t0` frames is heard at exactly that offset, so a video frame and its
+audio cannot disagree about where they are.
+
+**Drift is measured, not assumed.** Each callback records the master frame it
+was serving. The difference between the samples the device has consumed and the
+samples the master clock implies is the drift, and it is reported
+(Section 10.1). Correction follows Section 11.5.1: adjust audio presentation, or
+drop/hold non-critical frames, within ±1 frame over a 30-minute show. Unbounded
+drift is forbidden.
+
+**Thread discipline (Section 7.13 applied to audio).** The audio callback runs
+on the device's real-time thread, at a higher priority than the render loop and
+with a harder deadline: a late video frame is a dropped frame, a late audio
+callback is an audible hole. Therefore:
+
+1. The callback MUST NOT allocate, lock, block, or perform I/O.
+2. The render loop MUST NOT call into the audio graph, and the audio callback
+   MUST NOT call into the renderer. Neither may wait on the other.
+3. Control reaches the callback through lock-free structures; meters and
+   counters leave the same way.
+4. Everything expensive — decode, resampling, soundboard preload — happens at
+   load or arm time, on other threads.
+
+## 8.10 Audio faults (normative, new in v0.3.3)
+
+An **underrun** is a callback the engine could not fill in time: the device
+asked for samples and the graph had none ready, so the hardware emitted silence
+or repeated its buffer. It is the audio equivalent of a dropped frame, and it is
+counted the same way (Section 10.1).
+
+| Condition | Meaning | Response |
+|---|---|---|
+| Underrun | a callback deadline was missed | count it; log the first of each episode |
+| Sustained underruns | the audio graph cannot keep up | raise the `E_AUDIO` condition in status (Section 10.4) and log loudly |
+| Device loss | the output device disappeared | `E_AUDIO`; attempt reopen with backoff; never block the render loop |
+
+**An audio fault MUST NOT trigger the video fallback slate.** The Section 10.3
+watchdog exists to keep a broken picture off air; a glitch in the audio graph
+does not make the picture wrong, and cutting the View to a slate because a
+soundboard sample underran would turn a small fault into a visible one. The two
+subsystems fail independently and report independently.
+
+---
+
 # 9. Subsystem 5 — Output/distribution
 
 ## 9.1 Outputs
@@ -1555,9 +1629,18 @@ Telemetry fields:
   "fallbackActive": false,
   "qualityProfile": "consumer",
   "degradationRung": 0,
-  "automationHold": false
+  "automationHold": false,
+  "audioUnderrunsTotal": 0,
+  "audioDriftMs": 0.4,
+  "busPeakDbfs": { "master": -12.3, "mic": -18.0 }
 }
 ```
+
+The three audio fields are new in v0.3.3. Before them a show could glitch
+audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
+missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
+drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
+operator can see which bus is hot without opening a meter bridge.
 
 ### 10.1.1 Field ownership and the merge (normative, new in v0.3.2)
 
@@ -1566,7 +1649,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs` |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 
@@ -1589,7 +1672,9 @@ Preview-only misses are not counted as live dropped frames but MUST be logged as
 
 ## 10.3 Watchdog
 
-The render node MUST implement a frame watchdog.
+The render node MUST implement a frame watchdog. It watches **video** frames:
+an audio fault is reported through Section 8.10 and never activates the
+fallback slate.
 
 If the render loop misses a deadline by more than:
 

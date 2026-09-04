@@ -75,6 +75,16 @@ ffmpeg -y -loglevel error \
   "$out/loop_10.mp4"
 
 # ---------------------------------------------------------------------------
+# 6a. Audio+video: a 1 kHz tone alongside picture, for the audio decode path.
+# ---------------------------------------------------------------------------
+say "av_tone.mp4 (640x360 video + 1 kHz stereo tone, 1 s)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=640x360:r=30:d=1" \
+  -f lavfi -i "sine=frequency=1000:duration=1:sample_rate=48000" \
+  -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 128k -shortest \
+  "$out/av_tone.mp4"
+
+# ---------------------------------------------------------------------------
 # 6. A corrupt file that claims to be video: decode must fail loudly, and at
 #    runtime that failure is a fault (itemEvent: decodeError), not a scope
 #    boundary.

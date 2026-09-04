@@ -503,3 +503,81 @@ async fn a_loop_taken_late_wraps_from_its_own_start() {
         "the loop fixture must have distinguishable frames"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Prompt 06 Step 0 defects, carried from the P5 review.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_resync_naming_no_item_clears_the_old_one() {
+    // The state after show.stop: the snapshot says nothing is on air. Reading
+    // only the naming case left the previous item rendering.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "cfr_30.mp4", None);
+    let (state, out) = load(dir.path()).await;
+    let handler = DirectiveHandler::new(state.clone(), out.clone());
+
+    *state.view_item.lock().unwrap() = Some("A1".into());
+    handler
+        .apply(&directive(
+            nbe_protocol::command::RESYNC,
+            9,
+            serde_json::json!({}),
+            serde_json::json!({
+                "showState": "STOPPED",
+                "viewItem": serde_json::Value::Null,
+                "previewItem": serde_json::Value::Null,
+                "itemStates": {},
+                "sceneStates": {},
+                "visibleOverlays": [],
+                "automationHold": false,
+                "fallbackActive": false,
+                "stateVersion": 9
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *state.view_item.lock().unwrap(),
+        None,
+        "a snapshot saying nothing is on air must clear the View"
+    );
+    assert!(
+        state.transition.lock().unwrap().is_none(),
+        "a resync supersedes any in-flight transition"
+    );
+
+    // And the View renders black rather than the stale item.
+    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    render.render_frame(0, None);
+    assert_eq!(centre_px(&render.readback_view().await), [0, 0, 0, 255]);
+}
+
+#[tokio::test]
+async fn an_armed_preview_clip_survives_a_late_master_clock() {
+    // Preview used t0 = 0, so an armed clip previewed as black once the master
+    // clock passed the clip's own length.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "cfr_30.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+
+    let armed_at: u64 = 500; // far past the clip's 30 frames
+    *state.preview_item.lock().unwrap() = Some("A1".into());
+    state
+        .preview_item_start_frame
+        .store(armed_at, std::sync::atomic::Ordering::SeqCst);
+
+    render.render_frame(armed_at, None);
+    let bytes = render.readback_preview().await;
+    let w = nbe_engine::render::PREVIEW_W;
+    let h = nbe_engine::render::PREVIEW_H;
+    let idx = (((h / 2) * w + w / 2) * 4) as usize;
+    let px = [bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3]];
+    assert!(
+        px[0] > 200 && px[1] < 60,
+        "an armed clip must preview its first frame regardless of the master \
+         clock's position, got {px:?}"
+    );
+}

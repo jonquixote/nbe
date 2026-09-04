@@ -3,6 +3,7 @@
 //! Arc<EngineState>; the clock FSM is derived by MainLoop from directives so
 //! other tasks can read state.
 
+use nbe_engine::audio_driver;
 use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
@@ -31,6 +32,18 @@ async fn main() -> anyhow::Result<()> {
         house_rate,
         telemetry_interval_ms: 1000,
     };
+
+    // The audio driver runs on its own task, on the audio cadence — never in
+    // the render loop (SPEC §8.9, §7.13). It owns the graph, drains the
+    // intents the directive path publishes, and publishes the v0.3.3 audio
+    // telemetry fields. Without it the graph is a mechanism nothing drives.
+    //
+    // Started before the GPU: audio does not depend on wgpu, and a slow or
+    // failing device init must not silence the show.
+    //
+    // The sink is the null sink: device glue is the recorded deferral in
+    // agents/prompts/06-audio-graph.md. Everything above the sink is real.
+    audio_driver::spawn(state.clone(), house_rate);
 
     // The render loop runs on its own task, driven by master-clock frame
     // boundaries — not a spin. It renders even while the clock is STOPPED so

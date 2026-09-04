@@ -35,6 +35,10 @@ pub struct EngineState {
     /// What the engine is showing on its view bus: the taken item's reference.
     /// Directive handlers update it; the render loop reads it.
     pub view_item: std::sync::Mutex<Option<String>>,
+    /// The master frame `preview_item` was armed — the Preview bus's `t0`.
+    /// Without it an armed clip previews as black once the master clock passes
+    /// the clip's own length.
+    pub preview_item_start_frame: AtomicU64,
     /// The master frame `view_item` went on air — SPEC §12.1's `t0`.
     ///
     /// Without this the compositor reads every clip at `frame` rather than
@@ -57,6 +61,19 @@ pub struct EngineState {
     pub dropped_frames_total: AtomicU64,
     /// Preview misses: logged, never counted as dropped frames.
     pub preview_missed: AtomicU64,
+    /// Audio callbacks the graph could not fill in time (SPEC §8.10).
+    pub audio_underruns_total: AtomicU64,
+    /// Audio-to-master drift (SPEC §8.9), as `f64::to_bits` so the audio
+    /// thread can publish it without a lock.
+    pub audio_drift_ms_bits: AtomicU64,
+    /// Per-bus peak levels for telemetry (SPEC §10.1).
+    pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// Audio intents published by the directive path and drained by whoever
+    /// owns the graph. The directive thread never touches the graph itself.
+    pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
+    /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
+    /// is the requirement: a trigger that reads disk cannot meet AC-13.
+    pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -80,6 +97,7 @@ impl EngineState {
             requested_quality: std::sync::Mutex::new(None),
             view_item: std::sync::Mutex::new(None),
             view_item_start_frame: AtomicU64::new(0),
+            preview_item_start_frame: AtomicU64::new(0),
             preview_item: std::sync::Mutex::new(None),
             package: Mutex::new(None),
             package_generation: AtomicU64::new(0),
@@ -88,6 +106,11 @@ impl EngineState {
             sessions: crate::video::SessionPool::new(),
             dropped_frames_total: AtomicU64::new(0),
             preview_missed: AtomicU64::new(0),
+            audio_underruns_total: AtomicU64::new(0),
+            audio_drift_ms_bits: AtomicU64::new(0),
+            bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            audio_commands: Mutex::new(Vec::new()),
+            audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -130,6 +153,7 @@ impl EngineState {
         FrameSnapshot {
             view_item: self.view_item.lock().unwrap().clone(),
             view_item_start_frame: self.view_item_start_frame.load(Ordering::SeqCst),
+            preview_item_start_frame: self.preview_item_start_frame.load(Ordering::SeqCst),
             preview_item: self.preview_item.lock().unwrap().clone(),
             transition: self.transition.lock().unwrap().clone(),
             fallback_active: self.fallback_active.load(Ordering::SeqCst),
@@ -210,6 +234,8 @@ pub struct FrameSnapshot {
     pub view_item: Option<String>,
     /// SPEC §12.1's `t0` for the View bus item.
     pub view_item_start_frame: u64,
+    /// The Preview bus's `t0`.
+    pub preview_item_start_frame: u64,
     pub preview_item: Option<String>,
     pub transition: Option<crate::scene::Transition>,
     pub fallback_active: bool,

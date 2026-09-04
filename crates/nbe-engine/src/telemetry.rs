@@ -29,6 +29,17 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
         // Effective probe result from GPU init, capped by the manifest's
         // requested profile. The engine is the engine — it is authoritative.
         quality_profile: *state.quality_profile.lock().unwrap(),
+        // SPEC §8.10 / §8.9 / §10.1: measured by the audio graph, published
+        // here. Zero means "no audio engine running", not "no problem".
+        audio_underruns_total: state
+            .audio_underruns_total
+            .load(std::sync::atomic::Ordering::SeqCst),
+        audio_drift_ms: f64::from_bits(
+            state
+                .audio_drift_ms_bits
+                .load(std::sync::atomic::Ordering::SeqCst),
+        ),
+        bus_peak_dbfs: state.bus_peaks.lock().unwrap().clone(),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

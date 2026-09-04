@@ -354,6 +354,17 @@ pub struct EngineTelemetry {
     /// probe has run — the control plane then reports the requested profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_profile: Option<QualityProfile>,
+    /// Audio callbacks the engine could not fill in time (SPEC §8.10). The
+    /// audio equivalent of `dropped_frames_total`.
+    #[serde(default)]
+    pub audio_underruns_total: u64,
+    /// Measured audio-to-master-clock drift in milliseconds (SPEC §8.9).
+    #[serde(default)]
+    pub audio_drift_ms: f64,
+    /// Per-bus peak level in dBFS, so an operator can see which bus is hot
+    /// without opening a meter bridge (SPEC §10.1).
+    #[serde(default)]
+    pub bus_peak_dbfs: std::collections::BTreeMap<String, f64>,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.

@@ -395,6 +395,12 @@ export const EngineTelemetryFrameSchema = z
      * requested profile.
      */
     qualityProfile: z.enum(["potato", "consumer", "pro", "reference"]).optional(),
+    /** Audio callbacks the engine could not fill in time (SPEC §8.10). */
+    audioUnderrunsTotal: z.number().int().nonnegative().default(0),
+    /** Measured audio-to-master-clock drift, ms (SPEC §8.9). */
+    audioDriftMs: z.number().default(0),
+    /** Per-bus peak level in dBFS (SPEC §10.1). */
+    busPeakDbfs: z.record(z.number()).default({}),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

@@ -78,6 +78,8 @@ impl DirectiveHandler {
             "show.stop" => self.on_show_stop(d)?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
+            "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
+            | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -184,6 +186,29 @@ impl DirectiveHandler {
         }
         *self.state.video.lock().unwrap() = library;
 
+        // SPEC §8.4: soundboard and clip audio are RAM-resident from
+        // `show.load`. A trigger that reads disk cannot meet AC-13's 20 ms,
+        // and a take that decodes cannot meet §7.13.
+        let mut audio_assets = std::collections::BTreeMap::new();
+        for (asset_id, src) in &index.asset_source {
+            match nbe_decode::decode_audio(&root.join(src)) {
+                Ok(Some(track)) => {
+                    info!(
+                        asset = %asset_id,
+                        frames = track.frames(),
+                        "audio asset resident"
+                    );
+                    audio_assets.insert(asset_id.clone(), Arc::new(track.samples));
+                }
+                // No audio track is normal media, not a fault.
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(asset = %asset_id, err = %e, "audio decode failed");
+                }
+            }
+        }
+        *self.state.audio_assets.lock().unwrap() = audio_assets;
+
         *self.state.package.lock().unwrap() = Some(index);
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);
         *self.state.view_item.lock().unwrap() = None;
@@ -251,11 +276,54 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(start_frame, std::sync::atomic::Ordering::SeqCst);
+
+            // SPEC §8.7.3: the take's audio object decides what the clip bus
+            // does. `follow` takes the item's own audioPolicy (AFV).
+            let mode = d
+                .payload
+                .get("audio")
+                .and_then(|a| a.get("transition"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("follow");
+            let ramp_ms = d
+                .payload
+                .get("audio")
+                .and_then(|a| a.get("rampMs"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(10.0) as f32;
+            // §8.7.5: a video mix crossfades audio over the same duration.
+            // §8.7.6: a video cut still ramps, never steps.
+            let crossfade_frames = if kind == crate::scene::TransitionKind::Mix {
+                d.payload
+                    .get("audio")
+                    .and_then(|a| a.get("durationFrames"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(transition_frames)
+            } else {
+                0
+            };
+            self.state.audio_commands.lock().unwrap().push(
+                crate::audio_control::AudioCommand::TakeItem {
+                    item_ref: r.to_string(),
+                    t0: start_frame,
+                    mode: mode.to_string(),
+                    ramp_ms,
+                    crossfade_frames,
+                },
+            );
             let generation = self.playing.begin(r);
             if let Some(frames) = duration_frames(d) {
                 self.schedule_done(r.to_string(), frames, generation);
             }
         }
+        Ok(())
+    }
+
+    /// Audio directives (SPEC §16.8). The graph lives on the audio thread; the
+    /// directive path only publishes intent, which is why this never blocks.
+    fn on_audio(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let mut pending = self.state.audio_commands.lock().unwrap();
+        pending.push(crate::audio_control::AudioCommand::from_directive(d)?);
         Ok(())
     }
 
@@ -278,19 +346,36 @@ impl DirectiveHandler {
         if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
             self.state.fallback_active.store(true, Ordering::SeqCst);
         }
-        if let Some(vi) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
-            *self.state.view_item.lock().unwrap() = Some(vi.to_string());
+        // The snapshot is authoritative about BOTH buses, including when a bus
+        // is empty. Reading only the naming case left the previous item on air
+        // after a show.stop resync said nothing was.
+        let now = self.state.master_frame().unwrap_or(0);
+        if snapshot.get("viewItem").is_some() {
+            let view = snapshot
+                .get("viewItem")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            *self.state.view_item.lock().unwrap() = view;
             // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
             // so a resynced timed item resumes from its first frame rather
             // than guessing an origin. Recorded as a spec gap in
             // agents/prompts/05-video-decode.md.
-            let now = self.state.master_frame().unwrap_or(0);
             self.state
                 .view_item_start_frame
                 .store(now, std::sync::atomic::Ordering::SeqCst);
+            // A resync supersedes any transition the engine was mid-way
+            // through: the snapshot is the state, not a waypoint toward it.
+            *self.state.transition.lock().unwrap() = None;
         }
-        if let Some(pi) = snapshot.get("previewItem").and_then(|v| v.as_str()) {
-            *self.state.preview_item.lock().unwrap() = Some(pi.to_string());
+        if snapshot.get("previewItem").is_some() {
+            let preview = snapshot
+                .get("previewItem")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            *self.state.preview_item.lock().unwrap() = preview;
+            self.state
+                .preview_item_start_frame
+                .store(now, std::sync::atomic::Ordering::SeqCst);
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");

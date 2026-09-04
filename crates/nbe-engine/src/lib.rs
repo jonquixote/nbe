@@ -4,6 +4,9 @@
 //! control plane, the master clock, the directive handler, telemetry out, and
 //! the watchdog skeleton. No GPU work until Prompt 04.
 
+pub mod audio;
+pub mod audio_control;
+pub mod audio_driver;
 pub mod channel;
 pub mod clock;
 /// Hardware decode lives in its own crate so `nbe-preflight` can use it

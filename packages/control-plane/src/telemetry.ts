@@ -29,6 +29,10 @@ export interface TelemetryTick {
   recordState: string;
   automationHold: boolean;
   qualityProfile: string | null;
+  // audio (SPEC §8.9, §8.10, new in v0.3.3)
+  audioUnderrunsTotal: number;
+  audioDriftMs: number;
+  busPeakDbfs: Record<string, number>;
   // addendum fields
   engineConnected: boolean;
   deprecationWarnings: Array<{ command: string; resolvedTo: string; stateVersionAtTime: number }>;
@@ -71,6 +75,9 @@ export function buildTick(
     // report is fresh; otherwise the manifest's requested profile is the only
     // honest answer the control plane has.
     qualityProfile: f?.qualityProfile ?? state.qualityProfile,
+    audioUnderrunsTotal: f?.audioUnderrunsTotal ?? 0,
+    audioDriftMs: f?.audioDriftMs ?? 0,
+    busPeakDbfs: f?.busPeakDbfs ?? {},
     engineConnected: engineFresh,
     // Deprecation warnings are per-subscriber: the server fans each accepted
     // deprecated command into every subscriber's own cursor and fills this in.
