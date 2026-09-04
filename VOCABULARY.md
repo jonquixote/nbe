@@ -9,6 +9,8 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 3. Every term records the spec version that introduced it.
 4. New terms are added by commit with a spec-version reference. Deprecations keep the old term listed with its replacement.
 5. When in doubt, add the term — an undefined term in an agent prompt is a bug factory.
+6. Every new term cites the spec section that owns it. A definition with no
+   owning section is prose, and prose drifts.
 
 ## Time axis — editorial: when things play
 
@@ -16,7 +18,7 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 |---|---|---|---|---|
 | Network | normative | v0.1 | The top-level identity: branding, fonts, fallback assets, template library. | |
 | Channel | normative (hook only) | v0.1 | A 24/7 programmed stream of Shows. Scheduler is post-v1; schema must not preclude it. | |
-| Show | normative | v0.1 | A single program/episode definition: video/audio specs, outputs, fallback. | |
+| Show | normative | v0.1 | A single program/episode **definition**: video/audio specs, outputs, fallback. A static declaration in the manifest — the thing a Show package contains, not the thing that runs. What runs is **Show state**. | |
 | Rundown | normative | v0.1 | The root Sequence of a Show: the editorial order of play. | |
 | Sequence | planned | v0.3 | A recursive, ordered container of Items. Sub-sequences are nested Sequences. Reusable across Shows. | generalizes Rundown/Segment/Subsegment |
 | Segment | normative | v0.1 | Conventional top level of a Rundown. IDs A–K by convention; schema allows A–ZZ. | |
@@ -42,10 +44,22 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 
 | Term | Status | Since | Definition | Aliases / notes |
 |---|---|---|---|---|
-| View | planned | v0.3 | The main live/recorded composited output. | renames Program |
-| Preview | normative | v0.1 | The staging bus: what transitions into View. | |
+| View | planned | v0.3 | The main live/recorded composited output (SPEC §5.6). What the audience sees; never degraded by the ladder. | renames Program |
+| Preview | normative | v0.1 | The staging bus: what is prepared to go live, and what transitions into View (SPEC §5.6). Never on air. | |
 | Multiview | planned | v0.3 | Operator grid render target: view, preview, source thumbnails, meters, tally borders. | |
 | Fallback slate | normative | v0.1 | The resident emergency image; automatic cut-to target on failure, ≤ 1 frame late. | |
+
+## Processes — who runs what
+
+The two components the system is made of. Neither was named in this ledger
+before [RI-0]; every architectural statement in the spec and in the review
+depends on the boundary between them.
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Control plane | normative | v0.1 | The authoritative show-state owner (SPEC §5.1). The Node/TypeScript process that loads and validates Show packages, owns the rundown state machine, exposes the §16 command API, maintains `stateVersion`, and keeps the audit log. It MUST NOT decode video, composite frames, or mix audio (§5.1). | |
+| Render node | normative | v0.1 | The Rust/wgpu process that decodes, composites, and mixes (SPEC §5.2, §5.9). It holds no authority over show state: it applies directives and reports `appliedStateVersion`. All control traffic reaches it through the control plane; direct dashboard-to-render-node control is forbidden (§5.2). | **engine**, `nbe-engine`, `render` role (§5.3) |
+| Render channel | normative | v0.3 | The control-plane→render-node protocol: directive frames, engine frames, per-connection `seq`, and reconnect resync (SPEC §5.9). | |
 
 ## Control
 
@@ -62,13 +76,14 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 | Tally | planned | v0.3 | Live-source indication, operator- and talent-facing. | |
 | Marker | planned | v0.3 | A rundown bookmark; doubles as a recording chapter. | |
 | Role | normative | v0.1 | Permissions class: monitor, operator, producer, admin, render. | |
+| Show state | normative | v0.3 | The **runtime** state machine of a loaded Show: `UNLOADED → LOADED → RUNNING → STOPPED` (SPEC §16.1 transitions, §17 item/scene states, §5.9.4 resync snapshot). Owned by the control plane and mirrored to the render node by `show.resync`; it is the `showState` field on the wire. Not to be confused with **Show** (a definition) or **Show package** (a folder). | `showState` |
 
 ## Media and assets
 
 | Term | Status | Since | Definition | Aliases / notes |
 |---|---|---|---|---|
 | Asset | normative | v0.1 | A packaged media file with kind, format, hash, cadence, and loop metadata. | |
-| Show package | normative | v0.1 | The self-contained folder: manifest + media + templates + audio. | |
+| Show package | normative | v0.1 | The self-contained folder on disk: manifest + media + templates + audio (SPEC §6). A **static artifact** — it is loaded, validated and preflighted; it has no runtime state of its own. The runtime is **Show state**. | package |
 | Mezzanine | normative | v0.1 | The house format every asset is normalized to (CFR, house rate, H.264 High, 48 kHz, −16 LUFS). | normalized format |
 | Loop | normative | v0.1 | Deterministic master-clock modulo playback: `frame(t) = (F − t0) mod P`. No restart events. | |
 | Cadence | normative | v0.1 | Source frame-rate character, preserved via frame holds. | |
