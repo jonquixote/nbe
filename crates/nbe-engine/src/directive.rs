@@ -11,6 +11,10 @@ use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{debug, info};
 
+/// GOP length assumed when the manifest does not declare one; feeds the
+/// §12.8 read-ahead minimum.
+const DEFAULT_GOP_FRAMES: u32 = 30;
+
 #[derive(Debug, Error)]
 pub enum DirectiveError {
     #[error("no package loaded: {0}")]
@@ -109,14 +113,58 @@ impl DirectiveHandler {
         .map_err(|e| DirectiveError::Invalid(format!("manifest not valid JSON: {e}")))?;
         let index = crate::scene::PackageIndex::build(&manifest, root);
 
-        // Step 5: the manifest's requested profile caps the probe result.
-        // Read the probe into a local first: a guard held in an `if let`
-        // scrutinee lives for the whole block, and re-locking it inside would
-        // deadlock.
-        let probed = *self.state.quality_profile.lock().unwrap();
-        if let (Some(requested), Some(probed)) = (index.requested_quality, probed) {
-            *self.state.quality_profile.lock().unwrap() = Some(probed.capped_by(requested));
+        // Record what the show asked for; the cap is applied at publish time
+        // (SPEC §10.1.1), so the order of probe and load does not matter.
+        self.state.set_requested_quality(index.requested_quality);
+
+        // Prompt 05: decode the package's video assets here, at load time.
+        // A genuine decode failure IS a fault — unlike Prompt 04's scope
+        // boundary — and is reported as `itemEvent: decodeError` so the
+        // control plane can drive the item to ERROR (SPEC §5.9.3, §17.3).
+        let budget = crate::loop_cache::CacheBudget {
+            per_loop_mib: 1024,
+            total_mib: 4096,
+            recommended_working_set_mib: None,
+        };
+        let mut library = crate::video::VideoLibrary::default();
+        for (asset_id, kind) in &index.asset_kind {
+            if kind != "video" && kind != "alphaVideo" {
+                continue;
+            }
+            let Some(src) = index.asset_source.get(asset_id) else {
+                continue;
+            };
+            let declared = index.declared_loop_period.get(asset_id).copied();
+            match crate::video::load_video_asset(
+                asset_id,
+                &root.join(src),
+                &self.state.sessions,
+                budget,
+                declared,
+                DEFAULT_GOP_FRAMES,
+            ) {
+                Ok(asset) => {
+                    info!(
+                        asset = %asset_id,
+                        frames = asset.frames.len(),
+                        rate = asset.source_frame_rate,
+                        "video asset decoded"
+                    );
+                    library.assets.insert(asset_id.clone(), asset);
+                }
+                Err(e) => {
+                    tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
+                    library.failures.insert(asset_id.clone(), e.to_string());
+                    self.outgoing.push(EngineFrame::ItemEvent {
+                        v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                        item_ref: asset_id.clone(),
+                        event: ItemEvent::DecodeError,
+                        detail: Some(e.to_string()),
+                    });
+                }
+            }
         }
+        *self.state.video.lock().unwrap() = library;
 
         *self.state.package.lock().unwrap() = Some(index);
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);

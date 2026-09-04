@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 nbe-protocol = { path = "../nbe-protocol" }
 nbe-core = { path = "../nbe-core" }
+nbe-decode = { path = "../nbe-decode" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

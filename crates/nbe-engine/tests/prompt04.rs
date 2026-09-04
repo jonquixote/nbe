@@ -459,16 +459,20 @@ async fn the_v0_3_fixture_produces_a_renderable_first_frame() {
         ))
         .await
         .unwrap();
-    // The fixture's only element is a video clip: unsupported until Prompt 05,
-    // so the scene is empty and renders black — a defined picture, not a fault.
+    // UPDATED IN PROMPT 05. This test previously asserted the View rendered
+    // black, because the fixture's only element is a video clip and video was
+    // unsupported — Prompt 04 drew that scope boundary deliberately. Prompt 05
+    // erased it: the clip now decodes and draws, so asserting black would be
+    // asserting the absence of the feature that just landed. The fixture's
+    // clip is flat 0x102030, and that is what the View must show.
     *state.view_item.lock().unwrap() = Some("A1".into());
     let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
     let report = render.render_frame(0, Some(Duration::from_secs(5)));
     assert!(report.view_late_by.is_none());
-    assert_eq!(
-        centre_px(&render.readback_view().await),
-        [0, 0, 0, 255],
-        "an empty scene renders black"
+    let px = centre_px(&render.readback_view().await);
+    assert!(
+        px[0].abs_diff(0x10) <= 2 && px[1].abs_diff(0x20) <= 2 && px[2].abs_diff(0x30) <= 2,
+        "the fixture's video element must render its decoded frame, got {px:?}"
     );
     assert_eq!(
         state.dropped_frames_total.load(Ordering::SeqCst),

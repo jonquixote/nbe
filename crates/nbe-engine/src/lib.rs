@@ -6,10 +6,15 @@
 
 pub mod channel;
 pub mod clock;
+/// Hardware decode lives in its own crate so `nbe-preflight` can use it
+/// without pulling in wgpu. Re-exported here so engine paths read the same.
+pub use nbe_decode as decode;
 pub mod directive;
 pub mod gpu;
+pub mod loop_cache;
 pub mod render;
 pub mod scene;
 pub mod state;
 pub mod telemetry;
+pub mod video;
 pub mod watchdog;

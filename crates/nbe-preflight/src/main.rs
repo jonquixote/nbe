@@ -8,6 +8,38 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use nbe_core::{AssetReport, PreflightReport, ValidationError};
 
+/// How many frames a preflight decode pass will read per asset. Preflight is
+/// allowed to be slow; it is not allowed to be unbounded.
+const DECODE_FRAME_LIMIT: usize = 100_000;
+
+/// The decode-derived fields of an `AssetReport` (SPEC §19.2).
+#[derive(Default)]
+struct DecodeFacts {
+    first_frame_ok: Option<bool>,
+    last_frame_ok: Option<bool>,
+    cfr: Option<bool>,
+    frame_rate: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    duration_frames: Option<u32>,
+}
+
+impl DecodeFacts {
+    fn from_probe(p: &nbe_decode::AssetProbe) -> Self {
+        Self {
+            // A probe decodes every frame, so reaching the end means both the
+            // first and the last frame decoded.
+            first_frame_ok: Some(true),
+            last_frame_ok: Some(true),
+            cfr: Some(p.cfr),
+            frame_rate: Some(p.measured_frame_rate),
+            width: Some(p.width),
+            height: Some(p.height),
+            duration_frames: Some(p.frame_count as u32),
+        }
+    }
+}
+
 /// Validate an NBE show package for air-readiness.
 #[derive(Parser, Debug)]
 #[command(name = "nbe-preflight", version, about)]
@@ -60,6 +92,23 @@ fn run(package_path: &Path) -> Result<(PreflightReport, bool)> {
         }
     }
 
+    // The house video format the assets are measured against (SPEC §6.2).
+    let house_resolution = manifest_json
+        .get("show")
+        .and_then(|s| s.get("video"))
+        .and_then(|v| {
+            Some((
+                v.get("width")?.as_u64()? as u32,
+                v.get("height")?.as_u64()? as u32,
+            ))
+        });
+    let house_frame_rate = manifest_json
+        .get("show")
+        .and_then(|s| s.get("video"))
+        .and_then(|v| v.get("frameRate"))
+        .and_then(|v| v.as_u64())
+        .map(|r| r as u32);
+
     // Asset existence: only meaningful once schema validation passes,
     // but we check regardless so the report is complete.
     if let Some(assets) = manifest_json.get("assets").and_then(|a| a.as_array()) {
@@ -82,10 +131,96 @@ fn run(package_path: &Path) -> Result<(PreflightReport, bool)> {
                     source
                 ));
             }
+            // Decode-based checks (Prompt 05 Step 7, SPEC §19): only for
+            // media that exists and claims to be video.
+            let mut decoded = DecodeFacts::default();
+            let is_video = matches!(kind.as_deref(), Some("video") | Some("alphaVideo"));
+            if exists && is_video {
+                let path = package_path.join(source.unwrap_or_default());
+                match nbe_decode::probe_asset(&path, DECODE_FRAME_LIMIT) {
+                    Ok(probe) => {
+                        decoded = DecodeFacts::from_probe(&probe);
+                        // AC-3: a variable frame rate is an error, not a
+                        // warning — VFR media cannot hold cadence on air.
+                        if !probe.cfr {
+                            had_errors = true;
+                            report.push_error(format!(
+                                "vfr: asset \"{id}\" is not constant frame rate (measured {:.3} fps); SPEC §6.2 requires CFR",
+                                probe.measured_frame_rate
+                            ));
+                        }
+                        if let Some((want_w, want_h)) = house_resolution {
+                            if probe.width != want_w || probe.height != want_h {
+                                had_errors = true;
+                                report.push_error(format!(
+                                    "resolution: asset \"{id}\" is {}x{}, house format is {want_w}x{want_h}",
+                                    probe.width, probe.height
+                                ));
+                            }
+                        }
+                        // Cadence: a source slower than the house rate is
+                        // legal and held (SPEC §18); a source FASTER than the
+                        // house rate loses frames, which is a warning an
+                        // operator should see before air.
+                        if let Some(house_rate) = house_frame_rate {
+                            let src = probe.nominal_frame_rate.round() as u32;
+                            if src > house_rate {
+                                report.push_warning(format!(
+                                    "cadence: asset \"{id}\" is {src} fps against a {house_rate} fps house rate; frames will be dropped"
+                                ));
+                            }
+                        }
+                        // Declared duration versus decoded reality.
+                        if let Some(expected) =
+                            asset.get("expectedDurationFrames").and_then(|v| v.as_u64())
+                        {
+                            if expected != probe.frame_count {
+                                report.push_warning(format!(
+                                    "duration: asset \"{id}\" declares {expected} frames, decoded {}",
+                                    probe.frame_count
+                                ));
+                            }
+                        }
+                        // Declared loop period versus reality (SPEC §12.10).
+                        if let Some(period) = asset
+                            .get("loop")
+                            .and_then(|l| l.get("periodFrames"))
+                            .and_then(|v| v.as_u64())
+                        {
+                            if period != probe.frame_count {
+                                had_errors = true;
+                                report.push_error(format!(
+                                    "loop: asset \"{id}\" declares periodFrames {period}, decoded {} frames",
+                                    probe.frame_count
+                                ));
+                            }
+                        }
+                        // Alpha presence for assets that promise it.
+                        if kind.as_deref() == Some("alphaVideo") && !probe.has_alpha {
+                            had_errors = true;
+                            report.push_error(format!(
+                                "alpha: asset \"{id}\" is declared alphaVideo but carries no alpha"
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        had_errors = true;
+                        report.push_error(format!("decode: asset \"{id}\" failed to decode: {e}"));
+                    }
+                }
+            }
+
             report.assets.push(AssetReport {
                 id,
                 kind,
                 exists,
+                decode_first_frame_ok: decoded.first_frame_ok,
+                decode_last_frame_ok: decoded.last_frame_ok,
+                cfr: decoded.cfr,
+                frame_rate: decoded.frame_rate,
+                width: decoded.width,
+                height: decoded.height,
+                duration_frames: decoded.duration_frames,
                 ..Default::default()
             });
         }

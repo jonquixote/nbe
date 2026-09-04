@@ -33,6 +33,12 @@ const UNIFORM_STRIDE: u64 = 256;
 /// Maximum layers composited in one frame.
 const MAX_LAYERS: u64 = 64;
 
+/// One video asset's resident frames, indexed by ring slot (SPEC §12.7).
+struct VideoRing {
+    textures: Vec<wgpu::Texture>,
+    period_frames: u32,
+}
+
 pub struct RenderTargets {
     pub view: wgpu::Texture,
     pub preview: wgpu::Texture,
@@ -73,6 +79,9 @@ pub struct RenderLoop {
     /// Uploaded image textures by asset id; rebuilt when the package
     /// generation changes, never per frame.
     textures: HashMap<String, wgpu::Texture>,
+    /// Uploaded video ring buffers by asset id (SPEC §12.7). Built at load
+    /// time; the render loop only indexes into them.
+    video_rings: HashMap<String, VideoRing>,
     /// The uploaded fallback slate.
     fallback_tex: wgpu::Texture,
     /// 1x1 white texture; solid layers are this modulated by a colour.
@@ -88,6 +97,9 @@ pub struct RenderLoop {
     pub fail_preview: bool,
     consecutive_late: u32,
     consecutive_on_time: u32,
+    /// True while the View is in a failure episode, so the log is written
+    /// once per episode rather than once per frame.
+    view_failing: bool,
 }
 
 impl RenderLoop {
@@ -96,9 +108,11 @@ impl RenderLoop {
         requested: Option<nbe_protocol::QualityProfile>,
     ) -> anyhow::Result<Self> {
         let gpu = Gpu::init(requested).await?;
-        // Step 5: the probe result is written into shared state HERE, in
-        // production, so telemetry reports it because the engine put it there.
-        *state.quality_profile.lock().unwrap() = Some(gpu.quality);
+        // The probe result is published here, in production, so telemetry
+        // reports it because the engine put it there. Publishing (not
+        // assigning) means a re-probe after device loss re-applies the
+        // manifest cap instead of dropping it.
+        state.set_probed_quality(gpu.quality);
 
         let targets = RenderTargets {
             view: gpu.make_texture(VIEW_W, VIEW_H, "view"),
@@ -129,6 +143,7 @@ impl RenderLoop {
             state,
             watchdog,
             textures: HashMap::new(),
+            video_rings: HashMap::new(),
             fallback_tex,
             white,
             loaded_generation: u64::MAX,
@@ -140,6 +155,7 @@ impl RenderLoop {
             fail_preview: false,
             consecutive_late: 0,
             consecutive_on_time: 0,
+            view_failing: false,
         };
         me.sync_package();
         Ok(me)
@@ -163,6 +179,35 @@ impl RenderLoop {
                     self.gpu.upload_rgba(&tex, img.width, img.height, &img.rgba);
                     self.textures.insert(asset_id.clone(), tex);
                 }
+            }
+        }
+
+        // Video rings: one texture per resident frame, uploaded once at the
+        // load boundary. `textureSlot = sourceIndex mod P` indexes them.
+        self.video_rings.clear();
+        {
+            let library = self.state.video.lock().unwrap();
+            for (asset_id, asset) in &library.assets {
+                let mut textures = Vec::with_capacity(asset.frames.len());
+                for f in &asset.frames {
+                    let tex = self.gpu.make_texture(f.width, f.height, asset_id);
+                    self.gpu.upload_rgba(&tex, f.width, f.height, &f.rgba);
+                    textures.push(tex);
+                }
+                tracing::info!(
+                    asset = %asset_id,
+                    frames = textures.len(),
+                    period = asset.period_frames,
+                    policy = ?asset.plan.cache_policy_selected,
+                    "video ring resident"
+                );
+                self.video_rings.insert(
+                    asset_id.to_string(),
+                    VideoRing {
+                        textures,
+                        period_frames: asset.period_frames,
+                    },
+                );
             }
         }
 
@@ -205,9 +250,23 @@ impl RenderLoop {
         if let Some(d) = self.injected_view_delay {
             std::thread::sleep(d);
         }
-        if let Err(e) = self.render_bus(Bus::View, frame) {
-            tracing::error!(err = %e, frame, "view render failed; engaging fallback");
-            self.state.fallback_active.store(true, Ordering::SeqCst);
+        match self.render_bus(Bus::View, frame) {
+            Ok(()) => {
+                // Recovery is worth exactly one line too.
+                if self.view_failing {
+                    tracing::info!(frame, "view render recovered");
+                    self.view_failing = false;
+                }
+            }
+            Err(e) => {
+                // Log once per fault episode: a persistent failure at frame
+                // rate buries every other line in the log.
+                if !self.view_failing {
+                    tracing::error!(err = %e, frame, "view render failed; engaging fallback");
+                    self.view_failing = true;
+                }
+                self.state.fallback_active.store(true, Ordering::SeqCst);
+            }
         }
         let elapsed = started.elapsed();
 
@@ -258,17 +317,20 @@ impl RenderLoop {
 
     /// Resolve what a bus shows this frame, as (scene, alpha) pairs drawn in
     /// order. A running mix contributes two entries.
+    ///
+    /// The bus inputs are read once into a `FrameSnapshot` before the package
+    /// is touched: taking four locks across a frame invited a torn read the
+    /// moment decode threads started writing to the same state.
     pub fn scene_for(&self, bus: Bus, frame: u64) -> Vec<(ResolvedScene, f32)> {
+        let snapshot = self.state.frame_snapshot();
         let index = self.state.package.lock().unwrap();
         let Some(index) = index.as_ref() else {
             return Vec::new();
         };
         if bus == Bus::Preview {
-            let item = self.state.preview_item.lock().unwrap().clone();
-            return vec![(index.resolve(item.as_deref()), 1.0)];
+            return vec![(index.resolve(snapshot.preview_item.as_deref()), 1.0)];
         }
-        let transition = self.state.transition.lock().unwrap().clone();
-        match transition {
+        match snapshot.transition {
             // Before the boundary the transition was issued for, the outgoing
             // item is still what is on air: no transition begins mid-frame.
             Some(t) if frame < t.start_frame => {
@@ -283,10 +345,7 @@ impl RenderLoop {
                 out.push((index.resolve(Some(&t.to_item)), alpha));
                 out
             }
-            _ => {
-                let item = self.state.view_item.lock().unwrap().clone();
-                vec![(index.resolve(item.as_deref()), 1.0)]
-            }
+            _ => vec![(index.resolve(snapshot.view_item.as_deref()), 1.0)],
         }
     }
 
@@ -312,7 +371,7 @@ impl RenderLoop {
         } else {
             for (scene, alpha) in self.scene_for(bus, frame) {
                 for layer in scene.layers {
-                    if let Some(d) = self.draw_for(&layer, alpha) {
+                    if let Some(d) = self.draw_for(&layer, alpha, frame) {
                         draws.push(d);
                     }
                 }
@@ -386,10 +445,33 @@ impl RenderLoop {
         Ok(())
     }
 
-    fn draw_for(&self, layer: &Layer, alpha: f32) -> Option<(wgpu::Texture, LayerUniform)> {
+    fn draw_for(
+        &self,
+        layer: &Layer,
+        alpha: f32,
+        frame: u64,
+    ) -> Option<(wgpu::Texture, LayerUniform)> {
         let (tex, mut color) = match &layer.source {
             LayerSource::Solid(c) => (self.white.clone(), *c),
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
+            // SPEC §12.1: which frame shows is a pure function of the master
+            // clock. The ring textures were uploaded at load; this is a lookup.
+            LayerSource::Video { asset_id, looping } => {
+                let ring = self.video_rings.get(asset_id)?;
+                let source_index = if *looping {
+                    crate::decode::loop_source_index(frame, 0, ring.period_frames as u64)?
+                } else {
+                    crate::decode::clip_source_index(frame, 0, ring.period_frames as u64)?
+                };
+                let slot = crate::loop_cache::texture_slot(source_index, ring.period_frames)?;
+                let tex = ring
+                    .textures
+                    .get(slot)
+                    // Streamed loops hold the last resident frame rather than
+                    // blocking the render thread (SPEC §12.8).
+                    .or_else(|| ring.textures.last())?;
+                (tex.clone(), [1.0, 1.0, 1.0, 1.0])
+            }
         };
         color[3] *= layer.opacity * alpha;
         Some((
