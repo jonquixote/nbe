@@ -38,6 +38,17 @@ pub enum AudioCommand {
         guest_id: String,
         muted: bool,
     },
+    /// A take: put this item's audio on the clip bus at its `t0`, honouring
+    /// the §8.7.3 audio mode.
+    TakeItem {
+        item_ref: String,
+        t0: u64,
+        /// `follow` | `crossfade` | `cut` | `mute` (SPEC §8.7.3).
+        mode: String,
+        ramp_ms: f32,
+        /// Frames to crossfade over; 0 for a cut (SPEC §8.7.5/§8.7.6).
+        crossfade_frames: u64,
+    },
 }
 
 impl AudioCommand {
@@ -89,6 +100,42 @@ impl AudioCommand {
 ///
 /// `library` supplies soundboard samples that were preloaded at show load —
 /// nothing is read from disk here (SPEC §8.9).
+/// How a take's audio mode maps to the clip bus (SPEC §8.7.3).
+///
+/// Returned rather than applied inline so the mapping is testable without a
+/// graph: it is the part of the take that is easy to get subtly wrong.
+pub fn take_gain_and_ramp(
+    mode: &str,
+    ramp_ms: f32,
+    crossfade_frames: u64,
+    house_rate: u32,
+) -> (f32, f32) {
+    let crossfade_ms = if crossfade_frames > 0 {
+        crossfade_frames as f32 * 1000.0 / house_rate.max(1) as f32
+    } else {
+        0.0
+    };
+    match mode {
+        // The item's audio is muted on air.
+        "mute" => (-60.0, ramp_ms),
+        // An equal-power crossfade over the video's own duration (§8.7.5).
+        // The ramp is the crossfade; the clip arrives at unity across it.
+        "crossfade" => (0.0, crossfade_ms.max(ramp_ms)),
+        // A cut still ramps: §8.7.6 sets a 5 ms floor, which `Ramp` enforces.
+        "cut" => (0.0, ramp_ms),
+        // `follow` is AFV — the item's audioPolicy decides, and `clip` is the
+        // default policy, so the clip bus comes up at unity.
+        _ => (
+            0.0,
+            if crossfade_ms > 0.0 {
+                crossfade_ms
+            } else {
+                ramp_ms
+            },
+        ),
+    }
+}
+
 pub fn apply(
     graph: &mut AudioGraph,
     commands: Vec<AudioCommand>,
@@ -150,6 +197,30 @@ pub fn apply(
                 attack_ms,
                 release_ms,
             } => graph.set_duck(enabled, depth_db, attack_ms, release_ms),
+            AudioCommand::TakeItem {
+                item_ref,
+                t0,
+                mode,
+                ramp_ms,
+                crossfade_frames,
+            } => {
+                let house = graph.house_frame_rate();
+                let (gain_db, ramp) = take_gain_and_ramp(&mode, ramp_ms, crossfade_frames, house);
+                // The item's audio is whatever was made resident at show.load.
+                let sources = match library.get(&item_ref) {
+                    Some(samples) => vec![crate::audio::Source::Pcm {
+                        samples: samples.clone(),
+                        t0,
+                        looping: false,
+                    }],
+                    // A silent item is normal: clear the bus rather than leave
+                    // the previous item audible under the new picture.
+                    None => Vec::new(),
+                };
+                // Through silence: the content changes, not just the level, so
+                // ramping the gain alone would still step the waveform.
+                graph.swap_source_through_silence(BusId::Clip, sources, gain_db, ramp);
+            }
             AudioCommand::GuestMute { guest_id, muted } => {
                 if let Some(b) = graph.guest_bus_mut(&guest_id) {
                     b.set_muted(muted, DEFAULT_RAMP_MS);

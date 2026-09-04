@@ -17,21 +17,28 @@ jobs:
       - name: the unsafe exception stays in crates/nbe-decode
         run: |
           # The workspace denies unsafe_code (root Cargo.toml). Exactly one
-          # crate is allowed to opt out, because Objective-C FFI cannot exist
-          # without it. Anywhere else, an opt-out is a policy change wearing
-          # an attribute, and this gate refuses it.
+          # crate's PRODUCTION code is allowed to opt out, because Objective-C
+          # FFI cannot exist without it. Anywhere else in `src/`, an opt-out is
+          # a policy change wearing an attribute, and this gate refuses it.
+          #
+          # Test binaries are scoped out on purpose: the audio allocation gate
+          # needs `unsafe impl GlobalAlloc` to count allocations, and a test
+          # harness's allocator never ships. The policy protects what runs on
+          # air, and this keeps the rule honest instead of granting the audio
+          # crate a production exception it does not need.
           # `grep -r crates/` prints `crates//...` on GNU grep and `crates/...`
           # on BSD, so the path is normalized before filtering. Verifying this
           # gate only on macOS is what let that difference through once.
           hits=$(grep -rn "allow(unsafe_code)" crates --include=*.rs \
             | sed 's|//*|/|g' \
+            | grep "/src/" \
             | grep -v "^crates/nbe-decode/" || true)
           if [ -n "$hits" ]; then
             echo "allow(unsafe_code) outside crates/nbe-decode:"
             echo "$hits"
             exit 1
           fi
-          echo "unsafe exception confined to crates/nbe-decode"
+          echo "unsafe exception confined to crates/nbe-decode/src"
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |

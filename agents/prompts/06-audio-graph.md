@@ -118,6 +118,36 @@ Offline, over rendered samples. Each names the production path it covers:
 
 The `rust` job covers this crate. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` all pass. The audio tests run headless on `macos-14` with no device — if they need one, the design in Step 1 is wrong.
 
+## Deferred out of Prompt 06, recorded here
+
+**The `cpal` device sink.** The driver is real and runs in `main.rs`: it owns
+the graph, drains intents, renders on the master-clock cadence, and publishes
+the v0.3.3 telemetry fields. What it writes into is a `NullSink` that consumes
+blocks and counts them. The device glue — opening a `cpal` output stream,
+matching its block size, and handing the callback `AudioGraph::render` — is the
+remaining work.
+
+*Why deferred:* CI has no audio hardware, and the graph was built to be
+measured offline precisely so the acceptance criteria do not depend on a
+device. Everything above the sink is exercised; the sink boundary is one
+`AudioSink` implementation.
+
+*Trigger condition:* the first time a human needs to hear the engine — a
+monitor mix, an operator check, or Prompt 09's encoder needing real audio
+timing rather than block counts. `AudioGraph::render` is already
+allocation-free and gated as such, so it is callback-safe when that day comes.
+
+**Clip audio is loaded per asset, not per item.** `show.load` decodes every
+asset's audio track and makes it resident by asset id, and a take looks the
+item up by the same id. A package whose item ids and asset ids diverge will
+find nothing and play silence rather than the wrong thing. Resolving items to
+their scene's clip asset is the same reverse-index walk `items_using_asset`
+already does for decode faults; it lands with the first package that needs it.
+
+**Anchor-mic detection for ducking.** §8.3 allows voice-triggered ducking;
+this prompt implements the manual `audio.duck` path only. Voice detection needs
+a real mic input, which arrives with the device sink.
+
 ## Constraints
 
 **Forbidden changes:**

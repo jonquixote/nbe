@@ -16,13 +16,80 @@ use nbe_engine::audio_control::{apply, AudioCommand};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[allow(unsafe_code)]
+mod alloc_probe {
+    //! A counting global allocator, for the §8.9 allocation gate.
+    //!
+    //! `unsafe impl GlobalAlloc` is unavoidable here. This is a test binary —
+    //! the allocator never ships — and the CI gate that confines unsafe scopes
+    //! itself to `src/` for exactly this reason.
+    //!
+    //! The counters are THREAD-LOCAL. A global counter counts every thread's
+    //! allocations, and `cargo test` runs tests in parallel, so the first
+    //! version of this gate reported whatever the rest of the suite happened to
+    //! be doing. Both cells are const-initialized so touching them cannot
+    //! itself allocate.
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ALLOCS: Cell<usize> = const { Cell::new(0) };
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub struct CountingAlloc;
+
+    unsafe impl GlobalAlloc for CountingAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            note();
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            note();
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    fn note() {
+        // `try_with`: during thread teardown the TLS may be gone, and an
+        // allocator must never panic.
+        let _ = ARMED.try_with(|armed| {
+            if armed.get() {
+                let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+            }
+        });
+    }
+
+    /// Run `f` with counting armed on THIS thread, returning the count.
+    pub fn allocations_during(f: impl FnOnce()) -> usize {
+        ALLOCS.with(|n| n.set(0));
+        ARMED.with(|a| a.set(true));
+        f();
+        ARMED.with(|a| a.set(false));
+        ALLOCS.with(|n| n.get())
+    }
+}
+
+use alloc_probe::{allocations_during, CountingAlloc};
+
+#[global_allocator]
+static ALLOC: CountingAlloc = CountingAlloc;
+
 const HOUSE_RATE: u32 = 30;
+
+/// One master frame's worth of sample frames at the house rate. Rendering in
+/// exact master-frame blocks keeps a tone's phase continuous across blocks, so
+/// a discontinuity in the output is the graph's doing and not the harness's.
+const BLOCK: usize = SAMPLE_RATE as usize / HOUSE_RATE as usize;
 
 fn buffer(frames: usize) -> Vec<f32> {
     vec![0.0; frames * CHANNELS]
 }
 
-/// A one-second stereo tone at full-ish level, as soundboard material.
+/// A stereo tone, as soundboard material.
 fn tone_samples(hz: f32, amplitude: f32, frames: usize) -> Arc<Vec<f32>> {
     let mut v = Vec::with_capacity(frames * CHANNELS);
     for n in 0..frames {
@@ -39,10 +106,15 @@ fn peak_dbfs(buf: &[f32]) -> f32 {
     linear_to_db(buf.iter().fold(0.0f32, |m, s| m.max(s.abs())))
 }
 
-/// One master frame's worth of sample frames at the house rate. Rendering in
-/// exact master-frame blocks keeps a tone's phase continuous across blocks, so
-/// a discontinuity in the output is the graph's doing and not the harness's.
-const BLOCK: usize = SAMPLE_RATE as usize / HOUSE_RATE as usize;
+/// Peak of the final quarter of a buffer.
+///
+/// A ramping change is settled by then, so this measures the value the change
+/// moved TO. Peak over a whole buffer measures the value it moved FROM, which
+/// is what made the first version of the ducking test read 0.9 dB.
+fn settled_peak_dbfs(buf: &[f32]) -> f32 {
+    let tail = buf.len() / 4 * 3;
+    peak_dbfs(&buf[tail..])
+}
 
 /// Render two consecutive master frames into ONE contiguous buffer, applying
 /// `change` at the join.
@@ -63,16 +135,6 @@ fn render_across_change(
     change(g);
     g.render(b, first_frame + 1);
     buf
-}
-
-/// Peak of the final quarter of a buffer.
-///
-/// A ramping change is settled by then, so this measures the value the change
-/// moved TO. Peak over a whole buffer measures the value it moved FROM, which
-/// is what made the first version of the ducking test read 0.9 dB.
-fn settled_peak_dbfs(buf: &[f32]) -> f32 {
-    let tail = buf.len() / 4 * 3;
-    peak_dbfs(&buf[tail..])
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +368,43 @@ fn a_sources_read_offset_comes_from_the_master_clock() {
 }
 
 #[test]
+fn the_house_rate_is_configuration_not_a_constant() {
+    // SPEC §8.9: sampleForMasterFrame(F) = (F - t0) * sampleRate / houseRate.
+    // A literal 30 in that arithmetic gives 40000 here, and mis-times every
+    // frame of a 25 fps show.
+    let g25 = AudioGraph::new(25);
+    assert_eq!(
+        g25.sample_for_master_frame(25, 0),
+        SAMPLE_RATE as i64,
+        "one second of show time at 25 fps is one second of samples"
+    );
+    assert_eq!(g25.sample_for_master_frame(50, 25), SAMPLE_RATE as i64);
+
+    // And a source's own t0 offset uses the same rate: an item taken at frame
+    // 25 of a 25 fps show is at its own sample 0 one second in.
+    let mut g = AudioGraph::new(25);
+    let samples: Arc<Vec<f32>> = tone_samples(1000.0, 0.5, SAMPLE_RATE as usize);
+    g.set_source(
+        BusId::Clip,
+        vec![Source::Pcm {
+            samples,
+            t0: 25,
+            looping: false,
+        }],
+    );
+    let mut buf = buffer(512);
+    g.render(&mut buf, 25);
+    // At its own frame 0 the tone starts at zero and rises; if the offset were
+    // computed with a literal 30 the read would land 8000 samples away and the
+    // first sample would not be near zero.
+    assert!(
+        buf[0].abs() < 0.01,
+        "a 25 fps item at its own t0 must start at its first sample, got {}",
+        buf[0]
+    );
+}
+
+#[test]
 fn drift_is_measured_against_the_master_clock() {
     let mut g = AudioGraph::new(HOUSE_RATE);
     // Render exactly one second of audio.
@@ -504,4 +603,384 @@ fn soundboard_play_uses_only_resident_samples() {
         &library,
     );
     assert_eq!(g.active_voices(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// SPEC §8.9 — the callback allocates nothing. The gate, not the comment.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rendering_a_block_allocates_nothing() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: 0.3,
+        }],
+    );
+    g.set_source(
+        BusId::Music,
+        vec![Source::Tone {
+            hz: 220.0,
+            amplitude: 0.3,
+        }],
+    );
+    g.upsert_guest(
+        "G",
+        vec![Source::Tone {
+            hz: 500.0,
+            amplitude: 0.2,
+        }],
+    );
+    g.upsert_guest("H", vec![]);
+    g.trigger("stab", tone_samples(880.0, 0.5, 48_000), 0.0);
+
+    let mut buf = buffer(BLOCK);
+    // Warm up: `reserve` may grow the scratch buffers the first time it sees
+    // this block size, which is setup, not steady state.
+    g.render(&mut buf, 0);
+
+    let allocs = allocations_during(|| {
+        g.render(&mut buf, 1);
+    });
+    assert_eq!(
+        allocs, 0,
+        "AudioGraph::render must allocate nothing in the steady state \
+         (SPEC §8.9); it made {allocs} allocations"
+    );
+
+    let mut ret = buffer(BLOCK);
+    let allocs = allocations_during(|| {
+        g.render_guest_return("G", &mut ret, 1);
+    });
+    assert_eq!(
+        allocs, 0,
+        "render_guest_return must allocate nothing either; it made {allocs}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SPEC §8.6/§8.7.1 — a change landing mid-buffer must ramp in the IFB path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_mute_mid_buffer_ramps_in_the_guest_return() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: 0.5,
+        }],
+    );
+    g.upsert_guest("G", vec![]);
+
+    // Two consecutive blocks with the mic muted at the join. Applying the
+    // gain once per buffer would step here.
+    let mut buf = buffer(BLOCK * 2);
+    let (a, b) = buf.split_at_mut(BLOCK * CHANNELS);
+    g.render_guest_return("G", a, 0);
+    let baseline = worst_discontinuity_dbfs(a);
+    g.bus_mut(BusId::Mic).set_muted(true, 10.0);
+    g.render_guest_return("G", b, 1);
+
+    let worst = worst_discontinuity_dbfs(&buf);
+    assert!(
+        worst <= baseline + 1.0,
+        "a mute landing mid-stream must ramp in the guest return too: \
+         baseline {baseline:.1} dBFS, with mute {worst:.1} dBFS"
+    );
+
+    // And the ramp must actually RUN. A gain applied once per buffer advances
+    // the ramp one sample per block, so a 10 ms mute would take 240 blocks to
+    // land — no step to measure, and the mic still audible in the IFB long
+    // after the operator muted it.
+    let settled = settled_peak_dbfs(&buf[BLOCK * CHANNELS..]);
+    assert!(
+        settled < -60.0,
+        "a 10 ms mute must be complete within a 33 ms block; the guest return \
+         still carries the mic at {settled:.1} dBFS"
+    );
+    println!(
+        "guest-return mid-buffer mute: baseline {baseline:.1} dBFS, with mute \
+         {worst:.1} dBFS, settled {settled:.1} dBFS"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 — the driver. Path: AudioDriver::cycle -> drain -> render -> publish.
+// A graph nothing drives is a mechanism test; these cover the driving.
+// ---------------------------------------------------------------------------
+
+use nbe_engine::audio_driver::{AudioDriver, NullSink};
+use nbe_engine::state::EngineState;
+
+fn driver_with_null_sink(state: Arc<EngineState>) -> AudioDriver {
+    AudioDriver::new(state, Box::new(NullSink::new(BLOCK)), HOUSE_RATE)
+}
+
+#[test]
+fn the_driver_drains_intents_and_they_reach_the_graph() {
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut driver = driver_with_null_sink(state.clone());
+    driver.graph.set_source(
+        BusId::Music,
+        vec![Source::Tone {
+            hz: 220.0,
+            amplitude: 0.5,
+        }],
+    );
+
+    // A directive-side publish, exactly as `on_audio` does it.
+    state
+        .audio_commands
+        .lock()
+        .unwrap()
+        .push(AudioCommand::BusSet {
+            bus: "music".into(),
+            guest_id: None,
+            gain_db: Some(-40.0),
+            muted: None,
+        });
+
+    // Before the cycle, the queue is full and nothing has been applied.
+    assert_eq!(state.audio_commands.lock().unwrap().len(), 1);
+    driver.cycle(0);
+    assert!(
+        state.audio_commands.lock().unwrap().is_empty(),
+        "the driver must drain what the directive path publishes"
+    );
+
+    // And the change is audible: render past the ramp, then read what the
+    // driver PUBLISHED. Reading the graph's own meters here would read them
+    // after `publish` reset them — always silence, and a test that passes
+    // whether or not the intent was ever applied.
+    for f in 1..8 {
+        driver.cycle(f);
+    }
+    let music = state
+        .bus_peaks
+        .lock()
+        .unwrap()
+        .get("music")
+        .copied()
+        .expect("music is metered");
+    assert!(
+        music < -30.0,
+        "a -40 dB bus set must reach the graph; music peaked at {music:.1} dBFS"
+    );
+    // Not vacuous: without the gain change this bus is loud. Read the
+    // PUBLISHED peaks here too — the graph's own meters are reset by publish.
+    let fresh_state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut fresh = driver_with_null_sink(fresh_state.clone());
+    fresh.graph.set_source(
+        BusId::Music,
+        vec![Source::Tone {
+            hz: 220.0,
+            amplitude: 0.5,
+        }],
+    );
+    fresh.cycle(0);
+    let loud = fresh_state
+        .bus_peaks
+        .lock()
+        .unwrap()
+        .get("music")
+        .copied()
+        .unwrap_or(-120.0);
+    assert!(
+        loud > -30.0,
+        "the unchanged bus must be loud, else the assertion above proves nothing"
+    );
+}
+
+#[test]
+fn the_driver_publishes_the_v0_3_3_telemetry_fields() {
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut driver = driver_with_null_sink(state.clone());
+    driver.graph.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: db_to_linear(-6.0),
+        }],
+    );
+
+    driver.cycle(0);
+
+    // Production wrote these, not a test.
+    let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } =
+        nbe_engine::telemetry::build_tick(&state)
+    else {
+        panic!("expected EngineTelemetry");
+    };
+    let mic = fields
+        .bus_peak_dbfs
+        .get("mic")
+        .copied()
+        .expect("busPeakDbfs must carry the mic bus");
+    assert!(
+        (mic - -6.0).abs() < 1.5,
+        "the driver must publish real peaks; mic reported {mic:.1} dBFS"
+    );
+    assert_eq!(fields.audio_underruns_total, 0);
+    assert!(
+        fields.audio_drift_ms.abs() < 40.0,
+        "one block in, drift should be under a frame: {} ms",
+        fields.audio_drift_ms
+    );
+}
+
+#[test]
+fn peaks_are_windowed_so_a_meter_falls_again() {
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut driver = driver_with_null_sink(state.clone());
+    driver.graph.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: 0.9,
+        }],
+    );
+    driver.cycle(0);
+    let loud = state.bus_peaks.lock().unwrap().get("mic").copied().unwrap();
+
+    // Silence the source; the next window must report silence, not the
+    // loudest moment since the show began.
+    driver.graph.set_source(BusId::Mic, Vec::new());
+    driver.cycle(1);
+    let quiet = state.bus_peaks.lock().unwrap().get("mic").copied().unwrap();
+
+    assert!(
+        loud > -3.0,
+        "the tone should have peaked hot, got {loud:.1}"
+    );
+    assert!(
+        quiet < -60.0,
+        "peaks are per-interval; a meter that never falls tells an operator \
+         nothing after the first transient (got {quiet:.1} dBFS)"
+    );
+}
+
+#[test]
+fn a_sink_that_cannot_take_a_block_is_an_underrun_and_not_a_video_fault() {
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut sink = NullSink::new(BLOCK);
+    sink.fail_next = true;
+    let mut driver = AudioDriver::new(state.clone(), Box::new(sink), HOUSE_RATE);
+
+    driver.cycle(0);
+
+    assert_eq!(
+        state
+            .audio_underruns_total
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a block the sink refused is an underrun (SPEC §8.10)"
+    );
+    assert!(
+        !state
+            .fallback_active
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "SPEC §10.3: an audio fault must never put the fallback slate on air"
+    );
+}
+
+#[test]
+fn the_drain_is_bounded_so_a_flood_cannot_starve_a_block() {
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut driver = driver_with_null_sink(state.clone());
+    {
+        let mut q = state.audio_commands.lock().unwrap();
+        for _ in 0..500 {
+            q.push(AudioCommand::StopAll);
+        }
+    }
+    driver.cycle(0);
+    let left = state.audio_commands.lock().unwrap().len();
+    assert_eq!(
+        left,
+        500 - nbe_engine::audio_driver::MAX_COMMANDS_PER_CYCLE,
+        "the drain is bounded per cycle; an unbounded one turns a command \
+         flood into a missed block"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 — the take's audio object (SPEC §8.7.3, §8.7.5, §8.7.6).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_take_audio_modes_map_to_gain_and_ramp() {
+    use nbe_engine::audio_control::take_gain_and_ramp;
+
+    // §8.7.6: a cut still ramps — `Ramp` enforces the 5 ms floor.
+    assert_eq!(take_gain_and_ramp("cut", 10.0, 0, 30), (0.0, 10.0));
+    // §8.7.5: a mix crossfades over the video's own duration. 15 frames at
+    // 30 fps is 500 ms.
+    let (gain, ramp) = take_gain_and_ramp("crossfade", 10.0, 15, 30);
+    assert_eq!(gain, 0.0);
+    assert!((ramp - 500.0).abs() < 0.01, "crossfade ramp was {ramp} ms");
+    // `mute` takes the item off the mix.
+    assert_eq!(take_gain_and_ramp("mute", 10.0, 0, 30).0, -60.0);
+    // `follow` is AFV: the item's policy, which defaults to clip audio at unity.
+    assert_eq!(take_gain_and_ramp("follow", 10.0, 0, 30), (0.0, 10.0));
+    // And the house rate is honoured, not assumed: 15 frames at 25 fps is 600 ms.
+    let (_, ramp25) = take_gain_and_ramp("crossfade", 10.0, 15, 25);
+    assert!(
+        (ramp25 - 600.0).abs() < 0.01,
+        "at 25 fps the ramp was {ramp25} ms"
+    );
+}
+
+#[test]
+fn a_muted_take_silences_the_clip_bus_without_a_step() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let samples = tone_samples(440.0, 0.8, SAMPLE_RATE as usize);
+    let mut library = BTreeMap::new();
+    library.insert("A1".to_string(), samples);
+
+    apply(
+        &mut g,
+        vec![AudioCommand::TakeItem {
+            item_ref: "A1".into(),
+            t0: 0,
+            mode: "follow".into(),
+            ramp_ms: 10.0,
+            crossfade_frames: 0,
+        }],
+        &library,
+    );
+    let audible = settled_peak_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    assert!(
+        audible > -20.0,
+        "the taken item should be audible: {audible:.1}"
+    );
+
+    // Now a muted take of the same item.
+    let buf = render_across_change(&mut g, 2, |g| {
+        apply(
+            g,
+            vec![AudioCommand::TakeItem {
+                item_ref: "A1".into(),
+                t0: 2,
+                mode: "mute".into(),
+                ramp_ms: 10.0,
+                crossfade_frames: 0,
+            }],
+            &library,
+        );
+    });
+    let silenced = settled_peak_dbfs(&buf);
+    assert!(
+        silenced < -50.0,
+        "a muted take must silence the clip bus, got {silenced:.1} dBFS"
+    );
+    // And it got there by ramping (§8.7.1).
+    let worst = worst_discontinuity_dbfs(&buf);
+    assert!(
+        worst < -20.0,
+        "a muted take must ramp, not step; worst jump {worst:.1} dBFS"
+    );
 }

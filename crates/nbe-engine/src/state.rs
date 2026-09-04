@@ -71,6 +71,9 @@ pub struct EngineState {
     /// Audio intents published by the directive path and drained by whoever
     /// owns the graph. The directive thread never touches the graph itself.
     pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
+    /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
+    /// is the requirement: a trigger that reads disk cannot meet AC-13.
+    pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -107,6 +110,7 @@ impl EngineState {
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
             audio_commands: Mutex::new(Vec::new()),
+            audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             degradation_rung: AtomicU64::new(0),
         }
     }

@@ -178,6 +178,17 @@ impl Bus {
         self.gain.advance() * self.mute.advance()
     }
 
+    /// Advance the ramps for `frames` without contributing signal.
+    ///
+    /// A bus's gain is state, not signal: skipping the ramp because the bus
+    /// happens to have no source freezes a fade half-way, and a swap waiting
+    /// for silence then waits forever.
+    fn advance_silent(&mut self, frames: usize) {
+        for _ in 0..frames {
+            self.next_gain();
+        }
+    }
+
     fn observe(&mut self, sample: f32) {
         let a = sample.abs();
         if a > self.peak {
@@ -218,6 +229,15 @@ pub enum Source {
     },
     /// A test tone, for the synthetic guest bus and the acceptance tests.
     Tone { hz: f32, amplitude: f32 },
+}
+
+/// A content swap waiting for its bus to reach silence (§8.7.1).
+#[derive(Debug)]
+struct PendingSwap {
+    bus: BusId,
+    sources: Option<Vec<Source>>,
+    target_db: f32,
+    ramp_ms: f32,
 }
 
 /// A soundboard voice: RAM-resident, triggered, plays once (§8.4).
@@ -267,6 +287,8 @@ pub struct AudioGraph {
     /// Samples rendered since the graph started, for drift measurement.
     rendered_samples: u64,
     underruns: u64,
+    /// Content swaps waiting for silence (§8.7.1).
+    pending_swaps: Vec<PendingSwap>,
     /// Scratch buffers, allocated once so `render` allocates nothing.
     scratch: Vec<f32>,
     guest_scratch: BTreeMap<String, Vec<f32>>,
@@ -288,9 +310,14 @@ impl AudioGraph {
             house_frame_rate,
             rendered_samples: 0,
             underruns: 0,
+            pending_swaps: Vec::with_capacity(8),
             scratch: vec![0.0; 8192],
             guest_scratch: BTreeMap::new(),
         }
+    }
+
+    pub fn house_frame_rate(&self) -> u32 {
+        self.house_frame_rate
     }
 
     pub fn bus_mut(&mut self, id: BusId) -> &mut Bus {
@@ -303,6 +330,66 @@ impl AudioGraph {
 
     pub fn set_source(&mut self, id: BusId, sources: Vec<Source>) {
         self.sources.insert(id, sources);
+    }
+
+    /// Swap a bus's content **through silence** (SPEC §8.7.1).
+    ///
+    /// Ramping the gain is not enough when the content itself changes: a take
+    /// re-reads the clip from a new `t0`, so the waveform jumps mid-ramp and
+    /// the jump is audible at whatever level the ramp had reached. The swap is
+    /// therefore deferred — fade out, exchange at zero, fade back in — which is
+    /// what "at least a 5 ms ramp at any boundary" (§8.7.6) is asking for.
+    pub fn swap_source_through_silence(
+        &mut self,
+        id: BusId,
+        sources: Vec<Source>,
+        target_db: f32,
+        ramp_ms: f32,
+    ) {
+        let half = (ramp_ms / 2.0).max(MIN_RAMP_MS);
+        // If the bus is already silent there is nothing to fade out of.
+        let bus = self.buses.get_mut(&id).expect("every BusId has a Bus");
+        if bus.gain.value() <= 0.000_01 {
+            self.sources.insert(id, sources);
+            self.buses
+                .get_mut(&id)
+                .expect("bus")
+                .set_gain_db(target_db, half);
+            return;
+        }
+        bus.gain.to(0.0, half);
+        self.pending_swaps.push(PendingSwap {
+            bus: id,
+            sources: Some(sources),
+            target_db,
+            ramp_ms: half,
+        });
+    }
+
+    /// Complete any swap whose fade-out has reached silence. Called once per
+    /// block, before rendering.
+    fn service_pending_swaps(&mut self) {
+        let mut i = 0;
+        while i < self.pending_swaps.len() {
+            let ready = {
+                let p = &self.pending_swaps[i];
+                self.buses
+                    .get(&p.bus)
+                    .map(|b| b.gain.value() <= 0.000_01)
+                    .unwrap_or(true)
+            };
+            if ready {
+                let mut p = self.pending_swaps.remove(i);
+                if let Some(sources) = p.sources.take() {
+                    self.sources.insert(p.bus, sources);
+                }
+                if let Some(bus) = self.buses.get_mut(&p.bus) {
+                    bus.set_gain_db(p.target_db, p.ramp_ms);
+                }
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Add or replace a guest's bus (§8.6). Guests are separate buses because
@@ -425,12 +512,12 @@ impl AudioGraph {
         if self.scratch.len() < samples {
             self.scratch.resize(samples, 0.0);
         }
-        let ids: Vec<String> = self.guest_scratch.keys().cloned().collect();
-        for id in ids {
-            if let Some(buf) = self.guest_scratch.get_mut(&id) {
-                if buf.len() < samples {
-                    buf.resize(samples, 0.0);
-                }
+        // `values_mut` rather than collecting keys: this runs on the callback's
+        // path, and cloning a key per guest per block is exactly the kind of
+        // allocation §8.9 forbids.
+        for buf in self.guest_scratch.values_mut() {
+            if buf.len() < samples {
+                buf.resize(samples, 0.0);
             }
         }
     }
@@ -442,30 +529,49 @@ impl AudioGraph {
     /// device callback once `reserve` has covered the block size.
     pub fn render(&mut self, out: &mut [f32], master_frame: u64) {
         self.reserve(out.len());
+        self.service_pending_swaps();
         out.fill(0.0);
         let frames = out.len() / CHANNELS;
         let base = self.sample_for_master_frame(master_frame, 0);
 
-        // Program buses.
-        let bus_ids: Vec<BusId> = self.sources.keys().copied().collect();
-        for id in bus_ids {
+        // Destructured so each field is borrowed independently. The previous
+        // version collected key vectors and cloned source lists every call,
+        // which made the module's allocation-free claim false — and this
+        // function is meant to be callable from a device callback (§8.9).
+        let Self {
+            buses,
+            sources,
+            guests,
+            voices,
+            ducker,
+            scratch,
+            guest_scratch,
+            house_frame_rate,
+            rendered_samples,
+            ..
+        } = self;
+        let scratch = &mut scratch[..out.len()];
+
+        // Program buses, in the fixed §8.1 order — no key collection needed.
+        for id in BusId::ALL {
             if !id.feeds_master() {
                 continue;
             }
-            let sources = self.sources.get(&id).cloned().unwrap_or_default();
-            let scratch = &mut self.scratch[..out.len()];
+            let Some(bus_sources) = sources.get(id) else {
+                // No source, but the ramps still advance.
+                if let Some(bus) = buses.get_mut(id) {
+                    bus.advance_silent(frames);
+                }
+                continue;
+            };
             scratch.fill(0.0);
-            render_sources(&sources, scratch, base, self.house_frame_rate);
+            render_sources(bus_sources, scratch, base, *house_frame_rate);
 
-            let ducking = id == BusId::Music;
-            let bus = self.buses.get_mut(&id).expect("bus");
+            let ducking = *id == BusId::Music;
+            let bus = buses.get_mut(id).expect("every BusId has a Bus");
             for f in 0..frames {
                 let g = bus.next_gain();
-                let duck = if ducking {
-                    self.ducker.gain.advance()
-                } else {
-                    1.0
-                };
+                let duck = if ducking { ducker.gain.advance() } else { 1.0 };
                 for c in 0..CHANNELS {
                     let v = scratch[f * CHANNELS + c] * g * duck;
                     bus.observe(v);
@@ -475,10 +581,9 @@ impl AudioGraph {
         }
 
         // Soundboard voices sum into `sfx`.
-        if !self.voices.is_empty() {
-            let scratch = &mut self.scratch[..out.len()];
+        if !voices.is_empty() {
             scratch.fill(0.0);
-            for v in self.voices.iter_mut() {
+            for v in voices.iter_mut() {
                 for f in 0..frames {
                     let g = v.gain.advance();
                     for c in 0..CHANNELS {
@@ -491,10 +596,10 @@ impl AudioGraph {
                 v.position += frames * CHANNELS;
             }
             // A voice is done when it runs out or its stop ramp reached zero.
-            self.voices
+            voices
                 .retain(|v| v.position < v.samples.len() && !(v.stopping && v.gain.value() <= 0.0));
 
-            let bus = self.buses.get_mut(&BusId::Sfx).expect("sfx");
+            let bus = buses.get_mut(&BusId::Sfx).expect("sfx");
             for f in 0..frames {
                 let g = bus.next_gain();
                 for c in 0..CHANNELS {
@@ -505,23 +610,16 @@ impl AudioGraph {
             }
         }
 
-        // Guest buses sum into the program mix.
-        let guest_ids: Vec<String> = self.guests.keys().cloned().collect();
-        for gid in &guest_ids {
-            let Some((_, sources)) = self.guests.get(gid) else {
+        // Guest buses sum into the program mix. `guests` and `guest_scratch`
+        // are separate fields, so each guest's buffer is reachable without
+        // cloning its id or its sources.
+        for (gid, (bus, guest_sources)) in guests.iter_mut() {
+            let Some(buf) = guest_scratch.get_mut(gid) else {
                 continue;
             };
-            let sources = sources.clone();
-            let buf = self
-                .guest_scratch
-                .get_mut(gid)
-                .expect("guest scratch exists");
             let buf = &mut buf[..out.len()];
             buf.fill(0.0);
-            render_sources(&sources, buf, base, self.house_frame_rate);
-            let Some((bus, _)) = self.guests.get_mut(gid) else {
-                continue;
-            };
+            render_sources(guest_sources, buf, base, *house_frame_rate);
             for f in 0..frames {
                 let g = bus.next_gain();
                 for c in 0..CHANNELS {
@@ -533,7 +631,7 @@ impl AudioGraph {
         }
 
         // Master gain and metering last.
-        let master = self.buses.get_mut(&BusId::Master).expect("master");
+        let master = buses.get_mut(&BusId::Master).expect("master");
         for f in 0..frames {
             let g = master.next_gain();
             for c in 0..CHANNELS {
@@ -545,7 +643,7 @@ impl AudioGraph {
             }
         }
 
-        self.rendered_samples += frames as u64;
+        *rendered_samples += frames as u64;
     }
 
     /// Render guest G's mix-minus return (SPEC §8.6).
@@ -559,42 +657,55 @@ impl AudioGraph {
         let frames = out.len() / CHANNELS;
         let base = self.sample_for_master_frame(master_frame, 0);
 
+        let Self {
+            buses,
+            sources,
+            guests,
+            scratch,
+            guest_scratch,
+            house_frame_rate,
+            ..
+        } = self;
+        let scratch = &mut scratch[..out.len()];
+
+        // Program contributions. Ramps advance per sample here too: applying a
+        // bus's gain once per buffer means a mute landing mid-buffer steps, and
+        // the IFB path is the one output AC-18's own test does not listen to.
         for id in [BusId::Mic, BusId::Clip, BusId::Music, BusId::Sfx] {
-            let Some(sources) = self.sources.get(&id).cloned() else {
+            let Some(bus_sources) = sources.get(&id) else {
                 continue;
             };
-            let scratch = &mut self.scratch[..out.len()];
             scratch.fill(0.0);
-            render_sources(&sources, scratch, base, self.house_frame_rate);
-            let gain = self.buses.get(&id).expect("bus").gain.value()
-                * self.buses.get(&id).expect("bus").mute.value();
-            for i in 0..out.len() {
-                out[i] += scratch[i] * gain;
+            render_sources(bus_sources, scratch, base, *house_frame_rate);
+            let bus = buses.get_mut(&id).expect("every BusId has a Bus");
+            for f in 0..frames {
+                let g = bus.next_gain();
+                for c in 0..CHANNELS {
+                    out[f * CHANNELS + c] += scratch[f * CHANNELS + c] * g;
+                }
             }
         }
 
-        // Every guest EXCEPT this one.
-        let others: Vec<String> = self
-            .guests
-            .keys()
-            .filter(|g| g.as_str() != guest_id)
-            .cloned()
-            .collect();
-        for gid in others {
-            let Some((bus, sources)) = self.guests.get(&gid) else {
+        // Every guest EXCEPT this one. The exclusion is the whole point: this
+        // function has no path that reads guest G's own bus, so no check can be
+        // forgotten and no configuration can route it back (SPEC §8.6).
+        for (gid, (bus, guest_sources)) in guests.iter_mut() {
+            if gid == guest_id {
+                continue;
+            }
+            let Some(buf) = guest_scratch.get_mut(gid) else {
                 continue;
             };
-            let gain = bus.gain.value() * bus.mute.value();
-            let sources = sources.clone();
-            let scratch = &mut self.scratch[..out.len()];
-            scratch.fill(0.0);
-            render_sources(&sources, scratch, base, self.house_frame_rate);
-            for i in 0..out.len() {
-                out[i] += scratch[i] * gain;
+            let buf = &mut buf[..out.len()];
+            buf.fill(0.0);
+            render_sources(guest_sources, buf, base, *house_frame_rate);
+            for f in 0..frames {
+                let g = bus.next_gain();
+                for c in 0..CHANNELS {
+                    out[f * CHANNELS + c] += buf[f * CHANNELS + c] * g;
+                }
             }
         }
-
-        let _ = frames;
     }
 
     /// Count a callback the graph could not fill in time (SPEC §8.10).
@@ -642,7 +753,7 @@ impl AudioGraph {
 }
 
 /// Sum a bus's sources into `out`, reading each at its master-clock offset.
-fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, _house_rate: u32) {
+fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, house_rate: u32) {
     let frames = out.len() / CHANNELS;
     for source in sources {
         match source {
@@ -652,8 +763,10 @@ fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, _house_
                 looping,
             } => {
                 // SPEC §8.9: the read offset comes from the master clock and
-                // the source's own start, never from a private cursor.
-                let t0_samples = *t0 as i64 * SAMPLE_RATE as i64 / 30;
+                // the source's own start, never from a private cursor. The
+                // house rate is configuration — a literal 30 here silently
+                // mis-times every 25 fps show.
+                let t0_samples = *t0 as i64 * SAMPLE_RATE as i64 / house_rate.max(1) as i64;
                 let start = base_sample - t0_samples;
                 let total = samples.len() as i64;
                 if total == 0 {
