@@ -1317,6 +1317,42 @@ async fn falling_behind_the_cadence_is_an_underrun() {
 }
 
 #[test]
+fn a_silent_item_stays_silent_even_when_its_name_matches_an_asset() {
+    // The P0 fix's own regression. `TakeItem.asset_id` is documented as
+    // "`None` means the item shows no audio-bearing asset — a graphic scene,
+    // legitimately silent", but the first version of the fix fell back to
+    // `library.get(item_ref)` when it was `None`. That quietly reinstated the
+    // exact collision the P0 closed: a graphic-only item named `stab`, in a
+    // package that also has a soundboard asset named `stab`, would put that
+    // sample on the clip bus under a scene the manifest says is silent.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert(
+        "stab".to_string(),
+        tone_samples(440.0, 0.8, SAMPLE_RATE as usize),
+    );
+
+    apply(
+        &mut g,
+        vec![AudioCommand::TakeItem {
+            item_ref: "stab".into(), // the item's name collides with the asset
+            asset_id: None,          // ... but the scene carries no audio asset
+            t0: 0,
+            mode: "follow".into(),
+            ramp_ms: 10.0,
+            crossfade_frames: 0,
+        }],
+        &library,
+    );
+    let level = settled_peak_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    assert!(
+        level < -60.0,
+        "an item with no audio asset must be silent even when its id matches a \
+         resident asset; the clip bus is at {level:.1} dBFS"
+    );
+}
+
+#[test]
 fn the_drain_is_bounded_so_a_flood_cannot_starve_a_block() {
     let state = Arc::new(EngineState::new(HOUSE_RATE));
     let mut driver = driver_with_null_sink(state.clone());

@@ -399,36 +399,35 @@ test("[RI-1] step 7: an audio.bus.set is reflected on the next tick", async () =
   await untilTelemetry("a tick after the bus change", () => true);
 });
 
-test("[RI-1] a 12 fps source spans 30 house frames (AC-4)", async () => {
-  // Without a non-house-rate clip in this package the rehearsal is blind to
-  // cadence forever. AC-4 was reported as delivered for six prompts while
-  // `draw_for` mapped house frames onto source indices 1:1 and never read
-  // `source_frame_rate` — a 12 fps asset played at 2.5x — because the only
-  // test filed under AC-4 exercised a helper with no production caller.
+test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () => {
+  // NOT the AC-4 cadence gate. The first version of this step asserted that no
+  // `itemEvent: end` arrives for a 12 fps take, and it could not fail:
+  // `ItemEvent::End` is emitted only from `schedule_done`, which is spawned
+  // only when the take payload carries `durationFrames` — and this take
+  // carries none. Nothing on the wire moves when a clip is exhausted:
+  // `viewItem` does not clear and no event fires. So the assertion was green
+  // whether or not cadence conversion existed, which is exactly the defeatable
+  // gate this review spent three rounds removing elsewhere (report §3.10).
   //
-  // A3 is 12 source frames at 12 fps: one second, which is 30 house frames.
-  // The wire-visible consequence of getting this wrong is the item ending
-  // early, so the assertion is that it is STILL on air after 12 house frames
-  // (400 ms), the point a 1:1 mapping would have exhausted it.
+  // The cadence mapping is gated where the observable actually lives: in
+  // pixels, by `a_12_fps_source_spans_30_house_frames_in_the_rendered_picture`
+  // (crates/nbe-engine/tests/prompt05.rs), which reads back the View and fails
+  // when the mapping reverts to 1:1. Two nbe-decode unit tests gate the
+  // arithmetic itself.
+  //
+  // What this step honestly proves is narrower and still worth having: a
+  // non-house-rate asset is in the package the rehearsal plays, it takes
+  // without error, and it costs no dropped frames. Before this, no end-to-end
+  // path touched a non-house-rate clip at all.
+  const before = droppedNow();
   await ok("preview.set", { itemRef: "A3" });
   await ok("view.take", { transition: "cut" });
-  await untilTelemetry(
+  const tick = await untilTelemetry(
     "A3 on air",
     (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A3",
   );
-
-  const ended = pushes.some(
-    (f) =>
-      f["kind"] === "itemEvent" &&
-      f["event"] === "end" &&
-      (f["itemRef"] ?? f["item_ref"]) === "A3",
-  );
-  assert.equal(
-    ended,
-    false,
-    "a 12 fps source must span 30 house frames, not 12: A3 reported end early, " +
-      "which is what a 1:1 house-to-source mapping produces",
-  );
+  assert.equal((tick["data"] as Record<string, unknown>)["viewItem"], "A3");
+  assert.equal(droppedNow(), before, "taking a 12 fps source must not drop frames");
 });
 
 test("[RI-1] step 8: preview.set is visible in telemetry", async () => {

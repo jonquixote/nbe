@@ -331,6 +331,53 @@ async fn a_video_element_renders_its_frame_not_black() {
 }
 
 #[tokio::test]
+async fn a_12_fps_source_spans_30_house_frames_in_the_rendered_picture() {
+    // AC-4, end to end, measured in PIXELS — the only signal that actually
+    // depends on the cadence mapping.
+    //
+    // The first end-to-end attempt asserted that no `itemEvent: end` arrives
+    // for a 12 fps take. It could not fail: `ItemEvent::End` is emitted only
+    // from `schedule_done`, which is spawned only when the take payload
+    // carries `durationFrames`, and that take carried none. Nothing on the
+    // wire moves when a clip is exhausted — `viewItem` does not clear and no
+    // event fires — so the picture is the observable.
+    //
+    // `cadence_12.mp4` is 12 frames at 12 fps; frame N is red = N*20. At a
+    // 30 fps house rate it must span 30 house frames, so house frame 20 shows
+    // source frame 8 (red 160). A 1:1 mapping asks for source frame 20, which
+    // does not exist, drops the layer, and renders black.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "cadence_12.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
+
+    render.render_frame(5, None);
+    let early = centre_px(&render.readback_view().await);
+    assert!(
+        early[0] > 20 && early[0] < 80,
+        "house frame 5 must show source frame 2 (red ~40), got {early:?}"
+    );
+
+    render.render_frame(20, None);
+    let mid = centre_px(&render.readback_view().await);
+    assert!(
+        mid[0] > 120,
+        "house frame 20 must show source frame 8 (red ~160) — a 1:1 mapping \
+         would have exhausted this 12-frame clip by house frame 12 and \
+         rendered black; got {mid:?}"
+    );
+
+    render.render_frame(29, None);
+    let last = centre_px(&render.readback_view().await);
+    assert!(
+        last[0] > 180,
+        "house frame 29 must still be on air, showing source frame 11 \
+         (red ~220), got {last:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_decode_failure_is_reported_as_an_item_event() {
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "corrupt.mp4", None);

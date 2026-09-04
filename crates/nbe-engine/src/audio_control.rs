@@ -212,20 +212,31 @@ pub fn apply(
                 let house = graph.house_frame_rate();
                 let (gain_db, ramp) = take_gain_and_ramp(&mode, ramp_ms, crossfade_frames, house);
                 // The item's audio is whatever was made resident at show.load.
-                // By asset id. Resolving by `item_ref` here was the P0: the
-                // library is keyed by asset id, so any package whose item and
-                // asset ids differ took silently.
-                let key = asset_id.as_deref().unwrap_or(item_ref.as_str());
-                let sources = match library.get(key) {
-                    Some(samples) => vec![crate::audio::Source::Pcm {
-                        samples: samples.clone(),
-                        t0,
-                        looping: false,
-                    }],
-                    // A silent item is normal: clear the bus rather than leave
-                    // the previous item audible under the new picture.
-                    None => Vec::new(),
-                };
+                // By asset id, and ONLY by asset id. Resolving by `item_ref`
+                // was the P0: the library is keyed by asset id, so any package
+                // whose item and asset ids differ took silently.
+                //
+                // No fallback to `item_ref` when `asset_id` is `None`. The
+                // first version of this fix kept one, which quietly reinstated
+                // the same collision for the branch the field's own doc
+                // comment calls legitimately silent: a graphic-only item named
+                // `stab`, in a package with a soundboard asset named `stab`,
+                // put that sample on the clip bus at -1.9 dBFS. `None` means
+                // silent, so it flows to the empty-source branch — a silent
+                // item clears the bus rather than leaving the previous item
+                // audible under the new picture.
+                let _ = &item_ref;
+                let sources = asset_id
+                    .as_deref()
+                    .and_then(|k| library.get(k))
+                    .map(|samples| {
+                        vec![crate::audio::Source::Pcm {
+                            samples: samples.clone(),
+                            t0,
+                            looping: false,
+                        }]
+                    })
+                    .unwrap_or_default();
                 // Through silence: the content changes, not just the level, so
                 // ramping the gain alone would still step the waveform.
                 graph.swap_source_through_silence(BusId::Clip, sources, gain_db, ramp);

@@ -201,7 +201,7 @@ pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHand
 pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
     let block = driver.block_duration();
     let mut next = std::time::Instant::now();
-    let mut cycles: u64 = 0;
+    let mut logged_first = false;
     loop {
         let now = std::time::Instant::now();
         if next > now {
@@ -214,8 +214,8 @@ pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
         // on log lines like this one and all three were defeated by writing
         // the line by hand — see the note in tests/prompt06.rs. The wiring is
         // gated by [RI-1]'s dress rehearsal, which observes telemetry.
-        cycles += 1;
-        if cycles == 1 {
+        if !logged_first {
+            logged_first = true;
             tracing::info!(
                 rendered_samples = driver.graph.rendered_samples(),
                 "audio driver cycling"
