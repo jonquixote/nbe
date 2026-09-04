@@ -315,3 +315,46 @@ One round, after this report, before anything Prompt 07. Each item carries its f
 | 6 | **F6:** remove the dead `requested` parameter | Compilation; no behavioural row (it is dead code, not behaviour) |
 
 Explicitly **not** in this round, and why: R1 (item→asset audio) is P0 but belongs at the front of Prompt 07's fix list per the ledger's own rule; R2, R3, R5 and S1 need timing and metering design that Prompt 07's audio work will touch; S2 is a v0.4 wire question.
+
+
+---
+
+## 10. Fix round — executed
+
+Committed as `3738eb7`, after this report, before anything Prompt 07.
+
+| # | Change | Falsification row | Result |
+|---|---|---|---|
+| 1 | Cadence conversion in the render path | revert `source_index_at` to 1:1 | `a_12_fps_source_spans_30_house_frames`, `a_loop_at_a_slower_source_rate_wraps_on_source_time` fail |
+| 2 | A3 (12 fps) added to `dress_show` + AC-4 rehearsal assertion | (covered by row 1 at unit level; the rehearsal assertion is the end-to-end half) | rehearsal step passes |
+| 3 | `fail_view` seam + engagement test | delete `fallback_active.store(true)` from the View `Err` arm | `a_failed_view_render_puts_the_slate_on_air` fails |
+| 4 | Cadence-overrun underrun branch tested | delete `note_underrun()` from the fell-behind branch | `falling_behind_the_cadence_is_an_underrun` fails |
+| 5 | Stopped-clock item-end guard tested | delete `if !state.is_running() { return; }` | `a_stopped_show_emits_no_item_end` fails |
+| 6 | Dead `requested` parameter removed | compilation only (dead code, not behaviour) | — |
+
+### A note on the falsification itself
+
+The first run of rows 3, 4 and 5 reported **"no failure — vacuous row"** for all three. That was wrong: a bug in the shell wrapper driving the deletions, not a defect in the tests. Re-run against each test by name, every row fails correctly.
+
+This is worth recording because of what it nearly caused. A falsifier that silently fails to apply its edit reports *clean* — the same false-confidence failure this review has now found four times in the tests themselves. The instrument needs the same scepticism as the thing it measures, and the tell was that one row (R1) had failed correctly minutes earlier and then "passed" unchanged.
+
+### Rehearsal after the fix round: 8 of 12
+
+`ok 9 - [RI-1] a 12 fps source spans 30 house frames (AC-4)` — the end-to-end half of the cadence fix, on a package that now contains a non-house-rate clip.
+
+Still failing, all previously reported and all assigned to Prompt 07's fix list: step 3 (clock advance within 2 ticks, R5), step 4 (clip bus, R1 — the P0 item→asset miss), step 6 (sfx bus, R1 + R2), and the gate (`audioUnderrunsTotal` = 1, R4).
+
+### Verbatim CI summary lines
+
+```
+TOTAL: 121 passed, 0 failed, 0 ignored
+cargo fmt --all -- --check                               -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
+```
+```
+# tests 51
+# pass 48
+# fail 3
+```
+
+The control-plane count now includes the dress rehearsal. **The 3 failures are the review's own open findings** (R1 ×2, R4), not regressions: they are the assertions that prove the show has no sound. The rehearsal is not yet wired into CI as a required gate — doing so is Prompt 07's first task, after R1 is fixed, because a gate that is red on merge day teaches people to ignore it.
