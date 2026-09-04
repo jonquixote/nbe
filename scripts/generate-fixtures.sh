@@ -105,4 +105,50 @@ ffmpeg -y -loglevel error \
   -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune stillimage -g 30 -frames:v 900 \
   "$show/A1.mp4"
 
-say "done — $(ls -1 "$out" | wc -l | tr -d ' ') fixtures in $out"
+# ---------------------------------------------------------------------------
+# 8. The dress-rehearsal package ([RI-1]). This one is played end to end by a
+#    real control plane and a real engine binary, so every asset must be real
+#    media at the declared house format (1920x1080, 30 fps) — a placeholder
+#    would fail preflight at step 1 of the show, before the rehearsal starts.
+#
+#    Flat colour and stillimage tuning keep these a few tens of KiB despite the
+#    resolution; the rehearsal asserts on wire telemetry, not on pixels.
+# ---------------------------------------------------------------------------
+dress="$root/tests/fixtures/dress_show/media"
+mkdir -p "$dress"
+
+# A1: the take target. It carries a real AAC track at a healthy level, because
+# the rehearsal proves `busPeakDbfs.clip` rises after a take with audio
+# "follow" — a silent clip would make that assertion unfalsifiable.
+say "dress_show/media/A1.mp4 (1920x1080, 30 fps, 150 frames, H.264 + AAC)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=0x1b3a5c:s=1920x1080:r=30:d=5" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=5" \
+  -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune stillimage -g 30 \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 -frames:v 150 -shortest \
+  "$dress/A1.mp4"
+
+# A2: the 10-frame loop the rehearsal mixes to. periodFrames is declared in the
+# manifest; AC-9 wrap is already covered by the engine suite, so what this
+# proves here is that a mix across it drops no frames.
+say "dress_show/media/A2.mp4 (1920x1080, 30 fps, 10 frames, videoLoop)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=0x5c1b3a:s=1920x1080:r=30:d=1" \
+  -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune stillimage -g 10 -frames:v 10 \
+  "$dress/A2.mp4"
+
+# The soundboard stab: short, loud, and its own asset, so `busPeakDbfs.sfx`
+# rising is attributable to `soundboard.play` and nothing else.
+say "dress_show/media/stab.m4a (48 kHz stereo, 0.4 s)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "sine=frequency=880:sample_rate=48000:duration=0.4" \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  "$dress/stab.m4a"
+
+# A real PNG fallback slate at house resolution — §10.3's watchdog target.
+say "dress_show/media/fallback.png (1920x1080)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=0x800000:s=1920x1080" -frames:v 1 \
+  "$dress/fallback.png"
+
+say "done — $(ls -1 "$out" | wc -l | tr -d ' ') fixtures in $out, dress package in $dress"
