@@ -33,6 +33,18 @@ async fn main() -> anyhow::Result<()> {
         telemetry_interval_ms: 1000,
     };
 
+    // The audio driver runs on its own task, on the audio cadence — never in
+    // the render loop (SPEC §8.9, §7.13). It owns the graph, drains the
+    // intents the directive path publishes, and publishes the v0.3.3 audio
+    // telemetry fields. Without it the graph is a mechanism nothing drives.
+    //
+    // Started before the GPU: audio does not depend on wgpu, and a slow or
+    // failing device init must not silence the show.
+    //
+    // The sink is the null sink: device glue is the recorded deferral in
+    // agents/prompts/06-audio-graph.md. Everything above the sink is real.
+    audio_driver::spawn(state.clone(), house_rate);
+
     // The render loop runs on its own task, driven by master-clock frame
     // boundaries — not a spin. It renders even while the clock is STOPPED so
     // the operator always has a picture (the fallback slate).
@@ -67,15 +79,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-
-    // The audio driver runs on its own task, on the audio cadence — never in
-    // the render loop (SPEC §8.9, §7.13). It owns the graph, drains the
-    // intents the directive path publishes, and publishes the v0.3.3 audio
-    // telemetry fields. Without it the graph is a mechanism nothing drives.
-    //
-    // The sink is the null sink: device glue is the recorded deferral in
-    // agents/prompts/06-audio-graph.md. Everything above the sink is real.
-    audio_driver::spawn(state.clone(), house_rate);
 
     channel::run_forever(cfg, state, outgoing).await;
     Ok(())

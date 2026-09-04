@@ -189,6 +189,12 @@ pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHand
         Box::new(NullSink::new(block_frames)),
         house_rate,
     );
+    // Logged so the gate on this wiring can be a real one: a test spawns the
+    // engine binary and waits for this line. The previous gate searched
+    // main.rs for the call as text, which an independent pass defeated four
+    // ways (a string literal, `if false`, `#[cfg(any())]`, `#[cfg(test)]`) —
+    // each leaving the suite green with the driver never started.
+    tracing::info!("audio driver started");
     tokio::spawn(run(driver, state))
 }
 

@@ -10,7 +10,7 @@
 
 use nbe_engine::audio::{
     db_to_linear, linear_to_db, worst_discontinuity_dbfs, AudioGraph, BusId, Source, CHANNELS,
-    SAMPLE_RATE,
+    MIN_RAMP_MS, SAMPLE_RATE,
 };
 use nbe_engine::audio_control::{apply, AudioCommand};
 use std::collections::BTreeMap;
@@ -153,7 +153,14 @@ fn muting_a_bus_ramps_instead_of_stepping() {
     );
 
     // Baseline: two blocks with no change, so the tone's own slope is known.
-    let baseline = worst_discontinuity_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    let base_buf = render_across_change(&mut g, 0, |_| {});
+    let present = peak_dbfs(&base_buf);
+    assert!(
+        present > -20.0,
+        "precondition: the bus must be audible before muting it means \
+         anything, got {present:.1} dBFS"
+    );
+    let baseline = worst_discontinuity_dbfs(&base_buf);
 
     // The same two blocks with a mute at the join.
     let muted = worst_discontinuity_dbfs(&render_across_change(&mut g, 10, |g| {
@@ -219,18 +226,8 @@ fn stopping_a_soundboard_voice_ramps_it_out() {
     // later, at the peak — maximum step for a cut, minimum slope for the
     // baseline, which is the only place the two are distinguishable.
     const HZ: f32 = 442.5;
-    // Guard the test's own power. The discrimination exists only because the
-    // join sits a quarter cycle off zero; it requires hz = 2.5 (mod 10) given
-    // BLOCK and a join at voice sample 3*BLOCK. Changing HOUSE_RATE, BLOCK, or
-    // the number of preceding renders would silently blind this test instead
-    // of failing it, so assert the condition rather than trusting the comment.
-    let join_phase = (HZ * (3 * BLOCK) as f32 / SAMPLE_RATE as f32).fract();
-    assert!(
-        (join_phase - 0.25).abs() < 0.05 || (join_phase - 0.75).abs() < 0.05,
-        "this test only discriminates a cut from a ramp when the join lands \
-         near a waveform peak; phase is {join_phase:.3} of a cycle"
-    );
-    let samples = tone_samples(HZ, 0.8, SAMPLE_RATE as usize);
+    const AMPLITUDE: f32 = 0.8;
+    let samples = tone_samples(HZ, AMPLITUDE, SAMPLE_RATE as usize);
     let id = g.trigger("stab", samples, 0.0);
 
     // Baseline: the voice running, no change at the join. The tone's own slope
@@ -242,6 +239,20 @@ fn stopping_a_soundboard_voice_ramps_it_out() {
     let buf = render_across_change(&mut g, 2, |g| {
         g.stop_voice(Some(id), None);
     });
+    // Guard the test's own power, by MEASUREMENT rather than arithmetic. The
+    // discrimination exists only because the join lands near a waveform peak:
+    // at a zero crossing a full cut and a ramp produce the same number. The
+    // previous guard recomputed the phase from a hard-coded "3 preceding
+    // blocks", so adding a render moved the real join to a zero crossing while
+    // the guard still read 0.25 and passed. This reads the actual last sample
+    // before the join, so nothing can move it without failing here.
+    let at_join = buf[BLOCK * CHANNELS - 1].abs();
+    assert!(
+        at_join > AMPLITUDE * 0.75,
+        "this test only tells a cut from a ramp when the join sits near a \
+         waveform peak; the sample there is {at_join:.3} of {AMPLITUDE}"
+    );
+
     let worst = worst_discontinuity_dbfs(&buf);
     assert!(
         worst <= baseline + 1.0,
@@ -327,6 +338,20 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
     assert!(
         first_audible <= 2,
         "AC-13: a trigger is audible immediately, not {first_audible} samples in"
+    );
+    // Immediate, but not a click: §8.7.1 ramps the voice in over the 5 ms
+    // floor. Starting a voice at full scale — the click the code comment names
+    // — left 116/116 green, since it is audible even sooner.
+    let head = buf[0].abs();
+    let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        peak > 0.5,
+        "precondition: the stab must reach full level, got {peak:.3}"
+    );
+    assert!(
+        head < peak * 0.1,
+        "a trigger must ramp in, not start at full scale: first sample \
+         {head:.4} against a peak of {peak:.3}"
     );
     // Report the measured number, which is what the AC is about.
     println!(
@@ -504,6 +529,13 @@ fn the_house_rate_is_configuration_not_a_constant() {
     // At its own frame 0 the tone starts at zero and rises; if the offset were
     // computed with a literal 30 the read would land 8000 samples away and the
     // first sample would not be near zero.
+    // Not just "quiet": an all-zero buffer satisfies a low-side bound, so
+    // assert the signal exists elsewhere in the buffer first.
+    let alive = peak_dbfs(&buf);
+    assert!(
+        alive > -20.0,
+        "precondition: the source must be audible, got {alive:.1} dBFS"
+    );
     assert!(
         buf[0].abs() < 0.01,
         "a 25 fps item at its own t0 must start at its first sample, got {}",
@@ -806,6 +838,17 @@ fn a_mute_mid_buffer_ramps_in_the_guest_return() {
     let mut buf = buffer(BLOCK * 2);
     let (a, b) = buf.split_at_mut(BLOCK * CHANNELS);
     g.render_guest_return("G", a, 0);
+    // Precondition: the mic must actually be IN the return. Deleting the whole
+    // program-bus loop of `render_guest_return` — so no guest ever hears the
+    // host mic, clips, music or SFX in their IFB — left 116/116 green, because
+    // every assertion here is a delta and `linear_to_db` floors at -120.0, so
+    // silence-vs-silence compares equal.
+    let present = peak_dbfs(a);
+    assert!(
+        present > -20.0,
+        "SPEC §8.6: the program mix must be present in a guest's return, \
+         measured {present:.1} dBFS"
+    );
     let baseline = worst_discontinuity_dbfs(a);
     g.bus_mut(BusId::Mic).set_muted(true, 10.0);
     g.render_guest_return("G", b, 1);
@@ -854,6 +897,12 @@ fn a_guest_mute_mid_buffer_ramps_in_every_other_return() {
     let mut buf = buffer(BLOCK * 2);
     let (a, b) = buf.split_at_mut(BLOCK * CHANNELS);
     g.render_guest_return("G", a, 0);
+    let present = peak_dbfs(a);
+    assert!(
+        present > -20.0,
+        "precondition: G must hear H before muting H means anything, got \
+         {present:.1} dBFS"
+    );
     let baseline = worst_discontinuity_dbfs(a);
     g.guest_bus_mut("H")
         .expect("guest H exists")
@@ -1001,6 +1050,110 @@ fn the_driver_publishes_the_v0_3_3_telemetry_fields() {
         "one block in, drift should be under a frame: {} ms",
         fields.audio_drift_ms
     );
+
+    // And drift must be MEASURED, not defaulted. `< 40.0` is satisfied by the
+    // 0.0 of a field nobody wrote: deleting the drift store from `publish`
+    // left 116/116 green. Cycling three times against a standing master frame
+    // means the graph has rendered three blocks the clock did not ask for, so
+    // real drift is 3 blocks = 100 ms.
+    for _ in 0..3 {
+        driver.cycle(0);
+    }
+    let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } =
+        nbe_engine::telemetry::build_tick(&state)
+    else {
+        panic!("expected EngineTelemetry");
+    };
+    let expected = driver.graph.drift_ms(0);
+    assert!(
+        expected > 90.0,
+        "the fixture must actually produce drift, got {expected:.1} ms"
+    );
+    assert!(
+        (fields.audio_drift_ms - expected).abs() < 0.001,
+        "the driver must publish the graph's measured drift: telemetry {} ms \
+         vs graph {expected} ms",
+        fields.audio_drift_ms
+    );
+}
+
+#[test]
+fn the_master_stage_limits_instead_of_clipping() {
+    // SPEC §8.2: master gain and metering, and a limiter rather than a
+    // clipper. None of it was tested — deleting the entire master stage from
+    // `render()` left 116/116 green, because the only assertion touching it
+    // was `peaks.contains_key("master")`, which the bus map satisfies whether
+    // the stage runs or not.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    // Four buses at 0.8 sum to 3.2 — well past full scale.
+    for id in [BusId::Mic, BusId::Clip, BusId::Music, BusId::Guest] {
+        g.set_source(
+            id,
+            vec![Source::Tone {
+                hz: 220.0,
+                amplitude: 0.8,
+            }],
+        );
+    }
+    let mut buf = buffer(BLOCK);
+    g.render(&mut buf, 0);
+
+    let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        peak > 0.5,
+        "precondition: the sum must actually be loud, got {peak:.3}"
+    );
+    assert!(
+        peak <= 1.0,
+        "the master stage must limit: a sample reached {peak:.3}, and hard \
+         clipping is a click generator"
+    );
+    let metered = g
+        .bus_peaks()
+        .get("master")
+        .copied()
+        .expect("master metered");
+    assert!(
+        metered > -20.0,
+        "the master bus must meter what it passed, got {metered:.1} dBFS"
+    );
+
+    // And master gain must actually apply.
+    g.bus_mut(BusId::Master).set_gain_db(-40.0, 5.0);
+    let quiet = settled_peak_dbfs(&render_across_change(&mut g, 1, |_| {}));
+    assert!(
+        quiet < -20.0,
+        "master gain must reach the output; still at {quiet:.1} dBFS"
+    );
+}
+
+#[test]
+fn a_ramp_shorter_than_the_floor_is_still_a_ramp() {
+    // SPEC §8.7.1/§8.7.6: `Ramp` enforces a 5 ms floor, which is what makes
+    // "a cut still ramps" true. Deleting the clamp from `Ramp::to` left
+    // 116/116 green even though a sibling test asserts the rule in prose.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.set_source(
+        BusId::Clip,
+        vec![Source::Tone {
+            hz: 1.0,
+            amplitude: 0.9,
+        }],
+    );
+    // A 1 Hz source is near-DC: any step is the gain change's doing.
+    let worst = worst_discontinuity_dbfs(&render_across_change(&mut g, 0, |g| {
+        g.bus_mut(BusId::Clip).set_gain_db(-60.0, 0.0);
+    }));
+    assert!(
+        worst < -40.0,
+        "a 0 ms ramp must still take the {MIN_RAMP_MS} ms floor, not step; \
+         worst jump {worst:.1} dBFS"
+    );
+    let settled = settled_peak_dbfs(&render_across_change(&mut g, 2, |_| {}));
+    assert!(
+        settled < -40.0,
+        "and the change must land: {settled:.1} dBFS"
+    );
 }
 
 #[test]
@@ -1089,91 +1242,60 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
 }
 
 #[test]
-fn the_engine_binary_spawns_the_audio_driver() {
-    // A source assertion, deliberately: nothing can observe `main()`, and
-    // deleting the spawn from it left all 112 tests passing — only clippy
-    // noticed, and only incidentally, through an unused import. The headline
-    // of this prompt is "a graph nothing drives"; this is the gate that fails
-    // if that becomes true again.
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("src/main.rs is readable");
-    // Comments stripped first. A raw `contains` over the file text is defeated
-    // by two slashes: commenting the call out (and dropping the now-unused
-    // import, which is what silences clippy) passed the entire gate — the exact
-    // regression this test exists to prevent, with 115/115 green.
-    let code = strip_comments(&src);
-    assert!(
-        code.contains("audio_driver::spawn("),
-        "src/main.rs must call audio_driver::spawn; without it the audio graph \
-         is a mechanism nothing drives (SPEC §8.9)"
-    );
-}
+fn the_engine_binary_actually_starts_the_audio_driver() {
+    // This spawns the real binary and waits for the driver to announce itself.
+    //
+    // The previous version of this gate searched main.rs for the text
+    // `audio_driver::spawn(`. An independent pass defeated it four ways — the
+    // call inside a string literal, inside `if false`, behind `#[cfg(any())]`,
+    // behind `#[cfg(test)]` — each leaving 116/116 green, clippy clean, and
+    // the engine never starting the driver. A substring test over source
+    // cannot tell a reachable call from a token sequence, so it is gone. This
+    // observes the running process instead, and the only way to pass it is to
+    // start the driver.
+    use std::io::Read;
+    use std::process::{Command, Stdio};
 
-/// Rust source with `//` and `/* */` comments removed, so a source assertion
-/// cannot be satisfied by commented-out code. String literals are preserved.
-fn strip_comments(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut it = src.chars().peekable();
-    let (mut line, mut block, mut string) = (false, 0usize, false);
-    while let Some(c) = it.next() {
-        if line {
-            if c == '\n' {
-                line = false;
-                out.push(c);
-            }
-        } else if block > 0 {
-            match (c, it.peek()) {
-                ('*', Some('/')) => {
-                    it.next();
-                    block -= 1;
-                }
-                ('/', Some('*')) => {
-                    it.next();
-                    block += 1;
-                }
-                ('\n', _) => out.push(c),
-                _ => {}
-            }
-        } else if string {
-            out.push(c);
-            match c {
-                '\\' => {
-                    if let Some(n) = it.next() {
-                        out.push(n);
-                    }
-                }
-                '"' => string = false,
-                _ => {}
-            }
-        } else {
-            match (c, it.peek()) {
-                ('/', Some('/')) => {
-                    it.next();
-                    line = true;
-                }
-                ('/', Some('*')) => {
-                    it.next();
-                    block = 1;
-                }
-                _ => {
-                    out.push(c);
-                    if c == '"' {
-                        string = true;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nbe-engine"))
+        .env("NBE_RENDER_TOKEN", "test-token")
+        .env("NBE_CP_URL", "ws://127.0.0.1:1/nbe/v0.3") // nothing listening, by design
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the engine binary must be runnable");
+
+    let mut out = child.stdout.take().expect("stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match out.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    if buf.contains("audio driver started") {
+                        let _ = tx.send(true);
+                        return;
                     }
                 }
             }
         }
-    }
-    out
-}
+        let _ = tx.send(false);
+    });
 
-#[test]
-fn comment_stripping_does_not_see_commented_out_code() {
-    // The gate above is only as good as this function.
-    assert!(strip_comments("a();\n// b();\n").contains("a("));
-    assert!(!strip_comments("a();\n// b();\n").contains("b("));
-    assert!(!strip_comments("/* b(); */ a();").contains("b("));
-    assert!(strip_comments(r#"let s = "// b()"; a();"#).contains("b()"));
+    let started = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap_or(false);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        started,
+        "the engine binary must start the audio driver; without it the audio \
+         graph is a mechanism nothing drives (SPEC §8.9)"
+    );
 }
 
 #[test]
