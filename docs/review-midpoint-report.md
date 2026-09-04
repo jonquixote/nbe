@@ -410,3 +410,30 @@ Two consequences already actioned here:
 ### 11.4 The mission test
 
 Per outline §0, the dress rehearsal and the 30-minute AC-5 soak, green **on this Intel machine**, are the proof the project exists to produce — a release gate, not a curiosity. The rehearsal now stands at **9 of 12**, with the three remaining reds being R5, R6 and the underrun gate, all dispositioned to Prompt 07.
+
+
+---
+
+## 12. Ultrareview findings, and a flakiness measurement
+
+An independent cloud review of the whole branch returned three findings. Two were real; one of them is the anti-pattern this review spent three rounds removing, reintroduced by me.
+
+### 12.1 The AC-4 rehearsal step could not fail
+
+The step "a 12 fps source spans 30 house frames (AC-4)" asserted that no `itemEvent: end` arrives for the A3 take. `ItemEvent::End` is emitted only from `schedule_done`, which is spawned only when the take payload carries `durationFrames` — and that take carried none. Nothing on the wire moves when a clip is exhausted: `viewItem` does not clear and no event fires. The step was green whether or not cadence conversion existed. §10 of this report named it "the end-to-end half" of the AC-4 fix; it was not, and that sentence was wrong.
+
+**Fixed by moving the gate to where the observable lives — pixels.** `a_12_fps_source_spans_30_house_frames_in_the_rendered_picture` loads `cadence_12.mp4` (frame *N* is red = *N*×20), renders house frames 5, 20 and 29, and reads back the View. Reverting `source_index_at` to 1:1 fails it: house frame 5 shows source frame 5 (red 100) instead of source frame 2 (red 40). The rehearsal step now claims only what it proves — a non-house-rate asset takes cleanly and costs no frames.
+
+This is the fifth defeatable gate this review has found, and the second I wrote myself. The pattern is consistent enough to state as a rule: **a gate must observe a signal that only the behaviour under test can produce.** Source text, log text, and the absence of an event that cannot occur all fail that test.
+
+### 12.2 The P0 fix reinstated the collision it closed
+
+`TakeItem.asset_id` is documented as "`None` means the item shows no audio-bearing asset — a graphic scene, legitimately silent", and the code then fell back to `library.get(item_ref)` when it was `None`. A graphic-only item named `stab` in a package with a soundboard asset named `stab` put that sample on the clip bus: **−1.9 dBFS on a bus the manifest says is silent**, measured. `None` now flows to the empty-source branch, gated by `a_silent_item_stays_silent_even_when_its_name_matches_an_asset`.
+
+### 12.3 `show.load` is a flakiness risk for the gate
+
+Measured again, and worse than §3.2 recorded: a standalone rehearsal run competing with a `cargo build` for CPU **exceeded even the 180 s `LOAD_MS` budget**, failing at `show.load` and cascading through every step after it. The same suite run without that contention passes 9 of 12.
+
+The charter requires the gate be green in CI **twice consecutively**, and states that a real-time gate that flakes is not a gate. A 46 s step whose worst case under contention is unbounded cannot meet that bar by raising the timeout.
+
+**Disposition — Prompt 07, as a prerequisite to making the rehearsal a required gate.** The fix is not a bigger number; it is to stop `show.load` doing 46 s of decode. Options, in the order I would try them: run preflight's decode checks in release even when the workspace is a debug build; cache the preflight report by package hash so a repeated load of an unchanged package is a read; or narrow the rehearsal fixture's decode surface. Recorded here rather than fixed, because it is scheduling work on the CI job as much as engine work.
