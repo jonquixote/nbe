@@ -1,0 +1,63 @@
+Hardware:
+
+    Hardware Overview:
+
+      Model Name: MacBook Pro
+      Model Identifier: MacBookPro15,1
+      Processor Name: 6-Core Intel Core i7
+      Processor Speed: 2.6 GHz
+      Number of Processors: 1
+      Total Number of Cores: 6
+      L2 Cache (per Core): 256 KB
+      L3 Cache: 12 MB
+      Hyper-Threading Technology: Enabled
+      Memory: 16 GB
+      System Firmware Version: 2103.160.2.0.0 (iBridge: 23.16.16068.0.0,0)
+      OS Loader Version: 583~2317
+      Serial Number (system): C02YX1SELVCH
+      Hardware UUID: E127B8AF-7B49-5F10-A474-7FD894CBFBD1
+      Provisioning UDID: E127B8AF-7B49-5F10-A474-7FD894CBFBD1
+      Activation Lock Status: Enabled
+
+Graphics/Displays:
+
+    Intel UHD Graphics 630:
+
+      Chipset Model: Intel UHD Graphics 630
+      Type: GPU
+      Bus: Built-In
+      VRAM (Dynamic, Max): 1536 MB
+      Vendor: Intel
+      Device ID: 0x3e9b
+      Revision ID: 0x0000
+      Automatic Graphics Switching: Supported
+      gMux Version: 5.0.0
+      Metal Support: Metal 3
+
+    Radeon Pro 555X:
+
+      Chipset Model: Radeon Pro 555X
+      Type: GPU
+      Bus: PCIe
+      PCIe Lane Width: x8
+      VRAM (Total): 4 GB
+      Vendor: AMD (0x1002)
+      Device ID: 0x67ef
+      Revision ID: 0x00e3
+      ROM Revision: 113-C980AL-075
+      VBIOS Version: 113-C97501P-005
+      EFI Driver Version: 01.A1.075
+      Automatic Graphics Switching: Supported
+      gMux Version: 5.0.0
+      Metal Support: Metal 2
+      Displays:
+        Color LCD:
+          Display Type: Built-In Retina LCD
+          Resolution: 2880 x 1800 Retina
+          Framebuffer Depth: 24-Bit Color (ARGB8888)
+          Main Display: Yes
+          Mirror: Off
+          Online: Yes
+          Automatically Adjust Brightness: Yes
+          Connection Type: Internal
+
