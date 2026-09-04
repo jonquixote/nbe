@@ -78,6 +78,8 @@ impl DirectiveHandler {
             "show.stop" => self.on_show_stop(d)?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
+            "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
+            | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -259,6 +261,14 @@ impl DirectiveHandler {
         Ok(())
     }
 
+    /// Audio directives (SPEC §16.8). The graph lives on the audio thread; the
+    /// directive path only publishes intent, which is why this never blocks.
+    fn on_audio(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let mut pending = self.state.audio_commands.lock().unwrap();
+        pending.push(crate::audio_control::AudioCommand::from_directive(d)?);
+        Ok(())
+    }
+
     fn on_fallback(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
         self.state.fallback_active.store(true, Ordering::SeqCst);
         *self.state.view_item.lock().unwrap() = None; // on fallback, view shows the slate
@@ -278,19 +288,36 @@ impl DirectiveHandler {
         if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
             self.state.fallback_active.store(true, Ordering::SeqCst);
         }
-        if let Some(vi) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
-            *self.state.view_item.lock().unwrap() = Some(vi.to_string());
+        // The snapshot is authoritative about BOTH buses, including when a bus
+        // is empty. Reading only the naming case left the previous item on air
+        // after a show.stop resync said nothing was.
+        let now = self.state.master_frame().unwrap_or(0);
+        if snapshot.get("viewItem").is_some() {
+            let view = snapshot
+                .get("viewItem")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            *self.state.view_item.lock().unwrap() = view;
             // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
             // so a resynced timed item resumes from its first frame rather
             // than guessing an origin. Recorded as a spec gap in
             // agents/prompts/05-video-decode.md.
-            let now = self.state.master_frame().unwrap_or(0);
             self.state
                 .view_item_start_frame
                 .store(now, std::sync::atomic::Ordering::SeqCst);
+            // A resync supersedes any transition the engine was mid-way
+            // through: the snapshot is the state, not a waypoint toward it.
+            *self.state.transition.lock().unwrap() = None;
         }
-        if let Some(pi) = snapshot.get("previewItem").and_then(|v| v.as_str()) {
-            *self.state.preview_item.lock().unwrap() = Some(pi.to_string());
+        if snapshot.get("previewItem").is_some() {
+            let preview = snapshot
+                .get("previewItem")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            *self.state.preview_item.lock().unwrap() = preview;
+            self.state
+                .preview_item_start_frame
+                .store(now, std::sync::atomic::Ordering::SeqCst);
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");

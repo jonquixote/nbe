@@ -336,12 +336,13 @@ impl RenderLoop {
             return Vec::new();
         };
         if bus == Bus::Preview {
-            // Preview has no take, so its item has been "on air" since the
-            // engine saw it: read it from its own first frame.
+            // Preview has its own `t0` — the frame its item was armed. Pinning
+            // it to 0 made an armed clip preview as black once the master clock
+            // passed the clip's own length.
             return vec![BusScene {
                 scene: index.resolve(snapshot.preview_item.as_deref()),
                 alpha: 1.0,
-                t0: 0,
+                t0: snapshot.preview_item_start_frame,
             }];
         }
         match snapshot.transition {
