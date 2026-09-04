@@ -15,7 +15,15 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: cargo test --workspace (summary echoed for the audit trail)
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee /tmp/rust-test.log
+          echo "::group::Rust test summary"
+          grep "^test result" /tmp/rust-test.log
+          grep "^test result" /tmp/rust-test.log \
+            | awk '{p+=$4; f+=$6; i+=$8} END {printf "TOTAL: %d passed, %d failed, %d ignored\n", p, f, i}'
+          echo "::endgroup::"
       - name: GPU/render tests actually ran (Prompt 04)
         # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
         # If zero tests ran, the render gate is silently absent and CI passes
@@ -67,9 +75,13 @@ jobs:
             | grep -v "\.test\.ts" \
             | grep -v "^\s*//" || true)
           if [ -n "$hits" ]; then echo "vocabulary violation:"; echo "$hits"; exit 1; fi
-      - name: tests pass and actually run
+      - name: tests pass and actually run (summary echoed for the audit trail)
         run: |
+          set -o pipefail
           npm test 2>&1 | tee /tmp/cp-test.log
+          echo "::group::Control-plane test summary"
+          grep -E "^# (tests|pass|fail|skipped|todo) " /tmp/cp-test.log || true
+          echo "::endgroup::"
           passed=$(grep -E "^# pass " /tmp/cp-test.log | awk '{print $3}')
           failed=$(grep -E "^# fail " /tmp/cp-test.log | awk '{print $3}')
           echo "passed=$passed failed=$failed"

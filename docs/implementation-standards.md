@@ -27,6 +27,44 @@ Any prompt that introduces a binary, fixture, or externally observable behaviour
 
 A gate that passes on any failure mode is not a gate. CI MUST fail loudly and name what it expected.
 
+## 2a. Falsification (standing review step)
+
+A green suite is evidence only if it could have been red. Every prompt's review
+includes a **falsification pass**: for each behaviour the prompt claims to
+deliver, delete or disable that behaviour in the production code and re-run the
+suite. Record which tests failed.
+
+The output is a table, and it belongs in the completion report:
+
+| Behaviour removed | Tests that failed |
+|---|---|
+| … | … |
+
+Rules:
+
+1. **Every claimed behaviour needs at least one test that fails without it.** A
+   behaviour whose removal breaks nothing is untested, whatever the suite's
+   pass count says.
+2. **Falsify the production path, not the test.** Removing an assertion proves
+   nothing; removing the code the assertion is supposed to exercise proves
+   everything.
+3. **Restore and re-run.** The report states the suite is green again after the
+   experiment, and the working tree is clean.
+4. **A test that passes with its behaviour deleted is a defect**, and is fixed
+   or deleted in the same change — not carried as coverage.
+
+This step exists because it has caught real absence twice: a control-plane
+bridge that delivered no directives, and a compositor where deleting the whole
+render path left 7 of 8 tests passing.
+
+## 2b. Test counts come from CI
+
+Test totals reported in a completion message MUST be the summary lines the test
+runners printed, not a hand-tallied figure. The `rust` and `control-plane` CI
+jobs echo their summaries in a collapsed group for exactly this purpose; quote
+those lines. Arithmetic across suites has been wrong often enough that it is no
+longer an acceptable source.
+
 ## 3. Prompt structure
 
 Every implementation prompt uses this skeleton:
