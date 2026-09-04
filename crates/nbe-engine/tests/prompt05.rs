@@ -172,15 +172,23 @@ fn a_corrupt_asset_fails_loudly_rather_than_decoding_nothing() {
 #[test]
 fn clip_and_loop_indices_are_pure_functions_of_the_master_clock() {
     // A clip plays once from its start frame and then runs out.
-    assert_eq!(clip_source_index(100, 100, 30), Some(0));
-    assert_eq!(clip_source_index(115, 100, 30), Some(15));
-    assert_eq!(clip_source_index(130, 100, 30), None, "past the end");
-    assert_eq!(clip_source_index(99, 100, 30), None, "before the start");
+    assert_eq!(clip_source_index(100, 100, 30, 30, 30), Some(0));
+    assert_eq!(clip_source_index(115, 100, 30, 30, 30), Some(15));
+    assert_eq!(
+        clip_source_index(130, 100, 30, 30, 30),
+        None,
+        "past the end"
+    );
+    assert_eq!(
+        clip_source_index(99, 100, 30, 30, 30),
+        None,
+        "before the start"
+    );
 
     // A loop wraps by modulo, with no restart and no special case at the
     // boundary (SPEC §12.1, AC-9).
     for f in 0..100u64 {
-        assert_eq!(loop_source_index(f, 0, 10), Some(f % 10));
+        assert_eq!(loop_source_index(f, 0, 10, 30, 30), Some(f % 10));
     }
 }
 
@@ -304,7 +312,7 @@ async fn a_video_element_renders_its_frame_not_black() {
     let (state, _out) = load(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     // Frame 0 of the reference clip is red.
     render.render_frame(0, None);
     let px = centre_px(&render.readback_view().await);
@@ -389,7 +397,7 @@ async fn an_undecodable_video_leaves_the_view_black_rather_than_crashing() {
     let (state, _out) = load(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     render.render_frame(0, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -409,7 +417,7 @@ async fn a_take_at_a_nonzero_master_frame_starts_the_clip_at_its_own_frame_zero(
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "cfr_30.mp4", None);
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     // The show has been running a while: the take lands at master frame 500,
     // far past the clip's own length.
@@ -472,7 +480,7 @@ async fn a_loop_taken_late_wraps_from_its_own_start() {
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "loop_10.mp4", Some(10));
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     let start: u64 = 1000;
     *state.view_item.lock().unwrap() = Some("A1".into());
@@ -549,7 +557,7 @@ async fn a_resync_naming_no_item_clears_the_old_one() {
     );
 
     // And the View renders black rather than the stale item.
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     render.render_frame(0, None);
     assert_eq!(centre_px(&render.readback_view().await), [0, 0, 0, 255]);
 }
@@ -561,7 +569,7 @@ async fn an_armed_preview_clip_survives_a_late_master_clock() {
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "cfr_30.mp4", None);
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     let armed_at: u64 = 500; // far past the clip's 30 frames
     *state.preview_item.lock().unwrap() = Some("A1".into());

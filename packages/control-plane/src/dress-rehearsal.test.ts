@@ -386,6 +386,38 @@ test("[RI-1] step 7: an audio.bus.set is reflected on the next tick", async () =
   await untilTelemetry("a tick after the bus change", () => true);
 });
 
+test("[RI-1] a 12 fps source spans 30 house frames (AC-4)", async () => {
+  // Without a non-house-rate clip in this package the rehearsal is blind to
+  // cadence forever. AC-4 was reported as delivered for six prompts while
+  // `draw_for` mapped house frames onto source indices 1:1 and never read
+  // `source_frame_rate` — a 12 fps asset played at 2.5x — because the only
+  // test filed under AC-4 exercised a helper with no production caller.
+  //
+  // A3 is 12 source frames at 12 fps: one second, which is 30 house frames.
+  // The wire-visible consequence of getting this wrong is the item ending
+  // early, so the assertion is that it is STILL on air after 12 house frames
+  // (400 ms), the point a 1:1 mapping would have exhausted it.
+  await ok("preview.set", { itemRef: "A3" });
+  await ok("view.take", { transition: "cut" });
+  await untilTelemetry(
+    "A3 on air",
+    (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A3",
+  );
+
+  const ended = pushes.some(
+    (f) =>
+      f["kind"] === "itemEvent" &&
+      f["event"] === "end" &&
+      (f["itemRef"] ?? f["item_ref"]) === "A3",
+  );
+  assert.equal(
+    ended,
+    false,
+    "a 12 fps source must span 30 house frames, not 12: A3 reported end early, " +
+      "which is what a 1:1 house-to-source mapping produces",
+  );
+});
+
 test("[RI-1] step 8: preview.set is visible in telemetry", async () => {
   await ok("preview.set", { itemRef: "A1" });
   const tick = await untilTelemetry(

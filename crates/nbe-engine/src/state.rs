@@ -201,6 +201,12 @@ impl EngineState {
         }
     }
 
+    /// The house rate this show runs at. The renderer needs it to map show
+    /// time onto source time for non-house-rate assets (SPEC §18).
+    pub fn house_rate(&self) -> u32 {
+        self.clock.lock().unwrap().house_rate()
+    }
+
     pub fn clock_state(&self) -> ClockState {
         self.clock.lock().unwrap().state()
     }

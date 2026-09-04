@@ -20,7 +20,7 @@ use std::time::Duration;
 const FRAME_30: Duration = Duration::from_millis(33);
 
 async fn gpu_or_fail() -> Gpu {
-    match Gpu::init(None).await {
+    match Gpu::init().await {
         Ok(g) => g,
         Err(e) => panic!("wgpu adapter unavailable; tests must FAIL loudly, not skip: {e}"),
     }
@@ -99,7 +99,7 @@ async fn loaded_engine(dir: &std::path::Path) -> (Arc<EngineState>, DirectiveHan
         ))
         .await
         .unwrap();
-    let render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let render = RenderLoop::new(state.clone()).await.unwrap();
     (state, handler, render)
 }
 
@@ -332,6 +332,32 @@ async fn a_failing_preview_never_touches_the_view_or_the_drop_count() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_failed_view_render_puts_the_slate_on_air() {
+    // Fix round, pass-4 F3. SPEC §10.3's promise is that a failed VIEW render
+    // engages the fallback. `RenderLoop` had a `fail_preview` seam and no
+    // `fail_view` one, so the View's `Err` arm was unreachable: deleting
+    // `fallback_active.store(true)` from it left the whole suite green. The
+    // two tests below cover the slate's DRAWING; this covers its ENGAGEMENT.
+    let dir = tempfile::tempdir().unwrap();
+    make_package(dir.path(), [12, 200, 90, 255]);
+    let (state, _h, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    assert!(
+        !state.fallback_active.load(Ordering::SeqCst),
+        "precondition: the fallback must be off before the failure"
+    );
+
+    render.fail_view = true;
+    render.render_frame(0, None);
+
+    assert!(
+        state.fallback_active.load(Ordering::SeqCst),
+        "SPEC §10.3: a failed View render must put the fallback slate on air"
+    );
+}
+
+#[tokio::test]
 async fn fallback_renders_the_decoded_slate_pixels() {
     let dir = tempfile::tempdir().unwrap();
     let slate = [12, 200, 90, 255];
@@ -392,7 +418,7 @@ async fn an_undecodable_fallback_becomes_a_generated_slate() {
     assert_eq!((img.width, img.height), (VIEW_W, VIEW_H));
     assert!(img.rgba.iter().any(|b| *b != 0), "slate must not be blank");
 
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     state.fallback_active.store(true, Ordering::SeqCst);
     render.render_frame(0, None);
     let px = centre_px(&render.readback_view().await);
@@ -411,7 +437,7 @@ async fn quality_profile_is_probed_capped_and_emitted_by_production_code() {
     let state = Arc::new(EngineState::new(30));
 
     // The renderer writes the probe result; the test does not.
-    let _render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let _render = RenderLoop::new(state.clone()).await.unwrap();
     let probed = state
         .quality_profile
         .lock()
@@ -466,7 +492,7 @@ async fn the_v0_3_fixture_produces_a_renderable_first_frame() {
     // asserting the absence of the feature that just landed. The fixture's
     // clip is flat 0x102030, and that is what the View must show.
     *state.view_item.lock().unwrap() = Some("A1".into());
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     let report = render.render_frame(0, Some(Duration::from_secs(5)));
     assert!(report.view_late_by.is_none());
     let px = centre_px(&render.readback_view().await);

@@ -1,7 +1,7 @@
 //! GPU setup and quality profile probe (Step 1).
 //!
 //! Probe the adapter once, hold the device/queue for the sibling lifetime,
-//! and expose the effective quality profile (capped by the manifest's
+//! and expose the probed quality profile (capped by the manifest's
 //! requested profile, per SPEC §10.1.1).
 
 use nbe_protocol::QualityProfile;
@@ -16,7 +16,16 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub async fn init(requested: Option<QualityProfile>) -> anyhow::Result<Self> {
+    /// Probe the adapter and open a device.
+    ///
+    /// There is no `requested` parameter. One existed, threaded from
+    /// `RenderLoop::new`, and was always `None` in production — `main` never
+    /// passed one, and the manifest cap is applied where it belongs, in
+    /// `EngineState::publish_quality_profile` (which is tested). Deleting the
+    /// cap here left the suite green because the real one is elsewhere; the
+    /// parameter was dead weight that made `gpu.quality` read as "probed"
+    /// when it holds the probed value.
+    pub async fn init() -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -26,7 +35,6 @@ impl Gpu {
         let name = info.name.clone();
 
         let probed = probe_quality(&adapter);
-        let effective = requested.map(|req| probed.capped_by(req)).unwrap_or(probed);
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
@@ -34,7 +42,7 @@ impl Gpu {
         Ok(Self {
             device,
             queue,
-            quality: effective,
+            quality: probed,
             adapter_name: name,
         })
     }

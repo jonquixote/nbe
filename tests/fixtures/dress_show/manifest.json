@@ -52,6 +52,14 @@
       "id": "stab_sfx",
       "kind": "audio",
       "source": "media/stab.m4a"
+    },
+    {
+      "id": "A3_cadence",
+      "kind": "video",
+      "source": "media/A3_12fps.mp4",
+      "format": "h264",
+      "sourceFrameRate": 12,
+      "expectedDurationFrames": 12
     }
   ],
   "scenes": [
@@ -97,6 +105,18 @@
           "templateId": "TPL_GENERIC"
         }
       ]
+    },
+    {
+      "id": "SCN_A3",
+      "name": "12 fps source",
+      "elements": [
+        {
+          "id": "main_cadence",
+          "kind": "clip",
+          "z": 1,
+          "assetId": "A3_cadence"
+        }
+      ]
     }
   ],
   "rundown": {
@@ -118,6 +138,11 @@
         "id": "G",
         "kind": "sceneRef",
         "sceneRef": "SCN_G"
+      },
+      {
+        "id": "A3",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_A3"
       }
     ]
   },

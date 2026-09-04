@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // The render loop runs on its own task, driven by master-clock frame
     // boundaries — not a spin. It renders even while the clock is STOPPED so
     // the operator always has a picture (the fallback slate).
-    let mut render = RenderLoop::new(state.clone(), None).await?;
+    let mut render = RenderLoop::new(state.clone()).await?;
     let render_state = state.clone();
     tokio::spawn(async move {
         let frame_budget = Duration::from_secs_f64(1.0 / house_rate as f64);

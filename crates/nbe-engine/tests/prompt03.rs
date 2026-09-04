@@ -222,6 +222,40 @@ async fn item_end_emitted_after_timed_duration() {
 }
 
 #[tokio::test]
+async fn a_stopped_show_emits_no_item_end() {
+    // Fix round, pass-4 F5. `schedule_done`'s sibling guard
+    // (`tracker.is_current`) is covered by the test below; this one --
+    // `if !state.is_running() { return; }` -- was not, so deleting it left the
+    // suite green while a show.stop mid-item still emitted PLAYING->DONE for
+    // an item that never finished. The control plane acts on that row.
+    let (handler, state, outgoing) = make_engine();
+    state.clock.lock().unwrap().start();
+    let d = directive(
+        "view.take",
+        7,
+        serde_json::json!({ "transition": "cut", "durationFrames": 3 }),
+        serde_json::json!({ "itemRef": "A1" }),
+    );
+    handler.apply(&d).await.unwrap();
+
+    // Stop the show before the item's own duration elapses.
+    state.clock.lock().unwrap().stop();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    assert!(
+        !outgoing.drain().iter().any(|f| matches!(
+            f,
+            nbe_protocol::EngineFrame::ItemEvent {
+                event: nbe_protocol::ItemEvent::End,
+                item_ref,
+                ..
+            } if item_ref == "A1"
+        )),
+        "a stopped show must not report an item it never finished playing"
+    );
+}
+
+#[tokio::test]
 async fn superseded_take_emits_no_late_item_end() {
     // 03b Step 5: the old take's end must never fire after a new take.
     let (handler, state, outgoing) = make_engine();

@@ -1272,6 +1272,50 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
 // A defeatable gate is worse than none: it reports confidence it has not
 // earned, which is the exact failure this review exists to find.
 
+#[tokio::test]
+async fn falling_behind_the_cadence_is_an_underrun() {
+    // Fix round, pass-4 F4. There are TWO production sources of an underrun
+    // and only one was tested. Sink refusal is covered by
+    // `a_sink_that_cannot_take_a_block_is_an_underrun_and_not_a_video_fault`;
+    // this is the cadence-overrun branch in `run()` -- the one a real device
+    // sink actually hits -- and deleting its `note_underrun()` left the suite
+    // green, so the module's claim that `audioUnderrunsTotal` is written by
+    // production code held for only half its writers.
+    struct SlowSink;
+    impl nbe_engine::audio_driver::AudioSink for SlowSink {
+        fn write(&mut self, _block: &[f32]) -> bool {
+            // Longer than a block: the loop cannot keep cadence, which is
+            // exactly the condition the branch exists for.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            true
+        }
+        fn block_frames(&self) -> usize {
+            BLOCK
+        }
+    }
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let driver = AudioDriver::new(state.clone(), Box::new(SlowSink), HOUSE_RATE);
+    let handle = tokio::spawn(nbe_engine::audio_driver::run(driver, state.clone()));
+
+    let mut underruns = 0;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        underruns = state
+            .audio_underruns_total
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if underruns > 0 {
+            break;
+        }
+    }
+    handle.abort();
+
+    assert!(
+        underruns > 0,
+        "a driver that cannot keep the audio cadence must count underruns \
+         (SPEC §8.10); the sink took 60 ms per 33 ms block and none were counted"
+    );
+}
+
 #[test]
 fn the_drain_is_bounded_so_a_flood_cannot_starve_a_block() {
     let state = Arc::new(EngineState::new(HOUSE_RATE));

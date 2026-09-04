@@ -145,6 +145,16 @@ ffmpeg -y -loglevel error \
   -c:a aac -b:a 128k -ar 48000 -ac 2 \
   "$dress/stab.m4a"
 
+# A3: a 12 fps source at a 30 fps house rate. Without a non-house-rate clip in
+# this package the rehearsal is blind to cadence forever — AC-4 was reported as
+# delivered for six prompts while `draw_for` mapped house frames 1:1 and no
+# end-to-end test could see it. 12 source frames must span 30 house frames.
+say "dress_show/media/A3_12fps.mp4 (1920x1080, 12 fps source, 12 frames)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=0x3a5c1b:s=1920x1080:r=12:d=1" \
+  -c:v libx264 -pix_fmt yuv420p -preset veryfast -tune stillimage -g 12 -frames:v 12 \
+  "$dress/A3_12fps.mp4"
+
 # A real PNG fallback slate at house resolution — §10.3's watchdog target.
 say "dress_show/media/fallback.png (1920x1080)"
 ffmpeg -y -loglevel error \

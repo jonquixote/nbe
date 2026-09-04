@@ -45,6 +45,10 @@ pub struct BusScene {
 struct VideoRing {
     textures: Vec<wgpu::Texture>,
     period_frames: u32,
+    /// The source's own rate. Carried here because the renderer maps show time
+    /// onto source time (SPEC §18, AC-4); without it a non-house-rate asset
+    /// plays at the wrong speed.
+    source_frame_rate: u32,
 }
 
 pub struct RenderTargets {
@@ -95,6 +99,8 @@ pub struct RenderLoop {
     /// 1x1 white texture; solid layers are this modulated by a colour.
     white: wgpu::Texture,
     loaded_generation: u64,
+    /// The house rate, for the show-time to source-time mapping (SPEC §18).
+    house_rate: u32,
     pipeline: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
@@ -103,6 +109,14 @@ pub struct RenderLoop {
     pub injected_view_delay: Option<Duration>,
     /// Test seam: make the preview render fail.
     pub fail_preview: bool,
+    /// Test seam: make the VIEW render fail.
+    ///
+    /// §10.3's promise is that a failed View render puts the fallback slate on
+    /// air. Only Preview had a seam, so the View's `Err` arm was unreachable
+    /// and deleting `fallback_active.store(true)` from it left the whole suite
+    /// green. The two slate tests set `fallback_active` by hand — they cover
+    /// the drawing, not the engagement.
+    pub fail_view: bool,
     consecutive_late: u32,
     consecutive_on_time: u32,
     /// True while the View is in a failure episode, so the log is written
@@ -111,11 +125,8 @@ pub struct RenderLoop {
 }
 
 impl RenderLoop {
-    pub async fn new(
-        state: Arc<EngineState>,
-        requested: Option<nbe_protocol::QualityProfile>,
-    ) -> anyhow::Result<Self> {
-        let gpu = Gpu::init(requested).await?;
+    pub async fn new(state: Arc<EngineState>) -> anyhow::Result<Self> {
+        let gpu = Gpu::init().await?;
         // The probe result is published here, in production, so telemetry
         // reports it because the engine put it there. Publishing (not
         // assigning) means a re-probe after device loss re-applies the
@@ -144,6 +155,7 @@ impl RenderLoop {
             ..Default::default()
         });
         let watchdog = Watchdog::new(state.clone(), 2);
+        let house_rate = state.house_rate();
 
         let mut me = Self {
             gpu,
@@ -155,12 +167,14 @@ impl RenderLoop {
             fallback_tex,
             white,
             loaded_generation: u64::MAX,
+            house_rate,
             pipeline,
             bind_layout,
             uniforms,
             sampler,
             injected_view_delay: None,
             fail_preview: false,
+            fail_view: false,
             consecutive_late: 0,
             consecutive_on_time: 0,
             view_failing: false,
@@ -214,6 +228,10 @@ impl RenderLoop {
                     VideoRing {
                         textures,
                         period_frames: asset.period_frames,
+                        // Rounded: a source rate is a nominal cadence, and a
+                        // 23.976 source is a 24 fps cadence with a pulldown
+                        // pattern (SPEC §18), not 23 frames per second.
+                        source_frame_rate: asset.source_frame_rate.round().max(1.0) as u32,
                     },
                 );
             }
@@ -385,6 +403,9 @@ impl RenderLoop {
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
         }
+        if bus == Bus::View && self.fail_view {
+            anyhow::bail!("injected view failure");
+        }
         let target = match bus {
             Bus::View => &self.targets.view,
             Bus::Preview => &self.targets.preview,
@@ -495,9 +516,21 @@ impl RenderLoop {
                 // AND the frame this item went on air. Passing 0 here reads a
                 // clip taken at master frame N from source frame N.
                 let source_index = if *looping {
-                    crate::decode::loop_source_index(frame, t0, ring.period_frames as u64)?
+                    crate::decode::loop_source_index(
+                        frame,
+                        t0,
+                        ring.period_frames as u64,
+                        ring.source_frame_rate,
+                        self.house_rate,
+                    )?
                 } else {
-                    crate::decode::clip_source_index(frame, t0, ring.period_frames as u64)?
+                    crate::decode::clip_source_index(
+                        frame,
+                        t0,
+                        ring.period_frames as u64,
+                        ring.source_frame_rate,
+                        self.house_rate,
+                    )?
                 };
                 let slot = crate::loop_cache::texture_slot(source_index, ring.period_frames)?;
                 let tex = ring
