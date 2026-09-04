@@ -201,6 +201,44 @@ impl PackageIndex {
     /// §17.3 machine tracks. That machine tracks Items; an asset id is
     /// unresolvable to it, so a fault reported against an asset cannot drive
     /// anything to `ERROR`.
+    /// The audio-bearing asset an item shows: item → scene → elements → asset.
+    ///
+    /// The forward direction of `items_using_asset`, and the fix for the P0 the
+    /// midpoint review found. Audio is made resident at `show.load` keyed by
+    /// **asset id**; a take arrives carrying an **item ref**. Every package
+    /// used in testing happened to name them the same string, so the lookup
+    /// appeared to work; on the dress show — item `A1`, asset `A1_clip` — it
+    /// missed and the take installed no source. Every bus sat at −120 dBFS
+    /// with the graph, the driver and the decode path all working.
+    ///
+    /// Resolved at load and arm time, never on the take path: §7.13 forbids
+    /// this kind of walk on the frame path, and a take must not depend on a
+    /// map lookup that can fail silently.
+    ///
+    /// Picks the lowest-z element with an asset, which is the clip a scene is
+    /// built around; overlay elements sit above it and carry their own audio
+    /// policy (SPEC §7.10, Prompt 07's work).
+    pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
+        let scene = self.item_scene.get(item_ref)?;
+        let elements = self.scenes.get(scene)?;
+        elements
+            .iter()
+            .find(|e| e.asset_id.is_some())
+            .and_then(|e| e.asset_id.clone())
+    }
+
+    /// item ref → the asset whose audio that item plays, for every item in the
+    /// package. Built once at load.
+    pub fn item_audio_map(&self) -> std::collections::BTreeMap<String, String> {
+        self.item_scene
+            .keys()
+            .filter_map(|item| {
+                self.item_audio_asset(item)
+                    .map(|asset| (item.clone(), asset))
+            })
+            .collect()
+    }
+
     pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
         let scenes: Vec<&String> = self
             .scenes

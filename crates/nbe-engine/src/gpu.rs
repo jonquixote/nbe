@@ -27,14 +27,34 @@ impl Gpu {
     /// when it holds the probed value.
     pub async fn init() -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // HighPerformance, explicitly. The reference target is a dual-GPU
+        // Intel MacBook Pro — Intel UHD 630 (1536 MB dynamic) plus a Radeon
+        // Pro 555X (4 GB dedicated), per `docs/hardware-baseline.txt`. wgpu's
+        // default preference is not `HighPerformance`, so relying on it means
+        // relying on a heuristic that varies with wgpu version, macOS version
+        // and whether the machine is on battery. Naming the preference makes
+        // adapter choice a decision rather than a default.
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
             .await
             .map_err(|e| anyhow::anyhow!("no wgpu adapter available: {e}"))?;
         let info = adapter.get_info();
         let name = info.name.clone();
 
         let probed = probe_quality(&adapter);
+
+        // Logged because on a dual-GPU machine the adapter actually chosen is
+        // the evidence, and the dress-rehearsal report quotes it.
+        tracing::info!(
+            adapter = %name,
+            backend = ?info.backend,
+            device_type = ?info.device_type,
+            quality = ?probed,
+            "gpu adapter selected"
+        );
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())

@@ -1374,6 +1374,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
         &mut g,
         vec![AudioCommand::TakeItem {
             item_ref: "A1".into(),
+            asset_id: Some("A1".into()),
             t0: 0,
             mode: "follow".into(),
             ramp_ms: 10.0,
@@ -1397,6 +1398,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
             g,
             vec![AudioCommand::TakeItem {
                 item_ref: "A1".into(),
+                asset_id: Some("A1".into()),
                 t0: 2,
                 mode: "mute".into(),
                 ramp_ms: 10.0,

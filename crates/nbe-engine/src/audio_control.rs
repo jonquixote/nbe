@@ -42,6 +42,10 @@ pub enum AudioCommand {
     /// the §8.7.3 audio mode.
     TakeItem {
         item_ref: String,
+        /// The asset whose audio this item plays, resolved at load time from
+        /// the package index. `None` means the item shows no audio-bearing
+        /// asset — a graphic scene, legitimately silent.
+        asset_id: Option<String>,
         t0: u64,
         /// `follow` | `crossfade` | `cut` | `mute` (SPEC §8.7.3).
         mode: String,
@@ -199,6 +203,7 @@ pub fn apply(
             } => graph.set_duck(enabled, depth_db, attack_ms, release_ms),
             AudioCommand::TakeItem {
                 item_ref,
+                asset_id,
                 t0,
                 mode,
                 ramp_ms,
@@ -207,7 +212,11 @@ pub fn apply(
                 let house = graph.house_frame_rate();
                 let (gain_db, ramp) = take_gain_and_ramp(&mode, ramp_ms, crossfade_frames, house);
                 // The item's audio is whatever was made resident at show.load.
-                let sources = match library.get(&item_ref) {
+                // By asset id. Resolving by `item_ref` here was the P0: the
+                // library is keyed by asset id, so any package whose item and
+                // asset ids differ took silently.
+                let key = asset_id.as_deref().unwrap_or(item_ref.as_str());
+                let sources = match library.get(key) {
                     Some(samples) => vec![crate::audio::Source::Pcm {
                         samples: samples.clone(),
                         t0,
