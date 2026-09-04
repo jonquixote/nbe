@@ -172,6 +172,26 @@ impl AudioDriver {
     }
 }
 
+/// Build the driver the engine runs and spawn it on its own task.
+///
+/// This exists so the production wiring is one named call rather than eight
+/// lines inside `main`: deleting the spawn from `main` used to leave the whole
+/// suite green, because nothing can observe `main()`. `spawn` is covered by a
+/// test that watches it drain and publish, and `main`'s call to it by a source
+/// assertion in `tests/prompt06.rs`.
+///
+/// The sink is the null sink: device glue is the recorded deferral in
+/// `agents/prompts/06-audio-graph.md`. Everything above the sink is real.
+pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHandle<()> {
+    let block_frames = SAMPLE_RATE as usize / house_rate.max(1) as usize;
+    let driver = AudioDriver::new(
+        state.clone(),
+        Box::new(NullSink::new(block_frames)),
+        house_rate,
+    );
+    tokio::spawn(run(driver, state))
+}
+
 /// Run the driver until the process ends.
 ///
 /// Cadence comes from the master clock: each cycle covers one block, and the

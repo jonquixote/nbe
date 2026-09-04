@@ -195,25 +195,46 @@ fn a_gain_change_of_60_db_never_steps() {
 #[test]
 fn stopping_a_soundboard_voice_ramps_it_out() {
     let mut g = AudioGraph::new(HOUSE_RATE);
-    let samples = tone_samples(440.0, 0.8, SAMPLE_RATE as usize);
+    // 442.5 Hz, not 440. The stop lands at the join of the SECOND pair of
+    // blocks, which is sample 4800 of the voice — and 440 Hz completes exactly
+    // 44 cycles there. That is a zero crossing: the waveform is at 0, so a
+    // full cut and a ramp produce the identical number and the test cannot
+    // tell them apart. It could not: replacing the stop ramp with an instant
+    // cut left this test green. 442.5 Hz puts sample 4800 a quarter cycle
+    // later, at the peak — maximum step for a cut, minimum slope for the
+    // baseline, which is the only place the two are distinguishable.
+    let samples = tone_samples(442.5, 0.8, SAMPLE_RATE as usize);
     let id = g.trigger("stab", samples, 0.0);
 
-    // Baseline: the voice running, no change at the join. A 440 Hz tone at 0.8
-    // already moves about 0.046 per sample, so the bar is "the stop adds
-    // nothing on top of that".
+    // Baseline: the voice running, no change at the join. The tone's own slope
+    // is the floor, so the bar is "the stop adds nothing on top of that".
     let base_buf = render_across_change(&mut g, 0, |_| {});
     assert!(peak_dbfs(&base_buf) > -20.0, "the voice should be audible");
     let baseline = worst_discontinuity_dbfs(&base_buf);
 
-    let worst = worst_discontinuity_dbfs(&render_across_change(&mut g, 2, |g| {
+    let buf = render_across_change(&mut g, 2, |g| {
         g.stop_voice(Some(id), None);
-    }));
+    });
+    let worst = worst_discontinuity_dbfs(&buf);
     assert!(
         worst <= baseline + 1.0,
         "stopping a voice must ramp, not cut: baseline {baseline:.1} dBFS, \
          during stop {worst:.1} dBFS"
     );
-    println!("voice stop: baseline {baseline:.1} dBFS, during stop {worst:.1} dBFS");
+
+    // And the stop must actually finish. Without this, a `stop_voice` that
+    // does nothing at all also clears the discontinuity bar — the ramp
+    // assertion alone cannot tell "ramped out" from "never stopped".
+    let settled = settled_peak_dbfs(&buf[BLOCK * CHANNELS..]);
+    assert!(
+        settled < -60.0,
+        "a 10 ms stop must be silent long before a 33 ms block ends; the \
+         voice is still at {settled:.1} dBFS"
+    );
+    println!(
+        "voice stop: baseline {baseline:.1} dBFS, during stop {worst:.1} dBFS, \
+         settled {settled:.1} dBFS"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +350,37 @@ fn ducking_attenuates_music_by_its_depth_and_recovers() {
 
 #[test]
 fn ducking_leaves_mic_and_guest_alone() {
+    // `settled_peak_dbfs`, not `peak_dbfs`. Measured over the whole buffer the
+    // head is the level from before the 10 ms attack lands, so a bus wrongly
+    // ducked still reports its old peak: ducking every program bus in
+    // violation of §8.3 moved the whole-buffer number by 0.38 dB and left this
+    // test green, while the settled tail moved the full 6.00 dB. The helper's
+    // own doc comment warns about exactly this trap; it was fixed in the music
+    // test and left here.
+    let mic_before = mic_settled_level(false);
+    let mic_after = mic_settled_level(true);
+    assert!(
+        (mic_before - mic_after).abs() < 0.5,
+        "SPEC §8.3: ducking must not touch the mic bus ({mic_before:.1} -> {mic_after:.1})"
+    );
+
+    // And the guest half of the name, which was never tested at all — no guest
+    // bus was ever created here.
+    let guest_before = guest_settled_level(false);
+    let guest_after = guest_settled_level(true);
+    assert!(
+        (guest_before - guest_after).abs() < 0.5,
+        "SPEC §8.3: ducking must not touch a guest bus ({guest_before:.1} -> {guest_after:.1})"
+    );
+    println!(
+        "duck isolation: mic {mic_before:.1} -> {mic_after:.1} dBFS, \
+         guest {guest_before:.1} -> {guest_after:.1} dBFS"
+    );
+}
+
+/// The mic bus alone, measured after any ramp has settled. `duck` engages the
+/// ducker; nothing else differs between the two runs.
+fn mic_settled_level(duck: bool) -> f32 {
     let mut g = AudioGraph::new(HOUSE_RATE);
     g.set_source(
         BusId::Mic,
@@ -337,19 +389,30 @@ fn ducking_leaves_mic_and_guest_alone() {
             amplitude: 0.5,
         }],
     );
-    let mut before = buffer(4096);
-    g.render(&mut before, 0);
-    let mic_before = peak_dbfs(&before);
+    if duck {
+        g.set_duck(true, Some(-6.0), Some(10.0), Some(250.0));
+    }
+    let mut buf = buffer(4096);
+    g.render(&mut buf, if duck { 4 } else { 0 });
+    settled_peak_dbfs(&buf)
+}
 
-    g.set_duck(true, Some(-6.0), Some(10.0), Some(250.0));
-    let mut after = buffer(4096);
-    g.render(&mut after, 4);
-    let mic_after = peak_dbfs(&after);
-
-    assert!(
-        (mic_before - mic_after).abs() < 0.5,
-        "SPEC §8.3: ducking must not touch the mic bus ({mic_before:.1} -> {mic_after:.1})"
+/// One guest bus alone, same shape.
+fn guest_settled_level(duck: bool) -> f32 {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.upsert_guest(
+        "G",
+        vec![Source::Tone {
+            hz: 700.0,
+            amplitude: 0.5,
+        }],
     );
+    if duck {
+        g.set_duck(true, Some(-6.0), Some(10.0), Some(250.0));
+    }
+    let mut buf = buffer(4096);
+    g.render(&mut buf, if duck { 4 } else { 0 });
+    settled_peak_dbfs(&buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,16 +494,34 @@ fn drift_is_measured_against_the_master_clock() {
 fn an_underrun_is_counted_and_never_blacks_the_view() {
     use nbe_engine::state::EngineState;
     let state = Arc::new(EngineState::new(HOUSE_RATE));
-    let mut g = AudioGraph::new(HOUSE_RATE);
 
-    for _ in 0..5 {
-        g.note_underrun();
+    // Drive the underruns through the production path. The first version of
+    // this test built a bare `AudioGraph`, which holds no state handle, and
+    // stored the count into a fresh `EngineState` by hand — so `fallback_active`
+    // was a field nothing in the test could ever set, and the §10.3 assertion
+    // below could not fail. Making `AudioDriver::cycle` raise the fallback on
+    // an underrun left it green. Now the sink refuses every block and the
+    // driver owns the state, so the assertion is reachable.
+    struct DeadSink;
+    impl nbe_engine::audio_driver::AudioSink for DeadSink {
+        fn write(&mut self, _block: &[f32]) -> bool {
+            false
+        }
+        fn block_frames(&self) -> usize {
+            BLOCK
+        }
     }
-    state
-        .audio_underruns_total
-        .store(g.underruns(), std::sync::atomic::Ordering::SeqCst);
+    let mut driver = AudioDriver::new(state.clone(), Box::new(DeadSink), HOUSE_RATE);
+    for frame in 0..5 {
+        driver.cycle(frame);
+    }
 
-    assert_eq!(g.underruns(), 5);
+    assert_eq!(
+        state
+            .audio_underruns_total
+            .load(std::sync::atomic::Ordering::SeqCst),
+        5
+    );
     // SPEC §10.3 is a *video* watchdog: an audio fault must not put the
     // fallback slate on air. Cutting the picture because audio glitched turns
     // a small fault into a visible one.
@@ -464,7 +545,7 @@ fn an_underrun_is_counted_and_never_blacks_the_view() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn bus_peaks_are_metered_and_reach_telemetry_shape() {
+fn bus_peaks_are_metered_per_bus() {
     let mut g = AudioGraph::new(HOUSE_RATE);
     g.set_source(
         BusId::Mic,
@@ -708,6 +789,52 @@ fn a_mute_mid_buffer_ramps_in_the_guest_return() {
     );
 }
 
+#[test]
+fn a_guest_mute_mid_buffer_ramps_in_every_other_return() {
+    // The test above covers the program-bus loop of `render_guest_return`.
+    // This covers the guest-bus loop, which is the same code shape and had
+    // nothing watching it: hoisting `next_gain()` out of its per-frame loop
+    // left the whole suite green. `guest.mute` and
+    // `audio.bus.set{bus:"guestReturn"}` both land on `guest_bus_mut`, so a
+    // guest muted mid-block would step in every other guest's IFB.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.upsert_guest("G", vec![]); // the listener
+    g.upsert_guest(
+        "H",
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: 0.5,
+        }],
+    );
+
+    let mut buf = buffer(BLOCK * 2);
+    let (a, b) = buf.split_at_mut(BLOCK * CHANNELS);
+    g.render_guest_return("G", a, 0);
+    let baseline = worst_discontinuity_dbfs(a);
+    g.guest_bus_mut("H")
+        .expect("guest H exists")
+        .set_muted(true, 10.0);
+    g.render_guest_return("G", b, 1);
+
+    let worst = worst_discontinuity_dbfs(&buf);
+    assert!(
+        worst <= baseline + 1.0,
+        "muting a guest must ramp in the other guests' returns: baseline \
+         {baseline:.1} dBFS, with mute {worst:.1} dBFS"
+    );
+
+    let settled = settled_peak_dbfs(&buf[BLOCK * CHANNELS..]);
+    assert!(
+        settled < -60.0,
+        "a 10 ms guest mute must be complete within a 33 ms block; G still \
+         hears H at {settled:.1} dBFS"
+    );
+    println!(
+        "guest-bus mid-buffer mute: baseline {baseline:.1} dBFS, with mute \
+         {worst:.1} dBFS, settled {settled:.1} dBFS"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Step 2 — the driver. Path: AudioDriver::cycle -> drain -> render -> publish.
 // A graph nothing drives is a mechanism test; these cover the driving.
@@ -884,6 +1011,52 @@ fn a_sink_that_cannot_take_a_block_is_an_underrun_and_not_a_video_fault() {
             .fallback_active
             .load(std::sync::atomic::Ordering::SeqCst),
         "SPEC §10.3: an audio fault must never put the fallback slate on air"
+    );
+}
+
+#[tokio::test]
+async fn the_spawned_driver_runs_without_anyone_pumping_it() {
+    // `spawn` is the production entry point. This proves the task it creates
+    // actually cycles: intents queued before it starts get drained by it and
+    // telemetry appears, with nobody calling `cycle` by hand.
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    state
+        .audio_commands
+        .lock()
+        .unwrap()
+        .push(AudioCommand::StopAll);
+
+    let handle = nbe_engine::audio_driver::spawn(state.clone(), HOUSE_RATE);
+    let mut drained = false;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if state.audio_commands.lock().unwrap().is_empty()
+            && !state.bus_peaks.lock().unwrap().is_empty()
+        {
+            drained = true;
+            break;
+        }
+    }
+    handle.abort();
+    assert!(
+        drained,
+        "the spawned driver must drain intents and publish peaks on its own"
+    );
+}
+
+#[test]
+fn the_engine_binary_spawns_the_audio_driver() {
+    // A source assertion, deliberately: nothing can observe `main()`, and
+    // deleting the spawn from it left all 112 tests passing — only clippy
+    // noticed, and only incidentally, through an unused import. The headline
+    // of this prompt is "a graph nothing drives"; this is the gate that fails
+    // if that becomes true again.
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("src/main.rs is readable");
+    assert!(
+        src.contains("audio_driver::spawn("),
+        "src/main.rs must call audio_driver::spawn; without it the audio graph \
+         is a mechanism nothing drives (SPEC §8.9)"
     );
 }
 

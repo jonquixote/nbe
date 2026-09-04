@@ -3,8 +3,7 @@
 //! Arc<EngineState>; the clock FSM is derived by MainLoop from directives so
 //! other tasks can read state.
 
-use nbe_engine::audio::SAMPLE_RATE;
-use nbe_engine::audio_driver::{self, AudioDriver, NullSink};
+use nbe_engine::audio_driver;
 use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
@@ -76,14 +75,7 @@ async fn main() -> anyhow::Result<()> {
     //
     // The sink is the null sink: device glue is the recorded deferral in
     // agents/prompts/06-audio-graph.md. Everything above the sink is real.
-    let block_frames = SAMPLE_RATE as usize / house_rate.max(1) as usize;
-    let driver = AudioDriver::new(
-        state.clone(),
-        Box::new(NullSink::new(block_frames)),
-        house_rate,
-    );
-    let audio_state = state.clone();
-    tokio::spawn(async move { audio_driver::run(driver, audio_state).await });
+    audio_driver::spawn(state.clone(), house_rate);
 
     channel::run_forever(cfg, state, outgoing).await;
     Ok(())
