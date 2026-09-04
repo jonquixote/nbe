@@ -20,7 +20,11 @@ jobs:
           # crate is allowed to opt out, because Objective-C FFI cannot exist
           # without it. Anywhere else, an opt-out is a policy change wearing
           # an attribute, and this gate refuses it.
-          hits=$(grep -rn "allow(unsafe_code)" crates/ --include=*.rs \
+          # `grep -r crates/` prints `crates//...` on GNU grep and `crates/...`
+          # on BSD, so the path is normalized before filtering. Verifying this
+          # gate only on macOS is what let that difference through once.
+          hits=$(grep -rn "allow(unsafe_code)" crates --include=*.rs \
+            | sed 's|//*|/|g' \
             | grep -v "^crates/nbe-decode/" || true)
           if [ -n "$hits" ]; then
             echo "allow(unsafe_code) outside crates/nbe-decode:"
@@ -62,7 +66,12 @@ jobs:
           grep -q 'migrationRequired' tests/fixtures/valid_show/preflight_report.json
           grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json
   control-plane:
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu: this job builds `nbe-preflight`, which since Prompt 05
+    # depends on `nbe-decode` for the SPEC §19 decode checks — and that is
+    # VideoToolbox, so it only builds on macOS. Stubbing decode on Linux would
+    # mean the preflight gates silently checked less there, which is the kind
+    # of gate Standards §2 forbids.
+    runs-on: macos-14
     defaults:
       run:
         working-directory: packages/control-plane
