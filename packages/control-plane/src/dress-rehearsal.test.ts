@@ -87,6 +87,15 @@ const ticks: Record<string, unknown>[] = [];
 const pushes: Record<string, unknown>[] = [];
 /** showState values seen on stateChange frames, in order. */
 const showStates: string[] = [];
+/** Per-command timings — a charter artifact, and the only way to tell an
+ *  engine latency from a measurement that started inside a 46-second load. */
+const timings: { command: string; atMs: number; tookMs: number }[] = [];
+/** When the harness started, so every timing is relative to one origin. */
+const T0 = Date.now();
+/** First tick at which the clock was observed advancing, relative to T0. */
+let clockMovedAtMs: number | null = null;
+/** First tick at which the clip bus was observed above the floor. */
+let clipAudibleAtMs: number | null = null;
 
 function send(
   command: string,
@@ -119,7 +128,13 @@ async function ok(
   payload: unknown = {},
   timeoutMs: number = COMMAND_MS,
 ): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
   const reply = await send(command, payload, timeoutMs);
+  timings.push({
+    command,
+    atMs: startedAt - T0,
+    tookMs: Date.now() - startedAt,
+  });
   assert.equal(
     reply["status"],
     "ok",
@@ -195,7 +210,17 @@ before(async () => {
   });
   ws.on("message", (raw: Buffer) => {
     const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
-    if (frame["kind"] === "telemetry") ticks.push(frame);
+    if (frame["kind"] === "telemetry") {
+      ticks.push(frame);
+      const d = frame["data"] as Record<string, unknown> | undefined;
+      if (clockMovedAtMs === null && ((d?.["masterClockFrame"] as number) ?? 0) > 0) {
+        clockMovedAtMs = Date.now() - T0;
+      }
+      const peaks = d?.["busPeakDbfs"] as Record<string, number> | undefined;
+      if (clipAudibleAtMs === null && (peaks?.["clip"] ?? -120) > -60) {
+        clipAudibleAtMs = Date.now() - T0;
+      }
+    }
     // §10.1's telemetry tick does NOT carry showState — it rides on the
     // §5.4.1 stateChange frame instead. Observed on the wire, and recorded as
     // an [RI-3] finding: a dashboard holding only telemetry cannot say whether
@@ -258,6 +283,10 @@ after(async () => {
     writeFileSync(join(dir, "telemetry.jsonl"), ticks.map((t) => JSON.stringify(t)).join("\n"));
     writeFileSync(join(dir, "pushes.jsonl"), pushes.map((f) => JSON.stringify(f)).join("\n"));
     writeFileSync(join(dir, "show-states.json"), JSON.stringify(showStates, null, 2));
+    writeFileSync(
+      join(dir, "timings.json"),
+      JSON.stringify({ timings, clockMovedAtMs, clipAudibleAtMs }, null, 2),
+    );
   } catch {
     // Artifacts are diagnostics, never a reason to fail the gate.
   }

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
-  "description": "NBE control plane — authoritative show-state owner and WebSocket command bus (SPEC v0.3.1 Sections 5, 16, 17)",
+  "description": "NBE control plane \u2014 authoritative show-state owner and WebSocket command bus (SPEC v0.3.1 Sections 5, 16, 17)",
   "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=20"
@@ -11,9 +11,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "node --import tsx --test $(ls src/*.test.ts | grep -v dress-rehearsal)",
     "typecheck": "tsc --noEmit",
-    "gen:manifest-types": "node scripts/gen-manifest-types.mjs"
+    "gen:manifest-types": "node scripts/gen-manifest-types.mjs",
+    "test:rehearsal": "node --import tsx --test src/dress-rehearsal.test.ts"
   },
   "dependencies": {
     "uuid": "^11.1.0",

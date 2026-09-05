@@ -494,3 +494,53 @@ The engine takes its rate from `NBE_HOUSE_RATE` (default 30); `show.load` never 
 - **F9** — `cadence_pattern` now derives from `source_index_at`, so the 2,3,2,3 assertion is a tautology over the production function rather than an independent cross-check. Deliberate: an independent re-implementation is what let the helper drift from the renderer for six prompts. The pixel-readback test is the independent check.
 - **F10** — `step 5: a 15-frame mix drops no frames` passes if the mix does nothing. True, and it is a "nothing bad happened" assertion by design; the mix's own behaviour is gated in the engine suite.
 - **F8, F11** — the rehearsal does not rebuild or freshness-check the engine binary, and `item_audio_asset` now respects `visible` (F11 fixed in passing). Binary freshness is a CI-ordering concern, now partly addressed by F3's build step.
+
+
+---
+
+## 14. Two dispositions, written rather than implied
+
+### 14.1 The house-rate mismatch — v0.4 candidate, with the ownership question attached
+
+Nothing reconciles the engine's house rate with the package's. `main.rs` takes it from `NBE_HOUSE_RATE` (default 30); `show.load` never compared it with `show.video.frameRate`. A 25 fps package loaded on a 30 fps engine maps **every** asset against the wrong denominator — timed items run short, non-house-rate assets play at the wrong speed — and until this branch no path detected it. This is the cadence bug arriving from the other side: the same wrong denominator, reached by a different route.
+
+Detection now exists (`PackageIndex::declared_house_rate`, and `show.load` logs an error on mismatch). Detection is not a contract, so:
+
+**v0.4 candidate.** The question v0.4 must answer is not *whether* a mismatch is an error — it plainly is — but **which side owns the refusal**:
+
+- **Preflight refuses the package.** It already owns "is this package air-ready", already exits 0/1/2, and already writes a report the control plane consumes. But preflight validates a package *in isolation*; the engine's rate is a runtime property preflight cannot see. Making this preflight's job means preflight must be told the target rate, which changes its contract from "is this package valid" to "is this package valid *here*".
+- **`show.load` rejects it.** The control plane knows both sides — it loaded the package and it talks to the render node. This fits §5.1's "load and validate show packages" and gives `E_PREFLIGHT_FAILED` (or a new code) a natural home. But it moves a class of validation out of the tool that exists to do validation.
+
+My recommendation, recorded for v0.4 to accept or overturn: **`show.load` rejects, preflight warns.** Preflight can flag "this package declares 25 fps" as information without knowing the target; only the control plane can turn that into a refusal, because only it knows what the engine is running. That split keeps preflight's contract intact and puts the decision where both facts meet.
+
+Either way the answer is normative wire/contract text, which is why it is v0.4's and not a prompt's.
+
+### 14.2 The 46-second `show.load` — a measurement, not an aside
+
+On the mission machine, load time is part of the founding proof. An operator loading a five-second show waits **46 seconds** in a debug build; preflight alone accounts for 24–29 s of it, because it decodes the package's media.
+
+Measured again under contention, and the number does not degrade gracefully — it fails:
+
+```
+load average 25.36  ->  show.load exceeded the 180 s budget and timed out
+```
+
+That is not a slow socket or a flaky assertion. It is CPU-bound decode competing for six cores, and it means **the rehearsal's timing assertions are not measurable under CI-like load**. This is the concrete reason the rehearsal cannot be a required gate yet, stated as a number rather than a worry.
+
+### 14.3 Why the audio lands at tick 33 — a measurement, separated into two findings
+
+Before Prompt 07 touches R5's timing semantics, the delay needs splitting, because a test-design artifact and an engine latency are different problems and only one is 07's.
+
+The rehearsal now records per-command timings plus `clockMovedAtMs` and `clipAudibleAtMs` into `target/dress-rehearsal/timings.json` (a charter artifact that was missing). From the clean-run telemetry already captured:
+
+- The clock reads `masterClockFrame: 0` for the first ~32 ticks. Most of that span is `show.load` — 46 seconds of preflight decode — during which the clock legitimately has not started.
+- The clip becomes audible at tick 33, `masterClockFrame: 63` — roughly **one tick after the clock first advances**, not thirty.
+
+That separates cleanly into:
+
+1. **Engine latency (R5) — Prompt 07's.** `masterClockFrame` does not advance within 2 ticks of `show.start`. Real, reproducible, and the thing 07 should fix.
+2. **Test-design artifact — the rehearsal's, and mine.** Step 4 measures "the clip bus rises within 2 ticks of the take", but issues its take while the clock is still stalled. A clock-relative quantity measured across a clock stall is not a measurement of the audio path at all. Once the audio does start, it arrives within about a tick — so **the audio path is not slow; the step is measuring the wrong interval.**
+
+The honest consequence: **step 4 as written would fail even against a perfect audio implementation**, as long as R5 exists. It should wait for the clock to be observably running before starting its window. Fixing it is test work on 07's tab, not production work, and it must not be done by widening the timeout — that would hide R5 rather than measure it.
+
+One caveat on the numbers above, stated because it is exactly the kind of thing this review exists to catch: the tick-by-tick figures come from runs taken while three falsification passes were building concurrently (load average 25+). The *ordering* — clock starts, then audio arrives about a tick later — is robust across every run observed. The absolute spacing is not, and `timings.json` now captures it on every run so the next quiet measurement settles it without re-deriving anything.
