@@ -146,13 +146,13 @@ async function ok(
 /** Wait until a telemetry tick satisfies `pred`, or fail with what was seen. */
 async function untilTelemetry(
   what: string,
-  pred: (t: Record<string, unknown>, index: number) => boolean,
+  pred: (t: Record<string, unknown>) => boolean,
   ms: number = TELEMETRY_MS,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + ms;
   const seen = ticks.length;
   while (Date.now() < deadline) {
-    const hit = ticks.slice(seen).find((t, i) => pred(t, seen + i));
+    const hit = ticks.slice(seen).find(pred);
     if (hit) return hit;
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -435,7 +435,7 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
   assert.equal(droppedNow(), before, "a soundboard trigger must not cost a frame");
 });
 
-test("[RI-1] step 7: an audio.bus.set is reflected on the next tick", async () => {
+test("[RI-1] step 7: an audio.bus.set is accepted and the graph survives it", async () => {
   // The predicate here used to be `() => true`, which asserts nothing at all:
   // the step passed with `audio.bus.set` a complete no-op, while its name
   // claimed the change was "reflected on the next tick".
@@ -447,12 +447,13 @@ test("[RI-1] step 7: an audio.bus.set is reflected on the next tick", async () =
   // per-bus gain — so asserting a level here would be asserting a number the
   // protocol does not send. The graph-level behaviour is gated by the engine
   // suite (`audio_directives_parse_into_intents_and_apply_to_the_graph`).
-  const before = ticks.length;
+  // `untilTelemetry` already only considers ticks that arrive AFTER the
+  // awaited command, so the index guard an earlier version used here was
+  // unreachable. Removed rather than left as decoration.
   await ok("audio.bus.set", { bus: "music", gainDb: -20 });
   const after = await untilTelemetry(
     "a tick carrying live bus meters after the bus change",
-    (t, i) => {
-      if (i < before) return false;
+    (t) => {
       const peaks = (t["data"] as Record<string, unknown> | undefined)?.["busPeakDbfs"] as
         | Record<string, number>
         | undefined;

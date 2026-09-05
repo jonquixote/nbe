@@ -138,8 +138,13 @@ jobs:
   #           (finding R5)
   #   step 4  busPeakDbfs.clip rises, but after step 4's window closes — the
   #           audio is present and the timing is wrong (R5 again)
-  #   step 6  intermittent: bus meters are a 33 ms window sampled at 1 Hz, so a
-  #           0.4 s soundboard stab is a coin toss (finding R2)
+  #   step 6  bus meters are a 33 ms window sampled at 1 Hz, so a 0.4 s
+  #           soundboard stab is often missed (finding R2)
+  #   gate    audioUnderrunsTotal reaches 1 on the happy path (finding R4)
+  #
+  # FOUR steps, not three. An earlier version of this comment said three and
+  # nothing checked it against reality; an independent pass counted four,
+  # stably, across two runs. The pass count below is what keeps this honest.
   #
   # Both are dispositioned to Prompt 07. PROMOTING THIS JOB TO REQUIRED IS
   # PROMPT 07'S FIRST TASK, once R2 and R5 close and show.load stops taking
@@ -173,9 +178,30 @@ jobs:
           grep -E "^# (tests|pass|fail) |^not ok " /tmp/dress.log || true
           echo "::endgroup::"
           # Zero assertions is a failure, never a skip (charter [RI-1]).
+          #
+          # Gating on "# tests" ALONE was itself defeatable, and an independent
+          # pass defeated it: with the engine binary absent node still prints
+          # "# tests 12 / # pass 0 / # fail 12", so `ran=12` passed the gate
+          # while every step failed — the exact state the build step above
+          # exists to prevent. Gate on what PASSED.
           ran=$(grep -E "^# tests " /tmp/dress.log | awk '{print $3}')
+          passed=$(grep -E "^# pass " /tmp/dress.log | awk '{print $3}')
+          failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}')
+          echo "ran=${ran:-0} passed=${passed:-0} failed=${failed:-0}"
           if [ "${ran:-0}" -lt 12 ]; then
             echo "the rehearsal must run all 12 steps, ran ${ran:-0}"
+            exit 1
+          fi
+          # Eight steps pass today. If fewer do, something broke that is not
+          # one of the four documented findings — that is a real regression
+          # even though this job is non-blocking.
+          if [ "${passed:-0}" -lt 8 ]; then
+            echo "expected at least 8 passing steps, got ${passed:-0}"
+            exit 1
+          fi
+          # And the known-red set must not grow silently.
+          if [ "${failed:-99}" -gt 4 ]; then
+            echo "expected at most 4 failing steps (R2/R4/R5), got ${failed:-99}"
             exit 1
           fi
       - name: failure artifacts

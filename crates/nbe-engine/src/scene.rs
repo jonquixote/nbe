@@ -92,6 +92,10 @@ pub struct PackageIndex {
     pub item_scene: HashMap<String, String>,
     /// item id → item kind (`slate` renders a generated scene).
     pub item_kind: HashMap<String, String>,
+    /// item id → `audioPolicy` (SPEC §17: `clip` | `bed` | `mute`, default
+    /// `clip`). The manifest states what an item's audio should do; the
+    /// resolution below obeys it rather than inferring it.
+    pub item_audio_policy: HashMap<String, String>,
     /// scene id → elements, already sorted low-z to high-z.
     pub scenes: HashMap<String, Vec<ElementSpec>>,
     /// asset id → decoded image, for `image`-kind assets only.
@@ -123,6 +127,10 @@ pub struct ElementSpec {
     pub z: i64,
     pub visible: bool,
     pub asset_id: Option<String>,
+    /// `element.audio.bus` (SPEC §7.4 `LayerAudio`), defaulted to `clip`.
+    /// The manifest says which bus an element's audio belongs on; the audio
+    /// resolution reads it instead of guessing from z-order.
+    pub audio_bus: String,
     pub color: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
@@ -229,34 +237,78 @@ impl PackageIndex {
     /// this kind of walk on the frame path, and a take must not depend on a
     /// map lookup that can fail silently.
     ///
-    /// Picks the lowest-z element whose asset can CARRY audio. Kind matters:
-    /// "the lowest-z element with an asset" was the first version of this rule
-    /// and it is wrong for the most ordinary scene shape there is — a
-    /// background image at z=0 with the clip above it. That returns the image,
-    /// `library.get("bg_image")` misses, and the item is silent: the P0
-    /// re-opened for every scene with a backplate. Measured before the fix:
-    /// `item_audio_asset("A1")` returned `Some("bg")`. Every fixture in the
-    /// repo was single-element, so nothing caught it.
+    /// The asset whose audio a take installs for this item.
     ///
-    /// Overlay elements sit above the clip and carry their own audio policy
-    /// (SPEC §7.10, Prompt 07's work).
+    /// Three rules have now been wrong here, each a narrower version of the
+    /// same mistake — inferring from position what the manifest already
+    /// states:
+    ///
+    /// 1. "lowest-z element with an asset" picked the BACKGROUND IMAGE of any
+    ///    scene with a backplate. The item went silent.
+    /// 2. "lowest-z element whose asset can carry audio" picked a MUSIC BED
+    ///    authored below the clip, and the clip went silent. It also picked
+    ///    assets hung on elements the renderer never draws (`guest`, `camera`,
+    ///    `ticker`), and it flipped a picture-in-picture's audio depending on
+    ///    which camera the author happened to declare first.
+    /// 3. Neither read `Item.audioPolicy` or `Element.audio.bus`, which exist
+    ///    in the schema for precisely this question.
+    ///
+    /// So this reads the declaration:
+    ///
+    /// - `audioPolicy: "mute"` → `None`. A muted item installs no source.
+    /// - Only elements the renderer draws AS PICTURE are candidates
+    ///   (`clip`, `videoLoop`), carrying a `video`/`alphaVideo` asset. An
+    ///   `audio`-kind asset is a bed or a stab: it belongs on its own bus, not
+    ///   on the clip bus as a take's audio.
+    /// - Among those, an element that declares `audio.bus: "clip"` wins over
+    ///   one that declares another bus. That is the manifest naming the
+    ///   programme audio explicitly.
+    /// - Only then does z-order break the tie: lowest z first, manifest order
+    ///   within equal z. Documented because a picture-in-picture has two
+    ///   legitimate video elements and the answer must not depend on
+    ///   declaration order alone.
+    ///
+    /// `audioPolicy: "bed"` (a bed playing alongside the clip) needs more than
+    /// one source on more than one bus, which is per-source envelope work —
+    /// SPEC §8.7.5, deferred to Prompt 07. It resolves as `clip` here, which
+    /// is the current single-source behaviour rather than a claim to implement
+    /// the policy.
     pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
+        if self.item_audio_policy.get(item_ref).map(String::as_str) == Some("mute") {
+            return None;
+        }
         let scene = self.item_scene.get(item_ref)?;
         let elements = self.scenes.get(scene)?;
-        elements
+
+        // Already sorted low-z to high-z, and `sort_by_key` is stable, so
+        // manifest order survives within equal z.
+        let candidates: Vec<&ElementSpec> = elements
             .iter()
             .filter(|e| e.visible)
-            .filter_map(|e| e.asset_id.as_deref())
-            .find(|asset| self.asset_carries_audio(asset))
-            .map(str::to_string)
+            .filter(|e| matches!(e.kind.as_str(), "clip" | "videoLoop"))
+            .filter(|e| {
+                e.asset_id
+                    .as_deref()
+                    .is_some_and(|a| self.asset_is_picture_with_audio(a))
+            })
+            .collect();
+
+        candidates
+            .iter()
+            .find(|e| e.audio_bus == "clip")
+            .or_else(|| candidates.first())
+            .and_then(|e| e.asset_id.clone())
     }
 
-    /// Whether an asset kind can carry an audio track at all (SPEC §6.3).
-    /// Images, fonts, RSS and plugin binaries cannot.
-    fn asset_carries_audio(&self, asset_id: &str) -> bool {
+    /// Whether an asset is picture that can also carry an audio track.
+    ///
+    /// `audio`-kind assets are deliberately excluded: a soundboard stab or a
+    /// music bed is not a take's programme audio, and treating it as one is
+    /// how a bed authored below the clip silenced the clip.
+    fn asset_is_picture_with_audio(&self, asset_id: &str) -> bool {
         matches!(
             self.asset_kind.get(asset_id).map(String::as_str),
-            Some("video") | Some("alphaVideo") | Some("audio")
+            Some("video") | Some("alphaVideo")
         )
     }
 
@@ -374,6 +426,13 @@ fn index_sequence(sequence: Option<&serde_json::Value>, idx: &mut PackageIndex) 
         if let Some(kind) = item.get("kind").and_then(|v| v.as_str()) {
             idx.item_kind.insert(id.to_string(), kind.to_string());
         }
+        idx.item_audio_policy.insert(
+            id.to_string(),
+            item.get("audioPolicy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("clip")
+                .to_string(),
+        );
         if let Some(scene) = item.get("sceneRef").and_then(|v| v.as_str()) {
             idx.item_scene.insert(id.to_string(), scene.to_string());
         }
@@ -409,6 +468,12 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .get("assetId")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        audio_bus: e
+            .get("audio")
+            .and_then(|a| a.get("bus"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("clip")
+            .to_string(),
         color,
         rect: rect_of(e.get("transform")),
         opacity,

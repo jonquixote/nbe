@@ -456,6 +456,204 @@ fn an_items_audio_resolves_to_the_asset_its_scene_actually_shows() {
     );
 }
 
+/// Build a package with one scene of arbitrary elements, and index it.
+fn index_with_scene(
+    dir: &Path,
+    elements: serde_json::Value,
+    assets: serde_json::Value,
+    item_extra: serde_json::Value,
+) -> nbe_engine::scene::PackageIndex {
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    std::fs::copy(media("cfr_30.mp4"), dir.join("media/clip.mp4")).unwrap();
+    std::fs::copy(media("av_tone.mp4"), dir.join("media/other.mp4")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        8,
+        8,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.join("media/bg.png"), &png).unwrap();
+    std::fs::copy(media("av_tone.mp4"), dir.join("media/bed.m4a")).unwrap();
+
+    let mut item = serde_json::json!({ "id": "A1", "kind": "sceneRef", "sceneRef": "SCN" });
+    if let Some(extra) = item_extra.as_object() {
+        for (k, v) in extra {
+            item[k] = v.clone();
+        }
+    }
+    let manifest = serde_json::json!({
+        "manifestVersion": "0.3",
+        "network": { "id": "nbe", "name": "T" },
+        "show": {
+            "id": "s", "title": "T",
+            "video": { "width": 640, "height": 360, "frameRate": 30, "colorSpace": "rec709" },
+            "audio": { "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 },
+            "fallbackAssetId": "bg"
+        },
+        "control": { "bindings": [] },
+        "assets": assets,
+        "templates": [{ "id": "TPL", "kind": "generic" }],
+        "scenes": [{ "id": "SCN", "elements": elements }],
+        "rundown": { "id": "R", "items": [item] }
+    });
+    std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+    nbe_engine::scene::PackageIndex::build(&manifest, dir)
+}
+
+fn base_assets() -> serde_json::Value {
+    serde_json::json!([
+        { "id": "bg", "kind": "image", "source": "media/bg.png", "format": "png" },
+        { "id": "A1_clip", "kind": "video", "source": "media/clip.mp4", "format": "h264" },
+        { "id": "other", "kind": "video", "source": "media/other.mp4", "format": "h264" },
+        { "id": "bed", "kind": "audio", "source": "media/bed.m4a" }
+    ])
+}
+
+#[test]
+fn item_audio_follows_the_manifest_not_the_z_order() {
+    // Every case here is one an independent pass built and the previous rule
+    // got wrong. The rule has been wrong three times, each a narrower version
+    // of the same mistake: inferring from position what the manifest states.
+    let dir = tempfile::tempdir().unwrap();
+
+    // 1. A music bed authored BELOW the clip must not steal the take's audio.
+    //    The old rule returned `bed` and the clip went silent.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "bed_el", "kind": "clip", "z": 1, "assetId": "bed" },
+            { "id": "main", "kind": "clip", "z": 2, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "a bed below the clip must not become the take's audio"
+    );
+
+    // 2. An element the renderer never DRAWS must not supply the audio. A
+    //    `guest` element is not picture; the old rule took its asset anyway.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "audio must come from an element the renderer actually draws"
+    );
+
+    // 3. `audio.bus` beats z-order. A picture-in-picture whose full-frame
+    //    camera is declared second must still supply the programme audio when
+    //    it says so; the old rule flipped with declaration order.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "pip", "kind": "clip", "z": 0, "assetId": "other",
+              "audio": { "bus": "guest" } },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip",
+              "audio": { "bus": "clip" } }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "an element declaring audio.bus=clip is the programme audio, whatever its z"
+    );
+
+    // 4. `audioPolicy: "mute"` means no source at all.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({ "audioPolicy": "mute" }),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1"),
+        None,
+        "a muted item must install no audio source"
+    );
+
+    // 5. An invisible clip is not the picture, so it is not the audio either.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip", "visible": false }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1"),
+        None,
+        "an invisible element must not supply the item's audio"
+    );
+
+    // 6. The backplate case, kept: a background image below the clip.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "back", "kind": "graphic", "z": 0, "assetId": "bg", "templateId": "TPL" },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "a backdrop must not become the item's audio"
+    );
+}
+
+#[test]
+fn the_manifests_declared_house_rate_is_carried_into_the_index() {
+    // F7: `declared_house_rate` and the mismatch error it feeds were entirely
+    // ungated -- deleting the field's consumer left all nine engine test
+    // binaries green. In-schema the reachable mismatch is 60 declared against
+    // a 30 fps engine (`VideoSpec.frameRate` is an enum of [30, 60]).
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(30),
+        "the index must carry the manifest's declared house rate"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
+            .unwrap();
+    let mut sixty = manifest.clone();
+    sixty["show"]["video"]["frameRate"] = serde_json::json!(60);
+    let idx = nbe_engine::scene::PackageIndex::build(&sixty, dir.path());
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(60),
+        "a 60 fps package must be distinguishable from a 30 fps one; without \
+         this the engine cannot detect that it is running the wrong rate"
+    );
+}
+
 #[tokio::test]
 async fn a_take_installs_the_audio_of_the_asset_its_item_shows() {
     // The other half of the P0's gate: the resolution must reach the engine's
