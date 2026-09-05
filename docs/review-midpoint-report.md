@@ -659,3 +659,50 @@ The lesson is the one this review keeps relearning from the other direction: **t
 ### Falsification
 
 All six fixes fail their named assertion when reverted: the slate short-circuit, the `audio.bus` requirement, `audio.muted`, the `videoLoop` exclusion, the `opacity` filter, and the image exclusion.
+
+
+---
+
+## 17. Pass 8 — the claim held; the defect had a third home
+
+### 17.1 The structural claim survived, on the merits
+
+Pass 8's brief was to break the invariant *whatever `item_audio_asset` returns is an asset `resolve()` actually draws*. It built **70 adversarial inputs** through the real `PackageIndex::build` — duplicate asset ids with conflicting kinds, missing files, `opacity` at `-0.0`/`1e-45`/`1e40`/`"0.5"`/`null`, `visible` as a string, `audio` as an array, `audioPolicy` outside the enum, slates sharing a scene with a live item, duplicate item ids, a `rundown` that is an array — and reported:
+
+```
+rows=70 divergences=0
+```
+
+More usefully, it verified the invariant holds **by construction** rather than by luck: audio accepts an element only if it is in `drawn_elements` with `kind == "clip"` and an asset kind of `video`/`alphaVideo`; `layer_for` on that same element takes the `"clip" | "videoLoop"` arm, cannot be intercepted by the image guard (which is keyed on the same `asset_kind` map), and falls through to `LayerSource::Video`. Audio-accept ⟹ Video layer, unconditionally. **The fifth rewrite did not fail like the four before it.**
+
+### 17.2 But the defect had a third home
+
+`items_using_asset` was a **third parallel walk**: `scenes` → `item_scene` directly, with none of `drawn_elements`' filters — no slate short-circuit, no `visible`, no `opacity`, no `layer_for` check.
+
+It is the decode-fault attribution path. `server.ts` turns an `itemEvent` into `state.markError(itemRef)`, and §17.3 makes `ERROR` recoverable only via `item.reset`. So a broken asset the renderer would never have touched — behind `visible: false`, at `opacity: 0`, on a `guest` element, or in the scene of a **slated** item — **took a healthy item off the air.** Measured on all four shapes: `items_using_asset` named the item; the drawn layers named nothing.
+
+Two walks were unified to kill this on the audio path. It survived on the one nobody was looking at, because the fix was scoped to the symptom that had been reported rather than to the pattern. All three now read `drawn_elements`.
+
+### 17.3 And I deleted three tests while tidying
+
+Splitting the audio mega-test into named per-rule tests (pass 8's F2 — assertions abort at the first failure, so breaking two rules reported one and the name never said which) replaced a region delimited by two anchors. Three tests added minutes earlier sat between those anchors, including **the gate for the third-walk fix I had just committed.**
+
+The suite went 127 → 138 and stayed green. Twelve added, three deleted, net +11 — which reads exactly like success. The tell was a falsification run reporting `31 filtered out` for a test name that should have matched.
+
+**A test count that only ever goes up cannot detect deletion.** That is now the seventh distinct way this review has found a green suite concealing something, and the first where the concealment was arithmetic rather than a weak assertion. Restored: 141.
+
+### Verification
+
+```
+TOTAL: 141 passed, 0 failed, 0 ignored
+cargo fmt --all -- --check                               -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
+```
+
+Both fixes falsify: reverting `items_using_asset` to the old walk fails *"an invisible element's asset must not fault the item that contains it"*; removing the `opacity > 0` filter fails `resolve_drops_a_fully_transparent_layer`.
+
+### Cleared, and recorded so they are not re-litigated
+
+- **The fallback slate keeps clip audio on air.** Looks like the same picture/audio mismatch, and is not: SPEC §10.3 says *"an audio fault MUST NOT trigger the video fallback slate"*, deliberately decoupling the two fault domains. Current behaviour is consistent with the spec.
+- **Duplicate asset ids.** Last declaration wins in `asset_kind`, and both paths read that same map, so they cannot disagree.
+- **Missing/undecodable video file.** `resolve` still emits a Video layer and audio still resolves — consistent by the invariant's own terms; the runtime failure is reported separately as `decodeError`.
