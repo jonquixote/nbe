@@ -317,20 +317,34 @@ impl PackageIndex {
     /// unresolvable to it, so a fault reported against an asset cannot drive
     /// anything to `ERROR` (SPEC §5.9.3).
     ///
-    /// Derived from `drawn_elements`, and that is the whole point. This was a
-    /// THIRD parallel walk of the scene graph — it went `scenes` → `item_scene`
-    /// directly, with none of the filters, so it named items that could never
-    /// show the asset: behind `visible: false`, at `opacity: 0`, on an element
-    /// kind the renderer does not draw, or in the scene of an item that has
-    /// been slated.
+    /// Derived from the LAYERS an item draws, and that is the whole point.
     ///
     /// That is not cosmetic. `server.ts` turns an `itemEvent` into
-    /// `state.markError(itemRef)`, and §17.3 makes `ERROR` recoverable only via
-    /// `item.reset` — so a broken asset the renderer would never have touched
-    /// took a healthy item off the air.
+    /// `state.markError(itemRef)`; §17.3 makes `ERROR` recoverable only via
+    /// `item.reset`, and if the item is on air the control plane raises
+    /// `fallbackActive`. So a broken asset the renderer never touched takes a
+    /// healthy item off the air.
     ///
-    /// Two walks were unified to kill this defect on the audio path; it
-    /// survived on the third. Now all three read one function.
+    /// This has been wrong twice, each time because the question was asked of
+    /// the wrong thing:
+    ///
+    /// 1. It walked `scenes` → `item_scene` directly, with none of
+    ///    `drawn_elements`' filters, so it blamed items for assets behind
+    ///    `visible: false`, at `opacity: 0`, on an element kind the renderer
+    ///    does not draw, or in the scene of a slated item.
+    /// 2. Fixing that unified the ELEMENT predicate — `drawn_elements` plus
+    ///    `layer_for(e).is_some()` — but left the ASSET predicate independent:
+    ///    `e.asset_id == Some(asset_id)`. Those are two different questions,
+    ///    and `layer_for`'s `graphic` arm returns `Some(Solid)` **without ever
+    ///    reading `asset_id`**. The schema permits `assetId` on every element
+    ///    kind, so a `graphic` card carrying one is drawn as a solid, shows
+    ///    nothing of the asset, and was still blamed for it.
+    ///
+    /// So the predicate now asks the LAYER what it shows, rather than asking
+    /// the element what it mentions. An element can only be blamed for an
+    /// asset its own layer names. That closes the class rather than the
+    /// instance: a future `layer_for` arm that ignores `asset_id` is correct
+    /// here by construction instead of needing another filter.
     pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
         let mut items: Vec<String> = self
             .item_scene
@@ -338,8 +352,13 @@ impl PackageIndex {
             .filter(|item| {
                 self.drawn_elements(item)
                     .iter()
-                    .filter(|e| self.layer_for(e).is_some())
-                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
+                    .filter_map(|e| self.layer_for(e))
+                    .any(|layer| match &layer.source {
+                        LayerSource::Image(a) => a == asset_id,
+                        LayerSource::Video { asset_id: a, .. } => a == asset_id,
+                        // A solid shows no asset, whatever the element names.
+                        LayerSource::Solid(_) => false,
+                    })
             })
             .cloned()
             .collect();

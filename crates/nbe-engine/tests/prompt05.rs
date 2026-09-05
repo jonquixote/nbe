@@ -698,6 +698,17 @@ fn an_image_on_a_clip_element_is_not_audio_bearing_picture() {
 
 #[test]
 fn a_backdrop_does_not_become_the_items_audio() {
+    // Defence in depth, deliberately, and labelled as such: this backdrop is a
+    // `graphic` carrying an `image`, so it is excluded twice — by the element
+    // kind filter AND by the asset kind filter. It survives any SINGLE
+    // mutation of either, which means it pins no individual behaviour.
+    //
+    // That is not an accident to be fixed by weakening it. The single-filter
+    // cases are gated separately and precisely:
+    //   - element kind: `a_videoloop_overlay_does_not_supply_the_takes_audio`
+    //   - asset kind:   `an_image_on_a_clip_element_is_not_audio_bearing_picture`
+    // This one asserts the composite shape an author actually writes — a
+    // backdrop under a clip — and would catch a regression that removed both.
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
         audio_of(
@@ -840,6 +851,57 @@ fn a_fault_only_blames_items_that_would_actually_show_the_asset() {
         idx.items_using_asset("A1_clip").is_empty(),
         "a slated item shows no scene asset, so a decode fault must not blame it"
     );
+
+    // A `graphic` element carrying an assetId. This is the case the four above
+    // could not reach: they all sit on the `layer_for -> None` side, so they
+    // gate the ELEMENT predicate. Here `layer_for` returns `Some(Solid)` —
+    // the element IS drawn — but the layer shows no asset. The schema permits
+    // `assetId` on every element kind, so this is a schema-valid manifest that
+    // took a healthy item off air.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "card", "kind": "graphic", "z": 0, "assetId": "other",
+              "templateId": "TPL", "fields": { "color": "#101010" } },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "a graphic draws a solid and shows no asset, so it must not be blamed \
+         for one it merely names"
+    );
+    assert_eq!(
+        idx.items_using_asset("A1_clip"),
+        vec!["A1".to_string()],
+        "while the clip in the same scene is still attributed"
+    );
+
+    // And the standing invariant behind all of it: an item may only be blamed
+    // for an asset one of its own drawn LAYERS names.
+    for asset in ["other", "A1_clip", "bg", "bed"] {
+        let blamed = idx.items_using_asset(asset);
+        if blamed.contains(&"A1".to_string()) {
+            let shown: Vec<String> = idx
+                .resolve(Some("A1"))
+                .layers
+                .iter()
+                .filter_map(|l| match &l.source {
+                    nbe_engine::scene::LayerSource::Video { asset_id, .. } => {
+                        Some(asset_id.clone())
+                    }
+                    nbe_engine::scene::LayerSource::Image(a) => Some(a.clone()),
+                    nbe_engine::scene::LayerSource::Solid(_) => None,
+                })
+                .collect();
+            assert!(
+                shown.contains(&asset.to_string()),
+                "blamed A1 for {asset}, but its layers show {shown:?}"
+            );
+        }
+    }
 }
 
 #[test]
