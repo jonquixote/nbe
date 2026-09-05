@@ -544,3 +544,58 @@ That separates cleanly into:
 The honest consequence: **step 4 as written would fail even against a perfect audio implementation**, as long as R5 exists. It should wait for the clock to be observably running before starting its window. Fixing it is test work on 07's tab, not production work, and it must not be done by widening the timeout — that would hide R5 rather than measure it.
 
 One caveat on the numbers above, stated because it is exactly the kind of thing this review exists to catch: the tick-by-tick figures come from runs taken while three falsification passes were building concurrently (load average 25+). The *ordering* — clock starts, then audio arrives about a tick later — is robust across every run observed. The absolute spacing is not, and `timings.json` now captures it on every run so the next quiet measurement settles it without re-deriving anything.
+
+
+---
+
+## 15. Pass 6 — four production bugs, all one defect
+
+Pass 6's brief was the fixes rather than the originals, on the reasoning that fixes are where new holes hide. It found four production-code bugs, and they are one defect wearing four hats: **the item-audio rule inferred from position what the manifest already states.**
+
+Three versions of that rule have now been wrong, each a narrower version of the same mistake:
+
+| Version | Rule | What it picked |
+|---|---|---|
+| v1 | lowest-z element with an asset | the **background image** of any scene with a backplate |
+| v2 | lowest-z element whose asset can carry audio | a **music bed** authored below the clip — clip silent |
+| v2 | (same) | assets on elements the renderer **never draws** — `guest`, `camera`, `ticker` |
+| v2 | (same) | a picture-in-picture's audio **flipped with declaration order** |
+| v1–v2 | — | neither read `Item.audioPolicy` or `Element.audio.bus`, which exist in the schema for exactly this question |
+
+Measured by the pass: bed at z1 with clip at z2 resolved to `bed`; an `audio` asset at z −5 beat a clip at z0; a `guest` element at z0 beat the real clip at z1 **while the rendered layer list contained only the clip**; and `audioPolicy: "mute"` resolved audio anyway, so a muted item installed a source.
+
+### The rule now reads the declaration
+
+- `audioPolicy: "mute"` → `None`.
+- Candidates are elements the renderer draws **as picture** (`clip`, `videoLoop`) carrying a `video`/`alphaVideo` asset. An `audio`-kind asset is a bed or a stab: it belongs on its own bus, never as a take's programme audio.
+- An element declaring `audio.bus: "clip"` wins over one declaring another bus — the manifest naming the programme audio explicitly.
+- **Only then** does z break the tie: lowest z, manifest order within equal z. Documented, because a picture-in-picture has two legitimate video elements and the answer must not rest on declaration order.
+
+`audioPolicy: "bed"` — a bed playing *alongside* the clip — needs multiple sources on multiple buses. That is per-source envelope work (§8.7.5), already deferred to Prompt 07. It resolves as `clip` today, which is the current single-source behaviour and **not** a claim to implement the policy. Recorded as a **Re-deferral, new trigger: Prompt 07's per-source envelope work**, so it is not mistaken for done.
+
+### The lesson this rule keeps teaching
+
+Every version failed the same way: it answered a question the manifest had already answered, by looking at where things sat rather than at what they said. The schema has carried `Element.audio.bus` and `Item.audioPolicy` since v0.3. Three rules were written without reading either.
+
+That generalises past this function, and it belongs next to §12.1's rule about gates: **when the manifest states something, read it — inference from structure is a guess with good manners.**
+
+### Test-strengthening findings, also fixed
+
+- **F5 — the new CI gate could not detect the state it was written for.** With the engine binary absent, node prints `# tests 12 / # pass 0 / # fail 12`, so gating on `# tests` alone passed while every step failed — precisely what the build step above it exists to prevent. Verified by hiding the binary: old gate passes, new gate fails. It now requires `passed >= 8` and `failed <= 4`.
+- **F9 — that job's comment named three failing steps; four fail, stably.** Corrected, and the pass/fail bounds now keep the comment honest rather than trusting it.
+- **F6, F7** — the `visible` filter and `declared_house_rate` were ungated; both now covered.
+- **F8** — step 7's *name* claimed the bus change was "reflected on the next tick" while its assertions cannot observe that. Renamed to what it proves. Its index guard was unreachable and is gone rather than left as decoration.
+
+### The four rehearsal reds, restated correctly
+
+Pass 6 established that **four** steps fail, stably, not three: steps 3 and 4 (R5), step 6 (R2 — and it is not intermittent, it failed both runs), and the gate (R4, `audioUnderrunsTotal` reaching 1). Earlier sections of this report said three; that count came from a run where step 6 happened to pass. The CI job's bounds now encode four.
+
+### Verification
+
+```
+TOTAL: 127 passed, 0 failed, 0 ignored
+cargo fmt --all -- --check                               -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
+```
+
+All six fixes falsified: removing the element-kind filter, re-accepting `audio`-kind assets, ignoring `audioPolicy`, ignoring `audio.bus`, removing the `visible` filter, and never populating `declared_house_rate` each fail their named test.
