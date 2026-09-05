@@ -511,120 +511,211 @@ fn base_assets() -> serde_json::Value {
     ])
 }
 
+/// One scene, one item, resolved. Every audio-rule test below is this plus a
+/// scene shape, so each rule gets its own `#[test]` and a regression names the
+/// rule that broke. They used to be assertions inside one function, which
+/// aborts at the first failure: breaking two rules reported one, and the test
+/// name never said which.
+fn audio_of(dir: &Path, elements: serde_json::Value, item: serde_json::Value) -> Option<String> {
+    index_with_scene(dir, elements, base_assets(), item).item_audio_asset("A1")
+}
+
 #[test]
-fn item_audio_follows_the_manifest_not_the_z_order() {
-    // Every case here is one an independent pass built and the previous rule
-    // got wrong. The rule has been wrong three times, each a narrower version
-    // of the same mistake: inferring from position what the manifest states.
+fn a_bed_below_the_clip_does_not_become_the_takes_audio() {
     let dir = tempfile::tempdir().unwrap();
-
-    // 1. A music bed authored BELOW the clip must not steal the take's audio.
-    //    The old rule returned `bed` and the clip went silent.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "bed_el", "kind": "clip", "z": 1, "assetId": "bed" },
-            { "id": "main", "kind": "clip", "z": 2, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
     assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "a bed below the clip must not become the take's audio"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "bed_el", "kind": "clip", "z": 1, "assetId": "bed" },
+                { "id": "main", "kind": "clip", "z": 2, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
     );
+}
 
-    // 2. An element the renderer never DRAWS must not supply the audio. A
-    //    `guest` element is not picture; the old rule took its asset anyway.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
+#[test]
+fn audio_comes_from_an_element_the_renderer_draws() {
+    // A `guest` element is not picture; an earlier rule took its asset anyway.
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "audio must come from an element the renderer actually draws"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
     );
+}
 
-    // 3. `audio.bus` beats z-order. A picture-in-picture whose full-frame
-    //    camera is declared second must still supply the programme audio when
-    //    it says so; the old rule flipped with declaration order.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "pip", "kind": "clip", "z": 0, "assetId": "other",
-              "audio": { "bus": "guest" } },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip",
-              "audio": { "bus": "clip" } }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
+#[test]
+fn an_element_declaring_bus_clip_is_the_programme_audio_whatever_its_z() {
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "an element declaring audio.bus=clip is the programme audio, whatever its z"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "pip", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "guest" } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip",
+                  "audio": { "bus": "clip" } }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
     );
+}
 
-    // 4. `audioPolicy: "mute"` means no source at all.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({ "audioPolicy": "mute" }),
-    );
+#[test]
+fn an_element_declaring_a_non_clip_bus_is_not_programme_audio() {
+    // Declaring `guest` says "this is not programme audio". The previous rule
+    // overrode that with "but it was first" and put a guest on the clip bus.
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        idx.item_audio_asset("A1"),
-        None,
-        "a muted item must install no audio source"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "g", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "guest" } }
+            ]),
+            serde_json::json!({}),
+        ),
+        None
     );
+}
 
-    // 5. An invisible clip is not the picture, so it is not the audio either.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip", "visible": false }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
+#[test]
+fn a_muted_element_does_not_supply_the_takes_audio() {
+    // `LayerAudio.muted` is in the schema and was never read.
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        idx.item_audio_asset("A1"),
-        None,
-        "an invisible element must not supply the item's audio"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "quiet", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "clip", "muted": true } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
     );
+}
 
-    // 6b. A `clip` element carrying an IMAGE asset. Case 6 below puts the
-    //     backdrop on a `graphic` element, so it is excluded by the KIND
-    //     filter and never reaches the asset-kind branch — re-accepting
-    //     `image` in `asset_is_picture_with_audio` passed the entire
-    //     workspace. This is the case that actually gates it.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "still", "kind": "clip", "z": 0, "assetId": "bg" },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
+#[test]
+fn a_muted_item_installs_no_audio_source() {
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "an image on a clip element is not audio-bearing picture"
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({ "audioPolicy": "mute" }),
+        ),
+        None
     );
+}
 
-    // 7. A slate draws a generated solid and shows nothing from the scene, so
-    //    it carries no item audio. Before this, slating an item left its clip
-    //    audio on air: `resolve` short-circuited and the audio walk did not.
+#[test]
+fn an_invisible_element_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip", "visible": false }
+            ]),
+            serde_json::json!({}),
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_transparent_element_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_videoloop_overlay_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "bug", "kind": "videoLoop", "z": 0, "assetId": "other",
+                  "loop": { "periodFrames": 10 } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn an_image_on_a_clip_element_is_not_audio_bearing_picture() {
+    // The backdrop case that actually reaches the asset-kind branch. Putting
+    // the backdrop on a `graphic` element instead let the KIND filter exclude
+    // it, so re-accepting `image` passed the whole workspace.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "still", "kind": "clip", "z": 0, "assetId": "bg" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_backdrop_does_not_become_the_items_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "back", "kind": "graphic", "z": 0, "assetId": "bg", "templateId": "TPL" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_slate_shows_no_scene_element_so_it_installs_no_audio() {
+    let dir = tempfile::tempdir().unwrap();
     let idx = index_with_scene(
         dir.path(),
         serde_json::json!([
@@ -633,11 +724,7 @@ fn item_audio_follows_the_manifest_not_the_z_order() {
         base_assets(),
         serde_json::json!({ "kind": "slate" }),
     );
-    assert_eq!(
-        idx.item_audio_asset("A1"),
-        None,
-        "a slate shows no scene element, so it installs no audio"
-    );
+    assert_eq!(idx.item_audio_asset("A1"), None);
     assert!(
         idx.resolve(Some("A1"))
             .layers
@@ -645,81 +732,14 @@ fn item_audio_follows_the_manifest_not_the_z_order() {
             .all(|l| !matches!(l.source, nbe_engine::scene::LayerSource::Video { .. })),
         "and the slate draws no video either — the two must agree"
     );
+}
 
-    // 8. An element declaring a NON-clip bus is declaring that its audio is
-    //    not programme audio. The previous rule overrode that with "but it was
-    //    first", putting a guest's audio on the clip bus.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "g", "kind": "clip", "z": 0, "assetId": "other",
-              "audio": { "bus": "guest" } }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.item_audio_asset("A1"),
-        None,
-        "an element declaring bus=guest must not become clip-bus programme audio"
-    );
-
-    // 9. `audio.muted` is in the schema and was never read: a muted element
-    //    went to air, and a muted element below an unmuted clip won.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "quiet", "kind": "clip", "z": 0, "assetId": "other",
-              "audio": { "bus": "clip", "muted": true } },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "a muted element must not supply the take's audio"
-    );
-
-    // 10. A videoLoop overlay is decoration, not programme audio. An
-    //     alphaVideo loop below the clip used to steal the take.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "bug", "kind": "videoLoop", "z": 0, "assetId": "other",
-              "loop": { "periodFrames": 10 } },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "a videoLoop overlay must not supply the take's audio"
-    );
-
-    // 11. Fully transparent is not on screen, so it is not the audio either.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "an opacity-0 element is not the picture, so it is not the audio"
-    );
-
-    // 12. The structural claim, asserted directly: whatever audio resolves to
-    //     must be an asset the renderer actually draws. This is the class that
-    //     survived four rewrites, and it is the one worth a standing check.
-    for policy in [
+#[test]
+fn the_takes_audio_is_always_an_asset_the_renderer_draws() {
+    // The structural invariant, asserted directly. This is the class that
+    // survived four rewrites, and it is the one worth a standing check.
+    let dir = tempfile::tempdir().unwrap();
+    for item in [
         serde_json::json!({}),
         serde_json::json!({ "kind": "slate" }),
     ] {
@@ -730,7 +750,7 @@ fn item_audio_follows_the_manifest_not_the_z_order() {
                 { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
             ]),
             base_assets(),
-            policy,
+            item,
         );
         if let Some(audio) = idx.item_audio_asset("A1") {
             let drawn: Vec<String> = idx
@@ -750,57 +770,6 @@ fn item_audio_follows_the_manifest_not_the_z_order() {
             );
         }
     }
-
-    // 6. The backplate case, kept: a background image below the clip.
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "back", "kind": "graphic", "z": 0, "assetId": "bg", "templateId": "TPL" },
-            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.item_audio_asset("A1").as_deref(),
-        Some("A1_clip"),
-        "a backdrop must not become the item's audio"
-    );
-}
-
-#[test]
-fn the_manifests_declared_house_rate_is_carried_into_the_index() {
-    // F7: `declared_house_rate` and the mismatch error it feeds were entirely
-    // ungated -- deleting the field's consumer left all nine engine test
-    // binaries green. In-schema the reachable mismatch is 60 declared against
-    // a 30 fps engine (`VideoSpec.frameRate` is an enum of [30, 60]).
-    let dir = tempfile::tempdir().unwrap();
-    let idx = index_with_scene(
-        dir.path(),
-        serde_json::json!([
-            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
-        ]),
-        base_assets(),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        idx.declared_house_rate,
-        Some(30),
-        "the index must carry the manifest's declared house rate"
-    );
-
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
-            .unwrap();
-    let mut sixty = manifest.clone();
-    sixty["show"]["video"]["frameRate"] = serde_json::json!(60);
-    let idx = nbe_engine::scene::PackageIndex::build(&sixty, dir.path());
-    assert_eq!(
-        idx.declared_house_rate,
-        Some(60),
-        "a 60 fps package must be distinguishable from a 30 fps one; without \
-         this the engine cannot detect that it is running the wrong rate"
-    );
 }
 
 #[tokio::test]

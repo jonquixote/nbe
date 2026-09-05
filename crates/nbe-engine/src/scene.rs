@@ -219,13 +219,6 @@ impl PackageIndex {
         idx
     }
 
-    /// Which rundown items would show this asset: asset → elements using it →
-    /// scenes containing those elements → items referencing those scenes.
-    ///
-    /// A decode failure has to be attributed to something the control plane's
-    /// §17.3 machine tracks. That machine tracks Items; an asset id is
-    /// unresolvable to it, so a fault reported against an asset cannot drive
-    /// anything to `ERROR`.
     /// The audio-bearing asset an item shows: item → scene → elements → asset.
     ///
     /// The forward direction of `items_using_asset`, and the fix for the P0 the
@@ -317,22 +310,38 @@ impl PackageIndex {
             .collect()
     }
 
+    /// Which rundown items would SHOW this asset.
+    ///
+    /// A decode failure has to be attributed to something the control plane's
+    /// §17.3 machine tracks. That machine tracks Items; an asset id is
+    /// unresolvable to it, so a fault reported against an asset cannot drive
+    /// anything to `ERROR` (SPEC §5.9.3).
+    ///
+    /// Derived from `drawn_elements`, and that is the whole point. This was a
+    /// THIRD parallel walk of the scene graph — it went `scenes` → `item_scene`
+    /// directly, with none of the filters, so it named items that could never
+    /// show the asset: behind `visible: false`, at `opacity: 0`, on an element
+    /// kind the renderer does not draw, or in the scene of an item that has
+    /// been slated.
+    ///
+    /// That is not cosmetic. `server.ts` turns an `itemEvent` into
+    /// `state.markError(itemRef)`, and §17.3 makes `ERROR` recoverable only via
+    /// `item.reset` — so a broken asset the renderer would never have touched
+    /// took a healthy item off the air.
+    ///
+    /// Two walks were unified to kill this defect on the audio path; it
+    /// survived on the third. Now all three read one function.
     pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
-        let scenes: Vec<&String> = self
-            .scenes
-            .iter()
-            .filter(|(_, elements)| {
-                elements
-                    .iter()
-                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
-            })
-            .map(|(id, _)| id)
-            .collect();
         let mut items: Vec<String> = self
             .item_scene
-            .iter()
-            .filter(|(_, scene)| scenes.contains(scene))
-            .map(|(item, _)| item.clone())
+            .keys()
+            .filter(|item| {
+                self.drawn_elements(item)
+                    .iter()
+                    .filter(|e| self.layer_for(e).is_some())
+                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
+            })
+            .cloned()
             .collect();
         items.sort();
         items
