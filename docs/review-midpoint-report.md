@@ -706,3 +706,84 @@ Both fixes falsify: reverting `items_using_asset` to the old walk fails *"an inv
 - **The fallback slate keeps clip audio on air.** Looks like the same picture/audio mismatch, and is not: SPEC §10.3 says *"an audio fault MUST NOT trigger the video fallback slate"*, deliberately decoupling the two fault domains. Current behaviour is consistent with the spec.
 - **Duplicate asset ids.** Last declaration wins in `asset_kind`, and both paths read that same map, so they cannot disagree.
 - **Missing/undecodable video file.** `resolve` still emits a Video layer and audio still resolves — consistent by the invariant's own terms; the runtime failure is reported separately as `decodeError`.
+
+
+---
+
+## 18. Pass 9 — the count reconciled, and the same defect a fourth time
+
+### 18.1 The ledger, reconciled
+
+§17.3 of this report said "twelve added, three deleted" and could not be made to reconcile — a consistent off-by-one against the measured counts. Pass 9 found it:
+
+**The split produced THIRTEEN tests, not twelve.** Twelve rule tests **plus** `the_takes_audio_is_always_an_asset_the_renderer_draws`, the structural invariant. The commit message says exactly that; this report's arithmetic counted "twelve" as the total and dropped the thirteenth.
+
+Corrected:
+
+```
+127 + 2  (two working-tree additions, never committed alone)  = 129
+129 − 1  (item_audio_follows…, deliberately replaced) + 13    = 141
+141 − 3  (swallowed by the replacement region)                = 138  ✓ measured
+138 + 3  (restored)                                           = 141  ✓ measured
+```
+
+**True ledger: base `main` = 117 → HEAD = 141. Net +24: 27 added, 3 deleted.** "Twelve added, three deleted" described only the final two commits, and was wrong by one on the added side.
+
+Deletions by name, all three accounted for:
+
+| Test | Commit | Status |
+|---|---|---|
+| `the_engine_binary_actually_starts_the_audio_driver` | `1f1ebc2` | intentional, stated in the subject (§3.10) |
+| `item_audio_follows_the_manifest_not_the_z_order` | `463f1dd` | intentional — replaced by the split |
+| `the_manifests_declared_house_rate_is_carried_into_the_index` | `463f1dd` | **silent and unintended**; restored in `2a1d7fc` |
+
+Why the naive count could never reconcile against `git log`: two of the three "swallowed" tests — `a_fault_only_blames…` and `resolve_drops_a_fully_transparent_layer` — **never existed in any commit** before their restore. They were lost from the *working tree*, so history shows no deletion at all. An audit against commits alone cannot see them.
+
+**No unrunnable tests:** zero `#[ignore]`, zero `should_panic`, no `harness = false` or `required-features` stanzas. The static count of test functions (141) equals the measured passed count (141), so nothing is defined-but-unregistered.
+
+### 18.2 The fourth divergence — same defect, one axis over
+
+Pass 8 unified the **element** predicate in `items_using_asset` and left the **asset** predicate independent. Those are two different questions, and `layer_for`'s `graphic` arm returns `Some(Solid)` **without ever reading `asset_id`**.
+
+`Element` permits `assetId` on every kind in the schema, with no per-kind conditional, and `validate_manifest` is schema-only. So this is schema-valid and preflight-passing:
+
+```json
+{ "id": "card", "kind": "graphic", "z": 0, "assetId": "other",
+  "templateId": "TPL", "fields": { "color": "#101010" } }
+```
+
+Measured: `resolve(A1)` = `[Solid(…)]`, the renderer shows nothing of `other`, and `items_using_asset("other")` = `["A1"]`. Traced end to end: every video asset is decoded at load regardless of use → decode fails → the item is named → `ItemEvent::DecodeError` → `server.ts` `markError("A1")` → `state.ts` sets `ERROR` and, if A1 is on air, raises `fallbackActive`. §17.3 makes `ERROR` recoverable only via `item.reset`.
+
+**A healthy item, drawing its own clip perfectly, goes to the slate for a decode failure on an asset the renderer never touches.**
+
+The predicate now asks the **layer** what it shows rather than the **element** what it mentions. An element can only be blamed for an asset its own layer names — so a future `layer_for` arm that ignores `asset_id` is correct here by construction rather than needing another filter.
+
+The pass-8 fix's own test could not have caught this: its four cases (`visible: false`, `opacity: 0`, `guest` kind, slated) all sit on the `layer_for → None` side. They gate the element predicate. Nothing exercised the case where the element **is** drawn but its layer names no asset.
+
+### 18.3 What this pattern has cost, stated plainly
+
+This is the fourth time the same class has been fixed on this branch, each time in a place the previous fix did not reach:
+
+| Pass | Fix | Where it survived |
+|---|---|---|
+| 7 | picture and audio derive from `drawn_elements` | `items_using_asset` — a third walk |
+| 8 | `items_using_asset` derives from `drawn_elements` | its **asset** predicate, still independent |
+| 9 | the predicate asks the layer | — |
+
+Each fix was scoped to the symptom that had been reported. The reviewer's phrase for pass 8 — *"the fix targeted the reported symptom, and the pattern lived one function over"* — applied again to pass 8's own fix. The lesson is not "check one more function"; it is that a fix should be expressed so the class cannot recur, and "ask the artifact what it contains" does that where "filter the inputs that produce it" does not.
+
+### 18.4 Pass 9's other findings
+
+- **`a_backdrop_does_not_become_the_items_audio` pins no single behaviour** — its backdrop is a `graphic` carrying an `image`, excluded twice over, so it survives all 13 single mutations and fails only under a combined one. Kept and **labelled** as the defence-in-depth composite, with pointers to the two tests that pin each filter singly. Weakening it to exercise one filter would duplicate them.
+- **15 of 16 tests from the pass-7/8 rounds are genuine** — each fails when its behaviour is deleted, and each reaches the branch it names. No test passes for a reason contradicting its name.
+- **Pre-existing, not attributable to this branch:** `render-channel.test.ts` hangs indefinitely when the `nbe-preflight` binary is not resolvable — all tests report `ok` and the process never exits, so CI would hit a wall-clock limit rather than report failure. `git diff a5a7f8e..7a5722a -- packages/` touches neither that file nor `server.ts`/`package.ts`. Recorded so it is not rediscovered, and routed to Prompt 07's list.
+
+### Verification
+
+```
+TOTAL: 141 passed, 0 failed, 0 ignored
+cargo fmt --all -- --check                               -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
+```
+
+Falsified against **both** prior versions: reverting to pass 8's element predicate fails *"a graphic draws a solid and shows no asset, so it must not be blamed for one it merely names"*; reverting to the pre-pass-8 raw walk fails the same test.
