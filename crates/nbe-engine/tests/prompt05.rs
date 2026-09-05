@@ -772,6 +772,142 @@ fn the_takes_audio_is_always_an_asset_the_renderer_draws() {
     }
 }
 
+#[test]
+fn a_fault_only_blames_items_that_would_actually_show_the_asset() {
+    // `items_using_asset` drives decode-fault attribution: server.ts turns an
+    // itemEvent into markError(itemRef), and §17.3 makes ERROR recoverable
+    // only via item.reset. Naming the wrong item takes a healthy one off air.
+    //
+    // It was a THIRD parallel walk — scenes -> item_scene directly, with none
+    // of drawn_elements' filters. Two walks were unified to kill this defect
+    // on the audio path; it survived on the one nobody looked at.
+    let dir = tempfile::tempdir().unwrap();
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "hidden", "kind": "clip", "z": 0, "assetId": "other", "visible": false },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an invisible element's asset must not fault the item that contains it"
+    );
+    assert_eq!(
+        idx.items_using_asset("A1_clip"),
+        vec!["A1".to_string()],
+        "and the asset that IS drawn must still be attributed"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an opacity-0 element's asset must not fault its item"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an element the renderer never draws must not fault its item"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({ "kind": "slate" }),
+    );
+    assert!(
+        idx.items_using_asset("A1_clip").is_empty(),
+        "a slated item shows no scene asset, so a decode fault must not blame it"
+    );
+}
+
+#[test]
+fn resolve_drops_a_fully_transparent_layer() {
+    // The `opacity > 0` filter is shared by the picture and audio paths, but
+    // only the audio half was asserted. Visually a no-op — ALPHA_BLENDING
+    // means an opacity-0 layer contributed nothing either way — so this pins
+    // the behaviour rather than claiming a rendering change.
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    let drawn: Vec<String> = idx
+        .resolve(Some("A1"))
+        .layers
+        .iter()
+        .filter_map(|l| match &l.source {
+            nbe_engine::scene::LayerSource::Video { asset_id, .. } => Some(asset_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        drawn,
+        vec!["A1_clip".to_string()],
+        "a fully transparent layer is not drawn"
+    );
+}
+
+#[test]
+fn the_manifests_declared_house_rate_is_carried_into_the_index() {
+    // `declared_house_rate` and the mismatch error it feeds were ungated.
+    // In-schema the reachable mismatch is 60 declared against a 30 fps engine
+    // (`VideoSpec.frameRate` is an enum of [30, 60]).
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(30),
+        "the index must carry the manifest's declared house rate"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
+            .unwrap();
+    let mut sixty = manifest.clone();
+    sixty["show"]["video"]["frameRate"] = serde_json::json!(60);
+    let idx = nbe_engine::scene::PackageIndex::build(&sixty, dir.path());
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(60),
+        "a 60 fps package must be distinguishable from a 30 fps one; without \
+         this the engine cannot detect that it is running the wrong rate"
+    );
+}
+
 #[tokio::test]
 async fn a_take_installs_the_audio_of_the_asset_its_item_shows() {
     // The other half of the P0's gate: the resolution must reach the engine's
