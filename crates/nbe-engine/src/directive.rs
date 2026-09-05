@@ -209,6 +209,33 @@ impl DirectiveHandler {
         }
         *self.state.audio_assets.lock().unwrap() = audio_assets;
 
+        // The item→asset walk happens HERE, once, not on the take path.
+        // Residency is keyed by asset id and a take carries an item ref; every
+        // package used in testing named them the same string, so the mismatch
+        // was invisible until the dress show (item `A1`, asset `A1_clip`) made
+        // every bus read -120 dBFS with the whole audio stack working.
+        // SPEC §7.2: the package declares the house rate the show was authored
+        // at. The engine takes its rate from NBE_HOUSE_RATE and nothing
+        // reconciled the two, so a 25 fps package loaded on a 30 fps engine
+        // mapped every non-house-rate asset against the wrong denominator with
+        // no path detecting it. Loud, because the picture is wrong in a way an
+        // operator will see and not be able to explain.
+        if let Some(declared) = index.declared_house_rate {
+            let running = self.state.house_rate();
+            if declared != running {
+                tracing::error!(
+                    declared,
+                    running,
+                    "package house rate does not match the engine's; timed items \
+                     and non-house-rate assets will play at the wrong speed"
+                );
+            }
+        }
+
+        let item_audio = index.item_audio_map();
+        info!(items = item_audio.len(), "item audio resolved");
+        *self.state.item_audio.lock().unwrap() = item_audio;
+
         *self.state.package.lock().unwrap() = Some(index);
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);
         *self.state.view_item.lock().unwrap() = None;
@@ -305,6 +332,11 @@ impl DirectiveHandler {
             self.state.audio_commands.lock().unwrap().push(
                 crate::audio_control::AudioCommand::TakeItem {
                     item_ref: r.to_string(),
+                    // Resolved from the map built at load. `None` is a
+                    // legitimate answer — a graphic-only scene has no audio —
+                    // and is distinct from "the lookup missed", which is what
+                    // used to happen silently.
+                    asset_id: self.state.item_audio.lock().unwrap().get(r).cloned(),
                     t0: start_frame,
                     mode: mode.to_string(),
                     ramp_ms,

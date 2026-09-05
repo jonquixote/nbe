@@ -1,0 +1,164 @@
+{
+  "manifestVersion": "0.3",
+  "network": {
+    "id": "nbe",
+    "name": "News Broadcasting Engine"
+  },
+  "show": {
+    "id": "dress-rehearsal",
+    "title": "Dress Rehearsal",
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30,
+      "colorSpace": "rec709",
+      "aspectRatio": "16:9"
+    },
+    "audio": {
+      "sampleRate": 48000,
+      "loudnessTargetLufs": -16,
+      "truePeakDbtp": -1.5
+    },
+    "fallbackAssetId": "fallback_slate"
+  },
+  "qualityProfile": "reference",
+  "assets": [
+    {
+      "id": "fallback_slate",
+      "kind": "image",
+      "source": "media/fallback.png",
+      "format": "png"
+    },
+    {
+      "id": "A1_clip",
+      "kind": "video",
+      "source": "media/A1.mp4",
+      "format": "h264",
+      "expectedDurationFrames": 150
+    },
+    {
+      "id": "A2_loop",
+      "kind": "video",
+      "source": "media/A2.mp4",
+      "format": "h264",
+      "expectedDurationFrames": 10,
+      "loop": {
+        "periodFrames": 10,
+        "seamless": true,
+        "cachePolicy": "vram"
+      }
+    },
+    {
+      "id": "stab_sfx",
+      "kind": "audio",
+      "source": "media/stab.m4a"
+    },
+    {
+      "id": "A3_cadence",
+      "kind": "video",
+      "source": "media/A3_12fps.mp4",
+      "format": "h264",
+      "sourceFrameRate": 12,
+      "expectedDurationFrames": 12
+    }
+  ],
+  "scenes": [
+    {
+      "id": "SCN_A1",
+      "name": "Clip with audio",
+      "elements": [
+        {
+          "id": "main_clip",
+          "kind": "clip",
+          "z": 1,
+          "assetId": "A1_clip"
+        }
+      ]
+    },
+    {
+      "id": "SCN_A2",
+      "name": "Loop",
+      "elements": [
+        {
+          "id": "main_loop",
+          "kind": "videoLoop",
+          "z": 1,
+          "assetId": "A2_loop",
+          "loop": {
+            "periodFrames": 10,
+            "seamless": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "SCN_G",
+      "name": "Graphic",
+      "elements": [
+        {
+          "id": "bg",
+          "kind": "graphic",
+          "z": 1,
+          "fields": {
+            "color": "#1b3a5c"
+          },
+          "templateId": "TPL_GENERIC"
+        }
+      ]
+    },
+    {
+      "id": "SCN_A3",
+      "name": "12 fps source",
+      "elements": [
+        {
+          "id": "main_cadence",
+          "kind": "clip",
+          "z": 1,
+          "assetId": "A3_cadence"
+        }
+      ]
+    }
+  ],
+  "rundown": {
+    "id": "R",
+    "title": "Dress rehearsal rundown",
+    "items": [
+      {
+        "id": "A1",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_A1",
+        "durationFrames": 150
+      },
+      {
+        "id": "A2",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_A2"
+      },
+      {
+        "id": "G",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_G"
+      },
+      {
+        "id": "A3",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_A3"
+      }
+    ]
+  },
+  "control": {
+    "bindings": []
+  },
+  "templates": [
+    {
+      "id": "TPL_GENERIC",
+      "kind": "generic",
+      "fields": [
+        {
+          "name": "color",
+          "label": "Background colour"
+        }
+      ]
+    }
+  ]
+}

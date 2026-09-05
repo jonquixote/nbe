@@ -588,22 +588,53 @@ unsafe fn audio_output_settings() -> Retained<NSDictionary<NSString, objc2::runt
 /// A clip does not run on its own clock: the frame shown at master frame `f`
 /// is a pure function of the show clock, which is what makes the compositor's
 /// determinism property hold with video in the picture.
+/// Source index for a house-frame offset, honouring cadence (SPEC §18, AC-4).
+///
+/// This is THE mapping from show time to source time. A 12 fps source at a
+/// 30 fps house rate advances two source frames every five house frames —
+/// the 2,3,2,3 hold pattern, seen from the other side.
+///
+/// It used to be absent. `draw_for` mapped house frames onto source indices
+/// 1:1 and never read `source_frame_rate`, so a 12 fps asset played at 2.5x
+/// and exhausted in 12 house frames instead of 30. AC-4 was reported as
+/// delivered on the strength of a test exercising `cadence_pattern`, which had
+/// no production caller.
+///
+/// Signed, because a loop's pre-roll offset is legitimately negative.
+pub fn source_index_at(elapsed_house: i128, source_rate: u32, house_rate: u32) -> i128 {
+    if house_rate == 0 || source_rate == 0 || source_rate == house_rate {
+        return elapsed_house;
+    }
+    // div_euclid, not `/`: truncation toward zero makes pre-roll asymmetric
+    // around t0, and a loop's wrap point would land a frame off.
+    (elapsed_house * source_rate as i128).div_euclid(house_rate as i128)
+}
+
 pub fn clip_source_index(
     master_frame: u64,
     item_start_frame: u64,
     frame_count: u64,
+    source_rate: u32,
+    house_rate: u32,
 ) -> Option<u64> {
     if frame_count == 0 || master_frame < item_start_frame {
         return None;
     }
-    let elapsed = master_frame - item_start_frame;
-    (elapsed < frame_count).then_some(elapsed)
+    let elapsed = (master_frame - item_start_frame) as i128;
+    let index = source_index_at(elapsed, source_rate, house_rate);
+    (index >= 0 && (index as u64) < frame_count).then_some(index as u64)
 }
 
 /// Loop frame selection: `sourceIndex = (F - t0) mod P` (SPEC §12.1). A loop
 /// boundary is computationally indistinguishable from any other frame — there
 /// is no restart event, which is what AC-9 measures.
-pub fn loop_source_index(master_frame: u64, t0: u64, period_frames: u64) -> Option<u64> {
+pub fn loop_source_index(
+    master_frame: u64,
+    t0: u64,
+    period_frames: u64,
+    source_rate: u32,
+    house_rate: u32,
+) -> Option<u64> {
     if period_frames == 0 {
         return None;
     }
@@ -612,6 +643,7 @@ pub fn loop_source_index(master_frame: u64, t0: u64, period_frames: u64) -> Opti
     // a future t0 pre-rolls into its own cycle rather than pinning to frame 0.
     // Saturating here would silently freeze every pre-roll frame on frame 0.
     let elapsed = (master_frame as i128) - (t0 as i128);
+    let elapsed = source_index_at(elapsed, source_rate, house_rate);
     Some(elapsed.rem_euclid(period_frames as i128) as u64)
 }
 
@@ -624,8 +656,10 @@ pub fn cadence_pattern(source_rate: u32, house_rate: u32, house_frames: u64) -> 
     if source_rate == 0 || house_rate == 0 {
         return Vec::new();
     }
+    // Derived from the production mapping rather than duplicating its
+    // arithmetic, so this helper cannot drift from what the renderer does.
     (0..house_frames)
-        .map(|f| f * source_rate as u64 / house_rate as u64)
+        .map(|f| source_index_at(f as i128, source_rate, house_rate).max(0) as u64)
         .collect()
 }
 
@@ -659,6 +693,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_12_fps_source_spans_30_house_frames() {
+        // AC-4, measured through the function the RENDERER calls. The old
+        // AC-4 test asserted a hold pattern against `cadence_pattern`, which
+        // nothing called.
+        let count = 12; // one second of a 12 fps source
+        let spanned = (0..60)
+            .filter(|f| clip_source_index(*f, 0, count, 12, 30).is_some())
+            .count();
+        assert_eq!(
+            spanned, 30,
+            "a 12 fps source of {count} frames must span 30 house frames at 30 fps"
+        );
+        assert_eq!(clip_source_index(0, 0, count, 12, 30), Some(0));
+        assert_eq!(clip_source_index(2, 0, count, 12, 30), Some(0));
+        assert_eq!(clip_source_index(3, 0, count, 12, 30), Some(1));
+        assert_eq!(clip_source_index(29, 0, count, 12, 30), Some(11));
+        assert_eq!(clip_source_index(30, 0, count, 12, 30), None);
+    }
+
+    #[test]
+    fn a_loop_at_a_slower_source_rate_wraps_on_source_time() {
+        // A 10-frame 12 fps loop is 0.833 s: 25 house frames at 30 fps.
+        assert_eq!(loop_source_index(0, 0, 10, 12, 30), Some(0));
+        assert_eq!(loop_source_index(24, 0, 10, 12, 30), Some(9));
+        assert_eq!(loop_source_index(25, 0, 10, 12, 30), Some(0));
+        assert_eq!(loop_source_index(0, 25, 10, 12, 30), Some(0));
+    }
+
+    #[test]
     fn rgba_byte_len_refuses_overflow_and_absurd_dimensions() {
         assert_eq!(rgba_byte_len(1920, 1080), Some(1920 * 1080 * 4));
         assert_eq!(rgba_byte_len(0, 1080), None, "zero width");
@@ -678,11 +741,11 @@ mod tests {
 
     #[test]
     fn clip_and_loop_selection_are_pure() {
-        assert_eq!(clip_source_index(10, 10, 5), Some(0));
-        assert_eq!(clip_source_index(14, 10, 5), Some(4));
-        assert_eq!(clip_source_index(15, 10, 5), None);
-        assert_eq!(loop_source_index(15, 10, 5), Some(0));
-        assert_eq!(loop_source_index(15, 10, 0), None);
+        assert_eq!(clip_source_index(10, 10, 5, 30, 30), Some(0));
+        assert_eq!(clip_source_index(14, 10, 5, 30, 30), Some(4));
+        assert_eq!(clip_source_index(15, 10, 5, 30, 30), None);
+        assert_eq!(loop_source_index(15, 10, 5, 30, 30), Some(0));
+        assert_eq!(loop_source_index(15, 10, 0, 30, 30), None);
     }
 
     #[test]
@@ -690,9 +753,21 @@ mod tests {
         // SPEC §12.1 is defined over the whole timeline. Before t0 the loop is
         // mid-cycle, not frozen on frame 0 — which is what a saturating
         // subtraction would produce.
-        assert_eq!(loop_source_index(8, 10, 5), Some(3), "2 frames before t0");
-        assert_eq!(loop_source_index(9, 10, 5), Some(4), "1 frame before t0");
-        assert_eq!(loop_source_index(10, 10, 5), Some(0), "at t0");
-        assert_eq!(loop_source_index(5, 10, 5), Some(0), "one full cycle early");
+        assert_eq!(
+            loop_source_index(8, 10, 5, 30, 30),
+            Some(3),
+            "2 frames before t0"
+        );
+        assert_eq!(
+            loop_source_index(9, 10, 5, 30, 30),
+            Some(4),
+            "1 frame before t0"
+        );
+        assert_eq!(loop_source_index(10, 10, 5, 30, 30), Some(0), "at t0");
+        assert_eq!(
+            loop_source_index(5, 10, 5, 30, 30),
+            Some(0),
+            "one full cycle early"
+        );
     }
 }

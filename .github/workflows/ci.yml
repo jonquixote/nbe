@@ -118,3 +118,105 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "expected 0 failures"; exit 1; fi
           # A glob that matches nothing must not pass as a green build.
           if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi
+
+  # ---------------------------------------------------------------------------
+  # The dress rehearsal ([RI-1]) — NON-BLOCKING, AND CURRENTLY RED ON PURPOSE.
+  #
+  # This job plays a real show: a real control plane, the engine binary as a
+  # separate process, the real WebSocket protocol, a real 1920x1080/30 package
+  # with H.264+AAC media. It is the only gate that proves the parts compose,
+  # and the only one that proves the engine binary starts its audio driver
+  # (see docs/review-midpoint-report.md §3.10 — three Rust gates for that claim
+  # were written and all three were defeated, because text a process prints is
+  # free to forge).
+  #
+  # It is `continue-on-error` because three of its twelve steps fail today, and
+  # those failures are REAL FINDINGS this review recorded rather than bugs
+  # introduced here:
+  #
+  # MEASURED over six consecutive runs (load average 13-37), not asserted:
+  #
+  #   always red (3):
+  #     step 3  masterClockFrame does not advance within 2 ticks of
+  #             show.start (finding R5)
+  #     step 4  busPeakDbfs.clip rises, but after step 4's window closes —
+  #             the audio is present and the timing is wrong (R5 again)
+  #     gate    audioUnderrunsTotal reaches 1 on the happy path (finding R4)
+  #   intermittent:
+  #     step 6  4 of 6 runs. Bus meters are a 33 ms window sampled at 1 Hz,
+  #             so a 0.4 s soundboard stab is a coin toss (finding R2)
+  #     step 10 1 of 6 runs, under load. show.stop's ack inside the 2000 ms
+  #             grace window is timing-sensitive when the box is busy
+  #
+  #   observed range: pass 7-9, fail 3-5
+  #
+  # This comment has been wrong twice: it said three steps fail (measured
+  # four), then four (measured a 7-9 range). Both claims came from two-run
+  # samples of an intermittent test, which is exactly the error §11 of the
+  # report criticises. The bounds below are the measured range, and they are
+  # what keep this comment honest rather than the other way round.
+  #
+  # Both are dispositioned to Prompt 07. PROMOTING THIS JOB TO REQUIRED IS
+  # PROMPT 07'S FIRST TASK, once R2 and R5 close and show.load stops taking
+  # 46 seconds (report §12.3). Until then it stays visible and red: a required
+  # job that is red on merge day teaches people to ignore a gate, and a gate
+  # nobody looks at is worse than no gate at all.
+  #
+  # Do not silence this job. Fix the findings, then make it required.
+  dress-rehearsal:
+    name: dress rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      # Both binaries are real dependencies: the rehearsal spawns the engine
+      # and shells preflight. With either missing every step fails for a reason
+      # unrelated to the show — measured at 12 of 12 with the engine absent.
+      - run: cargo build -p nbe-engine -p nbe-preflight
+      - run: npm ci
+        working-directory: packages/control-plane
+      - name: play the show
+        working-directory: packages/control-plane
+        run: |
+          set -o pipefail
+          npm run test:rehearsal 2>&1 | tee /tmp/dress.log || true
+          echo "::group::Dress rehearsal summary"
+          grep -E "^# (tests|pass|fail) |^not ok " /tmp/dress.log || true
+          echo "::endgroup::"
+          # Zero assertions is a failure, never a skip (charter [RI-1]).
+          #
+          # Gating on "# tests" ALONE was itself defeatable, and an independent
+          # pass defeated it: with the engine binary absent node still prints
+          # "# tests 12 / # pass 0 / # fail 12", so `ran=12` passed the gate
+          # while every step failed — the exact state the build step above
+          # exists to prevent. Gate on what PASSED.
+          ran=$(grep -E "^# tests " /tmp/dress.log | awk '{print $3}')
+          passed=$(grep -E "^# pass " /tmp/dress.log | awk '{print $3}')
+          failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}')
+          echo "ran=${ran:-0} passed=${passed:-0} failed=${failed:-0}"
+          if [ "${ran:-0}" -lt 12 ]; then
+            echo "the rehearsal must run all 12 steps, ran ${ran:-0}"
+            exit 1
+          fi
+          # The measured range is pass 7-9 / fail 3-5 over six runs. Outside
+          # it, something broke that is not one of the documented findings —
+          # a real regression even though this job is non-blocking.
+          if [ "${passed:-0}" -lt 7 ]; then
+            echo "expected at least 7 passing steps, got ${passed:-0}"
+            exit 1
+          fi
+          if [ "${failed:-99}" -gt 5 ]; then
+            echo "expected at most 5 failing steps (R2/R4/R5), got ${failed:-99}"
+            exit 1
+          fi
+      - name: failure artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dress-rehearsal-artifacts
+          path: target/dress-rehearsal/
+          if-no-files-found: warn

@@ -92,6 +92,10 @@ pub struct PackageIndex {
     pub item_scene: HashMap<String, String>,
     /// item id → item kind (`slate` renders a generated scene).
     pub item_kind: HashMap<String, String>,
+    /// item id → `audioPolicy` (SPEC §17: `clip` | `bed` | `mute`, default
+    /// `clip`). The manifest states what an item's audio should do; the
+    /// resolution below obeys it rather than inferring it.
+    pub item_audio_policy: HashMap<String, String>,
     /// scene id → elements, already sorted low-z to high-z.
     pub scenes: HashMap<String, Vec<ElementSpec>>,
     /// asset id → decoded image, for `image`-kind assets only.
@@ -105,6 +109,14 @@ pub struct PackageIndex {
     /// asset id → declared `loop.periodFrames` (SPEC §12.9: the manifest's
     /// declaration takes precedence over the decoded frame count).
     pub declared_loop_period: HashMap<String, u32>,
+    /// The house rate the manifest declares (`show.video.frameRate`).
+    ///
+    /// Carried so the engine can check it against the rate it is actually
+    /// running. Nothing reconciled the two before: the engine takes its rate
+    /// from `NBE_HOUSE_RATE` (default 30) and never looked at the manifest, so
+    /// a 25 fps package loaded without that variable mapped every
+    /// non-house-rate asset against 30 and no path detected it.
+    pub declared_house_rate: Option<u32>,
 }
 
 /// One element, reduced to what this prompt can draw.
@@ -115,6 +127,13 @@ pub struct ElementSpec {
     pub z: i64,
     pub visible: bool,
     pub asset_id: Option<String>,
+    /// `element.audio.bus` (SPEC §7.4 `LayerAudio`), defaulted to `clip`.
+    /// The manifest says which bus an element's audio belongs on; the audio
+    /// resolution reads it instead of guessing from z-order.
+    pub audio_bus: String,
+    /// `element.audio.muted` (SPEC §7.4). Also in the schema, also previously
+    /// unread — a muted element went to air.
+    pub audio_muted: bool,
     pub color: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
@@ -130,6 +149,12 @@ impl PackageIndex {
                 .get("qualityProfile")
                 .and_then(|v| v.as_str())
                 .and_then(parse_quality),
+            declared_house_rate: manifest
+                .get("show")
+                .and_then(|sh| sh.get("video"))
+                .and_then(|v| v.get("frameRate"))
+                .and_then(|v| v.as_u64())
+                .map(|r| r as u32),
             ..Default::default()
         };
 
@@ -194,29 +219,148 @@ impl PackageIndex {
         idx
     }
 
-    /// Which rundown items would show this asset: asset → elements using it →
-    /// scenes containing those elements → items referencing those scenes.
+    /// The audio-bearing asset an item shows: item → scene → elements → asset.
+    ///
+    /// The forward direction of `items_using_asset`, and the fix for the P0 the
+    /// midpoint review found. Audio is made resident at `show.load` keyed by
+    /// **asset id**; a take arrives carrying an **item ref**. Every package
+    /// used in testing happened to name them the same string, so the lookup
+    /// appeared to work; on the dress show — item `A1`, asset `A1_clip` — it
+    /// missed and the take installed no source. Every bus sat at −120 dBFS
+    /// with the graph, the driver and the decode path all working.
+    ///
+    /// Resolved at load and arm time, never on the take path: §7.13 forbids
+    /// this kind of walk on the frame path, and a take must not depend on a
+    /// map lookup that can fail silently.
+    ///
+    /// The asset whose audio a take installs on the CLIP bus for this item.
+    ///
+    /// Four rules have been wrong here and five production bugs came out of
+    /// them, every one the same mistake: inferring from an element's POSITION
+    /// what the manifest STATES. So this version states its premises and reads
+    /// every field the schema provides.
+    ///
+    /// The candidate must be **drawn** — it comes from `drawn_elements`, the
+    /// same walk `resolve` uses, so it cannot be an element the renderer never
+    /// shows. Then, all of:
+    ///
+    /// - the item is not `audioPolicy: "mute"` (SPEC §17)
+    /// - the element is a `clip` — programme picture. A `videoLoop` is a loop
+    ///   or an overlay bug; its audio is not the take's programme audio
+    /// - the element does not declare `audio.muted` (SPEC §7.4)
+    /// - the element's `audio.bus` is `clip`. **No positional fallback.** An
+    ///   element declaring `guest`, `music` or `sfx` is declaring that its
+    ///   audio is not programme audio, and the previous rule overrode that
+    ///   declaration with "…but it was first". Routing those to their declared
+    ///   buses needs more than one source, which is §8.7.5 per-source envelope
+    ///   work deferred to Prompt 07
+    /// - its asset is `video` or `alphaVideo` — picture that can carry a track
+    ///
+    /// Ties break by z (lowest first), then manifest order, both from the
+    /// stable sort in `build`. Documented because a picture-in-picture has two
+    /// legitimate clip elements.
+    ///
+    /// `audioPolicy: "bed"` resolves as `clip` and is NOT implemented: a bed
+    /// playing alongside the clip is two sources on two buses. Deferred to
+    /// Prompt 07 with the per-source envelope work, and logged so an author
+    /// who writes `bed` is not silently given `clip`.
+    pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
+        match self.item_audio_policy.get(item_ref).map(String::as_str) {
+            Some("mute") => return None,
+            Some("bed") => tracing::warn!(
+                item = %item_ref,
+                "audioPolicy \"bed\" is not implemented; treating as \"clip\" \
+                 (SPEC §8.7.5, deferred to Prompt 07)"
+            ),
+            _ => {}
+        }
+        self.drawn_elements(item_ref)
+            .into_iter()
+            .filter(|e| e.kind == "clip")
+            .filter(|e| !e.audio_muted)
+            .filter(|e| e.audio_bus == "clip")
+            .find_map(|e| {
+                let asset = e.asset_id.as_deref()?;
+                self.asset_is_picture_with_audio(asset)
+                    .then(|| asset.to_string())
+            })
+    }
+
+    /// Whether an asset is picture that can also carry an audio track.
+    ///
+    /// `audio`-kind assets are deliberately excluded: a soundboard stab or a
+    /// music bed is not a take's programme audio, and treating it as one is
+    /// how a bed authored below the clip silenced the clip.
+    fn asset_is_picture_with_audio(&self, asset_id: &str) -> bool {
+        matches!(
+            self.asset_kind.get(asset_id).map(String::as_str),
+            Some("video") | Some("alphaVideo")
+        )
+    }
+
+    /// item ref → the asset whose audio that item plays, for every item in the
+    /// package. Built once at load.
+    pub fn item_audio_map(&self) -> std::collections::BTreeMap<String, String> {
+        self.item_scene
+            .keys()
+            .filter_map(|item| {
+                self.item_audio_asset(item)
+                    .map(|asset| (item.clone(), asset))
+            })
+            .collect()
+    }
+
+    /// Which rundown items would SHOW this asset.
     ///
     /// A decode failure has to be attributed to something the control plane's
     /// §17.3 machine tracks. That machine tracks Items; an asset id is
     /// unresolvable to it, so a fault reported against an asset cannot drive
-    /// anything to `ERROR`.
+    /// anything to `ERROR` (SPEC §5.9.3).
+    ///
+    /// Derived from the LAYERS an item draws, and that is the whole point.
+    ///
+    /// That is not cosmetic. `server.ts` turns an `itemEvent` into
+    /// `state.markError(itemRef)`; §17.3 makes `ERROR` recoverable only via
+    /// `item.reset`, and if the item is on air the control plane raises
+    /// `fallbackActive`. So a broken asset the renderer never touched takes a
+    /// healthy item off the air.
+    ///
+    /// This has been wrong twice, each time because the question was asked of
+    /// the wrong thing:
+    ///
+    /// 1. It walked `scenes` → `item_scene` directly, with none of
+    ///    `drawn_elements`' filters, so it blamed items for assets behind
+    ///    `visible: false`, at `opacity: 0`, on an element kind the renderer
+    ///    does not draw, or in the scene of a slated item.
+    /// 2. Fixing that unified the ELEMENT predicate — `drawn_elements` plus
+    ///    `layer_for(e).is_some()` — but left the ASSET predicate independent:
+    ///    `e.asset_id == Some(asset_id)`. Those are two different questions,
+    ///    and `layer_for`'s `graphic` arm returns `Some(Solid)` **without ever
+    ///    reading `asset_id`**. The schema permits `assetId` on every element
+    ///    kind, so a `graphic` card carrying one is drawn as a solid, shows
+    ///    nothing of the asset, and was still blamed for it.
+    ///
+    /// So the predicate now asks the LAYER what it shows, rather than asking
+    /// the element what it mentions. An element can only be blamed for an
+    /// asset its own layer names. That closes the class rather than the
+    /// instance: a future `layer_for` arm that ignores `asset_id` is correct
+    /// here by construction instead of needing another filter.
     pub fn items_using_asset(&self, asset_id: &str) -> Vec<String> {
-        let scenes: Vec<&String> = self
-            .scenes
-            .iter()
-            .filter(|(_, elements)| {
-                elements
-                    .iter()
-                    .any(|e| e.asset_id.as_deref() == Some(asset_id))
-            })
-            .map(|(id, _)| id)
-            .collect();
         let mut items: Vec<String> = self
             .item_scene
-            .iter()
-            .filter(|(_, scene)| scenes.contains(scene))
-            .map(|(item, _)| item.clone())
+            .keys()
+            .filter(|item| {
+                self.drawn_elements(item)
+                    .iter()
+                    .filter_map(|e| self.layer_for(e))
+                    .any(|layer| match &layer.source {
+                        LayerSource::Image(a) => a == asset_id,
+                        LayerSource::Video { asset_id: a, .. } => a == asset_id,
+                        // A solid shows no asset, whatever the element names.
+                        LayerSource::Solid(_) => false,
+                    })
+            })
+            .cloned()
             .collect();
         items.sort();
         items
@@ -239,18 +383,50 @@ impl PackageIndex {
                 }],
             };
         }
-        let Some(scene_id) = self.item_scene.get(item) else {
-            return ResolvedScene::default();
-        };
-        let Some(elements) = self.scenes.get(scene_id) else {
-            return ResolvedScene::default();
-        };
-        let layers = elements
-            .iter()
-            .filter(|e| e.visible)
+        let layers = self
+            .drawn_elements(item)
+            .into_iter()
             .filter_map(|e| self.layer_for(e))
             .collect();
         ResolvedScene { layers }
+    }
+
+    /// The elements this item actually puts on screen, in draw order.
+    ///
+    /// The single source of truth for "what is this item showing". `resolve`
+    /// turns these into layers, and `item_audio_asset` picks the take's audio
+    /// from the same list.
+    ///
+    /// Deriving both from one function is the point. Five production bugs have
+    /// been found in the audio rule across four rewrites, and the sharpest
+    /// class — audio resolving to an asset the renderer never draws — kept
+    /// surviving because the two paths walked the scene SEPARATELY and could
+    /// disagree. A `slate` item was the last instance: `resolve` short-circuits
+    /// to a generated solid and never reads the scene, while the audio walk
+    /// read the scene anyway, so slating an item left its clip audio on air.
+    ///
+    /// One walk cannot disagree with itself. That is structural, in the same
+    /// sense as §8.6's mix-minus: not "tested against", but unrepresentable.
+    fn drawn_elements(&self, item_ref: &str) -> Vec<&ElementSpec> {
+        // A slate draws a generated solid and nothing from the scene, so it
+        // shows no elements — and therefore carries no item audio.
+        if self.item_kind.get(item_ref).map(String::as_str) == Some("slate") {
+            return Vec::new();
+        }
+        let Some(scene_id) = self.item_scene.get(item_ref) else {
+            return Vec::new();
+        };
+        let Some(elements) = self.scenes.get(scene_id) else {
+            return Vec::new();
+        };
+        elements
+            .iter()
+            .filter(|e| e.visible)
+            // Fully transparent is not on screen. `visible: false` was
+            // filtered and `opacity: 0` was not, so a transparent element was
+            // not the picture but was the audio.
+            .filter(|e| e.opacity > 0.0)
+            .collect()
     }
 
     fn layer_for(&self, e: &ElementSpec) -> Option<Layer> {
@@ -303,6 +479,13 @@ fn index_sequence(sequence: Option<&serde_json::Value>, idx: &mut PackageIndex) 
         if let Some(kind) = item.get("kind").and_then(|v| v.as_str()) {
             idx.item_kind.insert(id.to_string(), kind.to_string());
         }
+        idx.item_audio_policy.insert(
+            id.to_string(),
+            item.get("audioPolicy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("clip")
+                .to_string(),
+        );
         if let Some(scene) = item.get("sceneRef").and_then(|v| v.as_str()) {
             idx.item_scene.insert(id.to_string(), scene.to_string());
         }
@@ -338,6 +521,17 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .get("assetId")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        audio_bus: e
+            .get("audio")
+            .and_then(|a| a.get("bus"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("clip")
+            .to_string(),
+        audio_muted: e
+            .get("audio")
+            .and_then(|a| a.get("muted"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         color,
         rect: rect_of(e.get("transform")),
         opacity,

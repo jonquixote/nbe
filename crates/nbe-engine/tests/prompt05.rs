@@ -172,15 +172,23 @@ fn a_corrupt_asset_fails_loudly_rather_than_decoding_nothing() {
 #[test]
 fn clip_and_loop_indices_are_pure_functions_of_the_master_clock() {
     // A clip plays once from its start frame and then runs out.
-    assert_eq!(clip_source_index(100, 100, 30), Some(0));
-    assert_eq!(clip_source_index(115, 100, 30), Some(15));
-    assert_eq!(clip_source_index(130, 100, 30), None, "past the end");
-    assert_eq!(clip_source_index(99, 100, 30), None, "before the start");
+    assert_eq!(clip_source_index(100, 100, 30, 30, 30), Some(0));
+    assert_eq!(clip_source_index(115, 100, 30, 30, 30), Some(15));
+    assert_eq!(
+        clip_source_index(130, 100, 30, 30, 30),
+        None,
+        "past the end"
+    );
+    assert_eq!(
+        clip_source_index(99, 100, 30, 30, 30),
+        None,
+        "before the start"
+    );
 
     // A loop wraps by modulo, with no restart and no special case at the
     // boundary (SPEC §12.1, AC-9).
     for f in 0..100u64 {
-        assert_eq!(loop_source_index(f, 0, 10), Some(f % 10));
+        assert_eq!(loop_source_index(f, 0, 10, 30, 30), Some(f % 10));
     }
 }
 
@@ -304,7 +312,7 @@ async fn a_video_element_renders_its_frame_not_black() {
     let (state, _out) = load(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     // Frame 0 of the reference clip is red.
     render.render_frame(0, None);
     let px = centre_px(&render.readback_view().await);
@@ -319,6 +327,663 @@ async fn a_video_element_renders_its_frame_not_black() {
     assert!(
         px[1] > 200 && px[0] < 60,
         "the frame shown must follow the clock, got {px:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_12_fps_source_spans_30_house_frames_in_the_rendered_picture() {
+    // AC-4, end to end, measured in PIXELS — the only signal that actually
+    // depends on the cadence mapping.
+    //
+    // The first end-to-end attempt asserted that no `itemEvent: end` arrives
+    // for a 12 fps take. It could not fail: `ItemEvent::End` is emitted only
+    // from `schedule_done`, which is spawned only when the take payload
+    // carries `durationFrames`, and that take carried none. Nothing on the
+    // wire moves when a clip is exhausted — `viewItem` does not clear and no
+    // event fires — so the picture is the observable.
+    //
+    // `cadence_12.mp4` is 12 frames at 12 fps; frame N is red = N*20. At a
+    // 30 fps house rate it must span 30 house frames, so house frame 20 shows
+    // source frame 8 (red 160). A 1:1 mapping asks for source frame 20, which
+    // does not exist, drops the layer, and renders black.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "cadence_12.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
+
+    render.render_frame(5, None);
+    let early = centre_px(&render.readback_view().await);
+    assert!(
+        early[0] > 20 && early[0] < 80,
+        "house frame 5 must show source frame 2 (red ~40), got {early:?}"
+    );
+
+    render.render_frame(20, None);
+    let mid = centre_px(&render.readback_view().await);
+    assert!(
+        mid[0] > 120,
+        "house frame 20 must show source frame 8 (red ~160) — a 1:1 mapping \
+         would have exhausted this 12-frame clip by house frame 12 and \
+         rendered black; got {mid:?}"
+    );
+
+    render.render_frame(29, None);
+    let last = centre_px(&render.readback_view().await);
+    assert!(
+        last[0] > 180,
+        "house frame 29 must still be on air, showing source frame 11 \
+         (red ~220), got {last:?}"
+    );
+}
+
+#[test]
+fn an_items_audio_resolves_to_the_asset_its_scene_actually_shows() {
+    // The P0's gate, which the P0 commit did not have: `item_audio_asset` and
+    // `item_audio_map` had exactly one caller (`directive.rs`) and ZERO test
+    // callers, so making the function return `None` -- reverting the fix
+    // entirely -- left the whole suite green.
+    //
+    // Also the backplate case. The first version of the rule was "the lowest-z
+    // element with an asset", which returns the BACKGROUND IMAGE for the most
+    // ordinary scene shape there is, misses in the audio library, and leaves
+    // the item silent: the P0 re-opened for any scene with a backdrop. Every
+    // fixture in the repo was single-element, so nothing caught it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("media")).unwrap();
+    std::fs::copy(media("cfr_30.mp4"), dir.path().join("media/clip.mp4")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        8,
+        8,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.path().join("media/bg.png"), &png).unwrap();
+
+    std::fs::write(
+        dir.path().join("manifest.json"),
+        serde_json::json!({
+            "manifestVersion": "0.3",
+            "network": { "id": "nbe", "name": "T" },
+            "show": {
+                "id": "s", "title": "T",
+                "video": { "width": 640, "height": 360, "frameRate": 30, "colorSpace": "rec709" },
+                "audio": { "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 },
+                "fallbackAssetId": "bg"
+            },
+            "control": { "bindings": [] },
+            "assets": [
+                { "id": "bg", "kind": "image", "source": "media/bg.png", "format": "png" },
+                { "id": "A1_clip", "kind": "video", "source": "media/clip.mp4", "format": "h264" }
+            ],
+            "scenes": [{
+                "id": "SCN_A1",
+                "elements": [
+                    // The backplate sits BELOW the clip, which is the whole point.
+                    { "id": "backdrop", "kind": "graphic", "z": 0, "assetId": "bg",
+                      "templateId": "TPL" },
+                    { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+                ]
+            }],
+            "templates": [{ "id": "TPL", "kind": "generic" }],
+            "rundown": { "id": "R", "items": [
+                { "id": "A1", "kind": "sceneRef", "sceneRef": "SCN_A1" }
+            ]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let idx = nbe_engine::scene::PackageIndex::build(
+        &serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(dir.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap(),
+        dir.path(),
+    );
+
+    assert_eq!(
+        idx.item_audio_asset("A1").as_deref(),
+        Some("A1_clip"),
+        "the item's audio is the clip its scene shows, not the image beneath it"
+    );
+    assert_eq!(
+        idx.item_audio_map().get("A1").map(String::as_str),
+        Some("A1_clip"),
+        "and the map built at show.load must agree"
+    );
+}
+
+/// Build a package with one scene of arbitrary elements, and index it.
+fn index_with_scene(
+    dir: &Path,
+    elements: serde_json::Value,
+    assets: serde_json::Value,
+    item_extra: serde_json::Value,
+) -> nbe_engine::scene::PackageIndex {
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    std::fs::copy(media("cfr_30.mp4"), dir.join("media/clip.mp4")).unwrap();
+    std::fs::copy(media("av_tone.mp4"), dir.join("media/other.mp4")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        8,
+        8,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.join("media/bg.png"), &png).unwrap();
+    std::fs::copy(media("av_tone.mp4"), dir.join("media/bed.m4a")).unwrap();
+
+    let mut item = serde_json::json!({ "id": "A1", "kind": "sceneRef", "sceneRef": "SCN" });
+    if let Some(extra) = item_extra.as_object() {
+        for (k, v) in extra {
+            item[k] = v.clone();
+        }
+    }
+    let manifest = serde_json::json!({
+        "manifestVersion": "0.3",
+        "network": { "id": "nbe", "name": "T" },
+        "show": {
+            "id": "s", "title": "T",
+            "video": { "width": 640, "height": 360, "frameRate": 30, "colorSpace": "rec709" },
+            "audio": { "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 },
+            "fallbackAssetId": "bg"
+        },
+        "control": { "bindings": [] },
+        "assets": assets,
+        "templates": [{ "id": "TPL", "kind": "generic" }],
+        "scenes": [{ "id": "SCN", "elements": elements }],
+        "rundown": { "id": "R", "items": [item] }
+    });
+    std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+    nbe_engine::scene::PackageIndex::build(&manifest, dir)
+}
+
+fn base_assets() -> serde_json::Value {
+    serde_json::json!([
+        { "id": "bg", "kind": "image", "source": "media/bg.png", "format": "png" },
+        { "id": "A1_clip", "kind": "video", "source": "media/clip.mp4", "format": "h264" },
+        { "id": "other", "kind": "video", "source": "media/other.mp4", "format": "h264" },
+        { "id": "bed", "kind": "audio", "source": "media/bed.m4a" }
+    ])
+}
+
+/// One scene, one item, resolved. Every audio-rule test below is this plus a
+/// scene shape, so each rule gets its own `#[test]` and a regression names the
+/// rule that broke. They used to be assertions inside one function, which
+/// aborts at the first failure: breaking two rules reported one, and the test
+/// name never said which.
+fn audio_of(dir: &Path, elements: serde_json::Value, item: serde_json::Value) -> Option<String> {
+    index_with_scene(dir, elements, base_assets(), item).item_audio_asset("A1")
+}
+
+#[test]
+fn a_bed_below_the_clip_does_not_become_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "bed_el", "kind": "clip", "z": 1, "assetId": "bed" },
+                { "id": "main", "kind": "clip", "z": 2, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn audio_comes_from_an_element_the_renderer_draws() {
+    // A `guest` element is not picture; an earlier rule took its asset anyway.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn an_element_declaring_bus_clip_is_the_programme_audio_whatever_its_z() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "pip", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "guest" } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip",
+                  "audio": { "bus": "clip" } }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn an_element_declaring_a_non_clip_bus_is_not_programme_audio() {
+    // Declaring `guest` says "this is not programme audio". The previous rule
+    // overrode that with "but it was first" and put a guest on the clip bus.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "g", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "guest" } }
+            ]),
+            serde_json::json!({}),
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_muted_element_does_not_supply_the_takes_audio() {
+    // `LayerAudio.muted` is in the schema and was never read.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "quiet", "kind": "clip", "z": 0, "assetId": "other",
+                  "audio": { "bus": "clip", "muted": true } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_muted_item_installs_no_audio_source() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({ "audioPolicy": "mute" }),
+        ),
+        None
+    );
+}
+
+#[test]
+fn an_invisible_element_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip", "visible": false }
+            ]),
+            serde_json::json!({}),
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_transparent_element_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_videoloop_overlay_does_not_supply_the_takes_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "bug", "kind": "videoLoop", "z": 0, "assetId": "other",
+                  "loop": { "periodFrames": 10 } },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn an_image_on_a_clip_element_is_not_audio_bearing_picture() {
+    // The backdrop case that actually reaches the asset-kind branch. Putting
+    // the backdrop on a `graphic` element instead let the KIND filter exclude
+    // it, so re-accepting `image` passed the whole workspace.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "still", "kind": "clip", "z": 0, "assetId": "bg" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_backdrop_does_not_become_the_items_audio() {
+    // Defence in depth, deliberately, and labelled as such: this backdrop is a
+    // `graphic` carrying an `image`, so it is excluded twice — by the element
+    // kind filter AND by the asset kind filter. It survives any SINGLE
+    // mutation of either, which means it pins no individual behaviour.
+    //
+    // That is not an accident to be fixed by weakening it. The single-filter
+    // cases are gated separately and precisely:
+    //   - element kind: `a_videoloop_overlay_does_not_supply_the_takes_audio`
+    //   - asset kind:   `an_image_on_a_clip_element_is_not_audio_bearing_picture`
+    // This one asserts the composite shape an author actually writes — a
+    // backdrop under a clip — and would catch a regression that removed both.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_of(
+            dir.path(),
+            serde_json::json!([
+                { "id": "back", "kind": "graphic", "z": 0, "assetId": "bg", "templateId": "TPL" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            serde_json::json!({}),
+        )
+        .as_deref(),
+        Some("A1_clip")
+    );
+}
+
+#[test]
+fn a_slate_shows_no_scene_element_so_it_installs_no_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({ "kind": "slate" }),
+    );
+    assert_eq!(idx.item_audio_asset("A1"), None);
+    assert!(
+        idx.resolve(Some("A1"))
+            .layers
+            .iter()
+            .all(|l| !matches!(l.source, nbe_engine::scene::LayerSource::Video { .. })),
+        "and the slate draws no video either — the two must agree"
+    );
+}
+
+#[test]
+fn the_takes_audio_is_always_an_asset_the_renderer_draws() {
+    // The structural invariant, asserted directly. This is the class that
+    // survived four rewrites, and it is the one worth a standing check.
+    let dir = tempfile::tempdir().unwrap();
+    for item in [
+        serde_json::json!({}),
+        serde_json::json!({ "kind": "slate" }),
+    ] {
+        let idx = index_with_scene(
+            dir.path(),
+            serde_json::json!([
+                { "id": "back", "kind": "graphic", "z": 0, "assetId": "bg", "templateId": "TPL" },
+                { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+            ]),
+            base_assets(),
+            item,
+        );
+        if let Some(audio) = idx.item_audio_asset("A1") {
+            let drawn: Vec<String> = idx
+                .resolve(Some("A1"))
+                .layers
+                .iter()
+                .filter_map(|l| match &l.source {
+                    nbe_engine::scene::LayerSource::Video { asset_id, .. } => {
+                        Some(asset_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                drawn.contains(&audio),
+                "the take's audio must come from an asset on screen; audio={audio}, drawn={drawn:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_fault_only_blames_items_that_would_actually_show_the_asset() {
+    // `items_using_asset` drives decode-fault attribution: server.ts turns an
+    // itemEvent into markError(itemRef), and §17.3 makes ERROR recoverable
+    // only via item.reset. Naming the wrong item takes a healthy one off air.
+    //
+    // It was a THIRD parallel walk — scenes -> item_scene directly, with none
+    // of drawn_elements' filters. Two walks were unified to kill this defect
+    // on the audio path; it survived on the one nobody looked at.
+    let dir = tempfile::tempdir().unwrap();
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "hidden", "kind": "clip", "z": 0, "assetId": "other", "visible": false },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an invisible element's asset must not fault the item that contains it"
+    );
+    assert_eq!(
+        idx.items_using_asset("A1_clip"),
+        vec!["A1".to_string()],
+        "and the asset that IS drawn must still be attributed"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an opacity-0 element's asset must not fault its item"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "g", "kind": "guest", "z": 0, "assetId": "other", "guestId": "G" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "an element the renderer never draws must not fault its item"
+    );
+
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({ "kind": "slate" }),
+    );
+    assert!(
+        idx.items_using_asset("A1_clip").is_empty(),
+        "a slated item shows no scene asset, so a decode fault must not blame it"
+    );
+
+    // A `graphic` element carrying an assetId. This is the case the four above
+    // could not reach: they all sit on the `layer_for -> None` side, so they
+    // gate the ELEMENT predicate. Here `layer_for` returns `Some(Solid)` —
+    // the element IS drawn — but the layer shows no asset. The schema permits
+    // `assetId` on every element kind, so this is a schema-valid manifest that
+    // took a healthy item off air.
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "card", "kind": "graphic", "z": 0, "assetId": "other",
+              "templateId": "TPL", "fields": { "color": "#101010" } },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert!(
+        idx.items_using_asset("other").is_empty(),
+        "a graphic draws a solid and shows no asset, so it must not be blamed \
+         for one it merely names"
+    );
+    assert_eq!(
+        idx.items_using_asset("A1_clip"),
+        vec!["A1".to_string()],
+        "while the clip in the same scene is still attributed"
+    );
+
+    // And the standing invariant behind all of it: an item may only be blamed
+    // for an asset one of its own drawn LAYERS names.
+    for asset in ["other", "A1_clip", "bg", "bed"] {
+        let blamed = idx.items_using_asset(asset);
+        if blamed.contains(&"A1".to_string()) {
+            let shown: Vec<String> = idx
+                .resolve(Some("A1"))
+                .layers
+                .iter()
+                .filter_map(|l| match &l.source {
+                    nbe_engine::scene::LayerSource::Video { asset_id, .. } => {
+                        Some(asset_id.clone())
+                    }
+                    nbe_engine::scene::LayerSource::Image(a) => Some(a.clone()),
+                    nbe_engine::scene::LayerSource::Solid(_) => None,
+                })
+                .collect();
+            assert!(
+                shown.contains(&asset.to_string()),
+                "blamed A1 for {asset}, but its layers show {shown:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolve_drops_a_fully_transparent_layer() {
+    // The `opacity > 0` filter is shared by the picture and audio paths, but
+    // only the audio half was asserted. Visually a no-op — ALPHA_BLENDING
+    // means an opacity-0 layer contributed nothing either way — so this pins
+    // the behaviour rather than claiming a rendering change.
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "ghost", "kind": "clip", "z": 0, "assetId": "other", "opacity": 0.0 },
+            { "id": "main", "kind": "clip", "z": 1, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    let drawn: Vec<String> = idx
+        .resolve(Some("A1"))
+        .layers
+        .iter()
+        .filter_map(|l| match &l.source {
+            nbe_engine::scene::LayerSource::Video { asset_id, .. } => Some(asset_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        drawn,
+        vec!["A1_clip".to_string()],
+        "a fully transparent layer is not drawn"
+    );
+}
+
+#[test]
+fn the_manifests_declared_house_rate_is_carried_into_the_index() {
+    // `declared_house_rate` and the mismatch error it feeds were ungated.
+    // In-schema the reachable mismatch is 60 declared against a 30 fps engine
+    // (`VideoSpec.frameRate` is an enum of [30, 60]).
+    let dir = tempfile::tempdir().unwrap();
+    let idx = index_with_scene(
+        dir.path(),
+        serde_json::json!([
+            { "id": "main", "kind": "clip", "z": 0, "assetId": "A1_clip" }
+        ]),
+        base_assets(),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(30),
+        "the index must carry the manifest's declared house rate"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("manifest.json")).unwrap())
+            .unwrap();
+    let mut sixty = manifest.clone();
+    sixty["show"]["video"]["frameRate"] = serde_json::json!(60);
+    let idx = nbe_engine::scene::PackageIndex::build(&sixty, dir.path());
+    assert_eq!(
+        idx.declared_house_rate,
+        Some(60),
+        "a 60 fps package must be distinguishable from a 30 fps one; without \
+         this the engine cannot detect that it is running the wrong rate"
+    );
+}
+
+#[tokio::test]
+async fn a_take_installs_the_audio_of_the_asset_its_item_shows() {
+    // The other half of the P0's gate: the resolution must reach the engine's
+    // state, where the take path reads it. Dropping the `state.item_audio`
+    // write at show.load also left the suite green.
+    let dir = tempfile::tempdir().unwrap();
+    write_video_package(dir.path(), "av_tone.mp4", None);
+    let (state, _out) = load(dir.path()).await;
+
+    let resolved = state.item_audio.lock().unwrap().clone();
+    assert_eq!(
+        resolved.get("A1").map(String::as_str),
+        Some("clip"),
+        "show.load must publish item -> audio-asset resolution; got {resolved:?}"
     );
 }
 
@@ -389,7 +1054,7 @@ async fn an_undecodable_video_leaves_the_view_black_rather_than_crashing() {
     let (state, _out) = load(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     render.render_frame(0, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -409,7 +1074,7 @@ async fn a_take_at_a_nonzero_master_frame_starts_the_clip_at_its_own_frame_zero(
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "cfr_30.mp4", None);
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     // The show has been running a while: the take lands at master frame 500,
     // far past the clip's own length.
@@ -472,7 +1137,7 @@ async fn a_loop_taken_late_wraps_from_its_own_start() {
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "loop_10.mp4", Some(10));
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     let start: u64 = 1000;
     *state.view_item.lock().unwrap() = Some("A1".into());
@@ -549,7 +1214,7 @@ async fn a_resync_naming_no_item_clears_the_old_one() {
     );
 
     // And the View renders black rather than the stale item.
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
     render.render_frame(0, None);
     assert_eq!(centre_px(&render.readback_view().await), [0, 0, 0, 255]);
 }
@@ -561,7 +1226,7 @@ async fn an_armed_preview_clip_survives_a_late_master_clock() {
     let dir = tempfile::tempdir().unwrap();
     write_video_package(dir.path(), "cfr_30.mp4", None);
     let (state, _out) = load(dir.path()).await;
-    let mut render = RenderLoop::new(state.clone(), None).await.unwrap();
+    let mut render = RenderLoop::new(state.clone()).await.unwrap();
 
     let armed_at: u64 = 500; // far past the clip's 30 frames
     *state.preview_item.lock().unwrap() = Some("A1".into());

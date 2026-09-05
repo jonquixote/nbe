@@ -1,7 +1,7 @@
 //! GPU setup and quality profile probe (Step 1).
 //!
 //! Probe the adapter once, hold the device/queue for the sibling lifetime,
-//! and expose the effective quality profile (capped by the manifest's
+//! and expose the probed quality profile (capped by the manifest's
 //! requested profile, per SPEC §10.1.1).
 
 use nbe_protocol::QualityProfile;
@@ -16,17 +16,45 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub async fn init(requested: Option<QualityProfile>) -> anyhow::Result<Self> {
+    /// Probe the adapter and open a device.
+    ///
+    /// There is no `requested` parameter. One existed, threaded from
+    /// `RenderLoop::new`, and was always `None` in production — `main` never
+    /// passed one, and the manifest cap is applied where it belongs, in
+    /// `EngineState::publish_quality_profile` (which is tested). Deleting the
+    /// cap here left the suite green because the real one is elsewhere; the
+    /// parameter was dead weight that made `gpu.quality` read as "probed"
+    /// when it holds the probed value.
+    pub async fn init() -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // HighPerformance, explicitly. The reference target is a dual-GPU
+        // Intel MacBook Pro — Intel UHD 630 (1536 MB dynamic) plus a Radeon
+        // Pro 555X (4 GB dedicated), per `docs/hardware-baseline.txt`. wgpu's
+        // default preference is not `HighPerformance`, so relying on it means
+        // relying on a heuristic that varies with wgpu version, macOS version
+        // and whether the machine is on battery. Naming the preference makes
+        // adapter choice a decision rather than a default.
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
             .await
             .map_err(|e| anyhow::anyhow!("no wgpu adapter available: {e}"))?;
         let info = adapter.get_info();
         let name = info.name.clone();
 
         let probed = probe_quality(&adapter);
-        let effective = requested.map(|req| probed.capped_by(req)).unwrap_or(probed);
+
+        // Logged because on a dual-GPU machine the adapter actually chosen is
+        // the evidence, and the dress-rehearsal report quotes it.
+        tracing::info!(
+            adapter = %name,
+            backend = ?info.backend,
+            device_type = ?info.device_type,
+            quality = ?probed,
+            "gpu adapter selected"
+        );
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
@@ -34,7 +62,7 @@ impl Gpu {
         Ok(Self {
             device,
             queue,
-            quality: effective,
+            quality: probed,
             adapter_name: name,
         })
     }

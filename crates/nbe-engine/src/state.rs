@@ -74,6 +74,10 @@ pub struct EngineState {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
+    /// item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
+    /// §8.7.3 takes). Built once at `show.load` by walking item → scene →
+    /// elements → asset, so a take is a map lookup and never a graph walk.
+    pub item_audio: Mutex<std::collections::BTreeMap<String, String>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -111,6 +115,7 @@ impl EngineState {
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
+            item_audio: Mutex::new(std::collections::BTreeMap::new()),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -199,6 +204,12 @@ impl EngineState {
                 )
             }
         }
+    }
+
+    /// The house rate this show runs at. The renderer needs it to map show
+    /// time onto source time for non-house-rate assets (SPEC §18).
+    pub fn house_rate(&self) -> u32 {
+        self.clock.lock().unwrap().house_rate()
     }
 
     pub fn clock_state(&self) -> ClockState {

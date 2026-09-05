@@ -1247,60 +1247,108 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
     );
 }
 
-#[test]
-fn the_engine_binary_actually_starts_the_audio_driver() {
-    // This spawns the real binary and waits for the driver to announce itself.
-    //
-    // The previous version of this gate searched main.rs for the text
-    // `audio_driver::spawn(`. An independent pass defeated it four ways — the
-    // call inside a string literal, inside `if false`, behind `#[cfg(any())]`,
-    // behind `#[cfg(test)]` — each leaving 116/116 green, clippy clean, and
-    // the engine never starting the driver. A substring test over source
-    // cannot tell a reachable call from a token sequence, so it is gone. This
-    // observes the running process instead, and the only way to pass it is to
-    // start the driver.
-    use std::io::Read;
-    use std::process::{Command, Stdio};
+// The engine-binary wiring gate used to live here. It is gone, deliberately.
+//
+// Three versions were written and three were defeated by an independent pass:
+//   v1  searched main.rs for `audio_driver::spawn(` as source text — beaten by
+//       a comment, a string literal, `if false`, and `#[cfg(any())]`.
+//   v2  logged "audio driver started" from `spawn` — beaten by replacing the
+//       spawn with that one `tracing::info!` line. 117/117 green, no driver.
+//   v3  logged "audio driver cycling" with a rendered-sample count, from
+//       inside the run loop after real work — beaten by writing
+//       `tracing::info!(rendered_samples = 1600, "audio driver cycling")`.
+//
+// The lesson is structural, not incremental: text a process prints is free to
+// forge, so a gate that reads source text or log text can never prove that
+// work happened. v3 failed for the same reason v1 did.
+//
+// The gate now lives in [RI-1]'s dress rehearsal
+// (`packages/control-plane/src/dress-rehearsal.test.ts`), which observes an
+// EFFECT across the process boundary: `busPeakDbfs` arriving in telemetry from
+// this binary over the real protocol. `EngineState::bus_peaks` is empty at
+// construction and only `AudioDriver::publish` — reachable solely from
+// `cycle()` — ever fills it. Faking that means running the driver.
+//
+// A defeatable gate is worse than none: it reports confidence it has not
+// earned, which is the exact failure this review exists to find.
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nbe-engine"))
-        .env("NBE_RENDER_TOKEN", "test-token")
-        .env("NBE_CP_URL", "ws://127.0.0.1:1/nbe/v0.3") // nothing listening, by design
-        .env("RUST_LOG", "info")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the engine binary must be runnable");
-
-    let mut out = child.stdout.take().expect("stdout piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        let mut chunk = [0u8; 1024];
-        loop {
-            match out.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                    if buf.contains("audio driver started") {
-                        let _ = tx.send(true);
-                        return;
-                    }
-                }
-            }
+#[tokio::test]
+async fn falling_behind_the_cadence_is_an_underrun() {
+    // Fix round, pass-4 F4. There are TWO production sources of an underrun
+    // and only one was tested. Sink refusal is covered by
+    // `a_sink_that_cannot_take_a_block_is_an_underrun_and_not_a_video_fault`;
+    // this is the cadence-overrun branch in `run()` -- the one a real device
+    // sink actually hits -- and deleting its `note_underrun()` left the suite
+    // green, so the module's claim that `audioUnderrunsTotal` is written by
+    // production code held for only half its writers.
+    struct SlowSink;
+    impl nbe_engine::audio_driver::AudioSink for SlowSink {
+        fn write(&mut self, _block: &[f32]) -> bool {
+            // Longer than a block: the loop cannot keep cadence, which is
+            // exactly the condition the branch exists for.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            true
         }
-        let _ = tx.send(false);
-    });
+        fn block_frames(&self) -> usize {
+            BLOCK
+        }
+    }
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let driver = AudioDriver::new(state.clone(), Box::new(SlowSink), HOUSE_RATE);
+    let handle = tokio::spawn(nbe_engine::audio_driver::run(driver, state.clone()));
 
-    let started = rx
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .unwrap_or(false);
-    let _ = child.kill();
-    let _ = child.wait();
+    let mut underruns = 0;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        underruns = state
+            .audio_underruns_total
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if underruns > 0 {
+            break;
+        }
+    }
+    handle.abort();
 
     assert!(
-        started,
-        "the engine binary must start the audio driver; without it the audio \
-         graph is a mechanism nothing drives (SPEC §8.9)"
+        underruns > 0,
+        "a driver that cannot keep the audio cadence must count underruns \
+         (SPEC §8.10); the sink took 60 ms per 33 ms block and none were counted"
+    );
+}
+
+#[test]
+fn a_silent_item_stays_silent_even_when_its_name_matches_an_asset() {
+    // The P0 fix's own regression. `TakeItem.asset_id` is documented as
+    // "`None` means the item shows no audio-bearing asset — a graphic scene,
+    // legitimately silent", but the first version of the fix fell back to
+    // `library.get(item_ref)` when it was `None`. That quietly reinstated the
+    // exact collision the P0 closed: a graphic-only item named `stab`, in a
+    // package that also has a soundboard asset named `stab`, would put that
+    // sample on the clip bus under a scene the manifest says is silent.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert(
+        "stab".to_string(),
+        tone_samples(440.0, 0.8, SAMPLE_RATE as usize),
+    );
+
+    apply(
+        &mut g,
+        vec![AudioCommand::TakeItem {
+            item_ref: "stab".into(), // the item's name collides with the asset
+            asset_id: None,          // ... but the scene carries no audio asset
+            t0: 0,
+            mode: "follow".into(),
+            ramp_ms: 10.0,
+            crossfade_frames: 0,
+        }],
+        &library,
+    );
+    let level = settled_peak_dbfs(&render_across_change(&mut g, 0, |_| {}));
+    assert!(
+        level < -60.0,
+        "an item with no audio asset must be silent even when its id matches a \
+         resident asset; the clip bus is at {level:.1} dBFS"
     );
 }
 
@@ -1362,6 +1410,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
         &mut g,
         vec![AudioCommand::TakeItem {
             item_ref: "A1".into(),
+            asset_id: Some("A1".into()),
             t0: 0,
             mode: "follow".into(),
             ramp_ms: 10.0,
@@ -1385,6 +1434,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
             g,
             vec![AudioCommand::TakeItem {
                 item_ref: "A1".into(),
+                asset_id: Some("A1".into()),
                 t0: 2,
                 mode: "mute".into(),
                 ramp_ms: 10.0,
