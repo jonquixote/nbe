@@ -134,17 +134,27 @@ jobs:
   # those failures are REAL FINDINGS this review recorded rather than bugs
   # introduced here:
   #
-  #   step 3  masterClockFrame does not advance within 2 ticks of show.start
-  #           (finding R5)
-  #   step 4  busPeakDbfs.clip rises, but after step 4's window closes — the
-  #           audio is present and the timing is wrong (R5 again)
-  #   step 6  bus meters are a 33 ms window sampled at 1 Hz, so a 0.4 s
-  #           soundboard stab is often missed (finding R2)
-  #   gate    audioUnderrunsTotal reaches 1 on the happy path (finding R4)
+  # MEASURED over six consecutive runs (load average 13-37), not asserted:
   #
-  # FOUR steps, not three. An earlier version of this comment said three and
-  # nothing checked it against reality; an independent pass counted four,
-  # stably, across two runs. The pass count below is what keeps this honest.
+  #   always red (3):
+  #     step 3  masterClockFrame does not advance within 2 ticks of
+  #             show.start (finding R5)
+  #     step 4  busPeakDbfs.clip rises, but after step 4's window closes —
+  #             the audio is present and the timing is wrong (R5 again)
+  #     gate    audioUnderrunsTotal reaches 1 on the happy path (finding R4)
+  #   intermittent:
+  #     step 6  4 of 6 runs. Bus meters are a 33 ms window sampled at 1 Hz,
+  #             so a 0.4 s soundboard stab is a coin toss (finding R2)
+  #     step 10 1 of 6 runs, under load. show.stop's ack inside the 2000 ms
+  #             grace window is timing-sensitive when the box is busy
+  #
+  #   observed range: pass 7-9, fail 3-5
+  #
+  # This comment has been wrong twice: it said three steps fail (measured
+  # four), then four (measured a 7-9 range). Both claims came from two-run
+  # samples of an intermittent test, which is exactly the error §11 of the
+  # report criticises. The bounds below are the measured range, and they are
+  # what keep this comment honest rather than the other way round.
   #
   # Both are dispositioned to Prompt 07. PROMOTING THIS JOB TO REQUIRED IS
   # PROMPT 07'S FIRST TASK, once R2 and R5 close and show.load stops taking
@@ -192,16 +202,15 @@ jobs:
             echo "the rehearsal must run all 12 steps, ran ${ran:-0}"
             exit 1
           fi
-          # Eight steps pass today. If fewer do, something broke that is not
-          # one of the four documented findings — that is a real regression
-          # even though this job is non-blocking.
-          if [ "${passed:-0}" -lt 8 ]; then
-            echo "expected at least 8 passing steps, got ${passed:-0}"
+          # The measured range is pass 7-9 / fail 3-5 over six runs. Outside
+          # it, something broke that is not one of the documented findings —
+          # a real regression even though this job is non-blocking.
+          if [ "${passed:-0}" -lt 7 ]; then
+            echo "expected at least 7 passing steps, got ${passed:-0}"
             exit 1
           fi
-          # And the known-red set must not grow silently.
-          if [ "${failed:-99}" -gt 4 ]; then
-            echo "expected at most 4 failing steps (R2/R4/R5), got ${failed:-99}"
+          if [ "${failed:-99}" -gt 5 ]; then
+            echo "expected at most 5 failing steps (R2/R4/R5), got ${failed:-99}"
             exit 1
           fi
       - name: failure artifacts

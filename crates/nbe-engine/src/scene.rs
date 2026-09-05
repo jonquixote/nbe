@@ -131,6 +131,9 @@ pub struct ElementSpec {
     /// The manifest says which bus an element's audio belongs on; the audio
     /// resolution reads it instead of guessing from z-order.
     pub audio_bus: String,
+    /// `element.audio.muted` (SPEC §7.4). Also in the schema, also previously
+    /// unread — a muted element went to air.
+    pub audio_muted: bool,
     pub color: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
@@ -237,67 +240,57 @@ impl PackageIndex {
     /// this kind of walk on the frame path, and a take must not depend on a
     /// map lookup that can fail silently.
     ///
-    /// The asset whose audio a take installs for this item.
+    /// The asset whose audio a take installs on the CLIP bus for this item.
     ///
-    /// Three rules have now been wrong here, each a narrower version of the
-    /// same mistake — inferring from position what the manifest already
-    /// states:
+    /// Four rules have been wrong here and five production bugs came out of
+    /// them, every one the same mistake: inferring from an element's POSITION
+    /// what the manifest STATES. So this version states its premises and reads
+    /// every field the schema provides.
     ///
-    /// 1. "lowest-z element with an asset" picked the BACKGROUND IMAGE of any
-    ///    scene with a backplate. The item went silent.
-    /// 2. "lowest-z element whose asset can carry audio" picked a MUSIC BED
-    ///    authored below the clip, and the clip went silent. It also picked
-    ///    assets hung on elements the renderer never draws (`guest`, `camera`,
-    ///    `ticker`), and it flipped a picture-in-picture's audio depending on
-    ///    which camera the author happened to declare first.
-    /// 3. Neither read `Item.audioPolicy` or `Element.audio.bus`, which exist
-    ///    in the schema for precisely this question.
+    /// The candidate must be **drawn** — it comes from `drawn_elements`, the
+    /// same walk `resolve` uses, so it cannot be an element the renderer never
+    /// shows. Then, all of:
     ///
-    /// So this reads the declaration:
+    /// - the item is not `audioPolicy: "mute"` (SPEC §17)
+    /// - the element is a `clip` — programme picture. A `videoLoop` is a loop
+    ///   or an overlay bug; its audio is not the take's programme audio
+    /// - the element does not declare `audio.muted` (SPEC §7.4)
+    /// - the element's `audio.bus` is `clip`. **No positional fallback.** An
+    ///   element declaring `guest`, `music` or `sfx` is declaring that its
+    ///   audio is not programme audio, and the previous rule overrode that
+    ///   declaration with "…but it was first". Routing those to their declared
+    ///   buses needs more than one source, which is §8.7.5 per-source envelope
+    ///   work deferred to Prompt 07
+    /// - its asset is `video` or `alphaVideo` — picture that can carry a track
     ///
-    /// - `audioPolicy: "mute"` → `None`. A muted item installs no source.
-    /// - Only elements the renderer draws AS PICTURE are candidates
-    ///   (`clip`, `videoLoop`), carrying a `video`/`alphaVideo` asset. An
-    ///   `audio`-kind asset is a bed or a stab: it belongs on its own bus, not
-    ///   on the clip bus as a take's audio.
-    /// - Among those, an element that declares `audio.bus: "clip"` wins over
-    ///   one that declares another bus. That is the manifest naming the
-    ///   programme audio explicitly.
-    /// - Only then does z-order break the tie: lowest z first, manifest order
-    ///   within equal z. Documented because a picture-in-picture has two
-    ///   legitimate video elements and the answer must not depend on
-    ///   declaration order alone.
+    /// Ties break by z (lowest first), then manifest order, both from the
+    /// stable sort in `build`. Documented because a picture-in-picture has two
+    /// legitimate clip elements.
     ///
-    /// `audioPolicy: "bed"` (a bed playing alongside the clip) needs more than
-    /// one source on more than one bus, which is per-source envelope work —
-    /// SPEC §8.7.5, deferred to Prompt 07. It resolves as `clip` here, which
-    /// is the current single-source behaviour rather than a claim to implement
-    /// the policy.
+    /// `audioPolicy: "bed"` resolves as `clip` and is NOT implemented: a bed
+    /// playing alongside the clip is two sources on two buses. Deferred to
+    /// Prompt 07 with the per-source envelope work, and logged so an author
+    /// who writes `bed` is not silently given `clip`.
     pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
-        if self.item_audio_policy.get(item_ref).map(String::as_str) == Some("mute") {
-            return None;
+        match self.item_audio_policy.get(item_ref).map(String::as_str) {
+            Some("mute") => return None,
+            Some("bed") => tracing::warn!(
+                item = %item_ref,
+                "audioPolicy \"bed\" is not implemented; treating as \"clip\" \
+                 (SPEC §8.7.5, deferred to Prompt 07)"
+            ),
+            _ => {}
         }
-        let scene = self.item_scene.get(item_ref)?;
-        let elements = self.scenes.get(scene)?;
-
-        // Already sorted low-z to high-z, and `sort_by_key` is stable, so
-        // manifest order survives within equal z.
-        let candidates: Vec<&ElementSpec> = elements
-            .iter()
-            .filter(|e| e.visible)
-            .filter(|e| matches!(e.kind.as_str(), "clip" | "videoLoop"))
-            .filter(|e| {
-                e.asset_id
-                    .as_deref()
-                    .is_some_and(|a| self.asset_is_picture_with_audio(a))
+        self.drawn_elements(item_ref)
+            .into_iter()
+            .filter(|e| e.kind == "clip")
+            .filter(|e| !e.audio_muted)
+            .filter(|e| e.audio_bus == "clip")
+            .find_map(|e| {
+                let asset = e.asset_id.as_deref()?;
+                self.asset_is_picture_with_audio(asset)
+                    .then(|| asset.to_string())
             })
-            .collect();
-
-        candidates
-            .iter()
-            .find(|e| e.audio_bus == "clip")
-            .or_else(|| candidates.first())
-            .and_then(|e| e.asset_id.clone())
     }
 
     /// Whether an asset is picture that can also carry an audio track.
@@ -362,18 +355,50 @@ impl PackageIndex {
                 }],
             };
         }
-        let Some(scene_id) = self.item_scene.get(item) else {
-            return ResolvedScene::default();
-        };
-        let Some(elements) = self.scenes.get(scene_id) else {
-            return ResolvedScene::default();
-        };
-        let layers = elements
-            .iter()
-            .filter(|e| e.visible)
+        let layers = self
+            .drawn_elements(item)
+            .into_iter()
             .filter_map(|e| self.layer_for(e))
             .collect();
         ResolvedScene { layers }
+    }
+
+    /// The elements this item actually puts on screen, in draw order.
+    ///
+    /// The single source of truth for "what is this item showing". `resolve`
+    /// turns these into layers, and `item_audio_asset` picks the take's audio
+    /// from the same list.
+    ///
+    /// Deriving both from one function is the point. Five production bugs have
+    /// been found in the audio rule across four rewrites, and the sharpest
+    /// class — audio resolving to an asset the renderer never draws — kept
+    /// surviving because the two paths walked the scene SEPARATELY and could
+    /// disagree. A `slate` item was the last instance: `resolve` short-circuits
+    /// to a generated solid and never reads the scene, while the audio walk
+    /// read the scene anyway, so slating an item left its clip audio on air.
+    ///
+    /// One walk cannot disagree with itself. That is structural, in the same
+    /// sense as §8.6's mix-minus: not "tested against", but unrepresentable.
+    fn drawn_elements(&self, item_ref: &str) -> Vec<&ElementSpec> {
+        // A slate draws a generated solid and nothing from the scene, so it
+        // shows no elements — and therefore carries no item audio.
+        if self.item_kind.get(item_ref).map(String::as_str) == Some("slate") {
+            return Vec::new();
+        }
+        let Some(scene_id) = self.item_scene.get(item_ref) else {
+            return Vec::new();
+        };
+        let Some(elements) = self.scenes.get(scene_id) else {
+            return Vec::new();
+        };
+        elements
+            .iter()
+            .filter(|e| e.visible)
+            // Fully transparent is not on screen. `visible: false` was
+            // filtered and `opacity: 0` was not, so a transparent element was
+            // not the picture but was the audio.
+            .filter(|e| e.opacity > 0.0)
+            .collect()
     }
 
     fn layer_for(&self, e: &ElementSpec) -> Option<Layer> {
@@ -474,6 +499,11 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .and_then(|v| v.as_str())
             .unwrap_or("clip")
             .to_string(),
+        audio_muted: e
+            .get("audio")
+            .and_then(|a| a.get("muted"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         color,
         rect: rect_of(e.get("transform")),
         opacity,
