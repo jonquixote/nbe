@@ -787,3 +787,65 @@ cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
 ```
 
 Falsified against **both** prior versions: reverting to pass 8's element predicate fails *"a graphic draws a solid and shows no asset, so it must not be blamed for one it merely names"*; reverting to the pre-pass-8 raw walk fails the same test.
+
+
+---
+
+## 19. Pass 10 — CLEAN. The unification closes.
+
+Ten independent falsification passes have run over this branch. Pass 10 is the first to come back clean, and the valuable part is *why* — it is a negative result with a proof behind it, not an absence of effort.
+
+### 19.1 `layer_for` is the sole decider of asset identity — proved, then attacked
+
+The pass-9 fix rests entirely on the claim that **an element can only be associated with an asset via the layer `layer_for` produces**. Pass 10 enumerated every field the schema's `Element` offers that names a resource, and checked each against what `element_spec` actually reads:
+
+| Field | Names a resource | Read by `element_spec` | Verdict |
+|---|---|---|---|
+| `assetId` | yes | **yes** | the one association path; consulted only in the `clip \| videoLoop` arm |
+| `feedAssetId` | yes | **no** | not read anywhere in the workspace |
+| `templateId` → `fontAssetIds` | yes | **no** | `templates` is never indexed by `PackageIndex::build` |
+| `pluginId` → `Plugin.source` | yes | **no** | `kind: plugin` → `layer_for` returns `None` |
+| `cameraId` / `guestId` | device ids | **no** | `layer_for` returns `None` |
+| `sceneRef` (element-level) | a Scene | **no** | `layer_for` returns `None` |
+| `children` (group) | Element ids | **no** | siblings are walked directly, so drawn and blamed identically |
+| `Item.assetId` (`clipRef`) | yes | **no** | absent from `item_scene`; symmetric, both directions empty |
+
+The invariant then holds **by construction**, because both sides are literally the same expression over the same walk:
+
+> item *i* is blamed for asset *a* ⟺ some layer of `resolve(i)` names *a*
+
+Verified for all four item classes (slate, unknown item, missing scene, normal), in both directions, and against the three paths to the screen (`resolve → draw_for`, the 1×1 white texture, the fallback slate — the last deliberately item-less). `items_using_asset` has exactly one production caller, and the control plane has exactly one blame path.
+
+Then it was attacked empirically: a nine-case probe hanging `assetId: "other"` off `group`, `sceneRef`, `plugin`, `camera`, `guest`, `ticker` and `clock` elements, plus `feedAssetId`, `fontAssetIds`, an `overlays` element, a `clipRef` item, an undecodable image, and a slate carrying a `sceneRef` — with a generalized assertion over the cross product of every asset against every item. **All nine cases failed to break the invariant.**
+
+**No fifth home for the defect class exists.** After four consecutive passes each finding the class alive one axis over, that is the result worth having.
+
+### 19.2 The decode loop, and faults that blame nobody
+
+`show.load` decodes every `video`/`alphaVideo` asset regardless of whether anything draws it — which is what gave pass 9's bug its blast radius. Pass 10 confirmed such assets genuinely exist (referenced only by a `graphic`, by an unhandled element kind, by `overlays`, by a `clipRef` item, or by nothing at all), and that post-fix their decode failure correctly blames **nobody**: measured on a real `show.load` with a corrupt asset referenced only by a `graphic` — zero `ItemEvent` frames, while the healthy asset decoded.
+
+Not swallowed, either: `directive.rs` logs `error!("video asset failed to decode")` unconditionally and then `warn!("decode failure affects no rundown item; nothing to report")`. The full reason stays in the engine log, which is where §5.3's token discipline deliberately keeps it.
+
+**Decoding everything stays.** A take can land on any `sceneRef` item at any moment, so scoping decode to currently-drawn elements would be wrong. Scoping it to *ever-drawable* elements would be defensible and would skip the unattributable assets — but that trades a bounded load-time cost for a new class of "asset not resident when the take arrives" bugs. Recorded as considered and declined.
+
+### 19.3 Findings — test-strengthening only, dispositioned to Prompt 07
+
+- **F1.** Nothing covers the `affected.is_empty()` branch. Deleting the `warn!` — or the `error!` above it — leaves the suite green, and an unattributable decode failure would then vanish with nothing flagging it. This is the single place where "logged, therefore not swallowed" rests on an ungated line. Pass 10 wrote the probe that asserts both halves; **07 should adopt it.**
+- **F2.** `VideoLibrary::failures` is write-only dead state, and its doc comment ("the caller reports each as `itemEvent: decodeError`") is now true only for attributable assets. Pre-existing on `main` — `video.rs` is not in this branch's diff — and post-pass-9 it is the natural home for surfacing an unattributable fault to the operator as a telemetry counter rather than an `itemEvent`.
+- **O-1.** A clip with no declared `loop.periodFrames` gets `period_frames = min(decoded, 30)`, so past frame 30 `clip_source_index` returns `None`, the layer is dropped, and the picture goes **black** rather than freezing on the last frame. `load_video_asset`'s comment claims §12.8's frozen-frame rule covers the gap; it does not, because `.or_else(|| ring.textures.last())` is only reachable after `clip_source_index` returns `Some`. Accurate for loops, overstated for clips. Identical on `main`.
+- **O-2.** `index_sequence` reads only `sceneRef`, so a `clipRef` item — whose `assetId` the schema requires — is absent from `item_scene` entirely: black picture, no audio, no blame. Internally symmetric, unchanged from `main`.
+
+### 19.4 Mutation sweep
+
+Ten single mutations of `scene.rs`, each reverted before the next; **every one killed by a named test**: the pass-8 predicate restored, `Solid(_) => true`, the opacity filter, `declared_house_rate`, the slate short-circuit, the `clip` kind filter, `audio_muted`, `audio_bus`, the asset-kind filter, and `audioPolicy: "mute"`. Every filter in the audio rule and every clause of the blame predicate is individually gated.
+
+### Verification
+
+```
+TOTAL: 141 passed, 0 failed, 0 ignored
+cargo fmt --all -- --check                               -> exit 0
+cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
+control-plane (required):  # tests 39 / # pass 39 / # fail 0
+```
+
+**VERDICT: CLEAN.** The branch merges under the pre-committed rule.
