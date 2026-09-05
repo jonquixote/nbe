@@ -599,3 +599,63 @@ cargo clippy --workspace --all-targets -- -D warnings    -> exit 0
 ```
 
 All six fixes falsified: removing the element-kind filter, re-accepting `audio`-kind assets, ignoring `audioPolicy`, ignoring `audio.bus`, removing the `visible` filter, and never populating `declared_house_rate` each fail their named test.
+
+
+---
+
+## 16. Pass 7 — five more, and the point at which the design was the bug
+
+Pass 7 found **five production bugs**, all in `item_audio_asset`, after its **fourth** rewrite. At that point the rule is not the defect; the shape of the solution is.
+
+| # | Bug | On air |
+|---|---|---|
+| F1 | A `slate` item carrying a `sceneRef` renders the slate solid but resolves the scene's clip audio | "we slated it and the audio kept going out" |
+| F2 | An element declaring `audio.bus: guest`/`music`/`sfx` still became the take's audio — **installed on the clip bus** | a remote guest live on the guest bus *and* the clip bus, at different gains, with a guest-bus mute no longer silencing them |
+| F3 | `LayerAudio.muted` is in the schema and was never read | the author muted the PiP; the PiP is what you hear and the programme clip is silent |
+| F4 | An `alphaVideo` overlay loop below the clip stole the take | a lower third's audio becomes the programme |
+| F5 | `opacity: 0` was not filtered though `visible: false` was | the transparent element is not the picture but is the audio |
+
+F1 deserves its own line because of how it was reachable: `{"id":"A1","kind":"slate","sceneRef":"SCN_A1"}` validates against the schema with **zero errors**, and `nbe-preflight` returns **exit 0, `airReady: true`**. Nothing between the manifest and air would have caught it.
+
+### The structural fix
+
+Every previous version failed the same way, and the sharpest class — audio resolving to an asset the renderer never draws — kept surviving because **picture and audio walked the scene separately and could disagree**. F1 is that disagreement in its plainest form: `resolve()` short-circuits on `item_kind == "slate"`; the audio walk did not know `item_kind` existed.
+
+So both now derive from one function, `drawn_elements`. `resolve()` turns its output into layers; `item_audio_asset` picks the take's audio from the same list. **One walk cannot disagree with itself.** That is structural in the same sense as §8.6's mix-minus — not "tested against", but unrepresentable.
+
+On top of it, the rule reads every field the schema provides rather than inferring: `audioPolicy` (`mute` → `None`, `bed` → warns instead of silently meaning `clip`), element kind (`clip` only — a `videoLoop` is a loop or an overlay bug), `audio.muted`, `audio.bus` **with no positional fallback**, and `opacity`. An element declaring a non-clip bus is declaring that its audio is not programme audio; the previous rule overrode that declaration with "but it was first."
+
+Twelve cases are now gated, including a standing structural assertion: **whatever audio resolves to must appear in the layers `resolve()` draws.**
+
+### F6 — my own test was the thing that let this through
+
+The test that looked like it covered the image exclusion put the backdrop on a **`graphic`** element, so the *kind* filter excluded it and the asset-kind branch was never reached. Re-accepting `image` passed the entire workspace, 127/127. The fix adds the case that actually exercises it: a `clip` element carrying an image asset.
+
+This is worth stating flatly. A test can be written for the right behaviour, name the right thing, pass for the wrong reason, and be counted as coverage. That is the same failure as the defeatable gates in §12.1, arriving through the front door.
+
+### F7 — I over-claimed stability, again, in the correction to an over-claim
+
+§15 said four rehearsal steps fail "stably", citing two runs. §11 had already criticised a claim built on **one** intermittent green; §15 replaced it with a claim built on **two** intermittent reds, and the CI comment inherited it.
+
+Measured properly, six consecutive runs (load average 13–37):
+
+```
+run 1  pass=8 fail=4   red: 3 4 6 gate
+run 2  pass=8 fail=4   red: 3 4 6 gate
+run 3  pass=9 fail=3   red: 3 4 gate
+run 4  pass=8 fail=4   red: 3 4 6 gate
+run 5  pass=7 fail=5   red: 3 4 6 gate 10
+run 6  pass=9 fail=3   red: 3 4 gate
+```
+
+- **Always red (3):** step 3, step 4, the gate — R5, R5, R4.
+- **Intermittent:** step 6 in 4 of 6 (R2, exactly the coin toss §3.5 predicts); step 10 in 1 of 6, under load — `show.stop`'s ack inside the 2000 ms grace window is timing-sensitive on a busy box.
+- **Range: pass 7–9, fail 3–5.**
+
+My CI bounds were `passed >= 8` / `failed <= 4`, which **run 5 would have tripped**. They are now the measured range, and the comment says the count came from six runs rather than asserting stability.
+
+The lesson is the one this review keeps relearning from the other direction: **two samples of an intermittent test establish nothing, in either direction.** I have now made that error twice — once toward green, once toward red — and both times while correcting someone else's version of it.
+
+### Falsification
+
+All six fixes fail their named assertion when reverted: the slate short-circuit, the `audio.bus` requirement, `audio.muted`, the `videoLoop` exclusion, the `opacity` filter, and the image exclusion.
