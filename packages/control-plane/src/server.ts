@@ -140,6 +140,15 @@ export interface ServerOptions {
   bridge?: RenderBridge;
   /** SPEC §16.1 graceful window; shortened in tests. Default 2000 ms. */
   showStopGraceMs?: number;
+  /**
+   * The house rate the render node runs at (SPEC §7.15).
+   *
+   * `show.load` MUST reject a package declaring a different rate. Without this
+   * the check is unreachable — which is exactly what shipped: the field
+   * existed on `DispatchDeps`, nothing ever assigned it, and deleting the
+   * guard left the suite green.
+   */
+  houseRate?: number;
   /** Warning sink; defaults to console.warn. Tests assert exact strings. */
   warn?: (message: string) => void;
 }
@@ -196,6 +205,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     persistence: opts.persistence,
     rateLimiter,
     showStopGraceMs: opts.showStopGraceMs ?? 2000,
+    houseRate: opts.houseRate,
     waitForGrace,
     emitDirectivesNow: (directives, stateVersion) => {
       for (const d of directives) {

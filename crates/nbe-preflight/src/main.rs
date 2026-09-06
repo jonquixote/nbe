@@ -142,6 +142,24 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             // Decode-based checks (Prompt 05 Step 7, SPEC §19): only for
             // media that exists and claims to be video.
             let mut decoded = DecodeFacts::default();
+            // §12.11.1 needs an image's OWN dimensions: a 200x100 logo is
+            // 0.08 MiB, not the 7.91 MiB of a house-resolution frame. Reading
+            // only the header keeps this cheap — no decode, no pixels.
+            if exists && kind.as_deref() == Some("image") {
+                // Non-fatal by design. An unreadable image is arguably a
+                // preflight failure, but v0.4's content list does not
+                // authorise a new failure mode — that would be enlarging the
+                // revision past its scope. If the header will not parse we
+                // fall back to the house frame, which over-states demand
+                // rather than under-stating it.
+                if let Ok((w, h)) =
+                    image::image_dimensions(package_path.join(source.unwrap_or_default()))
+                {
+                    decoded.width = Some(w);
+                    decoded.height = Some(h);
+                }
+            }
+
             let is_video = matches!(kind.as_deref(), Some("video") | Some("alphaVideo"));
             if exists && is_video {
                 let path = package_path.join(source.unwrap_or_default());
@@ -252,12 +270,29 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             .and_then(|v| v.as_str())
             .unwrap_or("<unnamed>");
         let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let offending: &[&str] = match kind {
-            "slate" => &["sceneRef", "assetId"],
-            "sceneRef" => &["assetId"],
-            _ => &[],
+        // §17.5 #1 is a GENERAL rule: an Item MUST NOT carry fields belonging
+        // to a kind other than its own. The first implementation covered only
+        // the two cases the spec lists as illustrations, which left
+        // `clipRef + sceneRef` legal — and that one is live: `index_sequence`
+        // fills `item_scene` from `sceneRef` regardless of kind, and
+        // `drawn_elements` special-cases only `slate`, so the engine draws the
+        // scene and resolves its audio for an item the manifest calls a clip.
+        //
+        // Expressed as "which field belongs to which kind", so a new kind
+        // cannot quietly inherit permission to carry everything.
+        let owned: &[&str] = match kind {
+            "sceneRef" => &["sceneRef"],
+            "clipRef" => &["assetId"],
+            "liveRef" => &["sourceId"],
+            "slate" => &[],
+            // An unknown kind is the schema's problem, not this check's.
+            _ => continue,
         };
-        for field in offending {
+        let offending: Vec<&str> = ["sceneRef", "assetId", "sourceId"]
+            .into_iter()
+            .filter(|f| !owned.contains(f))
+            .collect();
+        for field in &offending {
             if item.get(*field).is_some() {
                 had_errors = true;
                 report.push_error(format!(
@@ -290,18 +325,26 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
 ///
 /// Never a failure here: preflight cannot know what machine the package will
 /// play on, and refusing on a guess is worse than reporting the number
-/// (§12.11.3 #3).
+/// (§12.11.3).
+///
+/// This READS the manifest rather than inferring from structure. The first
+/// version inferred, and was wrong by 2.6x under, 13x over, 38x over, and
+/// reported 0 MiB for an hour of audio: it ignored `textureFormat` and
+/// `cachePolicy` — both in the schema, both stating the answer — charged every
+/// image a full house-resolution frame, and sized loops by the show's
+/// resolution instead of the asset's. That is precisely the defect §17.5
+/// exists to abolish, committed in the same revision that wrote §17.5.
 fn resource_demand(
     manifest: &serde_json::Value,
     report: &nbe_core::PreflightReport,
 ) -> nbe_core::ResourceReport {
     const MIB: u64 = 1024 * 1024;
     let video = manifest.get("show").and_then(|s| s.get("video"));
-    let width = video
+    let house_w = video
         .and_then(|v| v.get("width"))
         .and_then(|v| v.as_u64())
         .unwrap_or(1920);
-    let height = video
+    let house_h = video
         .and_then(|v| v.get("height"))
         .and_then(|v| v.as_u64())
         .unwrap_or(1080);
@@ -311,9 +354,8 @@ fn resource_demand(
         .map(|r| r as u32);
 
     // View + preview render targets and the fallback slate, RGBA8 at house
-    // resolution.
-    let frame_rgba = width * height * 4;
-    let mut vram = frame_rgba * 3;
+    // resolution. Unconditional.
+    let mut vram = house_w * house_h * 4 * 3;
 
     for asset in manifest
         .get("assets")
@@ -323,31 +365,56 @@ fn resource_demand(
     {
         let id = asset.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let kind = asset.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(period) = asset
-            .get("loop")
-            .and_then(|l| l.get("periodFrames"))
-            .and_then(|v| v.as_u64())
-        {
-            // NV12 is 1.5 bytes/px; alphaVideo needs the full RGBA8.
-            let per_frame = if kind == "alphaVideo" {
-                frame_rgba
-            } else {
-                width * height * 3 / 2
-            };
-            vram += period * per_frame;
-        } else if kind == "image" {
-            let probed = report.assets.iter().find(|a| a.id == id);
-            let w = probed.and_then(|a| a.width).map(u64::from).unwrap_or(width);
-            let h = probed
-                .and_then(|a| a.height)
-                .map(u64::from)
-                .unwrap_or(height);
-            vram += w * h * 4;
+        let probed = report.assets.iter().find(|a| a.id == id);
+        // The asset's OWN dimensions where preflight measured them; the house
+        // format is a fallback, not the default.
+        let w = probed
+            .and_then(|a| a.width)
+            .map(u64::from)
+            .unwrap_or(house_w);
+        let h = probed
+            .and_then(|a| a.height)
+            .map(u64::from)
+            .unwrap_or(house_h);
+
+        match asset.get("loop") {
+            Some(lm) => {
+                // §12.2: only a VRAM-RESIDENT loop occupies the cache. A
+                // `stream` loop holds a read-ahead window, not the period.
+                if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("stream") {
+                    continue;
+                }
+                let period = lm.get("periodFrames").and_then(|v| v.as_u64()).unwrap_or(0);
+                // §12.3's table, read from the manifest rather than guessed.
+                let px = w * h;
+                let per_frame = match lm
+                    .get("textureFormat")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("auto")
+                {
+                    "rgba8" => px * 4,
+                    "bc7" => px,
+                    "nv12Alpha" => px * 5 / 2,
+                    "nv12" => px * 3 / 2,
+                    // "auto": alpha content needs RGBA8; opaque is NV12.
+                    _ if kind == "alphaVideo" => px * 4,
+                    _ => px * 3 / 2,
+                };
+                vram += period * per_frame;
+            }
+            // §12.7: images upload whole, at their OWN size.
+            None if kind == "image" => vram += w * h * 4,
+            None => {}
         }
     }
 
     // §8.4 makes soundboard and clip audio RAM-resident from show.load, as
     // f32: 48 kHz x 2 ch x 4 B = 384 kB/s. An hour is 1.32 GiB.
+    //
+    // `expectedDurationFrames` is optional in the schema, so an audio asset may
+    // declare no duration. Taking the larger of declared and probed means an
+    // hour of audio is no longer reported as 0 MiB — the exact scenario §12.11
+    // was written for.
     let rate = declared_house_rate.unwrap_or(30) as u64;
     let audio_bytes: u64 = manifest
         .get("assets")
@@ -361,11 +428,19 @@ fn resource_demand(
             )
         })
         .map(|a| {
-            let frames = a
+            let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let declared = a
                 .get("expectedDurationFrames")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            (frames * 48_000 * 2 * 4) / rate.max(1)
+            let probed = report
+                .assets
+                .iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.duration_frames)
+                .map(u64::from)
+                .unwrap_or(0);
+            (declared.max(probed) * 48_000 * 2 * 4) / rate.max(1)
         })
         .sum();
 

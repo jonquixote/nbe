@@ -48,6 +48,12 @@ async function main(): Promise<void> {
     audit,
     state,
     persistence,
+    // SPEC §7.15: the control plane is the side that knows BOTH the package
+    // and the running engine, so it is the side that refuses. It reads the
+    // same variable the engine does, because a control plane that guessed the
+    // engine's rate would be guessing at exactly the thing this rule exists to
+    // stop being guessed.
+    houseRate: Number(process.env.NBE_HOUSE_RATE ?? 30),
   });
 
   console.log(`nbe control plane listening on ws://${process.env.NBE_HOST ?? "127.0.0.1"}:${server.port}/nbe/v0.3`);

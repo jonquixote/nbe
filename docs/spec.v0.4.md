@@ -8,11 +8,11 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 |---|---|---|
 | 1 | **Target-hardware correction.** §0.1 named Apple Silicon as the primary target. The reference machine is an Intel MacBook Pro with discrete AMD graphics, and that is the mission rather than a fallback. | 0.1 (corrected), 0.3 (new) |
 | 2 | **Package resource model.** A schema-legal, preflight-passing package could exceed the reference machine by an order of magnitude: `vramBudgetMib` has no maximum, `assets` has no `maxItems`, and preflight enforced no resource model at all. v0.4 makes package demand a preflight check, speaking both memory models. | 12.11 (new), 19.2 |
-| 3 | **`viewItemStartFrame` in the resync snapshot.** §5.9.4 said *what* is on air but not *since when*, so a resynced timed item restarted from its first frame. | 5.9.4 |
+| 3 | **`viewItemStartFrame` in the resync snapshot**, and the rule that an empty `visibleOverlays` array clears. §5.9.4 said *what* is on air but not *since when*, so a resynced timed item restarted from its first frame; and "no overlays" was a state the snapshot could not express. The clearing rule is implemented with the overlay level itself (Prompt 07) — the engine has no overlay level to clear today. | 5.9.4 |
 | 4 | **`showState` in telemetry.** The §10.1 tick carried no show state; it rode only on `stateChange`, so a client holding telemetry alone could not say whether the show was running. | 10.1, 10.1.1 |
-| 5 | **`sequenceRef` retired.** The v0.3.2 reservation is withdrawn rather than resolved: the hook is deleted from the schema and the `sequence.*` commands with it. | 16.4 (amended), 3.5 |
+| 5 | **`sequenceRef` retired.** The v0.3.2 reservation is withdrawn rather than resolved: the hook is deleted from the schema and the `sequence.*` commands with it. | 16.4 (amended), 3.1, 16.0, Appendix A |
 | 6 | **Contradictory items are a preflight failure.** `{"kind":"slate","sceneRef":…}` validated schema-clean and passed preflight while being semantically contradictory — the engine drew a slate and the audio path resolved the scene. | 17.5 (new), 19.2 |
-| 7 | **House-rate reconciliation.** Nothing compared the engine's rate with the package's, so a 25 fps package on a 30 fps engine mis-mapped every asset undetected. `show.load` rejects; preflight warns. | 7.15, 16.1, 19.2 |
+| 7 | **House-rate reconciliation.** Nothing compared the engine's rate with the package's, so a 25 fps package on a 30 fps engine mis-mapped every asset undetected. `show.load` rejects; preflight warns. | 7.15, 16.1 (failure modes), 19.2 |
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
@@ -35,7 +35,7 @@ v0.3.2 is a clarification release: it writes down contracts that were already re
 | 11 | Audit record shape and retention. | 10.7 |
 | 12 | `sequenceRef` declared reserved-unresolvable in v0.3 (no sequence registry exists in the schema). | 16.4 |
 
-`schemas/manifest.v0.3.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.
+`schemas/manifest.v0.4.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.
 
 v0.3.3 answers three questions the audio engine cannot be built without, and which nothing in v0.3.2 addressed:
 
@@ -45,7 +45,7 @@ v0.3.3 answers three questions the audio engine cannot be built without, and whi
 | 2 | The audio fault class. `underrun` appeared nowhere in the spec, and §10.1 carried no audio field, so a glitched show had nothing to report and no defined relationship to the watchdog. | 8.10 (new), 10.1, 10.1.1 |
 | 3 | That the Section 10.3 watchdog is a **video** watchdog: an audio underrun must not black the View. | 10.3 |
 
-`schemas/manifest.v0.3.json` is unchanged by v0.3.3.  
+`schemas/manifest.v0.4.json` is unchanged by v0.3.3.  
 Relationship to earlier versions: this document supersedes SPEC v0.2.5. It consolidates SPEC v0.1, SPEC v0.2, and the v0.2.1 errata (via the v0.2.5 consolidation) and introduces the v0.3 composable broadcast language: the two-axis model, element identity, the state-diff transition engine, overlays, sub-scenes, automation, plugins, quality profiles, and the abuse model. Where this document differs from prior versions, this document wins. Prior versions remain in `docs/` as history.
 
 ---
@@ -73,7 +73,7 @@ The following assumptions are normative unless changed by spec revision:
 13. **RSS ticker content is sanitized.** The ticker renderer must treat RSS text as untrusted display text, not markup or code.
 14. **Recording container default is fragmented MP4.** Matroska is allowed, but fragmented MP4 is the default crash-safe container.
 15. **Hardware encode is mandatory.** If hardware encoder is unavailable, live streaming/recording must refuse to start rather than fall back to CPU x264.
-16. **The normative schema lives at `schemas/manifest.v0.3.json`.** That repository file is the byte-exact normative artifact; any copy embedded in this document is informational. If they ever diverge, the repository file wins and the divergence is a spec bug.
+16. **The normative schema lives at `schemas/manifest.v0.4.json`.** That repository file is the byte-exact normative artifact; any copy embedded in this document is informational. If they ever diverge, the repository file wins and the divergence is a spec bug.
 17. **Deprecation aliases.** `program.*` commands are accepted by the control plane for one spec version and map 1:1 to `view.*` commands, emitting a deprecation warning in telemetry. The schema accepts `layer` as an alias for `element` during migration only.
 18. **Migration tooling.** A CLI tool `nbe-migrate` converts a v0.2 show package to a v0.3 package. Preflight in a v0.3 engine rejects v0.2 manifests.
 19. **WASM sandbox.** Element plugins run in Wasmtime/Wasmer-class runtimes with strict WASI capabilities: no network, no disk writes outside designated temp mounts, no ambient authority.
@@ -92,11 +92,11 @@ v0.3 is a superset. The MVP hard ceiling (Section 20) and the implementation ord
 
 ## 0.3 The reference envelope
 
-`docs/hardware-baseline.txt` is a machine-generated probe of the reference target, and it is normative for the resource model in §12.10: the arithmetic is against that machine, not an imagined one. It MUST be regenerated (`system_profiler SPHardwareDataType SPDisplaysDataType`) whenever the reference target changes, and the change MUST be a spec revision.
+`docs/hardware-baseline.txt` is a machine-generated probe of the reference target, and it is normative for the resource model in §12.11: the arithmetic is against that machine, not an imagined one. It MUST be regenerated (`system_profiler SPHardwareDataType SPDisplaysDataType`) whenever the reference target changes, and the change MUST be a spec revision.
 
 Two properties of the reference target are load-bearing and are called out because they do not hold on Apple Silicon:
 
-1. **Memory is not unified.** The discrete adapter has dedicated VRAM (4 GB) and the integrated one a dynamic allocation (1536 MB). §12.6's unified-memory clamp does not apply, and the resource model in §12.10 MUST therefore speak both models rather than assuming either.
+1. **Memory is not unified.** The discrete adapter has dedicated VRAM (4 GB) and the integrated one a dynamic allocation (1536 MB). §12.6's unified-memory clamp does not apply, and the resource model in §12.11 MUST therefore speak both models rather than assuming either.
 2. **There are two adapters.** The engine MUST request a high-performance adapter explicitly (`wgpu` power preference, or the platform equivalent) and MUST log which adapter it selected, its backend and its device type. Leaving the choice to a default makes it a function of driver version, OS version and power state.
 
 # 1. Scope and locked decisions
@@ -138,10 +138,10 @@ Generated from the canonical `VOCABULARY.md` ledger. One term, one definition. I
 | Channel | normative (hook only) | v0.1 | A 24/7 programmed stream of Shows. Scheduler is post-v1; schema must not preclude it. | |
 | Show | normative | v0.1 | A single program/episode definition: video/audio specs, outputs, fallback. | |
 | Rundown | normative | v0.1 | The root Sequence of a Show: the editorial order of play. | |
-| Sequence | normative | v0.3 | A recursive, ordered container of Items. Sub-sequences are nested Sequences. Reusable across Shows. | generalizes Rundown/Segment/Subsegment |
+| Sequence | normative | v0.3 | A flat, ordered container of Items. `rundown` is the only Sequence; nesting was retired with `sequenceRef` in v0.4 (§16.4). Reusable across Shows. | generalizes Rundown/Segment/Subsegment |
 | Segment | normative | v0.1 | Conventional top level of a Rundown. IDs A–K by convention; schema allows A–ZZ. | |
 | Subsegment | normative | v0.1 | Conventional second level of a Rundown (A1, A2…). | |
-| Item | normative | v0.3 | Leaf of a Sequence: scene reference, sequence reference, clip reference, live source reference, or generated slate. | |
+| Item | normative | v0.3 | Leaf of a Sequence: scene reference, clip reference, live source reference, or generated slate. | |
 | autoFollow | normative | v0.1 | Per-item flag to advance automatically when media ends. | subsumed by Automation |
 
 ## 3.2 Space axis — visual: what is on screen
@@ -1082,7 +1082,7 @@ A package declares the rate it was authored at (`show.video.frameRate`); an engi
 
 1. On `show.load`, if the package's declared `show.video.frameRate` differs from the rate the engine is running, the control plane MUST **reject** the load with `E_PREFLIGHT_FAILED` and a message naming both rates. It MUST NOT load the package at the wrong rate and warn.
 2. `nbe-preflight` MUST report the package's declared rate in `resources.declaredHouseRate` (§19.2.1) unconditionally, and MUST **warn** rather than fail when it is told a target rate that differs. A package is valid at the rate it declares; whether *this* engine can play it is a different question, and preflight validating a package in isolation cannot answer it. Preflight MUST NOT warn merely because a package declares a rate — that would make every package non-air-ready and teach operators to pass `--allow-warnings` by reflex.
-3. The engine MUST log the declared rate and its own rate at load, whether or not they match.
+3. The engine MUST log the declared rate and its own rate at load, **whether or not they match** — a match is evidence too, and an operator reading a log after a bad show needs to see that the rates were checked, not infer it from an absence.
 
 The split is the point: **the side that knows both facts is the side that refuses.** Preflight knows the package; only the control plane knows the package *and* the running engine. Putting the refusal in preflight would require telling preflight what machine it is validating for, which changes its contract from "is this package valid" to "is this package valid here" — and that contract belongs to the control plane (§5.1 #1, #4).
 
@@ -2221,10 +2221,11 @@ On a discrete target, `audioDemandMib` competes for system RAM and `vramDemandMi
 
 ### 12.11.3 The check
 
-1. Preflight MUST report `vramDemandMib` and `audioDemandMib` in its report (§19.2), always — a number an operator can read is the point, not only a threshold that trips.
-2. If a resource ceiling is known to preflight, it MUST **fail** when demand exceeds it, with the offending assets named.
-3. If no ceiling is known — preflight validating a package in isolation, off the target machine — it MUST **warn** with the computed demand rather than fail. Preflight cannot know what machine a package will play on; refusing on a guess is worse than reporting the number.
-4. The engine MUST clamp per §12.6 on unified memory, and MUST log the selected adapter's ceiling on discrete memory, so the two numbers can be compared after the fact.
+1. Preflight MUST report `vramDemandMib` and `audioDemandMib` in its report (§19.2), **always** — a number an operator can read is the point, not only a threshold that trips.
+2. Preflight MUST NOT warn or fail merely because a package declares a demand. A warning every package earns is a warning operators learn to pass `--allow-warnings` past, which is how a warning stops meaning anything — the same reasoning as §7.15 #2, and it applies for the same reason.
+3. **When, and only when, a resource ceiling is supplied to preflight**, it MUST warn if demand exceeds that ceiling, naming the offending assets. Preflight validating a package in isolation cannot know what machine it will play on, so it reports the number and says nothing further.
+4. The **refusal** belongs to whoever knows both the package and the machine. §7.15 puts that at `show.load` for the house rate; the resource ceiling is the same shape of question, and v0.4 deliberately stops at reporting: no component in this revision knows the running engine's adapter budget. Wiring that is Prompt 07's, and the trigger is the §12.6 clamp's — the first Apple Silicon machine or the first package declaring more than 1 GiB of loop budget.
+5. The engine MUST clamp per §12.6 on unified memory, and MUST log the selected adapter's ceiling on discrete memory, so the two numbers can be compared after the fact.
 
 The asymmetry in 2 and 3 is deliberate and mirrors §7.15's house-rate rule: **the side that knows both facts is the side that refuses.**
 
@@ -2328,7 +2329,7 @@ The plugin API is versioned. Plugins declare the API version they were built aga
 
 # 15. Manifest JSON Schema v0.3
 
-The normative manifest schema lives at `schemas/manifest.v0.3.json` in the repository. That file is the byte-exact normative artifact; nothing embedded in this document overrides it.
+The normative manifest schema lives at `schemas/manifest.v0.4.json` in the repository. That file is the byte-exact normative artifact; nothing embedded in this document overrides it.
 
 What is new in v0.3:
 
@@ -2387,7 +2388,7 @@ The Section 5.3 role descriptions are intent, not a contract; this matrix is the
 | `show.start` | — | — | — |
 | `show.stop` | — | ✓ | — |
 | `preview.*`, `view.*` | — | ✓ | — |
-| `scene.*`, `sequence.*`, `item.*` | — | ✓ | — |
+| `scene.*`, `item.*` | — | ✓ | — |
 | `element.*`, `graphic.*`, `breaking.*`, `overlay.*` | — | ✓ | — |
 | `ticker.*` | — | ✓ | ✓ |
 | `soundboard.*`, `audio.*`, `guest.mute` | — | ✓ | — |
@@ -2413,7 +2414,7 @@ Guest admission stays producer-gated (Section 10.7 §3): `guest.connect` is a pr
 
 | Command | Payload schema | Preconditions | State transitions | Failure modes |
 |---|---|---|---|---|
-| `show.load` | `{ packagePath: string, mode?: "load"\|"reload" }` | no live view | show `UNLOADED -> LOADED` | `E_BAD_PAYLOAD`, `E_NOT_FOUND`, `E_ENGINE` |
+| `show.load` | `{ packagePath: string, mode?: "load"\|"reload" }` | no live view; package house rate matches the engine (§7.15) | show `UNLOADED -> LOADED` | `E_BAD_PAYLOAD`, `E_NOT_FOUND`, `E_ENGINE`, `E_PREFLIGHT_FAILED` |
 | `show.preflight` | `{ strict?: boolean }` | show loaded | sets preflight state | `E_PREFLIGHT_FAILED` |
 | `show.start` | `{ startClock?: boolean, allowWarnings?: boolean }` | preflight passed (see below) | show `LOADED -> RUNNING`, clock `STOPPED -> RUNNING` | `E_FORBIDDEN_STATE` |
 | `show.stop` | see below | show running unless force | show `RUNNING -> STOPPED`; outputs quiesced | `E_FORBIDDEN_STATE`, `E_DISK`, `E_NETWORK` |
@@ -2932,7 +2933,7 @@ Any custom cadence MAY use explicit pattern mode:
 
 If an unsupported source frame rate has no valid pulldown metadata, preflight MUST fail.
 
-The `Pulldown` schema definition (one of `pattern`, `repeatNthSourceFrame`, `repeatOnePerNSourceFrames`) is normative in `schemas/manifest.v0.3.json`. The v0.1 `pulldownPattern` field is deprecated; `pulldown` wins if both are present.
+The `Pulldown` schema definition (one of `pattern`, `repeatNthSourceFrame`, `repeatOnePerNSourceFrames`) is normative in `schemas/manifest.v0.4.json`. The v0.1 `pulldownPattern` field is deprecated; `pulldown` wins if both are present.
 
 ## 18.6 Cadence preflight
 
@@ -3173,7 +3174,7 @@ Each criterion is independently testable.
 
 ## AC-1 — Manifest schema validation
 
-Given a valid show package, `preflight` MUST validate the manifest against the normative NBE manifest schema (`schemas/manifest.v0.3.json`) and return exit code 0.
+Given a valid show package, `preflight` MUST validate the manifest against the normative NBE manifest schema (`schemas/manifest.v0.4.json`) and return exit code 0.
 
 ## AC-2 — Missing asset detection
 
@@ -3581,7 +3582,7 @@ The following are unresolved in v0.3 and deferred to v0.4 or later:
 
 # Appendix A — v0.3 schema structural reference (for agent context)
 
-*Note: this appendix is informational, not normative. The byte-exact normative schema lives at `schemas/manifest.v0.3.json`. If this appendix and that file ever disagree, the file wins and the appendix has a bug.*
+*Note: this appendix is informational, not normative. The byte-exact normative schema lives at `schemas/manifest.v0.4.json`. If this appendix and that file ever disagree, the file wins and the appendix has a bug.*
 
 **Top-level additions:**
 
@@ -3602,7 +3603,7 @@ The following are unresolved in v0.3 and deferred to v0.4 or later:
 - `AutomationRule`: `{ id, trigger: { kind, params? }, conditions?, action: { command, payload? }, enabled? }` — trigger kinds: `mediaEnd, mediaStart, timer, timeOfDay, audioLevel, hotkey, rssKeyword, streamHealth, stateChange`.
 - `Plugin`: `{ id, kind: effect|element, source, version?, maxMemoryMib?, permissions }` — `maxMemoryMib` integer ≥ 16, default 64; permissions default `[]` (deny by default).
 - `Sequence`: `{ id, title?, label?, items: [Item] }` (flat; `sequenceRef` retired in v0.4).
-- `Item`: `{ id, kind, sceneRef?, sequenceRef?, assetId?, sourceId?, durationFrames?, autoFollow?, audioPolicy? }` — kind enum: `sceneRef, sequenceRef, clipRef, liveRef, slate`. Note: a `clipRef`-kind item references its clip via `assetId`; a `liveRef`-kind item references its live source via `sourceId`.
+- `Item`: `{ id, kind, sceneRef?, assetId?, sourceId?, durationFrames?, autoFollow?, audioPolicy? }` — kind enum: `sceneRef, clipRef, liveRef, slate`. Note: a `clipRef`-kind item references its clip via `assetId`; a `liveRef`-kind item references its live source via `sourceId`.
 
 **Command API endpoints added in v0.3:**
 
@@ -3613,5 +3614,5 @@ The following are unresolved in v0.3 and deferred to v0.4 or later:
 - `snapshot.save`, `snapshot.recall`
 - `marker.add`
 - `plugin.reload`
-- `sequence.arm/unarm`, `item.arm/unarm/stop`
+- `item.arm/unarm/stop/reset`
 - `element.toggle/set` (with `layer.*` deprecated aliases)

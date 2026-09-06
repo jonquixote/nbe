@@ -59,8 +59,6 @@ const SAMPLE_PAYLOADS: Record<string, unknown> = {
   "view.fallback": {},
   "scene.arm": { sceneId: "SCN_A1" },
   "scene.apply": { sceneId: "SCN_A1", target: "preview" },
-  "sequence.arm": { sequenceId: "A" },
-  "sequence.unarm": { sequenceId: "A" },
   "item.arm": { itemId: "A1" },
   "item.unarm": { itemId: "A1" },
   "item.stop": { itemId: "A1" },

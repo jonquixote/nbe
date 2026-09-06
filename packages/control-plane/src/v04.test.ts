@@ -74,3 +74,85 @@ test("§10.1: the telemetry tick carries showState", () => {
   state.showState = "RUNNING";
   assert.equal(buildTick(state, world, Date.now()).showState, "RUNNING");
 });
+
+test("§7.15: show.load rejects a house-rate mismatch, and the check is reachable", async () => {
+  // The guard existed and was UNREACHABLE: `DispatchDeps.houseRate` was
+  // optional and nothing ever assigned it — not `ServerOptions`, not the
+  // production entry point — so `engineRate` was always undefined and the
+  // condition never fired. Deleting the guard left the suite green.
+  //
+  // This drives the dispatcher the way the server does, with the rate set.
+  const { buildRegistry, dispatch } = await import("./dispatch.js");
+  const { AuditLog } = await import("./audit.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { randomUUID } = await import("node:crypto");
+
+  const dir = mkdtempSync(join(tmpdir(), "nbe-hr-"));
+  mkdirSync(join(dir, "media"), { recursive: true });
+  // A real 1x1 PNG: preflight reads image headers now, and the point of this
+  // test is the house-rate check, not an unreadable asset.
+  writeFileSync(
+    join(dir, "media", "slate.png"),
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  );
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: "0.4",
+      network: { id: "nbe", name: "T" },
+      show: {
+        id: "s",
+        title: "T",
+        // 60 fps against a 30 fps engine: schema-legal, and every asset would
+        // be mapped against the wrong denominator.
+        video: { width: 1920, height: 1080, frameRate: 60, colorSpace: "rec709" },
+        audio: { sampleRate: 48000, loudnessTargetLufs: -16, truePeakDbtp: -1.5 },
+        fallbackAssetId: "slate",
+      },
+      control: { bindings: [] },
+      assets: [{ id: "slate", kind: "image", source: "media/slate.png", format: "png" }],
+      scenes: [{ id: "SCN", elements: [{ id: "bg", kind: "graphic", z: 0, templateId: "TPL" }] }],
+      templates: [{ id: "TPL", kind: "generic" }],
+      rundown: { id: "R", items: [{ id: "A1", kind: "sceneRef", sceneRef: "SCN" }] },
+    }),
+  );
+
+  const state = new ControlPlaneState();
+  const tmp = mkdtempSync(join(tmpdir(), "nbe-hr-audit-"));
+  const deps = {
+    state,
+    bridge: { send: () => {}, droppedCount: () => 0, pending: () => 0 },
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+    houseRate: 30,
+    warn: () => {},
+    audit: new AuditLog(join(tmp, "a.jsonl")),
+  } as unknown as Parameters<typeof buildRegistry>[0];
+
+  const registry = buildRegistry(deps);
+  await assert.rejects(
+    () =>
+      dispatch(deps, registry, {
+        connectionId: "c1",
+        role: "admin",
+        envelope: {
+          v: "0.3",
+          id: randomUUID(),
+          command: "show.load",
+          payload: { packagePath: dir },
+        },
+      }),
+    (e: unknown) => {
+      const err = e as { code?: string; message?: string };
+      assert.equal(err.code, "E_PREFLIGHT_FAILED");
+      assert.match(String(err.message), /60 fps.*30 fps|houseRate/);
+      return true;
+    },
+    "a 60 fps package on a 30 fps engine must be REJECTED, not loaded and warned about",
+  );
+  assert.equal(state.pkg, null, "a rejected package must not be loaded");
+});

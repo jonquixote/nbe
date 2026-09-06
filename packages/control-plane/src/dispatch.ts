@@ -55,7 +55,7 @@ export interface DispatchDeps {
    * "no engine rate known", in which case the check cannot run — that is a
    * deployment without a render node, not a licence to load at any rate.
    */
-  houseRate?: number;
+  houseRate?: number | undefined;
   /**
    * Waits for an `appliedStateVersion` >= `stateVersion` from a render node.
    * Resolves true when acknowledged in time, false on timeout or when no

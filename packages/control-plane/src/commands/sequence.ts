@@ -44,13 +44,3 @@ export function sequenceHandlers(reg: CommandRegistry, _deps: DispatchDeps): voi
     },
   });
 }
-
-function collectItemIds(
-  pkg: { sequences: Set<string>; items: Map<string, { id: string }> },
-  id: string,
-): string[] {
-  if (pkg.items.has(id)) return [id];
-  // sequence ids: fall back to all items (the v0.3 rundown is a single
-  // non-recursive sequence; nested registries are 02a §3 out-of-scope).
-  return [...pkg.items.keys()];
-}

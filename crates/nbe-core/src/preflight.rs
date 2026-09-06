@@ -43,7 +43,12 @@ pub struct ResourceReport {
     pub audio_demand_mib: u64,
     /// The package's declared house rate, so a caller that knows the engine's
     /// rate can compare it (§7.15).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Serialized even when `None`. §19.2.1 calls this block REQUIRED and
+    /// always-populated, and an absent field is a different failure from a
+    /// null one: a consumer can tell "no rate declared" from "field missing"
+    /// only if the field is always there.
+    #[serde(default)]
     pub declared_house_rate: Option<u32>,
 }
 
