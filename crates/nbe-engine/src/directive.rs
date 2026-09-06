@@ -388,13 +388,20 @@ impl DirectiveHandler {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             *self.state.view_item.lock().unwrap() = view;
-            // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
-            // so a resynced timed item resumes from its first frame rather
-            // than guessing an origin. Recorded as a spec gap in
-            // agents/prompts/05-video-decode.md.
+            // SPEC §5.9.4 (v0.4): the snapshot carries `viewItemStartFrame` —
+            // §12.1's `t0` — so a resynced timed item resumes where it
+            // actually is. v0.3's snapshot said WHAT was on air but not SINCE
+            // WHEN, so this guessed `now`, and a clip forty seconds in jumped
+            // back to zero on air. Falling back to `now` when the field is
+            // absent keeps a v0.3 control plane working, badly, rather than
+            // not at all.
+            let t0 = snapshot
+                .get("viewItemStartFrame")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(now);
             self.state
                 .view_item_start_frame
-                .store(now, std::sync::atomic::Ordering::SeqCst);
+                .store(t0, std::sync::atomic::Ordering::SeqCst);
             // A resync supersedes any transition the engine was mid-way
             // through: the snapshot is the state, not a waypoint toward it.
             *self.state.transition.lock().unwrap() = None;

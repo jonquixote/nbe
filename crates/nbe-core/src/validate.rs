@@ -9,11 +9,11 @@ const SCHEMA_JSON: &str = include_str!("../../../schemas/manifest.v0.4.json");
 /// Errors produced by manifest validation.
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    /// The manifest's `manifestVersion` is not `"0.3"`.
-    /// AC-28: a v0.2 package presented to a v0.3 preflight MUST be rejected.
+    /// The manifest's `manifestVersion` is neither `"0.3"` nor `"0.4"`.
+    /// AC-28: a v0.2 package presented to a v0.3+ preflight MUST be rejected.
     #[error(
-        "migration required: manifest has manifestVersion \"{found}\", expected \"0.3\". \
-         Run `nbe-migrate` to convert this package to v0.3."
+        "migration required: manifest has manifestVersion \"{found}\", expected \"0.3\" or \"0.4\". \
+         Run `nbe-migrate` to convert this package."
     )]
     MigrationRequired { found: String },
 
@@ -48,13 +48,16 @@ fn compiled_validator() -> Result<&'static jsonschema::Validator, ValidationErro
 
 /// Check only the version gate. Cheap; runs before schema validation.
 ///
-/// A manifest whose `manifestVersion` is not `"0.3"` is a migration target,
+/// SPEC v0.4 accepts `"0.3"` and `"0.4"`: the only schema change is the
+/// removal of the `sequenceRef` hook, so a v0.3 manifest that never used it is
+/// a valid v0.4 manifest. A manifest at any other version is a migration
+/// target,
 /// not a malformed manifest — it gets a dedicated error so callers can
 /// give actionable guidance. A missing field is malformed instead.
 pub fn check_version(json: &serde_json::Value) -> Result<(), ValidationError> {
     match json.get("manifestVersion").and_then(|v| v.as_str()) {
         None => Err(ValidationError::MissingVersion),
-        Some("0.3") => Ok(()),
+        Some("0.3") | Some("0.4") => Ok(()),
         Some(other) => Err(ValidationError::MigrationRequired {
             found: other.to_string(),
         }),

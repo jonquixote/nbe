@@ -395,6 +395,10 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         const frame = engine.data;
         if (frame.kind === "engineTelemetry") {
           ingestEngineFrame(world, frame, Date.now());
+          // SPEC §5.9.4: the snapshot's `viewItemStartFrame` needs a clock,
+          // and the engine owns the only one. Recording it here keeps the
+          // field at worst one tick stale rather than an outage's length.
+          state.lastKnownMasterFrame = frame.masterClockFrame;
         } else if (frame.kind === "appliedStateVersion") {
           // SPEC §5.9.5: the signal show.stop's grace window waits for.
           noteApplied(session, frame.stateVersion);

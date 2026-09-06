@@ -5,12 +5,14 @@
 //! Field shape is always complete: consumers never see a missing field.
 
 import type { EngineTelemetryFrame } from "./protocol.js";
-import type { ControlPlaneState } from "./state.js";
+import type { ControlPlaneState, ShowState } from "./state.js";
 
 export interface TelemetryTick {
   // timing
   ts: number;
   // engine-owned (stubbed when stale)
+  /** SPEC §10.1 (v0.4): control-plane owned. */
+  showState: ShowState;
   masterClockFrame: number;
   droppedFramesTotal: number;
   renderGpuTimeMs: number;
@@ -55,6 +57,7 @@ export function buildTick(
   const f = engineFresh ? engine.last!.frame : null;
   return {
     ts: now,
+    showState: state.showState,
     masterClockFrame: f?.masterClockFrame ?? 0,
     droppedFramesTotal: f?.droppedFramesTotal ?? 0,
     renderGpuTimeMs: f?.renderGpuTimeMs ?? 0,

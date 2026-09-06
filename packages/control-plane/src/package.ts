@@ -130,6 +130,9 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
   const pkg: PackageInfo = {
     packagePath,
     showId: manifest.show.id,
+    // SPEC §7.15: the rate the package was authored at. `show.load` compares
+    // it with the engine's, because only the control plane knows both.
+    houseRate: manifest.show.video.frameRate,
     items,
     sequences,
     scenes,

@@ -60,6 +60,7 @@ function stateAt(target: ItemState, opts: { timed?: boolean } = {}): ControlPlan
   state.loadPackage({
     packagePath: "/tmp/none",
     showId: "show-1",
+    houseRate: 30,
     qualityProfile: undefined,
     items: new Map([
       [

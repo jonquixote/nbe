@@ -1081,7 +1081,7 @@ Fallback MUST be automatic and MUST NOT require operator action.
 A package declares the rate it was authored at (`show.video.frameRate`); an engine runs at a rate of its own. Nothing compared them, so a 25 fps package loaded on a 30 fps engine mapped every non-house-rate asset against the wrong denominator — timed items running short, cadence conversion silently wrong — with no path detecting it.
 
 1. On `show.load`, if the package's declared `show.video.frameRate` differs from the rate the engine is running, the control plane MUST **reject** the load with `E_PREFLIGHT_FAILED` and a message naming both rates. It MUST NOT load the package at the wrong rate and warn.
-2. `nbe-preflight` MUST **warn**, not fail, when it cannot know the target rate. A package is valid at the rate it declares; whether *this* engine can play it is a different question, and preflight validating a package in isolation cannot answer it.
+2. `nbe-preflight` MUST report the package's declared rate in `resources.declaredHouseRate` (§19.2.1) unconditionally, and MUST **warn** rather than fail when it is told a target rate that differs. A package is valid at the rate it declares; whether *this* engine can play it is a different question, and preflight validating a package in isolation cannot answer it. Preflight MUST NOT warn merely because a package declares a rate — that would make every package non-air-ready and teach operators to pass `--allow-warnings` by reflex.
 3. The engine MUST log the declared rate and its own rate at load, whether or not they match.
 
 The split is the point: **the side that knows both facts is the side that refuses.** Preflight knows the package; only the control plane knows the package *and* the running engine. Putting the refusal in preflight would require telling preflight what machine it is validating for, which changes its contract from "is this package valid" to "is this package valid here" — and that contract belongs to the control plane (§5.1 #1, #4).
@@ -2200,9 +2200,9 @@ imageDemandMiB   = Σ over image assets of (width × height × 4) / 1MiB
 slateDemandMiB   = fallback slate at house resolution, RGBA8
 targetsDemandMiB = view + preview render targets, RGBA8
 
-vramDemandMiB    = loopDemandMiB + imageDemandMiB + slateDemandMiB + targetsDemandMiB
+vramDemandMib    = loopDemandMiB + imageDemandMiB + slateDemandMiB + targetsDemandMiB
 
-audioDemandMiB   = Σ over audio-bearing assets of
+audioDemandMib   = Σ over audio-bearing assets of
                    (durationSeconds × 48000 × 2 ch × 4 B) / 1MiB
 ```
 
@@ -2217,11 +2217,11 @@ The envelope depends on the target's memory architecture, and the contract MUST 
 | **Discrete** (the reference target, §0.3) | the selected adapter's dedicated VRAM | adapter report; `docs/hardware-baseline.txt` records it for the reference machine |
 | **Unified** (Apple Silicon) | `deviceSafeBudgetMib` per §12.6 | `MTLDevice.recommendedMaxWorkingSetSize`, minus the reservations §12.6 lists |
 
-On a discrete target, `audioDemandMiB` competes for system RAM and `vramDemandMiB` for adapter memory, and they MUST be checked separately. On a unified target they compete for the same pool and MUST be checked against it jointly. An implementation that hard-codes either model is wrong on the other.
+On a discrete target, `audioDemandMib` competes for system RAM and `vramDemandMib` for adapter memory, and they MUST be checked separately. On a unified target they compete for the same pool and MUST be checked against it jointly. An implementation that hard-codes either model is wrong on the other.
 
 ### 12.11.3 The check
 
-1. Preflight MUST report `vramDemandMiB` and `audioDemandMiB` in its report (§19.2), always — a number an operator can read is the point, not only a threshold that trips.
+1. Preflight MUST report `vramDemandMib` and `audioDemandMib` in its report (§19.2), always — a number an operator can read is the point, not only a threshold that trips.
 2. If a resource ceiling is known to preflight, it MUST **fail** when demand exceeds it, with the offending assets named.
 3. If no ceiling is known — preflight validating a package in isolation, off the target machine — it MUST **warn** with the computed demand rather than fail. Preflight cannot know what machine a package will play on; refusing on a guess is worse than reporting the number.
 4. The engine MUST clamp per §12.6 on unified memory, and MUST log the selected adapter's ceiling on discrete memory, so the two numbers can be compared after the fact.
@@ -2971,8 +2971,8 @@ CI MUST block load on exit code != 0 unless explicitly overridden.
   "errors": [],
   "warnings": [],
   "resources": {
-    "vramDemandMiB": 412,
-    "audioDemandMiB": 22,
+    "vramDemandMib": 412,
+    "audioDemandMib": 22,
     "declaredHouseRate": 30
   },
   "assets": [
@@ -3028,8 +3028,8 @@ The `loops` entries MUST follow the extended report shape defined in Section 12.
 
 | Field | Meaning |
 |---|---|
-| `vramDemandMiB` | worst-case resident texture demand, per §12.11.1 |
-| `audioDemandMiB` | RAM-resident audio demand, per §12.11.1 |
+| `vramDemandMib` | worst-case resident texture demand, per §12.11.1 |
+| `audioDemandMib` | RAM-resident audio demand, per §12.11.1 |
 | `declaredHouseRate` | the package's `show.video.frameRate`, so a caller that knows the engine's rate can compare (§7.15) |
 
 A number an operator can read is the deliverable, not merely a threshold that trips. Preflight validating a package in isolation reports these and warns; the control plane, which knows both the package and the running engine, is the side that refuses (§7.15, §12.11.3).
