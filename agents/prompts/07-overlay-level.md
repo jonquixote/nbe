@@ -209,7 +209,10 @@ forbidden), scroll by **texture offset**, and **per-frame full relayout is
 forbidden except on content change**. Choose one stack, justify it against the
 dependency rules, and say **where layout and rasterization happen off the frame
 path** (§7.13). The packaged-font rule is a portability asset
-(`docs/portability.md` row 7) — do not weaken it.
+(`docs/portability.md` row 7) — do not weaken it. **Design here, build in 07b:**
+`agents/prompts/07b-graphics-templates.md` carries the templates, the ticker,
+the breaking banner, and the clock, and composites onto the level this prompt
+builds.
 
 **3. Preview semantics.** Does an armed overlay composite on Preview? §7.10 says
 overlays composite after the transition and persist across it, and says nothing

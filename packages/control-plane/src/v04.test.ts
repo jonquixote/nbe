@@ -156,3 +156,117 @@ test("§7.15: show.load rejects a house-rate mismatch, and the check is reachabl
   );
   assert.equal(state.pkg, null, "a rejected package must not be loaded");
 });
+
+test("§7.15: parseHouseRate mirrors the engine's parse, including its refusals", async () => {
+  const { parseHouseRate } = await import("./index.js");
+
+  // The bug: `Number(env ?? 30)` is NaN for a non-numeric value, and every
+  // comparison against NaN is false — so "abc" did not fall back to 30, it
+  // made `declared !== engineRate` true for EVERY package, including a
+  // matching 30 fps one, and rejected all of them with "runs at NaN fps".
+  assert.equal(parseHouseRate("abc"), 30, "a non-numeric value falls back, it does not poison");
+  assert.equal(parseHouseRate(""), 30);
+  assert.equal(parseHouseRate(undefined), 30);
+
+  // The engine parses `u32`: digits and an optional `+`, nothing else. Any
+  // looser grammar here (`Number.parseInt` stops at the first non-digit) makes
+  // the two sides disagree about the rate they exist to reconcile.
+  assert.equal(parseHouseRate("60abc"), 30, "the engine's parse fails here, so this one must too");
+  assert.equal(parseHouseRate("29.97"), 30, "u32 has no decimals");
+  assert.equal(parseHouseRate(" 30"), 30, "u32 does not skip whitespace");
+  assert.equal(parseHouseRate("-25"), 30);
+  assert.equal(parseHouseRate("0x1E"), 30);
+  assert.equal(parseHouseRate("99999999999999999999"), 30, "past u32, the engine's parse fails");
+
+  // And it still reads the rates an operator actually sets.
+  assert.equal(parseHouseRate("25"), 25);
+  assert.equal(parseHouseRate("60"), 60);
+  assert.equal(parseHouseRate("+50"), 50, "u32::from_str accepts a leading +");
+});
+
+test("§7.15: the rejection is reachable through the SERVER, not only the dispatcher", async () => {
+  // The dispatcher test above proves the guard fires when `houseRate` is set.
+  // It cannot prove anything about production, where the value arrives through
+  // `createControlPlaneServer`: the previous defect was precisely that nothing
+  // ever assigned the field, and a dispatcher-level test stayed green through
+  // it. This drives the real server over a real socket.
+  const WebSocket = (await import("ws")).default;
+  const { createControlPlaneServer } = await import("./server.js");
+  const { AuditLog } = await import("./audit.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { randomUUID } = await import("node:crypto");
+
+  const dir = mkdtempSync(join(tmpdir(), "nbe-hr-srv-"));
+  mkdirSync(join(dir, "media"), { recursive: true });
+  writeFileSync(
+    join(dir, "media", "slate.png"),
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  );
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: "0.4",
+      network: { id: "nbe", name: "T" },
+      show: {
+        id: "s",
+        title: "T",
+        video: { width: 1920, height: 1080, frameRate: 60, colorSpace: "rec709" },
+        audio: { sampleRate: 48000, loudnessTargetLufs: -16, truePeakDbtp: -1.5 },
+        fallbackAssetId: "slate",
+      },
+      control: { bindings: [] },
+      assets: [{ id: "slate", kind: "image", source: "media/slate.png", format: "png" }],
+      scenes: [{ id: "SCN", elements: [{ id: "bg", kind: "graphic", z: 0, templateId: "TPL" }] }],
+      templates: [{ id: "TPL", kind: "generic" }],
+      rundown: { id: "R", items: [{ id: "A1", kind: "sceneRef", sceneRef: "SCN" }] },
+    }),
+  );
+
+  const state = new ControlPlaneState();
+  const tmp = mkdtempSync(join(tmpdir(), "nbe-hr-srv-audit-"));
+  const server = await createControlPlaneServer({
+    port: 0,
+    auth: { tokens: { "hr-token": "admin" } },
+    audit: new AuditLog(join(tmp, "audit.jsonl")),
+    state,
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+    houseRate: 30,
+  });
+
+  try {
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
+      headers: { authorization: "Bearer hr-token", "x-nbe-role": "admin" },
+    });
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const resp = await new Promise<Record<string, unknown>>((resolve) => {
+      const onMsg = (buf: Buffer) => {
+        const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+        if (msg.kind !== "telemetry" && msg.kind !== "stateChange") {
+          ws.off("message", onMsg);
+          resolve(msg);
+        }
+      };
+      ws.on("message", onMsg);
+      ws.send(
+        JSON.stringify({ v: "0.3", id: randomUUID(), command: "show.load", payload: { packagePath: dir } }),
+      );
+    });
+    ws.close();
+
+    assert.equal(resp.status, "error", "a 60 fps package on a 30 fps engine must be refused");
+    const error = resp.error as { code?: string; message?: string } | undefined;
+    assert.equal(error?.code, "E_PREFLIGHT_FAILED");
+    assert.match(String(error?.message), /60 fps.*30 fps|houseRate/);
+    assert.equal(state.pkg, null, "a refused package must not be loaded");
+  } finally {
+    await server.close();
+  }
+});

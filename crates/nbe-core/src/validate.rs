@@ -129,6 +129,30 @@ mod tests {
     }
 
     #[test]
+    fn a_sequenceref_item_is_refused_at_validation() {
+        // SPEC §16.4 (v0.4): the hook is retired, and "retired" has to mean
+        // something a package can be measured against. The schema dropped
+        // `sequenceRef` from `Item.kind`; nothing asserted that a manifest
+        // using it is refused, so restoring the enum member would have gone
+        // unnoticed — and `ItemKind` still carried a `SequenceRef` variant the
+        // schema could no longer produce.
+        let mut m = minimal_valid_manifest();
+        m["rundown"]["items"] = serde_json::json!([
+            { "id": "A1", "kind": "sequenceRef", "sequenceId": "R2" }
+        ]);
+        let err = validate_manifest(&m).expect_err("a retired hook must not validate");
+        let text = err.to_string();
+        assert!(
+            text.contains("kind") || text.contains("sequenceRef"),
+            "the refusal must point at the retired field; got {text}"
+        );
+
+        // And the retirement is scoped: a v0.3 manifest that never used the
+        // hook is still a valid v0.4 manifest (§16.4's migration note).
+        assert!(validate_manifest(&minimal_valid_manifest()).is_ok());
+    }
+
+    #[test]
     fn valid_v03_manifest_passes() {
         let m = minimal_valid_manifest();
         assert!(validate_manifest(&m).is_ok());

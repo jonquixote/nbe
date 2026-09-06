@@ -812,7 +812,10 @@ pub struct Item {
 #[serde(rename_all = "camelCase")]
 pub enum ItemKind {
     SceneRef,
-    SequenceRef,
+    // `SequenceRef` was retired in v0.4 (§16.4) along with the schema's
+    // `Item.kind` enum member. A variant the schema can no longer produce is a
+    // parser that accepts what validation refuses — the drift `mirror.rs`
+    // exists to catch, one layer down.
     ClipRef,
     LiveRef,
     Slate,

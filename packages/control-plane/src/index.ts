@@ -67,10 +67,22 @@ async function main(): Promise<void> {
  * back to 30, it made `declared !== engineRate` true for EVERY package and
  * rejected all of them, including a matching 30 fps one, with "runs at NaN
  * fps". A one-character misconfiguration was a total outage.
+ *
+ * `Number.parseInt` is NOT that mirror either: it stops at the first
+ * non-digit, so `"60abc"` yields 60 here and 30 in the engine — the two sides
+ * would disagree about the rate they exist to reconcile. Rust's
+ * `u32::from_str` accepts an optional `+` and digits, nothing else, so that is
+ * the grammar checked here.
+ *
+ * The mirror is exact, including where it is unhelpful: `NBE_HOUSE_RATE="0"`
+ * parses, so both sides run at 0 and reject every package. That is a shared
+ * hazard, not a divergence — narrowing it here would put the two mirrors out
+ * of step, which is the failure this function exists to prevent.
  */
 export function parseHouseRate(raw: string | undefined): number {
-  const n = Number.parseInt(raw ?? "", 10);
-  return Number.isFinite(n) && n > 0 ? n : 30;
+  if (raw === undefined || !/^\+?\d+$/.test(raw)) return 30;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n <= 0xffffffff ? n : 30;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

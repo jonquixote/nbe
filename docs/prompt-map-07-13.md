@@ -12,6 +12,27 @@ Note on numbering: the build order names 14 (packaging) and 15 (contrib outputs)
 
 **Inherits three promoted deferrals** — the overlay level itself (§7.10, deferred by P4 naming 07 as owner), §8.7.5's true crossfade via per-source envelopes, and the `sfx` ramp-advance invariant. It also inherits **R1 as P0**: the item→asset audio miss must be at the front of 07's fix list, because a show with no sound is not a foundation to build overlays on. The scope that P4 deferred is unchanged — `View = overlay(transition(A, B))`, overlays composite after the transition and persist across it, and AC-24 (a ticker survives a complex move transition untouched) is the acceptance case. What has changed is the surrounding evidence: 07 now knows the audio graph works in isolation and does not reach a real take, and that per-source envelopes are load-bearing on **both** sides — video overlays and audio crossfade — so they should be designed once. §6.5's forbidding of per-frame relayout and its packaged-font rule are portability assets (`docs/portability.md` row 7) and must not be weakened. R2, R3 and R5 are assigned here too: they are metering and timing work that 07's audio changes will touch anyway.
 
+### 07 was split into 07 and 07b (recorded 2026-09-05)
+
+The upgrade pass rewrote 07 in place, and what it wrote is a different document
+from what it replaced: `agents/prompts/07-overlay-level.md` is the spine (the
+As-Built Ledger, R5, R6, the rehearsal's findings, F1/F2, the inherited hang)
+plus the overlay level itself. The graphics mission it overwrote —
+templates, the ticker, the breaking banner, the clock — is restored verbatim
+from `26bf2f55^` as `agents/prompts/07b-graphics-templates.md`.
+
+**The reason for the order: 07b composites onto the overlay level 07 builds.**
+`View = overlay(transition(A, B))` has to exist before there is anywhere for a
+ticker to survive a transition, so the level comes first and the furniture
+second. 07 answers the text-stack question in writing (§5.2 question 2); 07b
+implements it.
+
+Suffix ordering follows the `02b`/`02c` precedent, so the series keeps its
+numbering: nothing downstream of 07 renumbers. 07b has **not** had its upgrade
+pass and gets one before execution — its scope decisions (packaged fonts, no
+per-frame relayout, RSS sanitized at the control plane) stand; its Step 0
+inventory predates the engine and does not.
+
 ## 08 — Companion mapping (elevated to a normative requirement)
 
 Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an **Input Intent schema** — a mapping layer that is *data, not code* — from physical intents (Companion button, MIDI note, keyboard chord) to semantic §16 commands, with per-device profiles as user-editable documents. The §16 command surface with token auth and audit is already the device-independent core (`docs/portability.md`, known-good boundary 1), so 08 adds a layer above it and must not add a second command surface beside it. The proof of generality is normative: a keyboard-shortcut adapter ships in the same prompt and must work with **zero** changes to the core. The Input Intent schema is a wire-level contract and takes normative spec text at 08's moment. Target hardware: StreamDeck XL via Companion.

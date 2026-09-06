@@ -1,8 +1,13 @@
 //! nbe-protocol: the Rust mirror of the NBE wire protocol.
 //!
-//! Normative source: SPEC v0.3.2 (`docs/spec.v0.4.md`) — Section 5.4 (command
+//! Normative source: SPEC v0.4 (`docs/spec.v0.4.md`) — Section 5.4 (command
 //! envelope), 5.4.1 (server-push frames), 5.9 (the render channel), 16
 //! (command API and error registry).
+//!
+//! The label is the DOCUMENT revision. The wire `v` field stays `"0.3"`,
+//! deliberately decoupled: v0.4 adds fields and removes a reserved hook, which
+//! is patch-class on the wire, and bumping `v` would break every deployed
+//! client for a change none of them can observe (§5.4).
 //!
 //! This crate is a **mirror**, not a second definition. The TypeScript control
 //! plane (`packages/control-plane/src/protocol.ts`) and this crate both
