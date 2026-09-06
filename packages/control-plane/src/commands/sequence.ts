@@ -1,40 +1,13 @@
-//! Section 16.4 — sequence/item commands.
+//! Section 16.4 — item commands.
+//!
+//! `sequence.arm` / `sequence.unarm` were removed in SPEC v0.4 along with the
+//! `sequenceRef` hook they served: the schema declares exactly one Sequence,
+//! `rundown`, so they could only ever resolve that one id. See §16.4.
 
 import { CpError } from "../protocol.js";
 import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.js";
 
 export function sequenceHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
-  reg.set("sequence.arm", {
-    forward: true,
-    handler: (ctx, payload): HandlerOutput => {
-      const id = String(payload.sequenceId);
-      const pkg = ctx.state.requirePackage();
-      if (pkg.sequences.has(id) || pkg.items.has(id)) {
-        for (const itemId of collectItemIds(pkg, id)) {
-          const cur = ctx.state.itemStateOf(itemId);
-          if (cur === "READY" || cur === "DONE") ctx.state.armItem(itemId);
-        }
-        return {};
-      }
-      throw new CpError("E_NOT_FOUND", `no such sequence: ${id}`);
-    },
-  });
-
-  reg.set("sequence.unarm", {
-    forward: true,
-    handler: (ctx, payload): HandlerOutput => {
-      const id = String(payload.sequenceId);
-      const pkg = ctx.state.requirePackage();
-      if (!pkg.sequences.has(id) && !pkg.items.has(id)) {
-        throw new CpError("E_NOT_FOUND", `no such sequence: ${id}`);
-      }
-      for (const itemId of collectItemIds(pkg, id)) {
-        if (ctx.state.itemStateOf(itemId) === "ARMED") ctx.state.unarmItem(itemId);
-      }
-      return {};
-    },
-  });
-
   reg.set("item.arm", {
     forward: true,
     handler: (ctx, payload): HandlerOutput => {

@@ -1,5 +1,5 @@
 /**
- * GENERATED FROM schemas/manifest.v0.3.json — do not edit (addendum 02a §1.4).
+ * GENERATED FROM schemas/manifest.v0.4.json — do not edit (addendum 02a §1.4).
  * Regenerate: npm run gen:manifest-types.
  */
 
@@ -22,9 +22,8 @@ export type Pulldown =
     };
 export type Item = {
   id: Id;
-  kind: "sceneRef" | "sequenceRef" | "clipRef" | "liveRef" | "slate";
+  kind: "sceneRef" | "clipRef" | "liveRef" | "slate";
   sceneRef?: Id;
-  sequenceRef?: Id;
   assetId?: Id;
   sourceId?: string;
   durationFrames?: number;
@@ -32,9 +31,8 @@ export type Item = {
   audioPolicy?: "clip" | "bed" | "mute";
 } & {
   id: Id;
-  kind: "sceneRef" | "sequenceRef" | "clipRef" | "liveRef" | "slate";
+  kind: "sceneRef" | "clipRef" | "liveRef" | "slate";
   sceneRef?: Id;
-  sequenceRef?: Id;
   assetId?: Id;
   sourceId?: string;
   durationFrames?: number;
@@ -68,7 +66,7 @@ export type Element = {
 };
 
 export interface Manifest {
-  manifestVersion: "0.3";
+  manifestVersion: "0.3" | "0.4";
   network: Network;
   channel?: Channel;
   show: Show;

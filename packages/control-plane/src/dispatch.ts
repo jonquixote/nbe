@@ -88,8 +88,6 @@ const OPERATOR_COMMANDS = new Set([
   "view.fallback",
   "scene.arm",
   "scene.apply",
-  "sequence.arm",
-  "sequence.unarm",
   "item.arm",
   "item.unarm",
   "item.stop",

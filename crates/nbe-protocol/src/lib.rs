@@ -1,6 +1,6 @@
 //! nbe-protocol: the Rust mirror of the NBE wire protocol.
 //!
-//! Normative source: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Section 5.4 (command
+//! Normative source: SPEC v0.3.2 (`docs/spec.v0.4.md`) — Section 5.4 (command
 //! envelope), 5.4.1 (server-push frames), 5.9 (the render channel), 16
 //! (command API and error registry).
 //!
@@ -166,9 +166,7 @@ pub mod command {
         // 16.3 scene
         "scene.arm",
         "scene.apply",
-        // 16.4 sequence/item
-        "sequence.arm",
-        "sequence.unarm",
+        // 16.4 item (sequence.* retired with `sequenceRef` in v0.4)
         "item.arm",
         "item.unarm",
         "item.stop",

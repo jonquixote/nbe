@@ -19,7 +19,7 @@ export type AudioMode = "follow" | "crossfade" | "cut" | "mute";
 
 // ---------------------------------------------------------------------------
 // Show package — the slice of the manifest the control plane indexes.
-// Type information is generated from schemas/manifest.v0.3.json via
+// Type information is generated from schemas/manifest.v0.4.json via
 // scripts/gen-manifest-types.mjs (see addendum 1.4); validation of a package
 // is ALWAYS done by shelling out to nbe-preflight, never re-implemented here.
 // ---------------------------------------------------------------------------
@@ -28,7 +28,6 @@ export interface PackageItem {
   id: string;
   kind: string;
   sceneRef?: string | undefined;
-  sequenceRef?: string | undefined;
   assetId?: string | undefined;
   sourceId?: string | undefined;
   durationFrames?: number | undefined;

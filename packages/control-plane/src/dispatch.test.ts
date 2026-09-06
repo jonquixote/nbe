@@ -204,7 +204,9 @@ test("state machine: READY->ARMED->LIVE, take clears preview", async (t) => {
   }
   await d(deps, "preview.set", { itemRef: "A1" });
   assert.equal(deps.state.itemStateOf("A1"), "ARMED");
-  await d(deps, "sequence.arm", { sequenceId: "R" });
+  // `sequence.arm { sequenceId: "R" }` stood here, arming the whole rundown.
+  // SPEC v0.4 retired the sequence.* commands with the `sequenceRef` hook;
+  // `preview.set` above already armed A1, which is what this test measures.
   await d(deps, "view.take", {});
   // sceneRef item has no durationFrames -> LIVE (untimed)
   assert.equal(deps.state.itemStateOf("A1"), "LIVE");

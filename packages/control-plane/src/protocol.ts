@@ -167,8 +167,6 @@ export const CommandPayloadSchemas = {
   "scene.apply": z.object({ sceneId: id, target: z.enum(["view", "preview"]) }).strict(),
 
   // 16.4 sequence/item
-  "sequence.arm": z.object({ sequenceId: id }).strict(),
-  "sequence.unarm": z.object({ sequenceId: id }).strict(),
   "item.arm": z.object({ itemId: id }).strict(),
   "item.unarm": z.object({ itemId: id }).strict(),
   "item.stop": z.object({ itemId: id }).strict(),

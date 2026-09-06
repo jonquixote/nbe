@@ -1,4 +1,4 @@
-//! Manifest model mirroring `schemas/manifest.v0.3.json`.
+//! Manifest model mirroring `schemas/manifest.v0.4.json`.
 //! The schema file is normative; these types are the typed view of it.
 
 use serde::{Deserialize, Serialize};

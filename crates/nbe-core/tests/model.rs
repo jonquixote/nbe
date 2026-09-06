@@ -3,7 +3,7 @@
 //! The round-trip test is the point: every schema/model mismatch that
 //! Prompt 01b Step 1 fixed (numeric frameRate, ClockFormat, TextureFormat)
 //! is pinned by it. If the typed model drifts from
-//! `schemas/manifest.v0.3.json` again, this file fails first.
+//! `schemas/manifest.v0.4.json` again, this file fails first.
 
 use std::path::PathBuf;
 

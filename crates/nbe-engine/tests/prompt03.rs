@@ -52,7 +52,7 @@ async fn clock_fsm_total_coverage() {
 #[test]
 fn clock_states_match_spec_11_4() {
     use std::fs;
-    let spec = fs::read_to_string("../../docs/spec.v0.3.md").unwrap();
+    let spec = fs::read_to_string("../../docs/spec.v0.4.md").unwrap();
     let clock_section = spec
         .split("# 11. Cross-cutting concern — Master clock")
         .nth(1)

@@ -25,7 +25,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn spec_text() -> String {
-    std::fs::read_to_string(repo_root().join("docs/spec.v0.3.md")).expect("spec is readable")
+    std::fs::read_to_string(repo_root().join("docs/spec.v0.4.md")).expect("spec is readable")
 }
 
 fn section_16() -> String {
@@ -375,8 +375,8 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
 
 #[test]
 fn quality_profile_matches_the_manifest_schema_enum() {
-    // SPEC §10.5 and schemas/manifest.v0.3.json must agree on the spelling.
-    let schema = std::fs::read_to_string(repo_root().join("schemas/manifest.v0.3.json"))
+    // SPEC §10.5 and schemas/manifest.v0.4.json must agree on the spelling.
+    let schema = std::fs::read_to_string(repo_root().join("schemas/manifest.v0.4.json"))
         .expect("schema is readable");
     let schema: serde_json::Value = serde_json::from_str(&schema).expect("schema parses");
     let declared: BTreeSet<String> = schema["properties"]["qualityProfile"]["enum"]

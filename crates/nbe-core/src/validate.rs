@@ -4,7 +4,7 @@
 use thiserror::Error;
 
 /// The byte-exact normative schema, embedded at compile time.
-const SCHEMA_JSON: &str = include_str!("../../../schemas/manifest.v0.3.json");
+const SCHEMA_JSON: &str = include_str!("../../../schemas/manifest.v0.4.json");
 
 /// Errors produced by manifest validation.
 #[derive(Debug, Error)]
