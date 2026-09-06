@@ -52,7 +52,11 @@ Rules:
    experiment, and the working tree is clean. **Commit the work before
    falsifying it** — the restore step is `git checkout`, which discards
    uncommitted changes, so falsifying an uncommitted fix deletes the fix; this
-   trap has been sprung six times on this project.
+   trap has been sprung six times on this project. The rule covers the pass
+   itself: **do not edit during a falsification pass.** The restore step is
+   indiscriminate — it discards a fix written between two cases just as readily
+   as it discards the mutation. Finish the pass, commit, then resume editing.
+   That is the seventh instance.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
 

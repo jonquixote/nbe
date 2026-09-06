@@ -137,8 +137,13 @@ mod tests {
         // unnoticed — and `ItemKind` still carried a `SequenceRef` variant the
         // schema could no longer produce.
         let mut m = minimal_valid_manifest();
+        // Only the retired `kind` — nothing else about this item is
+        // irregular, so the enum is the only thing that can refuse it. With
+        // `sequenceId` alongside, restoring the enum member still failed the
+        // test, but on the unknown property rather than on the retirement:
+        // a falsification that fails for the adjacent reason proves nothing.
         m["rundown"]["items"] = serde_json::json!([
-            { "id": "A1", "kind": "sequenceRef", "sequenceId": "R2" }
+            { "id": "A1", "kind": "sequenceRef" }
         ]);
         let err = validate_manifest(&m).expect_err("a retired hook must not validate");
         let text = err.to_string();
