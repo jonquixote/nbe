@@ -24,6 +24,9 @@ const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
 /// nobody can act on. Past this bound the package is refused by name.
 const ABSOLUTE_LOOP_FRAME_CAP: u64 = 900;
 
+/// SPEC §8.4 residency for one second of clip audio: 48 kHz x 2 ch x f32.
+const AUDIO_BYTES_PER_SECOND: u64 = 48_000 * 2 * 4;
+
 /// SPEC §12.5's residency decision for one declared loop.
 ///
 /// Both callers — the estimator ("what does this package demand?") and the
@@ -383,6 +386,13 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             .and_then(|l| l.get("periodFrames"))
             .and_then(|v| v.as_u64())
         {
+            // `expectedDurationFrames` is the same class of unbounded input as
+            // `periodFrames`: `minimum: 1`, no maximum, and §8.4's residency is
+            // `frames * 48000 * 2 * 4 / rate`, which panicked for a large
+            // declaration. Saturating arithmetic keeps the report being
+            // written; a duration whose residency has no addressable byte count
+            // is refused by name rather than reported as a saturated number
+            // nobody can act on.
             if period > ABSOLUTE_LOOP_FRAME_CAP {
                 had_errors = true;
                 report.push_error(format!(
@@ -413,6 +423,23 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                         plan.max_frames_by_budget
                     ));
                 }
+            }
+        }
+
+        if matches!(
+            asset.get("kind").and_then(|v| v.as_str()),
+            Some("audio") | Some("video") | Some("alphaVideo")
+        ) {
+            let frames = asset
+                .get("expectedDurationFrames")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if frames.checked_mul(AUDIO_BYTES_PER_SECOND).is_none() {
+                had_errors = true;
+                report.push_error(format!(
+                    "audioDuration: asset \"{id}\" declares expectedDurationFrames {frames}, \
+                     whose §8.4 residency has no addressable byte count"
+                ));
             }
         }
     }
@@ -572,14 +599,11 @@ fn resource_demand(
                 .and_then(|x| x.duration_frames)
                 .map(u64::from)
                 .unwrap_or(0);
-            declared
-                .max(probed)
-                .saturating_mul(48_000)
-                .saturating_mul(2)
-                .saturating_mul(4)
-                / rate.max(1)
+            declared.max(probed).saturating_mul(AUDIO_BYTES_PER_SECOND) / rate.max(1)
         })
-        .sum();
+        // `sum()` panics on overflow in debug just as `*` did: the saturation
+        // has to survive the fold, not only each term.
+        .fold(0u64, u64::saturating_add);
 
     nbe_core::ResourceReport {
         vram_demand_mib: vram / MIB,

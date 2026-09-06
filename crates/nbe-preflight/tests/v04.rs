@@ -503,3 +503,29 @@ fn audio_demand_is_pinned_at_a_mib_boundary() {
         "8,200 frames is 104,960,000 B = 100 MiB"
     );
 }
+
+#[test]
+fn an_uncountable_audio_duration_is_named_not_a_panic() {
+    // `expectedDurationFrames` is the same unbounded input as `periodFrames`:
+    // `minimum: 1`, no maximum. §8.4's residency is `frames * 48000 * 2 * 4`,
+    // which panicked outright for a large declaration — and a panicking
+    // preflight writes no report, which breaks P1's locked behaviour.
+    let dir = tempfile::tempdir().unwrap();
+    let root = package_with_assets(
+        dir.path(),
+        r#", { "id": "A", "kind": "audio", "source": "media/slate.png", "format": "wav",
+              "expectedDurationFrames": 18446744073709551615 }"#,
+    );
+    // A panic fails inside `run`, before any assertion: no report is written.
+    let (code, report) = run(&root, &[]);
+    assert_eq!(code, 2, "a duration that cannot be counted is refused");
+    let errors = report["errors"].as_array().expect("errors array");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("audioDuration")),
+        "the refusal must name the field and the asset; got {errors:?}"
+    );
+    // And the report still carries the resource block it always carries.
+    assert!(report["resources"]["audioDemandMib"].is_number());
+}
