@@ -53,10 +53,24 @@ async function main(): Promise<void> {
     // same variable the engine does, because a control plane that guessed the
     // engine's rate would be guessing at exactly the thing this rule exists to
     // stop being guessed.
-    houseRate: Number(process.env.NBE_HOUSE_RATE ?? 30),
+    houseRate: parseHouseRate(process.env.NBE_HOUSE_RATE),
   });
 
   console.log(`nbe control plane listening on ws://${process.env.NBE_HOST ?? "127.0.0.1"}:${server.port}/nbe/v0.3`);
+}
+
+/**
+ * SPEC §7.15. Mirrors the engine's `.parse().ok().unwrap_or(30)` exactly.
+ *
+ * `Number(env ?? 30)` produced `NaN` for any non-numeric value, and every
+ * comparison against NaN is false — so `NBE_HOUSE_RATE="abc"` did not fall
+ * back to 30, it made `declared !== engineRate` true for EVERY package and
+ * rejected all of them, including a matching 30 fps one, with "runs at NaN
+ * fps". A one-character misconfiguration was a total outage.
+ */
+export function parseHouseRate(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 30;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

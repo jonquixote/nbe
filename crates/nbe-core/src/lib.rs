@@ -6,5 +6,6 @@ pub mod preflight;
 pub mod validate;
 
 pub use manifest::*;
+pub mod loop_cache;
 pub use preflight::*;
 pub use validate::{validate_manifest, ValidationError};

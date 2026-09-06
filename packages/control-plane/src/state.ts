@@ -45,6 +45,8 @@ export interface PackageInfo {
   showId: string;
   /** SPEC §7.15: `show.video.frameRate` as declared by the manifest. */
   houseRate: number;
+  /** The manifest's own `manifestVersion`, for §10.4's identity block. */
+  manifestVersion: string;
   /** Section 10.1 telemetry field, declared by the manifest. */
   qualityProfile: string | undefined;
   items: Map<string, PackageItem>;
@@ -435,7 +437,11 @@ export class ControlPlaneState {
     return {
       packagePath: this.pkg.packagePath,
       showId: this.pkg.showId,
-      manifestVersion: "0.3",
+      // The LOADED package's version, not a constant. This reported "0.3"
+      // for every package, including v0.4 ones — /status is where an operator
+      // checks what is actually loaded, so a constant there is a lie with an
+      // audience.
+      manifestVersion: this.pkg.manifestVersion,
     };
   }
 

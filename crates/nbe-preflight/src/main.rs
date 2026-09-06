@@ -12,6 +12,69 @@ use nbe_core::{AssetReport, PreflightReport, ValidationError};
 /// allowed to be slow; it is not allowed to be unbounded.
 const DECODE_FRAME_LIMIT: usize = 100_000;
 
+/// SPEC §12.4's default per-loop and total short-loop budgets.
+const DEFAULT_PER_LOOP_MIB: u64 = 256;
+const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
+
+/// SPEC §12.4's absolute short-loop frame cap.
+///
+/// The schema declares `periodFrames` with `minimum: 1` and **no maximum**, so
+/// a package may legally declare a period near `u64::MAX`. Saturating
+/// arithmetic stops that panicking, but a silent saturation reports a number
+/// nobody can act on. Past this bound the package is refused by name.
+const ABSOLUTE_LOOP_FRAME_CAP: u64 = 900;
+
+/// SPEC §12.5's residency decision for one declared loop.
+///
+/// Both callers — the estimator ("what does this package demand?") and the
+/// §12.5 mandatory-`vram` check ("does this package fit?") — must answer from
+/// the same plan, or preflight contradicts itself inside a single run. The plan
+/// itself lives in `nbe-core` so preflight and the engine cannot disagree
+/// either.
+fn loop_plan(
+    asset: &serde_json::Value,
+    lm: &serde_json::Value,
+    width: u64,
+    height: u64,
+) -> nbe_core::loop_cache::CachePlan {
+    use nbe_core::loop_cache::{CacheBudget, CacheTextureFormat, LoopSpec};
+    let kind = asset.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let declared_format = lm
+        .get("textureFormat")
+        .and_then(|v| v.as_str())
+        .and_then(CacheTextureFormat::from_declared);
+    let has_alpha = kind == "alphaVideo";
+    nbe_core::loop_cache::plan(
+        LoopSpec {
+            width: width.min(u32::MAX as u64) as u32,
+            height: height.min(u32::MAX as u64) as u32,
+            period_frames: lm
+                .get("periodFrames")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(u32::MAX as u64) as u32,
+            has_alpha,
+            // Absent a declaration, §12.3's ladder: an opaque source takes the
+            // NV12 rung, alpha content takes RGBA8.
+            yuv_sampling: !has_alpha,
+            gop_frames: 0,
+            declared_format,
+        },
+        CacheBudget {
+            // §12.4's defaults, overridden by the manifest's own declaration
+            // where it makes one.
+            per_loop_mib: lm
+                .get("vramBudgetMib")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_PER_LOOP_MIB)
+                .min(u32::MAX as u64) as u32,
+            total_mib: DEFAULT_TOTAL_LOOP_MIB,
+            // Discrete reference target (§0.3): no unified-memory clamp.
+            recommended_working_set_mib: None,
+        },
+    )
+}
+
 /// The decode-derived fields of an `AssetReport` (SPEC §19.2).
 #[derive(Default)]
 struct DecodeFacts {
@@ -302,6 +365,58 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         }
     }
 
+    // SPEC §12.4: the absolute short-loop frame cap. Checked before the
+    // resource arithmetic so a package past the bound is refused by name
+    // rather than saturating into a number that means nothing.
+    for asset in manifest_json
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let id = asset
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unnamed>");
+        if let Some(period) = asset
+            .get("loop")
+            .and_then(|l| l.get("periodFrames"))
+            .and_then(|v| v.as_u64())
+        {
+            if period > ABSOLUTE_LOOP_FRAME_CAP {
+                had_errors = true;
+                report.push_error(format!(
+                    "loopPeriod: asset \"{id}\" declares periodFrames {period}, beyond SPEC \
+                     §12.4's absolute short-loop cap of {ABSOLUTE_LOOP_FRAME_CAP}"
+                ));
+            }
+
+            // §12.5: "unless `cachePolicy: vram` is mandatory, in which case
+            // preflight MUST fail". A package demanding residency the budget
+            // cannot give does not quietly stream — it does not fit, and an
+            // operator needs to hear that before air rather than discover it
+            // as a different picture than the one they authored.
+            let lm = asset.get("loop").expect("checked above");
+            if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("vram") {
+                let probed = report.assets.iter().find(|a| a.id == id);
+                let plan = loop_plan(
+                    asset,
+                    lm,
+                    probed.and_then(|a| a.width).map(u64::from).unwrap_or(1920),
+                    probed.and_then(|a| a.height).map(u64::from).unwrap_or(1080),
+                );
+                if plan.cache_policy_selected != nbe_core::loop_cache::CachePolicy::Vram {
+                    had_errors = true;
+                    report.push_error(format!(
+                        "loopBudget: asset \"{id}\" mandates cachePolicy \"vram\" but its \
+                         {period} frames exceed the budget's {} (SPEC §12.5)",
+                        plan.max_frames_by_budget
+                    ));
+                }
+            }
+        }
+    }
+
     // SPEC §12.11 (v0.4): package demand, always reported.
     report.resources = resource_demand(&manifest_json, &report);
     // §7.15 #2: warn only when we were TOLD a target rate and it differs.
@@ -355,7 +470,10 @@ fn resource_demand(
 
     // View + preview render targets and the fallback slate, RGBA8 at house
     // resolution. Unconditional.
-    let mut vram = house_w * house_h * 4 * 3;
+    let mut vram = house_w
+        .saturating_mul(house_h)
+        .saturating_mul(4)
+        .saturating_mul(3);
 
     for asset in manifest
         .get("assets")
@@ -379,31 +497,45 @@ fn resource_demand(
 
         match asset.get("loop") {
             Some(lm) => {
-                // §12.2: only a VRAM-RESIDENT loop occupies the cache. A
-                // `stream` loop holds a read-ahead window, not the period.
-                if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("stream") {
+                let period = lm.get("periodFrames").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                // §12.2/§12.5: residency is a DECISION, not a declaration.
+                // `cachePolicy: "auto"` means "let the budget decide", and the
+                // first version honoured only the literal `"stream"` — so an
+                // auto loop the budget mandates streaming for was charged as
+                // resident (measured 2396 MiB where maxFrames = 32), and
+                // `vramBudgetMib` was never read at all.
+                //
+                // The decision lives in `nbe_core::loop_cache::plan`, the same
+                // function the engine uses to size its ring. One rule, one
+                // implementation, across crates.
+                let declared = lm
+                    .get("cachePolicy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("auto");
+                let plan = loop_plan(asset, lm, w, h);
+                let fits = plan.cache_policy_selected == nbe_core::loop_cache::CachePolicy::Vram;
+                if declared == "stream" || !fits {
                     continue;
                 }
-                let period = lm.get("periodFrames").and_then(|v| v.as_u64()).unwrap_or(0);
-                // §12.3's table, read from the manifest rather than guessed.
-                let px = w * h;
-                let per_frame = match lm
-                    .get("textureFormat")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("auto")
-                {
-                    "rgba8" => px * 4,
-                    "bc7" => px,
-                    "nv12Alpha" => px * 5 / 2,
-                    "nv12" => px * 3 / 2,
-                    // "auto": alpha content needs RGBA8; opaque is NV12.
-                    _ if kind == "alphaVideo" => px * 4,
-                    _ => px * 3 / 2,
-                };
-                vram += period * per_frame;
+
+                // §12.3's table, read off the plan rather than re-tabulated
+                // here. A second copy of the ladder is a second place to be
+                // wrong about what a frame costs.
+                let px = w.saturating_mul(h);
+                let per_frame = (px as f64 * plan.selected_texture_format.bytes_per_pixel()) as u64;
+                // Saturating, not wrapping. `periodFrames` has `minimum: 1`
+                // and NO maximum in the schema, so a package may legally
+                // declare a period near u64::MAX. That PANICKED preflight in
+                // debug and wrapped in release — and a panic means no report
+                // is written at all, which breaks P1's locked
+                // report-on-every-run behaviour.
+                vram = vram.saturating_add(period.saturating_mul(per_frame));
             }
             // §12.7: images upload whole, at their OWN size.
-            None if kind == "image" => vram += w * h * 4,
+            None if kind == "image" => {
+                vram = vram.saturating_add(w.saturating_mul(h).saturating_mul(4));
+            }
             None => {}
         }
     }
@@ -440,7 +572,12 @@ fn resource_demand(
                 .and_then(|x| x.duration_frames)
                 .map(u64::from)
                 .unwrap_or(0);
-            (declared.max(probed) * 48_000 * 2 * 4) / rate.max(1)
+            declared
+                .max(probed)
+                .saturating_mul(48_000)
+                .saturating_mul(2)
+                .saturating_mul(4)
+                / rate.max(1)
         })
         .sum();
 

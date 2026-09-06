@@ -80,7 +80,7 @@ The following assumptions are normative unless changed by spec revision:
 20. **WGSL sandbox.** Effect plugins are strictly fragment shaders operating on bound textures, validated via `naga`. They cannot execute arbitrary compute shaders that bypass the render graph.
 21. **Cloud cost profile.** Cloud is TURN relay, guest ingest, and distribution/backup only, at an estimated envelope of $0.10–$0.50 per broadcast-hour for managed TURN/relay egress. Self-hosted TURN reduces marginal cost toward zero.
 22. **Floor device baseline.** The 2019 dual-GPU Intel/Radeon MacBook Pro is the reference floor. The degradation ladder MUST engage gracefully on it.
-23. **Sequence recursion.** Time-axis Sequence nesting is capped at 8 levels; preflight warns beyond 4. This is distinct from the space-axis sub-scene depth cap of 4.
+23. **Sequence recursion — none.** The rundown is flat: `sequenceRef` was retired in v0.4 (§16.4) and there is no nesting to cap. The space-axis sub-scene depth cap of 4 is unaffected and remains in force.
 24. **Multi-output frame sharing.** Outputs share rendered frames with hardware encoders via GPU texture sharing (Metal `IOSurface` / Vulkan external memory) without CPU readback.
 25. **WASM memory ceiling.** Every plugin instance runs under a hard memory limit (default 64 MiB, manifest-configurable via `maxMemoryMib`). Exceeding it MUST terminate the plugin instance and substitute a transparent frame — it MUST NOT crash the render node.
 
@@ -241,9 +241,8 @@ v0.3 splits the single v0.1 hierarchy into two orthogonal axes.
 Network
   └── Channel         // future 24/7 scheduler; schema-only in v1
        └── Show
-            └── Rundown (root Sequence)
-                 └── Sequence (recursive, cap 8; preflight warns beyond 4)
-                      └── Item (references a Scene)
+            └── Rundown (the only Sequence; flat since v0.4)
+                 └── Item (references a Scene)
 ```
 
 ## 4.2 Space axis (visual: what is on screen)
@@ -359,6 +358,14 @@ The token is authoritative for the role. `X-NBE-Role` is client-asserted and MUS
 > v0.3.1 required the server to "close the socket with an `E_AUTH` error frame first." That is not achievable when the connection is refused at the HTTP upgrade, which is the correct layer to refuse it at. v0.3.2 replaces that requirement with the 401 path above.
 
 ## 5.4 Message envelope
+
+**The wire version is not the document version.** `v` is `"0.3"` and stays
+`"0.3"` through v0.4, deliberately: v0.4 is patch-class on the wire — it adds
+two optional fields (`viewItemStartFrame`, `showState`) and removes two
+commands, none of which changes how a v0.3 client parses a frame it
+understands. Bumping `v` would force every client to re-handshake for a
+revision that breaks nothing. The wire version moves when the wire's *framing*
+changes, not when the specification is revised.
 
 All client-to-server command messages MUST use this envelope:
 
@@ -746,6 +753,9 @@ It MUST validate:
 24. Scene graph is a DAG: no circular sub-scene references.
 25. Automation rules pass cycle detection (Section 13).
 26. Plugin sandbox validation (Section 14).
+27. **No contradictory Items** (Section 17.5): no Item carries a field belonging to a `kind` other than its own.
+28. **Package resource demand** (Section 12.11): `vramDemandMib` and `audioDemandMib` computed and reported.
+29. **No loop period beyond Section 12.4's absolute cap.**
 
 Preflight MUST fail on seeded:
 
@@ -2335,7 +2345,7 @@ What is new in v0.3:
 
 1. `manifestVersion` const `"0.3"`.
 2. Top-level `scenes` (required), `overlays`, `transitions`, `automation`, `plugins`, `qualityProfile`.
-3. `rundown` is now a recursive `Sequence` of `Item`s; Segment/Subsegment remain as conventional levels.
+3. `rundown` is a flat `Sequence` of `Item`s; Segment/Subsegment remain as conventional levels. (v0.3.2 described it as recursive; v0.4 retired the nesting hook — see §16.4.)
 4. `Layer` is replaced by `Element`, retaining every v0.2 property and adding `sceneRef`, `pluginId`, `children`, `enterAnimation`, `exitAnimation`, and the new element kinds `sceneRef`, `group`, `plugin` with their conditional requirements.
 5. `Item` kinds: `sceneRef`, `clipRef`, `liveRef`, `slate`. (`sequenceRef` was retired in v0.4 — see §16.4.)
 6. New definitions: `Scene`, `Overlay`, `Element`, `Animation`, `TransitionPreset`, `AutomationRule`, `Sequence`, `Item`, `Plugin`.
@@ -3050,6 +3060,8 @@ The preflight test suite MUST include:
 9. Invalid hotkey action.
 10. Missing template field.
 11. 29.97 fps asset without pulldown metadata.
+12. **A contradictory Item** — e.g. `{"kind": "slate", "sceneRef": …}` (Section 17.5). Without this row a checklist implementer lawfully passes a package the renderer and the audio path resolve differently.
+13. **A loop period beyond Section 12.4's absolute cap** — the schema permits any `periodFrames`, so the bound is preflight's to enforce, by name and without panicking.
 12. VRAM-residency request that exceeds `maxFramesByBudget`.
 13. Circular sub-scene reference.
 14. Self-triggering automation rule.
@@ -3512,7 +3524,7 @@ The manifest schema MUST NOT preclude future Channel scheduling, but v1 MUST NOT
 | 2 | Snapshot scope | The entire View state, including overlay visibility. A snapshot restores what the audience sees. |
 | 3 | TURN providers | Self-hosted coturn via environment configuration first; managed-provider integrations later. |
 | 4 | Caption burn-in (later) | A dedicated Overlay element on the DSK level — not a post-composite shader pass. |
-| 5 | Sequence depth limit | 8 levels normative; preflight warns beyond 4. |
+| 5 | Sequence depth limit | **Superseded by v0.4 (§16.4).** The rundown is flat; `sequenceRef` was retired rather than resolved, so there is no depth to limit. |
 
 v0.2.1 errata (adopted):
 

@@ -188,6 +188,11 @@ pub fn load_video_asset(
             has_alpha,
             yuv_sampling: false, // RGBA path until shader-side YUV lands
             gop_frames,
+            // The engine plans against what it actually allocates, not what the
+            // manifest asked for: this path decodes to RGBA8 regardless, so
+            // passing a declared format here would make the plan describe a
+            // residency the engine does not hold.
+            declared_format: None,
         },
         budget,
     );
@@ -217,6 +222,7 @@ pub fn load_video_asset(
             has_alpha,
             yuv_sampling: false,
             gop_frames,
+            declared_format: None, // as above: what is allocated, not declared
         },
         budget,
     );

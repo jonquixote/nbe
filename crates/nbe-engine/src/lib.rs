@@ -14,7 +14,9 @@ pub mod clock;
 pub use nbe_decode as decode;
 pub mod directive;
 pub mod gpu;
-pub mod loop_cache;
+/// SPEC §12.5's budget decision lives in `nbe-core` so preflight and the
+/// engine cannot disagree about it. Re-exported here for callers.
+pub use nbe_core::loop_cache;
 pub mod render;
 pub mod scene;
 pub mod state;

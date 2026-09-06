@@ -133,6 +133,7 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
     // SPEC §7.15: the rate the package was authored at. `show.load` compares
     // it with the engine's, because only the control plane knows both.
     houseRate: manifest.show.video.frameRate,
+    manifestVersion: manifest.manifestVersion,
     items,
     sequences,
     scenes,
