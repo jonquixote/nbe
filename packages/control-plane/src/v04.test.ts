@@ -270,3 +270,35 @@ test("§7.15: the rejection is reachable through the SERVER, not only the dispat
     await server.close();
   }
 });
+
+test("the recovery record carries the LOADED package's manifest version, not a constant", async () => {
+  // `manifestIdentity()` hardcoded `manifestVersion: "0.3"`, so every v0.4
+  // package was recorded — and reported — as v0.3. The identity block is what
+  // an operator and a crash recovery both read to answer "what is actually
+  // loaded", and a constant there is a lie with an audience.
+  const { StatePersistence } = await import("./persistence.js");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const state = new ControlPlaneState();
+  state.loadPackage({ ...pkg(), manifestVersion: "0.4" });
+  assert.equal(state.manifestIdentity()?.manifestVersion, "0.4");
+
+  const file = join(mkdtempSync(join(tmpdir(), "nbe-ident-")), "state.json");
+  const persistence = new StatePersistence(state, file);
+  persistence.onDirty();
+  persistence.flushNow();
+  const snapshot = JSON.parse(readFileSync(file, "utf8")) as {
+    manifestIdentity: { manifestVersion?: string } | null;
+  };
+  assert.equal(
+    snapshot.manifestIdentity?.manifestVersion,
+    "0.4",
+    "the persisted identity must name the version that was actually loaded",
+  );
+
+  // And it tracks the package, rather than tracking the newest version.
+  state.loadPackage({ ...pkg(), manifestVersion: "0.3" });
+  assert.equal(state.manifestIdentity()?.manifestVersion, "0.3");
+});
