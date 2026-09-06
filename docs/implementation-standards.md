@@ -49,7 +49,10 @@ Rules:
    nothing; removing the code the assertion is supposed to exercise proves
    everything.
 3. **Restore and re-run.** The report states the suite is green again after the
-   experiment, and the working tree is clean.
+   experiment, and the working tree is clean. **Commit the work before
+   falsifying it** — the restore step is `git checkout`, which discards
+   uncommitted changes, so falsifying an uncommitted fix deletes the fix; this
+   trap has been sprung six times on this project.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
 
