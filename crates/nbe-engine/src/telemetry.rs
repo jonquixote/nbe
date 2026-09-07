@@ -39,6 +39,8 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
                 .audio_drift_ms_bits
                 .load(std::sync::atomic::Ordering::SeqCst),
         ),
+        // A snapshot: the driver closes each meter window on its own boundary,
+        // so reading here neither ends a window nor races another reader.
         bus_peak_dbfs: state.bus_peaks.lock().unwrap().clone(),
     };
     EngineFrame::EngineTelemetry {
