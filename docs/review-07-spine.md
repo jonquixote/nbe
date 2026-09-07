@@ -1,18 +1,24 @@
-# Independent pass over the 07 spine — `P7-overlay-level @ 9bd18f9`
+# Independent pass over the 07 spine — `P7-overlay-level @ dbb46d7`
 
-**Verdict: FINDINGS.** One, MEDIUM, reproduced end to end.
+**Verdict: FINDINGS.** One, MEDIUM, measured rather than argued.
 
-Six of the seven claims survive adversarial probing intact, several of them
-under attacks the spine's own tests do not make. The seventh — the inherited
-hang — is half-fixed: the failure is now *named*, but the suite still does not
-exit, so CI still burns its wall clock. The root cause is one line below where
-the fix was applied, and it is in production code rather than the test harness.
+F1 is genuinely fixed at the layer that owns the handle, and it survives every
+attack in the brief: the child is killed, the suite exits with a summary, the
+override parses strictly, the two layers fail independently, and — the sharpest
+thing I could think to try — a stale `preflight_report.json` from an earlier
+successful run cannot be mistaken for a timed-out run's verdict.
 
-- **Head reviewed:** `9bd18f9b381dfec2ab11038d476cf18629136996`
-- **Confirmed equal to** `refs/heads/P7-overlay-level`; base `76ff9f3` (`main`)
-- **Checkout:** fresh clone, attached branch, tracked tree clean (0 modified)
-  after every mutation/restore cycle, rebuilt from the clean tree before every
-  measurement
+The finding is the constant. The brief asked whether a legitimate package can
+exceed 600 s. One can, and not an exotic one: **at a measured 130 ms per 1080p
+frame in the debug build the control plane actually resolves, the bound is
+reached at 2 minutes 34 seconds of footage.** A package that is merely slow is
+killed and told it is wedged.
+
+- **Head reviewed:** `dbb46d7c37af05da53109581182ceed59d0b3879`
+- **Confirmed equal to** `refs/heads/P7-overlay-level`
+- **Checkout:** fresh clone, attached branch, tracked tree clean after every
+  cycle, restored with `git reset --hard HEAD` and rebuilt before every
+  measurement (§2a, eighth variant)
 
 ---
 
@@ -26,7 +32,7 @@ the fix was applied, and it is in production code rather than the test harness.
 ==== STEP: the unsafe exception stays in crates/nbe-decode
 unsafe exception confined to crates/nbe-decode/src
 ==== STEP: cargo clippy --workspace --all-targets -- -D warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 25s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 24s
 ==== STEP: cargo test --workspace (summary echoed for the audit trail)
 ::group::Rust test summary
 TOTAL: 173 passed, 0 failed, 0 ignored
@@ -45,7 +51,7 @@ preflight FAILED (3 error(s), 0 warning(s)): report at tests/fixtures/valid_show
 
 ```
 ==== STEP: cargo build -p nbe-preflight   (working-directory: .)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.32s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
 ==== STEP: npm ci
 found 0 vulnerabilities
 ==== STEP: npx tsc --noEmit
@@ -56,83 +62,73 @@ found 0 vulnerabilities
   no violations
 ==== STEP: tests pass and actually run (summary echoed for the audit trail)
 ::group::Control-plane test summary
-# tests 45
-# pass 45
+# tests 46
+# pass 46
 # fail 0
 # skipped 0
 # todo 0
 ::endgroup::
-passed=45 failed=0
+passed=46 failed=0
   gate satisfied
 ```
-
-Green CI is the floor, and the floor is met. The finding below is something CI
-cannot see — because the condition that triggers it is the one where CI stops
-reporting at all.
 
 ---
 
 ## 2. Finding
 
-### F1 — [MEDIUM] The inherited hang is annotated, not fixed
+### F2 — [MEDIUM] The 600 s bound is crossed by a legitimate package
 
-**`packages/control-plane/src/package.ts:54`**, with the symptom in
-`packages/control-plane/src/render-channel.test.ts`.
+**`packages/control-plane/src/package.ts:44`** (`DEFAULT_PREFLIGHT_TIMEOUT_MS`).
 
-Step 4c's deliverable is stated twice and identically: *"the inherited hang
-fails instead of hanging"* (`07-overlay-level.md`, Definition of Done 3) and
-*"Remove the binary → the suite **fails** rather than hangs"* (its falsification
-row). The done message claims *"three named failures, process exits."*
+The bound's own doc comment sets the test: *"The bound is for **wedged, not
+slow**… Ten minutes is far outside any measured run."* The measured runs it was
+sized against are a five-second fixture. Real packages are not five seconds.
 
-**Reproduction.** A preflight binary that exists and never answers
-(`#!/bin/sh` / `sleep 100000`), which is the condition the finding describes:
+**Measurement.** Copies of `tests/fixtures/dress_show/media/A1.mp4` (150 frames,
+1080p) in one package, timed with the branch's own debug binary:
 
-```
-$ NBE_PREFLIGHT_BIN=…/hang-pf timeout 90 npx tsx --test src/render-channel.test.ts
-  exit=124
-  named failures: 3   summary line: 0
-```
+| 1080p frames | footage | preflight | per frame |
+|---:|---:|---:|---:|
+| 300 | 10.0 s | 39.16 s | 131 ms |
+| 600 | 20.0 s | 77.95 s | 130 ms |
+| 1200 | 40.0 s | 156.35 s | 130 ms |
+| 2400 | 80.0 s | 311.43 s | 130 ms |
 
-The three named failures are real and are an improvement — each says
-`no response to "show.load" within 15000 ms`. But **`exit=124` means the wall
-clock killed it**, and there is no `# pass` / `# fail` summary. The last line of
-output is a test completing normally; after that the process emits nothing and
-never exits. CI still hits its limit, exactly as before; it just prints more on
-the way there.
+Four points across an 8× span, no deviation — the cost is linear in frames at
+**130 ms/frame**. Re-measured from the confirmed clean tree: 136 and 132 ms.
 
-**Root cause, proven separately.** `send()`'s deadline bounds the *test's* wait.
-It does not bound the *subprocess*. `runPreflight` calls
-`execFileP(preflightBin(), args, { cwd })` with no `timeout` option, no
-`killSignal`, and no `AbortSignal` — a grep for all three across `package.ts`
-returns nothing. A single un-timed `execFile` child holds Node's event loop
-open on its own:
+**Therefore 600 000 ms is reached at ~4 600 frames — 2 minutes 34 seconds of
+1080p footage.** A rundown with ten fifteen-second clips crosses it. The
+extrapolation is a 2× step beyond the last measured point, on a fit with no
+observed curvature.
 
-```js
-const execFileP = promisify(execFile);
-execFileP(hangingBinary, []).catch(() => {});
-console.log("started child; main work done, nothing left to await");
-```
+**What the operator sees.** `show.load` fails with
+`E_PREFLIGHT_FAILED: preflight did not answer within 600000 ms … It is wedged,
+not slow — raise NBE_PREFLIGHT_TIMEOUT_MS only if a real run legitimately takes
+longer`. The package was legitimately taking longer. The message asserts the
+opposite of the truth and points the operator away from the actual remedy.
 
-```
-started child; main work done, nothing left to await
-  exit=124 (the child kept the loop alive)
-```
+**Why the debug build is the right frame.** `preflightBin()` resolves
+`target/debug/nbe-preflight` (`package.ts:27`, `:33`), and CI's control-plane
+job runs `cargo build -p nbe-preflight` with no `--release`. The debug binary is
+the one on the path today.
 
-Nothing in the test file can close that, because the handle belongs to
-production code.
+**The release build changes the arithmetic by 8×**, measured on the same
+1200-frame package: **20.00 s, 16.7 ms/frame**, which puts the bound at roughly
+twenty minutes of footage. That is comfortably outside any plausible package,
+which makes it the more interesting half of the fix: the As-Built Ledger already
+proposed *"run preflight's decode in release even from a debug build"* for the
+46 s `show.load` problem, and this is the same root cost with a second
+consequence. Fixing the build makes the constant right; raising the constant
+alone leaves loads taking ten minutes.
 
-**Why this is more than a harness bug.** `runPreflight` is the path
-`show.load` takes. With no timeout, a wedged preflight binary means `show.load`
-never returns: the operator's command does not answer, the §16 response never
-arrives, and the audit log records an accepted command with no outcome. The
-measured 46 s decode already shows this call can be slow; nothing bounds how
-slow. The test-harness symptom is the same defect seen from outside.
-
-**Fix shape.** A `timeout` (and `killSignal`) on the `execFileP` options in
-`runPreflight`, chosen against the measured worst case rather than guessed, so
-a wedged binary becomes a named `E_PREFLIGHT_FAILED` instead of an unanswered
-command. The `send()` deadline stays — it is a good guard, and it is what made
-this diagnosable — but it is the second line of defence, not the first.
+**Fix shape (either, or both).** Resolve a release-built preflight for the
+control plane's own invocation, so the bound is sized against 16.7 ms/frame; or
+size the default against the debug cost, which needs tens of minutes to cover a
+real bulletin and makes "wedged" nearly meaningless. The first is better, and it
+also closes the 46 s complaint the rehearsal has carried since the midpoint
+review. Whatever is chosen, the doc comment should name the measurement it was
+derived from rather than a fixture.
 
 ---
 
@@ -140,84 +136,82 @@ this diagnosable — but it is the second line of defence, not the first.
 
 | # | Claim | How verified | Result |
 |---|---|---|---|
-| 1 | Three audio tests re-pointed, no assertion weakened | Diffed `9bd18f9^..9bd18f9` on `prompt06.rs`, filtered for added/removed assertion lines | **Holds.** *No assertion line was added or removed* in any of the three. Only setup changed: a window seam and cycle counts. `loud > -3.0`, `quiet < -60.0`, `music < -30.0`, `(mic − −6.0).abs() < 1.5` all unchanged |
-| 1b | `set_meter_window` is a test seam, not a production escape | Grepped every caller | **Holds.** Five callers, all in `prompt06.rs`; the only definition is the method itself. Production takes `DEFAULT_METER_WINDOW_MS = 1000` |
-| 1c | The new transient test fails under old publish-and-reset | Restored per-block publish-and-reset, ran it | **FAILED as required** — `the transient was -6 dBFS and the window reported -120.0 dBFS` |
-| 2a | The starvation test measures what it claims | Read it; it asserts the load took >20 ms before concluding anything | **Holds.** It refuses to draw a conclusion from a fixture that decodes too fast to detect starvation — the failure message says so and tells you to add clips |
-| 2b | `show.load` is on the blocking pool at every call site | Grepped `on_show_load` and `load_video_asset` | **Holds.** One call site, inside `spawn_blocking`; `load_video_asset` is reached only from within it |
-| 2c | The clock test passes on unmodified parent code | Extracted the clock test alone, checked out `76ff9f3` sources under it, ran it | **Holds** — `show_start_starts_the_clock_at_once ... ok` against parent sources. The clock was never the defect, as claimed |
-| 3a | The R6 test runs at production cadence | Read the constant | **Holds.** `const INTERVAL_MS: u64 = 1000; // production cadence`, used for the config, the deadline, and the assertion bound |
-| 3b | The pump loses no ack and starves no tick under burst | My own probe: 40 back-to-back directives at a 1000 ms interval | **Holds under attack.** 40/40 acks, in order, **first ack at 2.05 ms**, 3 telemetry ticks in 2.5 s. No lost wakeup (`Notify`'s stored permit covers a push between drain and select), no tick starvation, no catch-up burst |
-| 4 | §12.4's cap inclusive at 900, budget irrelevant, reasons distinguish | Ran `plan()` at 899/900/901 on a 320×180 frame | **Holds.** Budget holds 3106 frames, so the cap alone decides. 899 → Vram, 900 → Vram, 901 → `Streaming … exceeds SPEC §12.4's absolute short-loop cap of 900 frames`. A budget refusal reads `… exceeds the 256 MiB effective budget (86 frames max)` — the two are distinguishable at a glance |
-| 5 | The pass-4 bypass no longer compiles | Reintroduced `let mut b = …; b.per_loop_mib = 1024;` in `nbe-engine` | **Holds** — `error[E0616]: field per_loop_mib of struct CacheBudget is private`. The compiler is the gate now |
-| 5b | `spec_budgets.rs`'s narrowed role is stated and real | Read the comment; ran anchor r14 | **Holds.** The comment says privacy handles other crates and the grep keeps in-crate proliferation. r14 is now refused at compile time (`E0451`) — a *stronger* outcome than the test failure it used to produce |
-| 6a | Unattributable counter moves; attributable does not double-count | The spine tests only the unattributable case, so I wrote the other: a corrupt asset an Item **does** reference | **Holds.** `total=1, unattributable=0, itemEvents=1`. Counted once, not once per affected Item, and the gap counter is not inflated by a failure that has somewhere to go |
-| 6b | The hang: three named failures, process exits | Hanging preflight binary | **FAILS — see F1.** Three named failures, but `exit=124` and no summary line |
-| 7 | The sixteen accumulated anchors still apply | Ran all sixteen on this head | **16/16 bite** — full table below |
+| 1a | The timeout fires and SIGKILL is fatal to the child | Direct `execFile` probe with `timeout: 1500, killSignal: "SIGKILL"` | **Holds** — `rejected after 1506 ms  killed=true signal=SIGKILL code=null`, **0 surviving processes** when the child is the binary itself |
+| 1b | No orphaned process survives | Same probe with a shell wrapper that *forks* rather than `exec`s | The grandchild survives — but that is a property of killing any shell wrapper, and production `execFile`s the binary path directly with no shell. **Not a finding**; noted because my own earlier probes leaked eight `sleep` processes this way |
+| 1c | `show.load` fails by name, nothing half-loaded, audit terminal | My own probe over a real socket, dumping the audit record | **Holds** — `status=error code=E_PREFLIGHT_FAILED`; `state.pkg=null showState=UNLOADED preflightPassed=false`; audit `{"kind":"command","command":"show.load","outcome":"rejected","errorCode":"E_PREFLIGHT_FAILED","svBefore":0,"svAfter":0}` |
+| 1d | Suite level: exit code with a summary, not 124 | Wedged binary against `render-channel.test.ts` and `v04.test.ts` | **Holds** — `exit=1`, `# tests 16 / # pass 13 / # fail 3`. Was `exit=124` with zero summary lines |
+| 2 | The override parses strictly | 13 inputs through `preflightTimeoutMs()` | **Holds.** `"600abc"`, `""`, `"-5"`, `"1e4"`, `" 600000"`, `"5_000"`, `"٦٠٠"`, `"9007199254740993"` → default. `"+5000"`→5000, `"0600"`→600 per the documented grammar. **`"0"` → default**, which is the important one: Node reads `timeout: 0` as *no timeout*, so the one value that would silently disable the bound is the one it refuses. Behaviour matches the comment exactly |
+| 3 | The two layers fail independently | Ran both mutations myself | **Holds.** No timeout → `exit=124`, 1 named failure, **0 summary lines** (hangs). Timeout kept, mapping deleted → `exit=1`, named test fails on *"the failure must name the bound it exceeded, not just fail"*. Neither substitutes for the other |
+| 4 | No legitimate package exceeds 600 s | Measured, four points, then release | **FAILS — see F2.** 2m34s of 1080p footage crosses it in the debug build that ships |
+| 5a | Near the bound succeeds; past it fails | Stub preflight sleeping 1 s vs a 3 000 ms bound, then 3 s vs 1 500 ms | **Holds** — `1394 ms, timedOut=false, exit 0, report present` / `1504 ms, timedOut=true, exit 124, report null`. No false positive under the bound |
+| 5b | All-or-nothing on the failure path | Ran a **successful** preflight first so an air-ready report sat on disk, then wedged the binary | **Holds, and this is the sharpest guard in the change.** `report=null` on timeout and `loadPackage` throws by name — a stale verdict from an earlier run cannot be adopted as this one's |
+| 6 | All accumulated anchors bite | 13 Rust + 3 TypeScript v0.4 rows, plus the spine round's five | **21/21 bite.** r14 at compile time (`E0451`), the rest as test failures |
+| 6b | The 40-directive pump burst | `crates/` is byte-identical between `9bd18f9` and `dbb46d7` (`git diff --stat` empty for `crates/`) | Verified at `9bd18f9`: 40/40 acks in order, first at 2.05 ms, 3 ticks in 2.5 s. Unchanged by this commit |
 
 ## 4. Falsification rows
 
-| # | Behaviour deleted | Observed |
-|---|---|---|
-| 1 | §12.4 frame-cap refusal | 1 test FAILED |
-| 2 | `audioDuration` refusal | 1 test FAILED |
-| 3 | Budget consulted for `auto` | 1 test FAILED |
-| 4 | §12.5 mandatory-`vram` failure | 1 test FAILED |
-| 5 | Planner honours `declared_format` | 1 test FAILED |
-| 6 | Image charged its own size | 4 tests FAILED |
-| 7 | `/rate` divisor in the audio sum | 1 test FAILED |
-| 8 | `parseHouseRate` → `Number(raw ?? 30)` | 1 test FAILED |
-| 9 | `houseRate` wiring in `server.ts` | 1 test FAILED |
-| 10 | `sequenceRef` back in the schema enum | 1 test FAILED |
-| 11 | `manifestIdentity` → constant `"0.3"` | 1 test FAILED |
-| 12 | Shared chain → hardcoded 1920×1080 | 1 test FAILED |
-| 13 | Duplicate spec item number | 1 test FAILED |
-| 14 | Engine builds its own 1024/4096 budget | **compile error `E0451`** (was a test failure; privacy moved the gate earlier), and the `spec_budgets` lint FAILED |
-| 15 | Engine ignores the declared `vramBudgetMib` | 1 test FAILED |
-| 16 | `DEFAULT_PER_LOOP_MIB` drifts from §12.4 | 1 test FAILED |
-| — | Per-block publish-and-reset restored (this round) | `a_transient_shorter_than_the_window_still_reaches_the_meter` FAILED |
-| — | `show.load` back on the async path (this round) | `a_package_load_does_not_starve_the_rest_of_the_engine` FAILED |
-| — | Pump drains only on the deadline (this round) | `an_ack_does_not_wait_for_the_telemetry_tick` FAILED |
+| Row | Observed |
+|---|---|
+| `timeout` + `killSignal` removed | `exit=124`, 1 named failure, **0 summary lines** — hangs |
+| Named-error mapping removed (timeout kept) | `exit=1`, `not ok - a wedged preflight fails show.load by name…`, error *"must name the bound it exceeded"* |
+| §12.4 frame-cap refusal | 1 FAILED |
+| `audioDuration` refusal | 1 FAILED |
+| Budget consulted for `auto` | 1 FAILED |
+| §12.5 mandatory-`vram` failure | 1 FAILED |
+| Planner honours `declared_format` | 1 FAILED |
+| Image charged its own size | 4 FAILED |
+| `/rate` divisor | 1 FAILED |
+| `parseHouseRate` → `Number()` | 1 FAILED |
+| `houseRate` wiring in `server.ts` | 1 FAILED |
+| `sequenceRef` back in the schema | 1 FAILED |
+| `manifestIdentity` → constant | 1 FAILED |
+| Shared chain → hardcoded 1080p | 1 FAILED |
+| Duplicate spec item number | 1 FAILED |
+| Engine builds its own budget | **compile error `E0451`** |
+| Engine ignores `vramBudgetMib` | 1 FAILED |
+| Constant drifts from §12.4 | 1 FAILED |
+| Per-block publish-and-reset (R2) | 1 FAILED |
+| §12.4's 900-frame conjunct | 1 FAILED |
+| `show.load` back on the async path (R5) | 1 FAILED |
+| Pump drains only on the deadline (R6) | 1 FAILED |
+| F1's unattributable counter | 1 FAILED |
 
-## 5. Observations — reproduced, deliberately not filed
+## 5. The closing question
 
-1. **`DEFAULT_METER_WINDOW_MS` and `telemetry_interval_ms` are two constants for
-   one number.** The commit's stated intent is *"one telemetry interval's worth
-   of blocks, so a published meter covers exactly the interval a tick reports"* —
-   true only while both read 1000. `AudioDriver` is constructed with
-   `(state, sink, house_rate)` and has no access to `EngineConfig`, so it cannot
-   derive the window from the interval. Not filed because the interval is
-   hardcoded to 1000 in `main.rs` and in `EngineConfig::default()` with no env
-   override, so no user can create the divergence. It is the same shape as the
-   §12.4 budget defect the v0.4 cycle spent three rounds on, one step before it
-   becomes real. Whoever makes the telemetry interval configurable owns it.
+> After this fix, is there any remaining path where an accepted command can fail
+> to reach a terminal state?
 
-2. **The meter window rolls on audio-block count, not wall clock.** If the
-   driver's cycle rate drifts, window and tick slide relative to each other, so
-   a tick reports the most recently *completed* window rather than the interval
-   it covers. Acceptable for a peak meter; worth knowing before anyone asserts
-   tighter timing on `busPeakDbfs`.
+**No — in the control plane, subject to F2.** Every `await` on a command path:
 
-3. **§10.1 still has no decode-failure field.** The spine flagged this rather
-   than inventing wire surface, which is the right call under the constraints.
-   The counters exist engine-side and are gated; nothing surfaces them yet.
+- `show.load` → `loadPackage` → `runPreflight` — **bounded** by
+  `preflightTimeoutMs()`, terminal either way.
+- `show.preflight` → `runPreflight` — the same bound, and the same fix covered
+  it without needing a second change.
+- `show.stop` → `deps.waitForGrace(graceMs, …)` — bounded by
+  `showStopGraceMs`, resolving `false` on expiry into the forced path. Terminal.
+
+A repository-wide grep for `fetch(`, `spawn(`, `execFile` and bare `new Promise`
+outside tests returns only those, plus the server's own startup and shutdown
+promises, which are not on a command path. There is no HTTP call, no second
+subprocess, and no unbounded `new Promise` in any handler.
+
+The qualifier matters, though: F2 means an accepted command *does* reach a
+terminal state, just the wrong one. "Bounded" and "correct" are different
+properties, and the spine has now achieved the first everywhere and the second
+everywhere except this constant.
 
 ## 6. Self-check
 
-- Reported SHA `9bd18f9b381dfec2ab11038d476cf18629136996` re-verified equal to
+- Reported SHA `dbb46d7c37af05da53109581182ceed59d0b3879` re-verified equal to
   `refs/heads/P7-overlay-level` after all probes.
-- Attached to a branch, not detached; tracked tree clean after every cycle.
-- **Rebuilt from the clean tree before every measurement** (§2a). One near-miss
-  of my own, worth recording alongside the stale-binary rule it rhymes with:
-  `git checkout <commit> -- <path>` **stages** what it restores, so a following
-  `git checkout -- .` restores *from the index* and silently keeps the other
-  commit's sources. `git reset --hard HEAD` is the restore; `git status` said
-  `7` modified when I expected `0`, which is the only reason I caught it.
-- Two probes of mine were wrong before they were right — the burst probe matched
-  `"telemetry"` where the wire says `"engineTelemetry"`, and sent a
-  discontiguous `seq` that the connection gate correctly dropped. Both produced
-  a plausible-looking "0 acks, 0 ticks" that would have been a false HIGH. Fixed
-  and re-run; the corrected result is in claim 3b.
-- The three consequential probes (the hang, the `execFile` loop-holding proof,
-  claim 1's falsifier) re-run against the confirmed SHA after a rebuild — all
-  three reproduce identically.
+- Attached to a branch, not detached; restored with `git reset --hard HEAD`
+  throughout — the eighth-variant rule, applied.
+- Rebuilt from the clean tree before every measurement.
+- Three consequential probes re-run against the confirmed SHA after a rebuild:
+  the cost measurement (136 and 132 ms/frame — the finding reproduces), the
+  wedged path end to end (`ok 7`, `# pass 7 / # fail 0`), and the no-timeout
+  mutation (`exit=124`).
+- I left eight orphaned `sleep` processes from earlier rounds' probes on this
+  machine and only noticed because the orphan count started at 8 rather than 0.
+  Cleaned up. It changed no result, but it is exactly the kind of ambient state
+  that makes a later measurement lie.
