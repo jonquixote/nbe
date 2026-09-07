@@ -194,12 +194,17 @@ pub fn load_video_asset(
             // residency the engine does not hold.
             //
             // The other half of that, which a reader needs to hear: preflight
-            // DOES honour the declaration (§12.11.1 reports declared demand),
-            // so for any format below RGBA8 its number is an UNDER-estimate of
-            // what this engine holds, and it can report a loop VRAM-resident
-            // that this path will stream. Measured: a 200-frame 1080p `bc7`
-            // loop at `vramBudgetMib: 512` reports 396 MiB resident here and
-            // streams there. The smaller number is not the safe one until the
+            // plans the format the MANIFEST asked for (§12.11.1 reports
+            // declared demand), so for ANY loop whose planned format is not
+            // RGBA8 its number is an UNDER-estimate of what this engine holds,
+            // and it can report a loop VRAM-resident that this path will
+            // stream. That includes loops declaring nothing at all: preflight
+            // passes `yuv_sampling: !has_alpha` and lands on NV12 where this
+            // path lands on RGBA8, so a 60-frame 1080p loop with no
+            // `textureFormat` reports 178 MiB there and holds 474 MiB here.
+            // The undeclared case is the default case. Measured also for a
+            // 200-frame `bc7` loop at `vramBudgetMib: 512`: 396 MiB reported,
+            // streamed here. The smaller number is not the safe one until the
             // §12.3 ladder is real.
             declared_format: None,
         },

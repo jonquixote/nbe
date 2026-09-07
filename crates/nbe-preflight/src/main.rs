@@ -12,17 +12,12 @@ use nbe_core::{AssetReport, PreflightReport, ValidationError};
 /// allowed to be slow; it is not allowed to be unbounded.
 const DECODE_FRAME_LIMIT: usize = 100_000;
 
-/// SPEC §12.4's default per-loop and total short-loop budgets.
-const DEFAULT_PER_LOOP_MIB: u64 = 256;
-const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
-
-/// SPEC §12.4's absolute short-loop frame cap.
+/// SPEC §12.4's absolute short-loop frame cap, widened for the comparison
+/// against a `periodFrames` the schema leaves unbounded.
 ///
-/// The schema declares `periodFrames` with `minimum: 1` and **no maximum**, so
-/// a package may legally declare a period near `u64::MAX`. Saturating
-/// arithmetic stops that panicking, but a silent saturation reports a number
-/// nobody can act on. Past this bound the package is refused by name.
-const ABSOLUTE_LOOP_FRAME_CAP: u64 = 900;
+/// The number itself lives in `nbe_core::loop_cache` with the rule it
+/// parameterises, so preflight and the engine cannot hold different §12.4s.
+const ABSOLUTE_LOOP_FRAME_CAP: u64 = nbe_core::loop_cache::ABSOLUTE_LOOP_FRAME_CAP as u64;
 
 /// SPEC §8.4 residency for one second of clip audio: 48 kHz x 2 ch x f32.
 const AUDIO_BYTES_PER_SECOND: u64 = 48_000 * 2 * 4;
@@ -108,18 +103,13 @@ fn loop_plan(
             gop_frames: 0,
             declared_format,
         },
-        CacheBudget {
-            // §12.4's defaults, overridden by the manifest's own declaration
-            // where it makes one.
-            per_loop_mib: lm
-                .get("vramBudgetMib")
+        // §12.4's table, with the manifest's ceiling where it declares one.
+        // Built by the same constructor the engine uses.
+        CacheBudget::from_manifest(
+            lm.get("vramBudgetMib")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(DEFAULT_PER_LOOP_MIB)
-                .min(u32::MAX as u64) as u32,
-            total_mib: DEFAULT_TOTAL_LOOP_MIB,
-            // Discrete reference target (§0.3): no unified-memory clamp.
-            recommended_working_set_mib: None,
-        },
+                .map(|v| v.min(u32::MAX as u64) as u32),
+        ),
     )
 }
 

@@ -11,15 +11,23 @@
 //! One rule, one implementation — the same discipline the renderer applies to
 //! `drawn_elements`, applied across crates.
 //!
-//! **One rule, two inputs, deliberately.** Preflight passes the manifest's
-//! `declared_format`; the engine passes `None`, because its decode path
-//! produces RGBA8 whatever the manifest asked for. That is not a disagreement
-//! about the rule — but it does mean that until §12.3's ladder is implemented,
-//! preflight's number for a loop declaring a format below RGBA8 sits *below*
-//! what the engine will hold, and the two can even disagree about residency
-//! policy (preflight `Vram`, engine `Streaming`). Whoever implements the
-//! ladder closes this; until then, do not read the smaller number as the safe
-//! one.
+//! **One rule, one budget, one remaining difference.** `CacheBudget` is built
+//! by [`CacheBudget::from_manifest`] on both sides, so §12.4's numbers cannot
+//! diverge again; they did, and the engine held loops preflight had reported as
+//! streamed and charged nothing for.
+//!
+//! What still differs is the format, deliberately: preflight passes the
+//! manifest's `declared_format` and derives the rest from §12.3's ladder, while
+//! the engine passes `None` with `yuv_sampling: false`, because its decode path
+//! produces RGBA8 whatever the manifest asked for. That is a capability
+//! difference, not a disagreement about the rule — but it means that until
+//! §12.3's ladder is implemented, preflight's number for **any** loop whose
+//! planned format is not RGBA8 sits *below* what the engine will hold, and the
+//! two can disagree about residency policy (preflight `Vram`, engine
+//! `Streaming`). That includes loops declaring no format at all, which take the
+//! NV12 rung here and RGBA8 there — the default case, not an exotic one.
+//! Whoever implements the ladder closes it; until then, do not read the smaller
+//! number as the safe one.
 //!
 //! The order is mandated (§26 sequencing): **format accounting first**, then
 //! the budget, then the policy. `frameCostMiB` comes from the selected texture
@@ -128,6 +136,20 @@ pub struct LoopSpec {
     pub declared_format: Option<CacheTextureFormat>,
 }
 
+/// SPEC §12.4's default per-loop short-loop budget.
+pub const DEFAULT_PER_LOOP_MIB: u32 = 256;
+
+/// SPEC §12.4's default total short-loop budget, shared across loops.
+pub const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
+
+/// SPEC §12.4's absolute short-loop frame cap.
+///
+/// The schema declares `periodFrames` with `minimum: 1` and **no maximum**, so
+/// a package may legally declare a period near `u64::MAX`. Saturating
+/// arithmetic stops that panicking, but a silent saturation reports a number
+/// nobody can act on. Past this bound the package is refused by name.
+pub const ABSOLUTE_LOOP_FRAME_CAP: u32 = 900;
+
 /// The budget a loop is planned against.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheBudget {
@@ -142,6 +164,27 @@ pub struct CacheBudget {
 }
 
 impl CacheBudget {
+    /// §12.4's table, with the manifest's declared ceiling where it declares
+    /// one.
+    ///
+    /// **Both crates build their budget here.** They did not: preflight held
+    /// §12.4's 256/512 while the engine hardcoded a Prompt 05 placeholder of
+    /// 1024/4096 and never read `vramBudgetMib` at all, so the two sides of one
+    /// shared planner disagreed about which loops are resident. A 100-frame
+    /// 1080p RGBA8 loop was streamed and charged nothing by preflight while the
+    /// engine made it resident at 791 MiB — and the package was air-ready.
+    ///
+    /// A shared rule is only shared if its inputs are built in one place.
+    pub fn from_manifest(declared_per_loop_mib: Option<u32>) -> Self {
+        CacheBudget {
+            per_loop_mib: declared_per_loop_mib.unwrap_or(DEFAULT_PER_LOOP_MIB),
+            total_mib: DEFAULT_TOTAL_LOOP_MIB,
+            // Discrete reference target (§0.3). A caller on unified memory sets
+            // this from `MTLDevice.recommendedMaxWorkingSetSize` (§12.6).
+            recommended_working_set_mib: None,
+        }
+    }
+
     /// The effective per-loop budget after the unified-memory clamp.
     ///
     /// SPEC §12.6: on Apple silicon the cache may not assume dedicated VRAM.

@@ -20,12 +20,13 @@ fn media(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// The budget the engine actually plans against (SPEC §12.4's table).
+///
+/// This helper held its own 1024/4096 — the same Prompt 05 placeholder the
+/// load site held — so these tests were exercising a budget no package would
+/// ever get. They now run against what production uses.
 fn budget() -> nbe_engine::loop_cache::CacheBudget {
-    nbe_engine::loop_cache::CacheBudget {
-        per_loop_mib: 1024,
-        total_mib: 4096,
-        recommended_working_set_mib: None,
-    }
+    nbe_engine::loop_cache::CacheBudget::from_manifest(None)
 }
 
 fn directive(

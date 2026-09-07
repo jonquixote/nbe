@@ -123,11 +123,6 @@ impl DirectiveHandler {
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
         // boundary — and is reported as `itemEvent: decodeError` so the
         // control plane can drive the item to ERROR (SPEC §5.9.3, §17.3).
-        let budget = crate::loop_cache::CacheBudget {
-            per_loop_mib: 1024,
-            total_mib: 4096,
-            recommended_working_set_mib: None,
-        };
         let mut library = crate::video::VideoLibrary::default();
         for (asset_id, kind) in &index.asset_kind {
             if kind != "video" && kind != "alphaVideo" {
@@ -137,6 +132,9 @@ impl DirectiveHandler {
                 continue;
             };
             let declared = index.declared_loop_period.get(asset_id).copied();
+            // SPEC §12.4's table, with this asset's declared ceiling where the
+            // manifest declares one — the same constructor preflight uses.
+            let budget = index.loop_budget(asset_id);
             match crate::video::load_video_asset(
                 asset_id,
                 &root.join(src),
