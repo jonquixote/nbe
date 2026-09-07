@@ -64,6 +64,20 @@ pub struct EngineState {
     pub preview_missed: AtomicU64,
     /// Audio callbacks the graph could not fill in time (SPEC §8.10).
     pub audio_underruns_total: AtomicU64,
+    /// Every decode failure seen at `show.load` (SPEC §5.9.3).
+    ///
+    /// `VideoLibrary::failures` recorded them and nothing read it — F2. A
+    /// failure the manifest can attribute to a rundown Item becomes an
+    /// `itemEvent: decodeError`; one it cannot had no destination at all and
+    /// left only a `warn!` behind, which is the single place "logged, therefore
+    /// not swallowed" rested on an ungated line — F1.
+    pub decode_failures_total: AtomicU64,
+    /// The subset of the above that no rundown Item references.
+    ///
+    /// Counted separately because it is the operator-visible gap: nothing on
+    /// the §17.3 state machine will ever turn red for these, so the count is
+    /// the only evidence they happened.
+    pub unattributable_decode_failures_total: AtomicU64,
     /// Audio-to-master drift (SPEC §8.9), as `f64::to_bits` so the audio
     /// thread can publish it without a lock.
     pub audio_drift_ms_bits: AtomicU64,
@@ -112,6 +126,8 @@ impl EngineState {
             dropped_frames_total: AtomicU64::new(0),
             preview_missed: AtomicU64::new(0),
             audio_underruns_total: AtomicU64::new(0),
+            decode_failures_total: AtomicU64::new(0),
+            unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
             audio_commands: Mutex::new(Vec::new()),

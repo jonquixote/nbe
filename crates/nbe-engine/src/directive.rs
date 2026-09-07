@@ -176,6 +176,9 @@ impl DirectiveHandler {
                     // control plane uses for auth failures (SPEC §5.3).
                     tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
                     library.failures.insert(asset_id.clone(), e.to_string());
+                    self.state
+                        .decode_failures_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     // `itemEvent` is addressed to a rundown Item, because that
                     // is what the §17.3 state machine tracks. Reporting an
@@ -183,9 +186,18 @@ impl DirectiveHandler {
                     // cannot attribute to anything.
                     let affected = index.items_using_asset(asset_id);
                     if affected.is_empty() {
+                        // F1/F2. This branch used to be a `warn!` and nothing
+                        // else: deleting the line left the suite green, because
+                        // a log line is not an effect. The count is the effect —
+                        // it is the only evidence an unattributable decode
+                        // failure happened, since no Item will ever go ERROR
+                        // for it.
+                        self.state
+                            .unattributable_decode_failures_total
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         tracing::warn!(
                             asset = %asset_id,
-                            "decode failure affects no rundown item; nothing to report"
+                            "decode failure affects no rundown item; counted, not reported as an itemEvent"
                         );
                     }
                     for item_ref in affected {

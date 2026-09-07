@@ -332,3 +332,98 @@ async fn an_ack_does_not_wait_for_the_telemetry_tick() {
          its next tick instead of draining when one is queued"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F1/F2 — an unattributable decode failure has an effect, not just a log line
+// ---------------------------------------------------------------------------
+
+/// A package whose only video asset no rundown Item references, and which
+/// cannot decode.
+fn write_orphan_failure_package(dir: &Path) {
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        8,
+        8,
+        image::Rgba([9, 9, 9, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.join("media/slate.png"), &png).unwrap();
+    std::fs::copy(media("corrupt.mp4"), dir.join("media/orphan.mp4")).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::json!({
+            "manifestVersion": "0.4",
+            "network": { "id": "nbe", "name": "T" },
+            "show": {
+                "id": "s", "title": "T",
+                "video": { "width": 640, "height": 360, "frameRate": 30, "colorSpace": "rec709" },
+                "audio": { "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 },
+                "fallbackAssetId": "slate"
+            },
+            "assets": [
+                { "id": "slate", "kind": "image", "source": "media/slate.png", "format": "png" },
+                { "id": "orphan", "kind": "video", "source": "media/orphan.mp4", "format": "h264" }
+            ],
+            // The scene shows the slate. Nothing references `orphan`, so its
+            // decode failure is attributable to no Item.
+            "scenes": [{ "id": "SCN", "elements": [
+                { "id": "main", "kind": "graphic", "z": 1, "templateId": "TPL" }
+            ]}],
+            "templates": [{ "id": "TPL", "kind": "generic" }],
+            "rundown": { "id": "R", "items": [
+                { "id": "A1", "kind": "sceneRef", "sceneRef": "SCN" }
+            ]},
+            "control": { "bindings": [] }
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_unattributable_decode_failure_is_counted_not_only_logged() {
+    // F1: `directive.rs`'s `affected.is_empty()` branch was a `warn!` and
+    // nothing else — delete the line and the suite stayed green, which made it
+    // the one place "logged, therefore not swallowed" rested on an ungated
+    // line. F2: `VideoLibrary::failures` was written and read nowhere.
+    //
+    // Standing invariant 3: a gate observes an effect, not text. The effect is
+    // the count — the only evidence this happened, since no Item will go ERROR
+    // for an asset no Item references.
+    let dir = tempfile::tempdir().unwrap();
+    write_orphan_failure_package(dir.path());
+    let state = Arc::new(EngineState::new(30));
+    let outgoing = Arc::new(OutgoingQueue::default());
+    let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
+    handler
+        .apply(&directive(
+            "show.load",
+            1,
+            serde_json::json!({ "packagePath": dir.path().to_string_lossy() }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.decode_failures_total.load(Ordering::Relaxed),
+        1,
+        "the failure must be counted"
+    );
+    assert_eq!(
+        state
+            .unattributable_decode_failures_total
+            .load(Ordering::Relaxed),
+        1,
+        "and counted as unattributable, because no rundown Item names `orphan`"
+    );
+    // And it produced no `itemEvent`: there is no Item to address one to.
+    let events = outgoing.drain();
+    assert!(
+        !events
+            .iter()
+            .any(|f| matches!(f, EngineFrame::ItemEvent { .. })),
+        "an unattributable failure must not invent an Item to blame"
+    );
+}
