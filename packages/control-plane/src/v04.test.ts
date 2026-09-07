@@ -569,9 +569,16 @@ test("the bound covers a package that declares no durations at all", async () =>
     process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "debug", "nbe-preflight");
     const dbg = preflightBound(undeclared);
     assert.equal(dbg.basis, "bytes", "with nothing declared, the file sizes are the input");
+    // Pin the rate itself, the way `msPerFrame` is pinned: measured at 204.7
+    // s/MB on the worst fixture, rounded up. A silently reduced rate is a
+    // silently tightened bound, which is how this class of defect keeps
+    // recurring.
+    assert.equal(dbg.msPerMb, 250_000, "worst measured was 204.7 s/MB in debug, rounded up");
     assert.ok(
-      dbg.ms > 156_000,
-      `the pass's fixture decodes in ~156 s in debug; the bound must cover it (got ${dbg.ms} ms)`,
+      dbg.ms > 156_000 * 2,
+      `the pass's fixture decodes in ~156 s in debug and the safety factor is ` +
+        `${3}x; the bound must keep real headroom over the measured cost, not ` +
+        `merely exceed it (got ${dbg.ms} ms)`,
     );
 
     // Release decodes it in ~17 s.
