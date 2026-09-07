@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { CpError } from "./protocol.js";
@@ -17,15 +17,28 @@ import type { PackageInfo, PackageItem, PackageElement } from "./state.js";
 
 const execFileP = promisify(execFile);
 
-/** Path to the preflight binary: env override, else the workspace debug build
- *  found by walking upward from cwd (tests run from the package dir). */
+/**
+ * Path to the preflight binary: env override, else the workspace build found by
+ * walking upward from cwd (tests run from the package dir).
+ *
+ * **Release is preferred, and the order is load-bearing — do not "simplify" it
+ * back.** Measured on this repo's own 1080p fixture: the debug binary decodes
+ * at 130 ms/frame and the release binary at 16.7 ms/frame, an 8x difference.
+ * That is the difference between a two-and-a-half-minute rundown taking ten
+ * minutes to preflight and taking one, and it is the same cost the rehearsal
+ * has carried since the midpoint review as "show.load takes 46 s". Debug stays
+ * as the developer fallback, because a contributor who has only ever run
+ * `cargo build` should still get a working control plane — just a slower one.
+ */
 export function preflightBin(): string {
   const fromEnv = process.env.NBE_PREFLIGHT_BIN;
   if (fromEnv) return fromEnv;
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, "target", "debug", "nbe-preflight");
-    if (existsSync(candidate)) return candidate;
+    for (const profile of ["release", "debug"] as const) {
+      const candidate = join(dir, "target", profile, "nbe-preflight");
+      if (existsSync(candidate)) return candidate;
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -34,34 +47,123 @@ export function preflightBin(): string {
 }
 
 /**
+ * Per-frame decode cost, measured — not guessed.
+ *
+ * Timed on this repo's `tests/fixtures/dress_show/media/A1.mp4` (150 frames,
+ * 1080p H.264) replicated into one package, at 300/600/1200/2400 frames: the
+ * cost is linear across an 8x span with no curvature.
+ *
+ *   debug    130 ms/frame   (39.16 / 77.95 / 156.35 / 311.43 s)
+ *   release  16.7 ms/frame  (20.00 s at 1200 frames)
+ *
+ * Both are rounded up here, because the measurement is one machine and a
+ * contended CI runner is slower. The previous constant — a flat 600 s — was
+ * crossed by 2 min 34 s of 1080p footage, ten ordinary clips, and told the
+ * operator their binary was "wedged, not slow" when it was exactly slow.
+ */
+const MS_PER_FRAME_RELEASE = 25;
+const MS_PER_FRAME_DEBUG = 200;
+
+/**
+ * How much longer than the estimate a legitimate run may take.
+ *
+ * The As-Built Ledger measured preflight at 46 s nominal and past 180 s under
+ * CPU contention — roughly 4x. Three is inside that and still leaves the bound
+ * meaning "no verdict is coming" rather than "this is taking a while".
+ */
+const PREFLIGHT_SAFETY_FACTOR = 3;
+
+/**
+ * The floor, for packages whose declared work is small or unreadable.
+ *
+ * A package with no declared durations still gets a minute: process spawn,
+ * schema validation and asset hashing cost something the frame count does not
+ * describe, and a manifest preflight is about to reject may not parse here at
+ * all.
+ */
+export const PREFLIGHT_FLOOR_MS = 60_000;
+
+/**
+ * Frames preflight will decode for this package, from the manifest.
+ *
+ * Defensive by construction: this runs *before* preflight has judged the
+ * manifest, so anything unreadable, missing or malformed contributes zero and
+ * the caller falls back to the floor. Deciding validity is preflight's job, and
+ * this must not pre-empt it — it only needs a size.
+ */
+export function expectedDecodeFrames(packagePath: string): number {
+  try {
+    const manifest = JSON.parse(readFileSync(join(packagePath, "manifest.json"), "utf8")) as {
+      assets?: Array<{
+        kind?: string;
+        expectedDurationFrames?: number;
+        loop?: { periodFrames?: number };
+      }>;
+    };
+    let frames = 0;
+    for (const a of manifest.assets ?? []) {
+      if (a.kind !== "video" && a.kind !== "alphaVideo") continue;
+      // Preflight decodes the asset; the manifest's own declaration is the
+      // best estimate of how much there is. A loop period is a lower bound on
+      // the same footage.
+      const declared = Number(a.expectedDurationFrames ?? 0);
+      const period = Number(a.loop?.periodFrames ?? 0);
+      const n = Math.max(Number.isFinite(declared) ? declared : 0, Number.isFinite(period) ? period : 0);
+      if (n > 0) frames += n;
+    }
+    return frames;
+  } catch {
+    return 0;
+  }
+}
+
+export interface PreflightBound {
+  ms: number;
+  frames: number;
+  msPerFrame: number;
+  derived: boolean;
+}
+
+/**
  * How long `nbe-preflight` may take before the control plane stops waiting.
  *
- * The bound is for **wedged, not slow**. Preflight legitimately takes 46 s on a
- * five-second 1080p package in a debug build and has been measured past 180 s
- * under CPU contention, so a tight bound would refuse packages that were only
- * working hard. Ten minutes is far outside any measured run and far inside "the
- * operator has been staring at an unanswered command".
+ * **Derived from the package, not picked.** `frames x msPerFrame x safety`,
+ * floored, where `msPerFrame` follows the binary that actually resolved —
+ * release and debug are 8x apart and a bound sized for one is wrong for the
+ * other. The bound is for **wedged, not slow**: a package that is merely large
+ * gets a proportionally larger budget, which a flat constant could not do.
  *
- * Override with `NBE_PREFLIGHT_TIMEOUT_MS` — the test suite sets it low so a
- * wedged binary produces a named failure in seconds rather than in minutes.
- * Parsed strictly: anything that is not a positive integer takes the default,
- * because a mistyped bound silently disabling the bound is the failure mode
- * this whole finding is about.
+ * `NBE_PREFLIGHT_TIMEOUT_MS` overrides it entirely, parsed strictly — anything
+ * that is not a positive integer takes the derived value, because a mistyped
+ * bound silently disabling the bound is the failure mode this began as. `"0"`
+ * is refused for the same reason: Node reads `timeout: 0` as *no timeout*.
  */
-export const DEFAULT_PREFLIGHT_TIMEOUT_MS = 600_000;
+export function preflightBound(packagePath?: string): PreflightBound {
+  const bin = preflightBin();
+  const msPerFrame = bin.includes(`${sep}release${sep}`) ? MS_PER_FRAME_RELEASE : MS_PER_FRAME_DEBUG;
+  const frames = packagePath ? expectedDecodeFrames(packagePath) : 0;
+  const derivedMs = frames * msPerFrame * PREFLIGHT_SAFETY_FACTOR;
 
-export function preflightTimeoutMs(): number {
   const raw = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
-  if (raw === undefined || !/^\+?\d+$/.test(raw)) return DEFAULT_PREFLIGHT_TIMEOUT_MS;
-  const n = Number(raw);
-  return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_PREFLIGHT_TIMEOUT_MS;
+  if (raw !== undefined && /^\+?\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n) && n > 0) {
+      return { ms: n, frames, msPerFrame, derived: false };
+    }
+  }
+  return {
+    ms: Math.max(PREFLIGHT_FLOOR_MS, derivedMs),
+    frames,
+    msPerFrame,
+    derived: true,
+  };
 }
 
 export interface PreflightResult {
   exitCode: number;
   report: PreflightReportShape | null;
   stderr: string;
-  /** The binary was killed for exceeding `preflightTimeoutMs()`. */
+  /** The binary was killed for exceeding `preflightBound()`. */
   timedOut: boolean;
 }
 
@@ -86,11 +188,11 @@ export interface PreflightReportShape {
 export async function runPreflight(packagePath: string, opts: { allowWarnings?: boolean } = {}): Promise<PreflightResult> {
   const args = ["--package-path", packagePath];
   if (opts.allowWarnings) args.push("--allow-warnings");
-  const timeout = preflightTimeoutMs();
+  const bound = preflightBound(packagePath);
   try {
     const { stdout, stderr } = await execFileP(preflightBin(), args, {
       cwd: process.cwd(),
-      timeout,
+      timeout: bound.ms,
       // SIGTERM can be ignored; a wedged process must not survive its bound.
       killSignal: "SIGKILL",
     });
@@ -141,11 +243,16 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
   // dispatcher's audit record gets its terminal state, and nothing is
   // half-loaded because this throws before any state is touched.
   if (pre.timedOut) {
+    const b = preflightBound(packagePath);
+    const how = b.derived
+      ? `${b.frames} frames at ${b.msPerFrame} ms/frame x ${PREFLIGHT_SAFETY_FACTOR} safety` +
+        (b.ms === PREFLIGHT_FLOOR_MS ? `, floored at ${PREFLIGHT_FLOOR_MS} ms` : "")
+      : "NBE_PREFLIGHT_TIMEOUT_MS override";
     throw new CpError(
       "E_PREFLIGHT_FAILED",
-      `preflight did not answer within ${preflightTimeoutMs()} ms for ${packagePath}; ` +
-        `the binary was killed. It is wedged, not slow — raise ` +
-        `NBE_PREFLIGHT_TIMEOUT_MS only if a real run legitimately takes longer`,
+      `preflight produced no verdict within ${b.ms} ms for ${packagePath} (${how}); ` +
+        `the binary was killed. Raise NBE_PREFLIGHT_TIMEOUT_MS only if a real run ` +
+        `legitimately exceeds that`,
     );
   }
   if (pre.exitCode === 2) {

@@ -95,7 +95,12 @@ jobs:
         with:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build -p nbe-preflight
+      # Release, deliberately: the control plane shells this binary out of
+      # `show.load`, and the debug build decodes at 130 ms/frame against
+      # release's 16.7 — an 8x difference that decides whether an ordinary
+      # rundown preflights in one minute or ten. `preflightBin()` prefers
+      # `target/release` for the same reason.
+      - run: cargo build -p nbe-preflight --release
         working-directory: .
       - run: npm ci
       - run: npx tsc --noEmit
@@ -183,7 +188,11 @@ jobs:
       # Both binaries are real dependencies: the rehearsal spawns the engine
       # and shells preflight. With either missing every step fails for a reason
       # unrelated to the show — measured at 12 of 12 with the engine absent.
-      - run: cargo build -p nbe-engine -p nbe-preflight
+      # Preflight in release for the same reason the control-plane job does:
+      # the rehearsal shells it from `show.load`, and its 46 s cost in debug is
+      # what makes step 3 flaky.
+      - run: cargo build -p nbe-engine
+      - run: cargo build -p nbe-preflight --release
       - run: npm ci
         working-directory: packages/control-plane
       - name: play the show

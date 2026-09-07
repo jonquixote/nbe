@@ -50,6 +50,33 @@ rather than fading with the pass that found them.
    it as a bug. It becomes live the moment shader-side YUV lands — the same
    moment §12.3's format ladder does, and the two should be closed together.
 
+### The 46 s `show.load` and the preflight bound shared one root (recorded 2026-09-07)
+
+Step 3d's gate for promoting the dress rehearsal to a required job includes
+*"`show.load` stops taking 46 s under contention"*. The spine's second review
+pass found, separately, that the control plane's preflight timeout was crossed
+by an ordinary package. **They are the same cost seen twice.**
+
+Measured on this repo's `dress_show` fixture, same machine, same run:
+
+| build | `dress_show` preflight | per 1080p frame |
+|---|---:|---:|
+| debug | 30.05 s | 130 ms |
+| release | 3.45 s | 16.7 ms |
+
+The control plane was resolving `target/debug/nbe-preflight`, and CI built it
+without `--release`. It now prefers `target/release`, and both jobs that shell
+preflight build it that way.
+
+**Disposition: this shrinks 3d, it does not close it.** The 46 s line can now
+cite the release binary — a ~9x reduction on the fixture, which takes the cost
+out of the flakiness budget entirely. What remains of 3d is unchanged: 3a-3c and
+steps 1-2 closing, and green on `macos-14` **twice consecutively**. When 3d is
+next revisited, its "46 s addressed" criterion should be rewritten to cite the
+release binary rather than an outstanding fix, and the rehearsal's own timing
+assumptions re-measured against it — a step that used to wait 46 s for a load
+may now be measuring something else entirely.
+
 ### Carried into 07 from the spine's own review pass (recorded 2026-09-07)
 
 Two observations the independent pass over `9bd18f9` reproduced and declined to

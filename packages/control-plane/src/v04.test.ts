@@ -376,8 +376,13 @@ test("a wedged preflight fails show.load by name instead of never answering", as
     assert.equal(error.code, "E_PREFLIGHT_FAILED");
     assert.match(
       String(error.message),
-      /did not answer within 1500 ms/,
+      /produced no verdict within 1500 ms/,
       "the failure must name the bound it exceeded, not just fail",
+    );
+    assert.match(
+      String(error.message),
+      /NBE_PREFLIGHT_TIMEOUT_MS override/,
+      "and where that bound came from, so the operator knows what to change",
     );
 
     // 2. Nothing is half-loaded.
@@ -402,5 +407,118 @@ test("a wedged preflight fails show.load by name instead of never answering", as
     else process.env.NBE_PREFLIGHT_BIN = prevBin;
     if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
     else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test("the preflight bound is derived from the package and the binary that will run it", async () => {
+  // The bound was a flat 600 s "far outside any measured run" — sized against a
+  // five-second fixture. Measured on this repo's own 1080p fixture, debug
+  // preflight costs 130 ms/frame, so 600 s was crossed by 2 min 34 s of
+  // footage: ten ordinary clips, refused with "wedged, not slow" when they were
+  // exactly slow. A bound that does not scale with the package cannot be right
+  // for both a slate and a bulletin.
+  const { preflightBound, expectedDecodeFrames, PREFLIGHT_FLOOR_MS } = await import("./package.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const pkg = (frames: number | null): string => {
+    const dir = mkdtempSync(join(tmpdir(), "nbe-bound-"));
+    mkdirSync(join(dir, "media"), { recursive: true });
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({
+        assets:
+          frames === null
+            ? [{ id: "slate", kind: "image", source: "media/s.png" }]
+            : [{ id: "clip", kind: "video", source: "media/c.mp4", expectedDurationFrames: frames }],
+      }),
+    );
+    return dir;
+  };
+
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  try {
+    // The frame count comes from the manifest, and only from decodable kinds.
+    assert.equal(expectedDecodeFrames(pkg(4600)), 4600);
+    assert.equal(expectedDecodeFrames(pkg(null)), 0, "images are not decoded frame by frame");
+    assert.equal(expectedDecodeFrames("/nonexistent"), 0, "an unreadable manifest is a size of 0, not a throw");
+
+    // Release: 25 ms/frame x 3. The package the old constant refused — 4600
+    // frames, 2 min 34 s of 1080p — now gets a bound comfortably above the
+    // 77 s a release binary actually needs for it.
+    process.env.NBE_PREFLIGHT_BIN = join("/somewhere", "target", "release", "nbe-preflight");
+    const rel = preflightBound(pkg(4600));
+    assert.equal(rel.msPerFrame, 25, "a release binary is measured at 16.7 ms/frame, rounded up");
+    assert.equal(rel.ms, 4600 * 25 * 3);
+    assert.ok(rel.derived);
+
+    // Debug: 8x the cost, so 8x the budget. A bound sized for release would
+    // refuse this package on the very binary a contributor is most likely to
+    // have built.
+    process.env.NBE_PREFLIGHT_BIN = join("/somewhere", "target", "debug", "nbe-preflight");
+    const dbg = preflightBound(pkg(4600));
+    assert.equal(dbg.msPerFrame, 200, "a debug binary is measured at 130 ms/frame, rounded up");
+    assert.equal(dbg.ms, 4600 * 200 * 3);
+    assert.ok(
+      dbg.ms > 600_000,
+      `the old flat 600 s refused this package; the derived bound must not (got ${dbg.ms} ms)`,
+    );
+
+    // Small packages get the floor, not a bound of zero.
+    assert.equal(preflightBound(pkg(null)).ms, PREFLIGHT_FLOOR_MS);
+    assert.equal(preflightBound(pkg(1)).ms, PREFLIGHT_FLOOR_MS);
+
+    // The operator override still wins, still strictly parsed.
+    process.env.NBE_PREFLIGHT_TIMEOUT_MS = "1234";
+    assert.equal(preflightBound(pkg(4600)).ms, 1234);
+    assert.equal(preflightBound(pkg(4600)).derived, false);
+    for (const bad of ["0", "600abc", "-5", "1e4", " 600000", ""]) {
+      process.env.NBE_PREFLIGHT_TIMEOUT_MS = bad;
+      assert.equal(
+        preflightBound(pkg(null)).ms,
+        PREFLIGHT_FLOOR_MS,
+        `${JSON.stringify(bad)} must not silently disable the bound`,
+      );
+    }
+  } finally {
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test("preflightBin prefers the release build, because it is 8x cheaper", async () => {
+  // `show.load` shells this binary. Debug decodes at 130 ms/frame and release
+  // at 16.7 — the difference between an ordinary rundown preflighting in one
+  // minute and in ten, and the root of the rehearsal's 46 s `show.load`
+  // complaint. Resolution order is behaviour, not tidiness.
+  const { preflightBin } = await import("./package.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const root = mkdtempSync(join(tmpdir(), "nbe-bin-"));
+  for (const profile of ["debug", "release"]) {
+    mkdirSync(join(root, "target", profile), { recursive: true });
+    writeFileSync(join(root, "target", profile, "nbe-preflight"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevCwd = process.cwd();
+  delete process.env.NBE_PREFLIGHT_BIN;
+  try {
+    process.chdir(root);
+    const resolved = preflightBin();
+    assert.ok(
+      resolved.endsWith(join("target", "release", "nbe-preflight")),
+      `with both present, release wins; resolved ${resolved}`,
+    );
+    assert.ok(!resolved.includes(join("target", "debug")), "and debug does not");
+  } finally {
+    process.chdir(prevCwd);
+    if (prevBin !== undefined) process.env.NBE_PREFLIGHT_BIN = prevBin;
   }
 });
