@@ -20,10 +20,10 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 | Channel | normative (hook only) | v0.1 | A 24/7 programmed stream of Shows. Scheduler is post-v1; schema must not preclude it. | |
 | Show | normative | v0.1 | A single program/episode **definition**: video/audio specs, outputs, fallback. A static declaration in the manifest — the thing a Show package contains, not the thing that runs. What runs is **Show state**. | |
 | Rundown | normative | v0.1 | The root Sequence of a Show: the editorial order of play. | |
-| Sequence | planned | v0.3 | A recursive, ordered container of Items. Sub-sequences are nested Sequences. Reusable across Shows. | generalizes Rundown/Segment/Subsegment |
+| Sequence | normative | v0.3 | A flat, ordered container of Items (SPEC §16.4). `rundown` is the only Sequence; nesting was retired with `sequenceRef` in v0.4 — the hook sat unresolvable for four patch levels and was withdrawn rather than resolved. | generalizes Rundown/Segment |
 | Segment | normative | v0.1 | Conventional top level of a Rundown. IDs A–K by convention; schema allows A–ZZ. | |
 | Subsegment | normative | v0.1 | Conventional second level of a Rundown (A1, A2…). | |
-| Item | planned | v0.3 | Leaf of a Sequence: clip reference, scene reference, live source, generated slate, or nested Sequence. | |
+| Item | normative | v0.3 | Leaf of a Sequence: clip reference, scene reference, live source, or generated slate (SPEC §16.4). Nesting was retired with `sequenceRef` in v0.4. | |
 | autoFollow | normative | v0.1 | Per-item flag to advance automatically when media ends. | subsumed by Automation in v0.3 |
 
 ## Space axis — visual: what is on screen

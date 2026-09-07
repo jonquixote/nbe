@@ -1,7 +1,7 @@
 //! Section 17.3 total coverage, driven by the spec table itself.
 //!
 //! Prompt 02c Step 8: the transition table is parsed out of
-//! `docs/spec.v0.3.md` and every (state, command-event) pair in the 7x5 grid
+//! `docs/spec.v0.4.md` and every (state, command-event) pair in the 7x5 grid
 //! is exercised. Pairs the table lists must succeed and land on a listed
 //! state; every pair it does not list must be refused with E_FORBIDDEN_STATE.
 //! Sampling illegal transitions proves nothing about the ones you skipped.
@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { ControlPlaneState, type ItemState } from "./state.js";
 import { CpError } from "./protocol.js";
 
-const SPEC_PATH = new URL("../../../docs/spec.v0.3.md", import.meta.url);
+const SPEC_PATH = new URL("../../../docs/spec.v0.4.md", import.meta.url);
 
 const STATES: ItemState[] = ["READY", "ARMED", "LIVE", "PLAYING", "DONE", "MISSING", "ERROR"];
 /** The events Section 16 commands produce (§17.3 "Event sources"). */
@@ -60,6 +60,8 @@ function stateAt(target: ItemState, opts: { timed?: boolean } = {}): ControlPlan
   state.loadPackage({
     packagePath: "/tmp/none",
     showId: "show-1",
+    houseRate: 30,
+    manifestVersion: "0.4",
     qualityProfile: undefined,
     items: new Map([
       [

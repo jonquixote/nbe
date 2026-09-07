@@ -19,7 +19,7 @@ export type AudioMode = "follow" | "crossfade" | "cut" | "mute";
 
 // ---------------------------------------------------------------------------
 // Show package — the slice of the manifest the control plane indexes.
-// Type information is generated from schemas/manifest.v0.3.json via
+// Type information is generated from schemas/manifest.v0.4.json via
 // scripts/gen-manifest-types.mjs (see addendum 1.4); validation of a package
 // is ALWAYS done by shelling out to nbe-preflight, never re-implemented here.
 // ---------------------------------------------------------------------------
@@ -28,7 +28,6 @@ export interface PackageItem {
   id: string;
   kind: string;
   sceneRef?: string | undefined;
-  sequenceRef?: string | undefined;
   assetId?: string | undefined;
   sourceId?: string | undefined;
   durationFrames?: number | undefined;
@@ -44,6 +43,10 @@ export interface PackageElement {
 export interface PackageInfo {
   packagePath: string;
   showId: string;
+  /** SPEC §7.15: `show.video.frameRate` as declared by the manifest. */
+  houseRate: number;
+  /** The manifest's own `manifestVersion`, for §10.4's identity block. */
+  manifestVersion: string;
   /** Section 10.1 telemetry field, declared by the manifest. */
   qualityProfile: string | undefined;
   items: Map<string, PackageItem>;
@@ -80,6 +83,7 @@ export interface GuestState {
 
 export interface SnapshotState {
   viewItem: string | null;
+  viewItemStartFrame: number | null;
   previewItem: string | null;
   itemStates: Record<string, ItemState>;
   visibleOverlays: string[];
@@ -116,6 +120,20 @@ export class ControlPlaneState {
   lastError: string | null = null;
 
   viewItem: string | null = null;
+  /**
+   * SPEC §5.9.4: the master frame at which `viewItem` went on air — §12.1's
+   * `t0`. `null` whenever `viewItem` is `null`.
+   *
+   * The snapshot said WHAT was on air and not SINCE WHEN, so a reconnecting
+   * engine had to guess an origin, and guessed "now": a clip forty seconds in
+   * jumped back to zero, on air. The control plane sources this from the
+   * engine's last reported `masterClockFrame`, which is at worst one telemetry
+   * tick stale — against an outage of arbitrary length, that is the difference
+   * between bounded and unbounded error.
+   */
+  viewItemStartFrame: number | null = null;
+  /** Last `masterClockFrame` the engine reported, for the field above. */
+  lastKnownMasterFrame = 0;
   previewItem: string | null = null;
   fallbackActive = false;
 
@@ -233,6 +251,7 @@ export class ControlPlaneState {
     }
     this.itemStates.set(itemRef, next);
     this.viewItem = itemRef;
+    this.viewItemStartFrame = this.lastKnownMasterFrame;
     if (this.previewItem === itemRef) this.previewItem = null;
     this.fallbackActive = false;
     return next;
@@ -295,6 +314,7 @@ export class ControlPlaneState {
       showState: this.showState,
       packagePath: this.pkg?.packagePath ?? null,
       viewItem: this.viewItem,
+      viewItemStartFrame: this.viewItem === null ? null : this.viewItemStartFrame,
       previewItem: this.previewItem,
       itemStates: Object.fromEntries(this.itemStates),
       sceneStates: Object.fromEntries(this.sceneStates),
@@ -327,6 +347,7 @@ export class ControlPlaneState {
   saveSnapshot(name: string): void {
     this.snapshots.set(name, {
       viewItem: this.viewItem,
+      viewItemStartFrame: this.viewItemStartFrame,
       previewItem: this.previewItem,
       itemStates: Object.fromEntries(this.itemStates),
       visibleOverlays: Array.from(this.visibleOverlays),
@@ -338,6 +359,7 @@ export class ControlPlaneState {
     const snap = this.snapshots.get(name);
     if (!snap) throw new CpError("E_NOT_FOUND", `no such snapshot: ${name}`);
     this.viewItem = snap.viewItem;
+    this.viewItemStartFrame = snap.viewItemStartFrame;
     this.previewItem = snap.previewItem;
     this.itemStates = new Map(Object.entries(snap.itemStates));
     this.visibleOverlays = new Set(snap.visibleOverlays);
@@ -415,7 +437,11 @@ export class ControlPlaneState {
     return {
       packagePath: this.pkg.packagePath,
       showId: this.pkg.showId,
-      manifestVersion: "0.3",
+      // The LOADED package's version, not a constant. This reported "0.3"
+      // for every package, including v0.4 ones — /status is where an operator
+      // checks what is actually loaded, so a constant there is a lie with an
+      // audience.
+      manifestVersion: this.pkg.manifestVersion,
     };
   }
 

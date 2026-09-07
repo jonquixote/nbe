@@ -23,6 +23,33 @@ pub struct PreflightReport {
     pub plugins: Vec<PluginReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_sheet: Option<String>,
+    /// SPEC §19.2.1 (v0.4). Always populated — a number an operator can read
+    /// is the deliverable, not only a threshold that trips.
+    #[serde(default)]
+    pub resources: ResourceReport,
+}
+
+/// SPEC §12.11: what a package will demand if it goes to air.
+///
+/// Reported unconditionally; the refusal lives where both facts are known
+/// (§7.15, §12.11.3). Preflight validates a package in isolation and cannot
+/// know the target machine, so it reports and warns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceReport {
+    /// Worst-case resident texture demand (§12.11.1).
+    pub vram_demand_mib: u64,
+    /// RAM-resident audio demand (§8.4 residency, §12.11.1).
+    pub audio_demand_mib: u64,
+    /// The package's declared house rate, so a caller that knows the engine's
+    /// rate can compare it (§7.15).
+    ///
+    /// Serialized even when `None`. §19.2.1 calls this block REQUIRED and
+    /// always-populated, and an absent field is a different failure from a
+    /// null one: a consumer can tell "no rate declared" from "field missing"
+    /// only if the field is always there.
+    #[serde(default)]
+    pub declared_house_rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -2,7 +2,7 @@
 //! - All validation decisions come from the `nbe-preflight` binary (its exit
 //!   code + preflight_report.json). The control plane NEVER re-implements
 //!   manifest validation.
-//! - The manifest's TS view is generated from schemas/manifest.v0.3.json
+//! - The manifest's TS view is generated from schemas/manifest.v0.4.json
 //!   (`./generated/manifest-schema.js`); here we only index structure needed
 //!   for the state machine (items, scenes, elements, assets, …).
 
@@ -130,6 +130,10 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
   const pkg: PackageInfo = {
     packagePath,
     showId: manifest.show.id,
+    // SPEC §7.15: the rate the package was authored at. `show.load` compares
+    // it with the engine's, because only the control plane knows both.
+    houseRate: manifest.show.video.frameRate,
+    manifestVersion: manifest.manifestVersion,
     items,
     sequences,
     scenes,
@@ -173,7 +177,6 @@ function indexSequence(
       id: item.id,
       kind: item.kind,
       sceneRef: item.sceneRef,
-      sequenceRef: item.sequenceRef,
       assetId: item.assetId,
       sourceId: item.sourceId,
       durationFrames: item.durationFrames,
@@ -181,8 +184,8 @@ function indexSequence(
       audioPolicy: item.audioPolicy,
     };
     items.set(item.id, pkgItem);
-    // Note (02a §3 gap): kind "sequenceRef" has no nested registry in the
-    // v0.3 manifest (single rundown Sequence) — such items are indexed but
-    // their targets cannot be resolved in Prompt 02.
+    // SPEC v0.4 retired `sequenceRef`. The gap the 02a addendum recorded here
+    // — a reserved kind with no registry to resolve against — was closed by
+    // deleting the hook rather than by inventing a nesting convention.
   }
 }

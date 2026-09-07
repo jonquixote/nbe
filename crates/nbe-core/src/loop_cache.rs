@@ -1,4 +1,33 @@
-//! Loop cache planning and residency (Prompt 05 Step 5, SPEC §12).
+//! Loop cache planning and residency (SPEC §12).
+//!
+//! **Lives in `nbe-core` because two crates must agree.** The §12.5 budget
+//! decision — does this loop fit VRAM, or must it stream — is consumed by the
+//! engine (which allocates the ring) and by preflight (which reports package
+//! demand). A second implementation of that rule is how preflight came to
+//! charge a `cachePolicy: "auto"` loop as resident when the budget mandated
+//! streaming: it skipped only the literal `"stream"` and never read
+//! `vramBudgetMib` at all.
+//!
+//! One rule, one implementation — the same discipline the renderer applies to
+//! `drawn_elements`, applied across crates.
+//!
+//! **One rule, one budget, one remaining difference.** `CacheBudget` is built
+//! by [`CacheBudget::from_manifest`] on both sides, so §12.4's numbers cannot
+//! diverge again; they did, and the engine held loops preflight had reported as
+//! streamed and charged nothing for.
+//!
+//! What still differs is the format, deliberately: preflight passes the
+//! manifest's `declared_format` and derives the rest from §12.3's ladder, while
+//! the engine passes `None` with `yuv_sampling: false`, because its decode path
+//! produces RGBA8 whatever the manifest asked for. That is a capability
+//! difference, not a disagreement about the rule — but it means that until
+//! §12.3's ladder is implemented, preflight's number for **any** loop whose
+//! planned format is not RGBA8 sits *below* what the engine will hold, and the
+//! two can disagree about residency policy (preflight `Vram`, engine
+//! `Streaming`). That includes loops declaring no format at all, which take the
+//! NV12 rung here and RGBA8 there — the default case, not an exotic one.
+//! Whoever implements the ladder closes it; until then, do not read the smaller
+//! number as the safe one.
 //!
 //! The order is mandated (§26 sequencing): **format accounting first**, then
 //! the budget, then the policy. `frameCostMiB` comes from the selected texture
@@ -22,6 +51,8 @@ pub enum CacheTextureFormat {
     Nv12Alpha,
     /// Straight RGBA8. 4 bytes per pixel.
     Rgba8,
+    /// Block-compressed RGBA (§12.3's conditional rung). 1 byte per pixel.
+    Bc7,
 }
 
 impl CacheTextureFormat {
@@ -31,6 +62,24 @@ impl CacheTextureFormat {
             CacheTextureFormat::Nv12 => 1.5,
             CacheTextureFormat::Nv12Alpha => 2.5,
             CacheTextureFormat::Rgba8 => 4.0,
+            CacheTextureFormat::Bc7 => 1.0,
+        }
+    }
+
+    /// The format a manifest declared, if it named one (§12.3 / `LoopMetadata`).
+    ///
+    /// `"auto"` and anything unrecognised return `None`, which hands the choice
+    /// back to [`Self::select`]. Preflight needs this: a package that declares
+    /// `bc7` is declaring a quarter of RGBA8's demand, and a resource report
+    /// that ignored the declaration answered a different question than the one
+    /// the operator asked.
+    pub fn from_declared(declared: &str) -> Option<Self> {
+        match declared {
+            "nv12" => Some(CacheTextureFormat::Nv12),
+            "nv12Alpha" => Some(CacheTextureFormat::Nv12Alpha),
+            "rgba8" => Some(CacheTextureFormat::Rgba8),
+            "bc7" => Some(CacheTextureFormat::Bc7),
+            _ => None,
         }
     }
 
@@ -81,7 +130,25 @@ pub struct LoopSpec {
     pub yuv_sampling: bool,
     /// GOP length, for the §12.8 read-ahead minimum.
     pub gop_frames: u32,
+    /// The format the manifest declared, when it declared one. `None` derives
+    /// the format from `has_alpha`/`yuv_sampling` — which is what a caller that
+    /// knows what it actually allocated should pass.
+    pub declared_format: Option<CacheTextureFormat>,
 }
+
+/// SPEC §12.4's default per-loop short-loop budget.
+pub const DEFAULT_PER_LOOP_MIB: u32 = 256;
+
+/// SPEC §12.4's default total short-loop budget, shared across loops.
+pub const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
+
+/// SPEC §12.4's absolute short-loop frame cap.
+///
+/// The schema declares `periodFrames` with `minimum: 1` and **no maximum**, so
+/// a package may legally declare a period near `u64::MAX`. Saturating
+/// arithmetic stops that panicking, but a silent saturation reports a number
+/// nobody can act on. Past this bound the package is refused by name.
+pub const ABSOLUTE_LOOP_FRAME_CAP: u32 = 900;
 
 /// The budget a loop is planned against.
 #[derive(Debug, Clone, Copy)]
@@ -97,6 +164,27 @@ pub struct CacheBudget {
 }
 
 impl CacheBudget {
+    /// §12.4's table, with the manifest's declared ceiling where it declares
+    /// one.
+    ///
+    /// **Both crates build their budget here.** They did not: preflight held
+    /// §12.4's 256/512 while the engine hardcoded a Prompt 05 placeholder of
+    /// 1024/4096 and never read `vramBudgetMib` at all, so the two sides of one
+    /// shared planner disagreed about which loops are resident. A 100-frame
+    /// 1080p RGBA8 loop was streamed and charged nothing by preflight while the
+    /// engine made it resident at 791 MiB — and the package was air-ready.
+    ///
+    /// A shared rule is only shared if its inputs are built in one place.
+    pub fn from_manifest(declared_per_loop_mib: Option<u32>) -> Self {
+        CacheBudget {
+            per_loop_mib: declared_per_loop_mib.unwrap_or(DEFAULT_PER_LOOP_MIB),
+            total_mib: DEFAULT_TOTAL_LOOP_MIB,
+            // Discrete reference target (§0.3). A caller on unified memory sets
+            // this from `MTLDevice.recommendedMaxWorkingSetSize` (§12.6).
+            recommended_working_set_mib: None,
+        }
+    }
+
     /// The effective per-loop budget after the unified-memory clamp.
     ///
     /// SPEC §12.6: on Apple silicon the cache may not assume dedicated VRAM.
@@ -113,8 +201,11 @@ impl CacheBudget {
 
 /// Plan a loop's residency. Format accounting first, then budget, then policy.
 pub fn plan(spec: LoopSpec, budget: CacheBudget) -> CachePlan {
-    // 1. Format accounting.
-    let format = CacheTextureFormat::select(spec.has_alpha, spec.yuv_sampling);
+    // 1. Format accounting. A declared format is the package's statement of
+    //    demand; absent one, derive it from what the source needs.
+    let format = spec
+        .declared_format
+        .unwrap_or_else(|| CacheTextureFormat::select(spec.has_alpha, spec.yuv_sampling));
     let bytes_per_frame = spec.width as f64 * spec.height as f64 * format.bytes_per_pixel();
     let frame_cost_mib = bytes_per_frame / (1024.0 * 1024.0);
 
@@ -191,6 +282,7 @@ mod tests {
             has_alpha: false,
             yuv_sampling: true,
             gop_frames: 30,
+            declared_format: None,
         }
     }
 
@@ -227,6 +319,55 @@ mod tests {
         );
         assert_eq!(p.selected_texture_format, CacheTextureFormat::Nv12Alpha);
         assert!(p.frame_cost_mib > 4.9 && p.frame_cost_mib < 5.0);
+    }
+
+    #[test]
+    fn a_declared_format_overrides_the_derived_one() {
+        // §12.3's ladder is declarable per loop. A planner that could only
+        // derive the format answered a different question than the manifest
+        // asked: `bc7` is a quarter of RGBA8, and a plan that silently charged
+        // NV12 instead decided residency on a cost nobody declared.
+        let mut spec = spec_1080p(200);
+        spec.declared_format = Some(CacheTextureFormat::Bc7);
+        let p = plan(
+            spec,
+            CacheBudget {
+                per_loop_mib: 512,
+                total_mib: 512,
+                recommended_working_set_mib: None,
+            },
+        );
+        assert_eq!(p.selected_texture_format, CacheTextureFormat::Bc7);
+        // 1920*1080*1 B = 1.9775 MiB; floor(512 / 1.9775) = 258 frames.
+        assert!((p.frame_cost_mib - 1.9775).abs() < 0.001);
+        assert_eq!(p.max_frames_by_budget, 258);
+        assert_eq!(p.cache_policy_selected, CachePolicy::Vram);
+
+        // The same 200 frames as NV12 (the derived format) does NOT fit:
+        // floor(512 / 2.9663) = 172. The declaration is load-bearing.
+        let derived = plan(
+            spec_1080p(200),
+            CacheBudget {
+                per_loop_mib: 512,
+                total_mib: 512,
+                recommended_working_set_mib: None,
+            },
+        );
+        assert_eq!(derived.cache_policy_selected, CachePolicy::Streaming);
+    }
+
+    #[test]
+    fn the_declared_format_names_come_from_the_schema() {
+        assert_eq!(
+            CacheTextureFormat::from_declared("bc7"),
+            Some(CacheTextureFormat::Bc7)
+        );
+        assert_eq!(
+            CacheTextureFormat::from_declared("nv12Alpha"),
+            Some(CacheTextureFormat::Nv12Alpha)
+        );
+        // `auto` is the schema default and means "you choose".
+        assert_eq!(CacheTextureFormat::from_declared("auto"), None);
     }
 
     #[test]

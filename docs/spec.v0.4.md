@@ -1,0 +1,3632 @@
+# NBE SPEC v0.4  
+**News Broadcasting Engine**  
+Status: normative specification — self-contained. Supersedes SPEC v0.3 (patch level v0.3.3), which remains in `docs/` as history.
+
+v0.4 is written after the midpoint integration review (`docs/review-midpoint-report.md`, merged as PR #8). It closes the gaps Prompts 07–13 cannot execute without, and nothing else. Two of its entries are **corrections**: the declared target hardware was wrong, and a schema hook reserved in v0.3.2 is being retired rather than resolved.
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | **Target-hardware correction.** §0.1 named Apple Silicon as the primary target. The reference machine is an Intel MacBook Pro with discrete AMD graphics, and that is the mission rather than a fallback. | 0.1 (corrected), 0.3 (new) |
+| 2 | **Package resource model.** A schema-legal, preflight-passing package could exceed the reference machine by an order of magnitude: `vramBudgetMib` has no maximum, `assets` has no `maxItems`, and preflight enforced no resource model at all. v0.4 makes package demand a preflight check, speaking both memory models. | 12.11 (new), 19.2 |
+| 3 | **`viewItemStartFrame` in the resync snapshot**, and the rule that an empty `visibleOverlays` array clears. §5.9.4 said *what* is on air but not *since when*, so a resynced timed item restarted from its first frame; and "no overlays" was a state the snapshot could not express. The clearing rule is implemented with the overlay level itself (Prompt 07) — the engine has no overlay level to clear today. | 5.9.4 |
+| 4 | **`showState` in telemetry.** The §10.1 tick carried no show state; it rode only on `stateChange`, so a client holding telemetry alone could not say whether the show was running. | 10.1, 10.1.1 |
+| 5 | **`sequenceRef` retired.** The v0.3.2 reservation is withdrawn rather than resolved: the hook is deleted from the schema and the `sequence.*` commands with it. | 16.4 (amended), 3.1, 16.0, Appendix A |
+| 6 | **Contradictory items are a preflight failure.** `{"kind":"slate","sceneRef":…}` validated schema-clean and passed preflight while being semantically contradictory — the engine drew a slate and the audio path resolved the scene. | 17.5 (new), 19.2 |
+| 7 | **House-rate reconciliation.** Nothing compared the engine's rate with the package's, so a 25 fps package on a 30 fps engine mis-mapped every asset undetected. `show.load` rejects; preflight warns. | 7.15, 16.1 (failure modes), 19.2 |
+
+Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
+
+v0.3.1 applied four patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).
+
+v0.3.2 is a clarification release: it writes down contracts that were already required but left implicit, and that implementers were therefore inventing. No behaviour that v0.3.1 defined has changed. New and amended material:
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | Server-push frame envelope (`stateChange`, `telemetry`) — Section 5.1 §5 required these events with no frame shape defined. | 5.4.1 (new) |
+| 2 | The render channel: directive frame, engine→control-plane frames, `seq` semantics, reconnect resync. Section 5.2 drew the render node without a protocol. | 5.9 (new) |
+| 3 | `show.stop` quiescence acknowledgement — "wait up to 2 seconds" never said what signals shutdown. | 16.1, 5.9.4 |
+| 4 | `E_RATE_LIMITED` — Section 10.7 mandates flood protection with no failure mode in the registry. | 16 registry |
+| 5 | Handshake rejection: HTTP 401 before upgrade is now the normative path, replacing the unachievable "error frame then close". | 5.3 |
+| 6 | Command authorization matrix — the role table was prose, so implementers inferred per-command permissions. | 16.0 (new) |
+| 7 | Item-reference grammar formalized (ABNF + which forms each command accepts). | 5.7 |
+| 8 | `item.reset` — Section 17.3's `reset` event had no command, leaving `ERROR`/`MISSING` terminal via the API. | 16.4 |
+| 9 | TURN credential derivation — the response shape had no derivation rule, so vended credentials could not authenticate. | 9.6.2 |
+| 10 | `show.start` warnings policy against the Section 19.1 exit codes. | 16.1 |
+| 11 | Audit record shape and retention. | 10.7 |
+| 12 | `sequenceRef` declared reserved-unresolvable in v0.3 (no sequence registry exists in the schema). | 16.4 |
+
+`schemas/manifest.v0.4.json` is **unchanged** by v0.3.2. Item 12 records a known structural gap rather than closing it; closing it is a v0.4 schema revision.
+
+v0.3.3 answers three questions the audio engine cannot be built without, and which nothing in v0.3.2 addressed:
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | How audio follows the master clock, and the real-time thread discipline that makes it possible. | 8.9 (new) |
+| 2 | The audio fault class. `underrun` appeared nowhere in the spec, and §10.1 carried no audio field, so a glitched show had nothing to report and no defined relationship to the watchdog. | 8.10 (new), 10.1, 10.1.1 |
+| 3 | That the Section 10.3 watchdog is a **video** watchdog: an audio underrun must not black the View. | 10.3 |
+
+`schemas/manifest.v0.4.json` is unchanged by v0.3.3.  
+Relationship to earlier versions: this document supersedes SPEC v0.2.5. It consolidates SPEC v0.1, SPEC v0.2, and the v0.2.1 errata (via the v0.2.5 consolidation) and introduces the v0.3 composable broadcast language: the two-axis model, element identity, the state-diff transition engine, overlays, sub-scenes, automation, plugins, quality profiles, and the abuse model. Where this document differs from prior versions, this document wins. Prior versions remain in `docs/` as history.
+
+---
+
+## 0. Assumptions and phasing honesty
+
+### 0.1 Assumptions
+
+The following assumptions are normative unless changed by spec revision:
+
+1. **Single primary render node for MVP.** The control plane may run on the same machine as the render node.
+2. **The reference target is an Intel Mac with discrete graphics.** Specifically: an Intel MacBook Pro (6-core i7, 16 GB RAM, Intel UHD 630 integrated plus AMD Radeon Pro 555X discrete), probed and recorded in `docs/hardware-baseline.txt`. Apple Silicon is welcome and supported, but MUST NOT be assumed. Linux cloud nodes are for guest ingest, distribution, backup, and benchmarking, not the primary local playout path unless explicitly configured.
+
+   *This corrects v0.3, which named Apple Silicon as the primary target.* The correction is not a downgrade: the project's founding proof is that this engine runs a show on the machine that could not serve it under OBS. Every acceptance measurement — the frame budget, the degradation ladder, AC-5's 30-minute soak — is measured on that machine or it is not measured.
+3. **All live media is pre-normalized.** The live render engine must not transcode, motion-interpolate, or repair media during live playout.
+4. **OBS is not a dependency.** OBS is only used as a benchmark baseline and optional Plan B through `obs-websocket`.
+5. **Smelter is reference only.** The NBE Rust/wgpu engine is custom. Smelter informs API shape and benchmarking but is not required at runtime.
+6. **Companion is the Stream Deck integration path.** Companion emits NBE WebSocket commands. No custom Stream Deck plugin is built for v1.
+7. **Show packages are self-contained folders.** All local assets are referenced by relative path from the package root.
+8. **The operator is a single human.** UX must minimize cognitive load, favor big state-clear controls, and automate recovery where possible.
+9. **Internet independence is mandatory.** Local playout must continue if WAN is lost. Remote guests and streaming may fail gracefully.
+10. **House rate is 30 fps for MVP.** 60 fps is manifest-supported for future showcase episodes but is not required for v1 acceptance.
+11. **Fonts and graphic templates are packaged.** Text rendering must not depend on host-system fonts unless explicitly declared.
+12. **Security is local-first.** v1 assumes a trusted local network or VPN. Auth tokens are used, but full multi-tenant RBAC is not a v1 hard requirement.
+13. **RSS ticker content is sanitized.** The ticker renderer must treat RSS text as untrusted display text, not markup or code.
+14. **Recording container default is fragmented MP4.** Matroska is allowed, but fragmented MP4 is the default crash-safe container.
+15. **Hardware encode is mandatory.** If hardware encoder is unavailable, live streaming/recording must refuse to start rather than fall back to CPU x264.
+16. **The normative schema lives at `schemas/manifest.v0.4.json`.** That repository file is the byte-exact normative artifact; any copy embedded in this document is informational. If they ever diverge, the repository file wins and the divergence is a spec bug.
+17. **Deprecation aliases.** `program.*` commands are accepted by the control plane for one spec version and map 1:1 to `view.*` commands, emitting a deprecation warning in telemetry. The schema accepts `layer` as an alias for `element` during migration only.
+18. **Migration tooling.** A CLI tool `nbe-migrate` converts a v0.2 show package to a v0.3 package. Preflight in a v0.3 engine rejects v0.2 manifests.
+19. **WASM sandbox.** Element plugins run in Wasmtime/Wasmer-class runtimes with strict WASI capabilities: no network, no disk writes outside designated temp mounts, no ambient authority.
+20. **WGSL sandbox.** Effect plugins are strictly fragment shaders operating on bound textures, validated via `naga`. They cannot execute arbitrary compute shaders that bypass the render graph.
+21. **Cloud cost profile.** Cloud is TURN relay, guest ingest, and distribution/backup only, at an estimated envelope of $0.10–$0.50 per broadcast-hour for managed TURN/relay egress. Self-hosted TURN reduces marginal cost toward zero.
+22. **Floor device baseline.** The 2019 dual-GPU Intel/Radeon MacBook Pro is the reference floor. The degradation ladder MUST engage gracefully on it.
+23. **Sequence recursion — none.** The rundown is flat: `sequenceRef` was retired in v0.4 (§16.4) and there is no nesting to cap. The space-axis sub-scene depth cap of 4 is unaffected and remains in force.
+24. **Multi-output frame sharing.** Outputs share rendered frames with hardware encoders via GPU texture sharing (Metal `IOSurface` / Vulkan external memory) without CPU readback.
+25. **WASM memory ceiling.** Every plugin instance runs under a hard memory limit (default 64 MiB, manifest-configurable via `maxMemoryMib`). Exceeding it MUST terminate the plugin instance and substitute a transparent frame — it MUST NOT crash the render node.
+
+### 0.2 Phasing honesty note
+
+v0.3 is a superset. The MVP hard ceiling (Section 20) and the implementation order (Section 26) still govern what gets built first. v0.3 features (plugins, automation, advanced state-diff transitions) MUST NOT delay the first broadcast. The core playout engine must reach AC-5 (30-minute zero-drop) before advanced compositing features are merged.
+
+---
+
+## 0.3 The reference envelope
+
+`docs/hardware-baseline.txt` is a machine-generated probe of the reference target, and it is normative for the resource model in §12.11: the arithmetic is against that machine, not an imagined one. It MUST be regenerated (`system_profiler SPHardwareDataType SPDisplaysDataType`) whenever the reference target changes, and the change MUST be a spec revision.
+
+Two properties of the reference target are load-bearing and are called out because they do not hold on Apple Silicon:
+
+1. **Memory is not unified.** The discrete adapter has dedicated VRAM (4 GB) and the integrated one a dynamic allocation (1536 MB). §12.6's unified-memory clamp does not apply, and the resource model in §12.11 MUST therefore speak both models rather than assuming either.
+2. **There are two adapters.** The engine MUST request a high-performance adapter explicitly (`wgpu` power preference, or the platform equivalent) and MUST log which adapter it selected, its backend and its device type. Leaving the choice to a default makes it a function of driver version, OS version and power state.
+
+# 1. Scope and locked decisions
+
+NBE is a purpose-built live news broadcast/playout system.
+
+It replaces an OBS-based prototype with a deterministic, manifest-driven broadcast engine.
+
+## 1.1 Locked decisions
+
+| # | Decision | Normative ruling |
+|---|---|---|
+| 1 | Engine | Custom Rust engine using `wgpu`. Smelter is reference for API shape and benchmarking. OBS is benchmark/Plan B only. |
+| 2 | Control plane | TypeScript/Node rundown engine. WebSocket + JSON command API is the single control bus. Bitfocus Companion drives Stream Deck XL. |
+| 3 | House rate | 30 fps default. 60 fps per-show only for showcase episodes. |
+| 4 | Platform | macOS-first render node with Apple Silicon VideoToolbox. Linux cloud render node with NVENC for guests/distribution/backup. Windows/browser future preserved via `wgpu`. |
+| 5 | Show package | Folder + `manifest.json`. Preflight validator must prove package air-ready before load. |
+| 6 | Guest ingest | WHIP/WebRTC remote guests. NDI or HDMI/SDI capture for local sources. Screen/app mirroring forbidden. |
+| 7 | Network | 10–20 Mbps up minimum, 100 Mbps aspirational. Local playout survives total internet loss. |
+| 8 | Schedule | No dates or timelines. Phases exit by acceptance tests only. |
+
+---
+
+# 2. Normative language
+
+The keywords **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** are to be interpreted as described in RFC 2119.
+
+---
+
+# 3. Normative glossary
+
+Generated from the canonical `VOCABULARY.md` ledger. One term, one definition. If a term is not here or in the ledger, it is not normative.
+
+## 3.1 Time axis — editorial: when things play
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Network | normative | v0.1 | The top-level identity: branding, fonts, fallback assets, template library. | |
+| Channel | normative (hook only) | v0.1 | A 24/7 programmed stream of Shows. Scheduler is post-v1; schema must not preclude it. | |
+| Show | normative | v0.1 | A single program/episode definition: video/audio specs, outputs, fallback. | |
+| Rundown | normative | v0.1 | The root Sequence of a Show: the editorial order of play. | |
+| Sequence | normative | v0.3 | A flat, ordered container of Items. `rundown` is the only Sequence; nesting was retired with `sequenceRef` in v0.4 (§16.4). Reusable across Shows. | generalizes Rundown/Segment/Subsegment |
+| Segment | normative | v0.1 | Conventional top level of a Rundown. IDs A–K by convention; schema allows A–ZZ. | |
+| Subsegment | normative | v0.1 | Conventional second level of a Rundown (A1, A2…). | |
+| Item | normative | v0.3 | Leaf of a Sequence: scene reference, clip reference, live source reference, or generated slate. | |
+| autoFollow | normative | v0.1 | Per-item flag to advance automatically when media ends. | subsumed by Automation |
+
+## 3.2 Space axis — visual: what is on screen
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Scene | normative | v0.3 | A named, reusable visual composition: element list + per-element state + audio state. | |
+| Sub-scene | normative | v0.3 | A Scene referenced as an Element inside another Scene; rendered once to a texture, reusable N times. | pre-comp; scene-as-source |
+| Element | normative | v0.3 | The atomic addressable visual unit, with persistent identity across Scenes. | renames Layer |
+| Group | normative | v0.3 | A named collection of Elements moved/toggled as one. | |
+| Effect | normative | v0.1 | A stateless visual transform applied to an Element (chroma key, luma key, color correction, blur, mask, border, shadow, crop, custom WGSL). | |
+| Transition | normative | v0.1 | An interpolation between two element-state maps. v0.1: cut/mix. v0.3: the state-diff engine (move, wipe, sting, DVE as parameterizations). | |
+| Overlay (DSK) | normative | v0.3 | A compositing level applied after the transition; its elements persist across scene changes. `View = overlay(transition(A, B))`. | downstream key |
+| Template | normative | v0.1 | A parameterized graphic (lower third, banner, ticker) with typed fields. | |
+| Ticker | normative | v0.1 | The scrolling text element; scrolls by texture offset, never re-layout per frame. | |
+
+## 3.3 Buses and outputs
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| View | normative | v0.3 | The main live/recorded composited output. | renames Program |
+| Preview | normative | v0.1 | The staging bus: what transitions into View. | |
+| Multiview | normative | v0.3 | Operator grid render target: view, preview, source thumbnails, meters, tally borders. | |
+| Fallback slate | normative | v0.1 | The resident emergency image; automatic cut-to target on failure, ≤ 1 frame late. | |
+
+## 3.4 Control
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Command bus | normative | v0.1 | The single WebSocket+JSON channel all control traffic passes through. | |
+| Envelope | normative | v0.1 | The command message wrapper: `v`, `id`, `command`, `payload`, `baseStateVersion`. | |
+| stateVersion | normative | v0.1 | Monotonic control-plane version for optimistic concurrency. | |
+| Binding | normative | v0.1 | A trigger→action mapping (Companion key, hotkey, MIDI, OSC, web button). | |
+| Preset | normative | v0.3 | A named reusable configuration: element, effect, transition, scene, or audio. | |
+| Snapshot | normative | v0.3 | A named, recallable state of the entire View, including overlay visibility. | |
+| Automation rule | normative | v0.3 | trigger + conditions → command. Runs through the command bus with the same preconditions as a human. | advanced scene switcher |
+| Automation hold | normative | v0.3 | Global automation kill switch; takes effect within 1 frame. | |
+| Tally | normative | v0.3 | Live-source indication, operator- and talent-facing. | |
+| Marker | normative | v0.3 | A rundown bookmark; doubles as a recording chapter. | |
+| Role | normative | v0.1 | Permissions class: monitor, operator, producer, admin, render. | |
+
+## 3.5 Media and assets
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Asset | normative | v0.1 | A packaged media file with kind, format, hash, cadence, and loop metadata. | |
+| Show package | normative | v0.1 | The self-contained folder: manifest + media + templates + audio. | |
+| Mezzanine | normative | v0.1 | The house format every asset is normalized to (CFR, house rate, H.264 High, 48 kHz, −16 LUFS). | normalized format |
+| Loop | normative | v0.1 | Deterministic master-clock modulo playback: `frame(t) = (F − t0) mod P`. No restart events. | |
+| Cadence | normative | v0.1 | Source frame-rate character, preserved via frame holds. | |
+| Pulldown | normative | v0.2 | The declared frame-hold pattern for non-house rates (`pattern`, `repeatNthSourceFrame`, `repeatOnePerNSourceFrames`). | |
+| Preflight | normative | v0.1 | The CI-runnable proof that a show package is air-ready. | |
+| Plugin package | normative | v0.3 | A WASM element plugin or WGSL effect plugin with manifest, version pin, memory ceiling, and permission list (deny by default). | |
+
+## 3.6 Audio
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Bus | normative | v0.1 | A named audio channel group: mic, clip, music, sfx, guest, master, guestReturn, ifb. | |
+| Mix-minus | normative | v0.2 | The guest return mix excluding that guest's own audio. Mandatory per guest. | |
+| IFB | normative | v0.2 | The anchor monitor bus: program minus anchor mic, plus talkback. | |
+| Ducking | normative | v0.1 | Automatic music attenuation under speech. | |
+| Soundboard | normative | v0.1 | RAM-resident SFX triggered in under 20 ms. | |
+| AFV | normative | v0.3 | Audio-follow-video: the named mode for audio tracking the taken source. | implicit in audioPolicy previously |
+| PFL | normative | v0.3 | Pre-fade listen; formalizes monitor-only solo. | |
+
+## 3.7 Operations and reliability
+
+| Term | Status | Since | Definition | Aliases / notes |
+|---|---|---|---|---|
+| Master clock | normative | v0.1 | The single monotonic show clock everything derives from. | |
+| Watchdog | normative | v0.1 | Frame-deadline monitor that triggers fallback. | |
+| Telemetry | normative | v0.1 | The per-second engine state stream. | |
+| House rate | normative | v0.1 | The output frame rate: 30 fps default, 60 for showcase. | |
+| Quality profile | normative | v0.3 | A hardware-probed performance envelope selected at startup: `potato`, `consumer`, `pro`, `reference`. | |
+| Degradation ladder | normative | v0.3 | The ordered yield list under load: preview fps, loop caches, effect quality, multiview — View is never degraded. | |
+| Captions | normative | v0.3 | Sidecar text output (WebVTT-class) alongside the stream; burn-in later via an Overlay element. | |
+
+## 3.8 Deprecated terms
+
+| Deprecated term | Replacement | Since | Alias compatibility |
+|---|---|---|---|
+| Program (bus) | View | v0.3 | `program.*` commands map 1:1 to `view.*` for one version |
+| Layer | Element | v0.3 | schema accepts `layer` as alias for `element` during migration only |
+| Scene collection | — | — | OBS-ism; forbidden |
+| OS-level hotkey | Binding | v0.1 | — |
+
+---
+
+# 4. Two-axis system hierarchy
+
+v0.3 splits the single v0.1 hierarchy into two orthogonal axes.
+
+## 4.1 Time axis (editorial: when things play)
+
+```text
+Network
+  └── Channel         // future 24/7 scheduler; schema-only in v1
+       └── Show
+            └── Rundown (the only Sequence; flat since v0.4)
+                 └── Item (references a Scene)
+```
+
+## 4.2 Space axis (visual: what is on screen)
+
+```text
+Scene
+  └── Sub-scene (Scene as Element, depth cap 4, DAG)
+       └── Element (persistent ID)
+            └── Effect / Plugin
+```
+
+## 4.3 The bridge
+
+An `Item` on the time axis references a `Scene` on the space axis via `sceneRef`. When an Item becomes active, its referenced Scene is instantiated on the View or Preview bus.
+
+## 4.4 Migration
+
+v0.2 packages migrate mechanically via `nbe-migrate` (Section 6.7). The v0.1/v0.2 model (Segment → Subsegment → LayerStack → Layer) maps onto Sequence → Item → Scene → Element.
+
+---
+
+# 5. Subsystem 1 — Show/Rundown control plane
+
+## 5.1 Responsibilities
+
+The control plane is the authoritative show-state owner.
+
+It MUST:
+
+1. Load and validate show packages.
+2. Own the rundown state machine.
+3. Expose the WebSocket JSON command API.
+4. Validate all commands against schema and current state.
+5. Emit state-change events to all connected clients.
+6. Translate operator commands into render-node directives.
+7. Maintain monotonic `stateVersion`.
+8. Enforce preconditions before allowing live transitions.
+9. Persist last known show state locally for crash recovery.
+10. Provide a snapshot API for dashboards and iPhone clients.
+11. Vend time-limited TURN credentials.
+12. Maintain the append-only audit log of control-plane actions and auth events.
+
+It MUST NOT:
+
+1. Decode video.
+2. Composite frames.
+3. Mix final audio.
+4. Depend on OBS.
+5. Require internet connectivity for local playout.
+
+## 5.2 Runtime topology
+
+```text
++-------------------+       WebSocket JSON       +-------------------+
+| Web dashboard     | <------------------------> |                   |
++-------------------+                            |                   |
+                                                 |   Control Plane   |
++-------------------+       WebSocket JSON       |   Node/TypeScript |
+| iPhone controller | <------------------------> |                   |
++-------------------+                            |                   |
+                                                 |                   |
++-------------------+       WebSocket JSON       |                   |
+| Companion bridge  | <------------------------> |                   |
++-------------------+                            +---------+---------+
+                                                           |
+                                                  WebSocket JSON
+                                                           |
+                                                 +---------v---------+
+                                                 | Rust Render Node  |
+                                                 | wgpu compositor   |
+                                                 +-------------------+
+```
+
+All control traffic MUST pass through the control plane. Direct dashboard-to-render-node control is forbidden in v1.
+
+## 5.3 WebSocket endpoint
+
+Default local endpoint:
+
+```text
+ws://127.0.0.1:8462/nbe/v0.3
+```
+
+TLS endpoint for remote/VPC use:
+
+```text
+wss://render.local:8463/nbe/v0.3
+```
+
+Connection handshake MUST include:
+
+```http
+Authorization: Bearer <token>
+X-NBE-Role: operator|producer|monitor|admin|render
+```
+
+Roles:
+
+| Role | Permissions |
+|---|---|
+| `monitor` | read state/telemetry only |
+| `operator` | live commands, take, graphics, audio, record/stream |
+| `producer` | load/preflight/edit rundown/ticker |
+| `admin` | all commands, config, auth |
+| `render` | internal render-node directive channel |
+
+The prose above states each role's intent. The normative per-command permissions are the matrix in Section 16.0; where prose and matrix disagree, the matrix wins.
+
+The token is authoritative for the role. `X-NBE-Role` is client-asserted and MUST be verified against the role the token resolves to; a mismatch is a handshake failure. Token comparison MUST be constant-time, and an empty or absent token MUST NOT resolve to any role.
+
+**Handshake rejection (normative, amended in v0.3.2).** A failed handshake MUST be rejected before the WebSocket upgrade completes, with HTTP `401 Unauthorized` and a JSON body carrying the Section 5.4 error response shape and code `E_AUTH`. The rejection reason returned to the peer MUST be generic; the specific reason (unknown token, role mismatch, expired credential) is written to the audit log, not to the unauthenticated caller.
+
+> v0.3.1 required the server to "close the socket with an `E_AUTH` error frame first." That is not achievable when the connection is refused at the HTTP upgrade, which is the correct layer to refuse it at. v0.3.2 replaces that requirement with the 401 path above.
+
+## 5.4 Message envelope
+
+**The wire version is not the document version.** `v` is `"0.3"` and stays
+`"0.3"` through v0.4, deliberately: v0.4 is patch-class on the wire — it adds
+two optional fields (`viewItemStartFrame`, `showState`) and removes two
+commands, none of which changes how a v0.3 client parses a frame it
+understands. Bumping `v` would force every client to re-handshake for a
+revision that breaks nothing. The wire version moves when the wire's *framing*
+changes, not when the specification is revised.
+
+All client-to-server command messages MUST use this envelope:
+
+```json
+{
+  "v": "0.3",
+  "id": "0d9f5c6a-7b8a-4a61-9b0a-5f5a5c8d99ab",
+  "command": "view.take",
+  "payload": {},
+  "baseStateVersion": 412
+}
+```
+
+Fields:
+
+| Field | Type | Required | Description |
+|---|---:|---:|---|
+| `v` | string | yes | Protocol version. |
+| `id` | UUID | yes | Client-generated request ID. |
+| `command` | string | yes | Command name. |
+| `payload` | object | yes | Command-specific payload. May be `{}`. |
+| `baseStateVersion` | integer | no | If present, command is rejected on version conflict. |
+
+Server response:
+
+```json
+{
+  "v": "0.3",
+  "requestId": "0d9f5c6a-7b8a-4a61-9b0a-5f5a5c8d99ab",
+  "status": "ok",
+  "stateVersion": 413,
+  "data": {}
+}
+```
+
+Error response:
+
+```json
+{
+  "v": "0.3",
+  "requestId": "0d9f5c6a-7b8a-4a61-9b0a-5f5a5c8d99ab",
+  "status": "error",
+  "stateVersion": 412,
+  "error": {
+    "code": "E_FORBIDDEN_STATE",
+    "message": "No preview item armed."
+  }
+}
+```
+
+## 5.4.1 Server-push frames (normative, new in v0.3.2)
+
+Section 5.1 §5 requires the control plane to emit state-change events to all connected clients, and Section 10.1 requires telemetry at least once per second. Both are **server-initiated** frames: they are not responses, they carry no `requestId`, and they MUST NOT be confused with the Section 5.4 response shapes.
+
+Every server-initiated frame carries a `kind` discriminator:
+
+```json
+{
+  "v": "0.3",
+  "kind": "stateChange",
+  "stateVersion": 413,
+  "changed": ["viewItem", "previewItem", "itemStates"],
+  "state": {}
+}
+```
+
+```json
+{
+  "v": "0.3",
+  "kind": "telemetry",
+  "data": {}
+}
+```
+
+| Frame | When | Payload |
+|---|---|---|
+| `stateChange` | Once per accepted command, after the `stateVersion` bump, to every connected client whose role may observe the affected state. | `stateVersion`, `changed` (array of changed top-level keys), `state` (the changed subset, or the full snapshot when `changed` is absent). |
+| `telemetry` | On the subscriber's interval, to clients that ran `system.telemetry.subscribe`. | `data`: the Section 10.1 field shape. |
+
+Rules:
+
+1. Exactly one `stateChange` frame per accepted command. A command that mutates nothing (a no-op or a rejected command) MUST NOT emit one.
+2. A `stateChange` frame MUST carry the same `stateVersion` that the command's success response carried, and MUST be observable no later than that response.
+3. Push frames are droppable under backpressure; command responses are not. A client that cannot keep up MAY have `telemetry` frames coalesced or skipped, and MUST be disconnected rather than buffered without bound. A client that missed a `stateChange` recovers with `system.status`.
+4. `kind` is reserved on server-initiated frames only. Client-to-server command envelopes MUST NOT carry `kind`; the render channel frames of Section 5.9 are the one exception and are accepted only from `render`-role sessions.
+
+## 5.5 State versioning
+
+The control plane MUST maintain a monotonically increasing integer `stateVersion`.
+
+A command with `baseStateVersion` not equal to current state version MUST fail with:
+
+```text
+E_VERSION_CONFLICT
+```
+
+Commands without `baseStateVersion` are accepted if otherwise valid.
+
+## 5.6 View and Preview buses
+
+The engine MUST maintain two logical video buses:
+
+| Bus | Meaning |
+|---|---|
+| `PREVIEW` | The staging environment: what is prepared to go live. |
+| `VIEW` | The main live/recorded composited output. |
+
+The preview bus MUST be independently rendered and visible in operator UI.
+
+A TAKE operation MUST promote the preview bus to view using the requested transition.
+
+If no preview is armed, TAKE MUST fail.
+
+The v0.1/v0.2 name for View is Program; `program.*` commands remain as deprecated aliases for one spec version (Assumption 17).
+
+## 5.7 Item references
+
+Commands use item references:
+
+| Reference | Meaning |
+|---|---|
+| `A` | Sequence/Segment A |
+| `A1` | Item/Subsegment A1 |
+| `element:A.lowerThird` | Element with ID `lowerThird` in the active scene for A |
+| `scene:SCN_A1` | Scene ID |
+| `overlay:ticker` | Overlay ID |
+| `guest:remote_1` | Guest source ID |
+| `camera:main` | Camera source ID |
+
+Subsegment IDs SHOULD match the `A1`, `A2`, `B1`, etc. convention.
+
+### 5.7.1 Reference grammar (normative, new in v0.3.2)
+
+```abnf
+reference   = bare-id / prefixed
+bare-id     = id                       ; a Sequence or Item id
+prefixed    = kind ":" scoped-id
+kind        = "element" / "scene" / "overlay" / "guest" / "camera"
+scoped-id   = id [ "." id ]            ; the dotted form scopes an element to an item
+id          = 1*( ALPHA / DIGIT / "_" / "-" )
+```
+
+A reference resolves against the loaded package. Resolution rules:
+
+1. A bare id resolves against the Item index first, then the Sequence index. If it matches neither, the command fails with `E_NOT_FOUND`.
+2. `element:<item>.<element>` resolves the element within the scene active for that item; `element:<element>` resolves within the current View scene. An id that exists in the manifest but not in the addressed scope is `E_NOT_FOUND`, not a silent no-op.
+3. `scene:`, `overlay:`, `guest:`, and `camera:` resolve against their respective indexes.
+4. A reference that parses but names an unknown prefix MUST fail with `E_BAD_PAYLOAD`, not `E_NOT_FOUND` — a malformed reference is a payload defect.
+
+Which forms each command accepts:
+
+| Payload field | Accepted forms |
+|---|---|
+| `itemRef` (`preview.set`, `view.cut`) | bare id only |
+| `itemId`, `sequenceId`, `sceneId`, `overlayId`, `guestId`, `elementId`, `templateId`, `assetId`, `ruleId`, `pluginId` | bare id only — these are typed fields, not references |
+| Automation rule `target`, render-directive `target` | any `reference` form |
+
+Typed id fields are deliberately not references: a command that names a `sceneId` accepts `SCN_A1`, never `scene:SCN_A1`. The prefixed forms exist for contexts that address heterogeneous targets.
+
+## 5.8 Operator topology (normative)
+
+The anchor drives. A producer or second operator MAY join remotely.
+
+The View is a served endpoint: any authorized client watches it over WHEP (Section 9.6) with hardware decode, in a browser or on a phone. Virtual-camera patterns are forbidden: the engine MUST NOT do GPU-readback detours to make the View visible to a remote operator.
+
+Guest onboarding is one link, no install, browser capture — obs.ninja-class UX — with the mix-minus return and TURN vending built in (Sections 8.6, 9.6).
+
+## 5.9 The render channel (normative, new in v0.3.2)
+
+Section 5.2 requires all control traffic to pass through the control plane, and shows the render node hanging off it. This section defines the protocol on that link. It is not a second transport: the render node connects to the same endpoint as every other client (Section 5.3), authenticates with a token that resolves to the `render` role, and then exchanges the frames below.
+
+Render-channel frames are distinct from the Section 5.4 command envelope. A `render`-role session MUST NOT issue commands; a non-`render` session MUST NOT receive directives.
+
+### 5.9.1 Directive frame (control plane → render node)
+
+```json
+{
+  "v": "0.3",
+  "kind": "directive",
+  "seq": 91,
+  "stateVersion": 413,
+  "command": "view.take",
+  "target": {},
+  "payload": {}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `seq` | Per-connection monotonic counter, starting at `0` when that connection is established. |
+| `stateVersion` | The `stateVersion` the directive was issued at. Every directive emitted for one command carries that command's version. |
+| `command` | The command name that produced this directive. |
+| `target` | Resolved references (Section 5.7.1) — resolved by the control plane, never re-resolved by the engine. |
+| `payload` | Fully resolved parameters. Names that require lookup (for example a transition `preset`) MUST be resolved before emission; the engine never resolves policy. |
+
+Delivery is fire-and-forget: emitting a directive MUST NOT block command processing. The outbound path MUST be bounded — a render node that cannot keep up has its directives dropped and counted, never buffered without bound (the Section 5.4.1 §3 rule).
+
+### 5.9.2 `seq` semantics
+
+`seq` is a continuity check **within a single connection**. It resets to `0` on every connect and reconnect. A fresh connection beginning at `seq 0` means "joined here", never "lost N directives". A gap in `seq` within one connection means directives were dropped, and the node MUST request a resync (Section 5.9.3) rather than infer the missing state.
+
+### 5.9.3 Engine → control plane frames
+
+Accepted only from `render`-role sessions; from any other role they MUST be ignored and the attempt audited.
+
+| `kind` | Shape | Meaning |
+|---|---|---|
+| `engineTelemetry` | Section 10.1 fields the engine owns (Section 10.1.1) | Reported at 1 Hz. |
+| `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
+| `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
+| `resyncRequest` | `{ v, kind, reason }` where `reason` is `seqGap` \| `reconnect` \| `internal` | The engine asks for a full snapshot. |
+
+Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
+
+### 5.9.4 Reconnect and resync
+
+A bounded, fire-and-forget channel plus a reconnecting engine means directives issued during an outage are gone. Guessing is not acceptable on air. Therefore:
+
+1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, `viewItem`, **`viewItemStartFrame`**, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
+
+   `viewItemStartFrame` is the master frame at which the current View item went on air — §12.1's `t0` — and is REQUIRED whenever `viewItem` is non-null. Without it the snapshot says *what* is on air but not *since when*, so a reconnecting engine restarts a timed item from its first frame: a clip forty seconds in jumps back to zero, on air. It MUST be `null` when `viewItem` is `null`.
+
+   An empty `visibleOverlays` array MUST clear all visible overlays. It is a full snapshot, not a patch, and "no overlays" is a state the snapshot has to be able to express.
+2. Between connecting and receiving `show.resync`, the render node MUST hold its last applied output and MUST NOT apply any later directive.
+3. The engine confirms with `appliedStateVersion` carrying the snapshot's `stateVersion`.
+4. Directives issued while no render node was connected MUST NOT be replayed. The snapshot, not the backlog, is the recovery mechanism.
+5. On `resyncRequest`, the control plane MUST send a fresh `show.resync` on that connection.
+
+### 5.9.5 Quiescence acknowledgement
+
+`show.stop`'s graceful window (Section 16.1) is only meaningful if something signals that outputs actually stopped. That signal is `appliedStateVersion`:
+
+1. The control plane emits `record.stop` / `stream.stop` directives at the stop command's `stateVersion`.
+2. The engine stops the outputs, and only once they are actually stopped sends `appliedStateVersion` for that `stateVersion`. An early acknowledgement defeats the window and is a defect.
+3. The control plane waits up to 2 seconds for that acknowledgement. Arriving in time is a graceful stop; timing out forces the stop and logs the warning named in Section 16.1.
+
+---
+
+# 6. Subsystem 2 — Media asset pipeline
+
+## 6.1 Responsibilities
+
+The asset pipeline prepares show packages before live load.
+
+It MUST provide:
+
+1. Ingest from source media.
+2. Transcode/normalize to house format.
+3. Cadence preservation.
+4. Loudness normalization.
+5. Thumbnail generation.
+6. Contact-sheet generation.
+7. Alpha/loop validation.
+8. Preflight report generation.
+9. Asset hashing.
+10. Missing-asset detection.
+11. Plugin package validation (Section 14).
+
+It MUST NOT:
+
+1. Use variable frame rate output.
+2. Use motion interpolation unless asset explicitly declares `cadence: interpolate`.
+3. Use VP9/WebM alpha as a live format.
+4. Rely on live transcoding during playout.
+
+## 6.2 Normalized video format
+
+All normal video assets MUST be:
+
+| Property | Requirement |
+|---|---|
+| Resolution | Show resolution, default `1920x1080` |
+| Frame rate | House rate, default `30 fps` |
+| Frame-rate mode | CFR only |
+| Codec | H.264 High Profile |
+| Pixel format | `yuv420p` |
+| Keyframe interval | ≤ 1 second, i.e. ≤ 30 frames at 30 fps |
+| Audio | AAC or PCM, 48 kHz |
+| Loudness target | `-16 LUFS` integrated |
+| True peak | `-1.5 dBTP` max |
+| Container | MP4 or MOV |
+
+Reference FFmpeg shape:
+
+```bash
+ffmpeg -i input.mov \
+  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p" \
+  -c:v libx264 -profile:v high -preset slow -crf 18 \
+  -g 30 -keyint_min 30 -sc_threshold 0 \
+  -c:a aac -b:a 192k -ar 48000 \
+  -af loudnorm=I=-16:TP=-1.5:LRA=11 \
+  output.mp4
+```
+
+The live engine MAY use hardware decode for H.264. The asset pipeline MAY use CPU encoding; the live path MUST NOT.
+
+## 6.3 Alpha loops
+
+Alpha loops MUST use one of:
+
+| Format | Status |
+|---|---|
+| ProRes 4444 | Preferred on Apple Silicon |
+| HAP Alpha | Preferred when supported by engine |
+| PNG sequence | Fallback |
+| VP9/WebM alpha | Forbidden live format |
+
+Alpha assets MUST contain a real alpha channel. Preflight MUST fail if alpha is absent.
+
+## 6.4 Audio assets
+
+Audio assets MUST be:
+
+| Property | Requirement |
+|---|---|
+| Sample rate | 48 kHz |
+| Bit depth | 16-bit PCM minimum, 24-bit preferred |
+| Channels | mono or stereo |
+| Loudness | normalized to show target |
+| Soundboard assets | fully preloadable into RAM |
+
+## 6.5 Graphics and fonts
+
+Graphics MUST be template-driven.
+
+Required template classes:
+
+1. Lower-third headline.
+2. Lower-third name/location.
+3. Breaking banner.
+4. Ticker.
+5. Clock.
+
+Text requirements:
+
+| Requirement | Mandatory |
+|---|---|
+| Unicode | yes |
+| UTF-8 | yes |
+| RTL scripts | yes |
+| Multilingual fields | yes |
+| Font packaging | yes |
+| Ticker GPU texture scroll | yes |
+| Per-frame full text relayout | forbidden except content change |
+
+Ticker rendering MUST scroll by texture offset or equivalent GPU method. It MUST NOT re-layout the whole ticker string every frame unless ticker content changes.
+
+## 6.6 Preflight
+
+`preflight(show_package)` MUST be runnable locally and in CI.
+
+It MUST produce:
+
+```text
+preflight_report.json
+contact_sheet.jpg
+thumbnails/*.jpg
+```
+
+It MUST validate:
+
+1. Manifest JSON schema validity.
+2. Manifest semantic validity.
+3. Existence of every referenced asset.
+4. SHA-256 match when provided.
+5. First and last frame decode for every video/alpha asset.
+6. Loop duration matches `loop.periodFrames`.
+7. Constant frame rate.
+8. Correct resolution.
+9. Correct house frame rate.
+10. Correct cadence pattern.
+11. Audio sample rate.
+12. Integrated loudness.
+13. True peak.
+14. Alpha presence for alpha assets.
+15. Font availability for templates.
+16. Template field completeness.
+17. Fallback asset existence and decodability.
+18. No forbidden formats.
+19. No VFR assets.
+20. No missing control binding command.
+21. Effective loop metadata present for every `videoLoop` element (see Section 12).
+22. Loop budget math (see Section 12 and AC-21).
+23. Scene-reference integrity: every `sceneRef` resolves to a declared scene; every `pluginId` resolves to a declared plugin; every group `children` entry resolves within the scene.
+24. Scene graph is a DAG: no circular sub-scene references.
+25. Automation rules pass cycle detection (Section 13).
+26. Plugin sandbox validation (Section 14).
+27. **No contradictory Items** (Section 17.5): no Item carries a field belonging to a `kind` other than its own.
+28. **Package resource demand** (Section 12.11): `vramDemandMib` and `audioDemandMib` computed and reported.
+29. **No loop period beyond Section 12.4's absolute cap.**
+
+Preflight MUST fail on seeded:
+
+1. Missing asset.
+2. VFR clip.
+3. Incorrect resolution.
+4. Broken loop period.
+5. Missing fallback asset.
+6. Loudness out of tolerance.
+7. Invalid manifest field.
+8. Circular sub-scene reference.
+9. Self-triggering automation rule.
+10. Plugin failing sandbox validation.
+
+Preflight result MUST be machine-readable.
+
+## 6.7 v0.2 → v0.3 migration rules
+
+The migration from v0.2 to v0.3 MUST be mechanical and preflight-verified, performed by the `nbe-migrate` CLI:
+
+1. A v0.2 `Segment` becomes a v0.3 `Sequence` (e.g., `SEQ_A`).
+2. A v0.2 `Subsegment` becomes a v0.3 `Item` referencing a generated `Scene`.
+3. A v0.2 `LayerStack` becomes a v0.3 `Scene` (e.g., `SCN_A1`).
+4. A v0.2 `Layer` becomes a v0.3 `Element`, preserving the `id`.
+5. Preflight MUST verify that a v0.2 package run through `nbe-migrate` produces a valid v0.3 package with identical visual and audio output.
+
+Preflight in a v0.3 engine rejects v0.2 manifests (Assumption 18).
+
+---
+
+# 7. Subsystem 3 — Playout/compositor engine
+
+## 7.1 Implementation constraints
+
+The render node MUST be implemented in Rust.
+
+It MUST use `wgpu` for GPU compositing.
+
+Backend targets:
+
+| Platform | Backend |
+|---|---|
+| macOS | Metal via `wgpu` |
+| Linux | Vulkan via `wgpu` |
+| Windows | DX12 via `wgpu`, future |
+| Browser | WebGPU, future |
+
+The render node MUST NOT:
+
+1. Use OBS as the core compositor.
+2. Use CPU x264 for live encoding.
+3. Use screen/app mirroring as an ingest method.
+4. Depend on the public internet for local playout.
+
+## 7.2 Render model
+
+The compositor MUST use a GPU scene graph.
+
+Per frame:
+
+```text
+1. Read master clock frame number.
+2. Resolve VIEW item/scene and PREVIEW item/scene.
+3. Resolve scene elements (including extensions and sub-scenes).
+4. For each visible element:
+   a. obtain source texture,
+   b. apply transform/crop/opacity/effects,
+   c. assign z-order.
+5. Composite elements from low z to high z (M/E level).
+6. Apply transition interpolation if a transition is running.
+7. Composite overlay (DSK) level.
+8. Render VIEW target.
+9. Render PREVIEW target.
+10. Submit frames to display/encoder.
+11. Emit telemetry.
+```
+
+The compositor MUST be frame-deterministic for a given master-clock frame and show state.
+
+## 7.3 Element kinds
+
+The engine MUST support the following element kinds:
+
+| Kind | Source |
+|---|---|
+| `videoLoop` | looping normal or alpha video |
+| `clip` | one-shot video |
+| `camera` | local camera/capture device |
+| `guest` | WHIP/WebRTC remote guest |
+| `graphic` | template-generated graphic |
+| `ticker` | scrolling ticker |
+| `clock` | wall clock or show clock |
+| `sceneRef` | sub-scene reference (Section 7.7) |
+| `group` | named collection of elements (Section 7.6) |
+| `plugin` | WASM/WGSL plugin element (Section 14) |
+
+## 7.4 Element identity and state model
+
+Elements have persistent identity across scenes. The same element `id` in two scenes is the same element.
+
+Element state comprises:
+
+```text
+transform (x, y, w, h, crop)
+opacity
+visibility
+effect parameters
+audio parameters (bus, gainDb, muted)
+```
+
+Persistent identity is what makes Move-class transitions possible (Section 7.9).
+
+## 7.5 Scenes
+
+A scene is a named, reusable visual composition: an element list plus per-element state plus optional audio state.
+
+Scenes are declared top-level in the manifest and referenced by rundown items. A scene is self-contained.
+
+## 7.6 Groups
+
+An element of kind `group` names a collection of sibling elements (`children`). Group operations (move, toggle, opacity) apply to all children as one. Groups are scene-local.
+
+## 7.7 Sub-scenes
+
+A scene may be referenced as an element inside another scene (`kind: "sceneRef"`), rendered once to a texture and reused N times.
+
+Rules:
+
+1. Recursion depth cap: 4.
+2. Scenes form a directed acyclic graph. Preflight MUST reject circular references.
+3. A sub-scene renders to its texture at the show resolution unless the element transform declares otherwise.
+
+Sub-scenes are strictly visual pre-compositions. Audio elements declared inside a sub-scene's element list MUST be ignored by the audio engine. If a sub-scene requires audio, it MUST be declared as a discrete audio element in the parent scene, or the sub-scene must be promoted to a full Scene reference on the time axis.
+
+## 7.8 Scene extension
+
+The v0.2 layer-stack merge capability is preserved in scene terms. A scene MAY declare a base scene:
+
+```json
+{
+  "id": "SCN_B2",
+  "base": "SCN_B",
+  "mergeMode": "inherit"
+}
+```
+
+Merge modes:
+
+| Mode | Behavior |
+|---|---|
+| `inherit` | Extending scene's elements merge over the base scene's elements. |
+| `replace` | Extending scene's element list replaces the base scene's. |
+| `merge` | Explicit merge by element ID. |
+
+Merge rule for `inherit` and `merge`:
+
+1. Start with base scene elements.
+2. Replace any base element with the same `id` if present in the extending scene.
+3. Append extending-only elements.
+4. Sort final list by ascending `z`.
+5. Apply visibility.
+
+## 7.9 Transitions and the state-diff engine
+
+A transition is an interpolation between two element-state maps keyed by element ID.
+
+Given the outgoing scene state and the incoming scene state:
+
+- Elements present in both: tween their properties (position, size, opacity, effect parameters).
+- Elements only incoming: enter animation.
+- Elements only outgoing: exit animation.
+
+Named transition kinds are parameterizations of this engine:
+
+| Kind | Definition |
+|---|---|
+| `cut` | zero-duration tween |
+| `mix` | whole-frame opacity tween over `durationFrames` |
+| `wipe` | mask tween |
+| `sting` | alpha overlay + audio with a defined cut point |
+| `move` | transform tweens on shared elements |
+| `dve` | transform tween on a single featured element (e.g., PiP spring-to-fullscreen) |
+
+Easings: `linear`, `easeIn`, `easeOut`, `easeInOut`, `cubicBezier`, `spring`. Per-element duration, delay, stagger, and path.
+
+v1 MUST support `cut` and `mix` (Section 20). The remaining kinds are schema-supported and post-MVP.
+
+The state diff MUST be precomputable at arm time, so the take-latency guarantee holds for arbitrarily complex moves.
+
+Transitions MUST be quantized to master-clock frame boundaries.
+
+Default crossfade duration:
+
+```text
+15 frames at 30 fps = 0.5 seconds
+```
+
+Transition presets are named, reusable transition configurations bindable to hotkeys (manifest `transitions` array).
+
+### 7.9.1 Take latency (normative)
+
+For a command accepted on localhost:
+
+```text
+takeLatency = firstVisibleViewChangeFrame - commandAcceptedFrame
+```
+
+For `cut`:
+
+```text
+takeLatency <= 2 frames
+```
+
+For `mix`:
+
+```text
+first mixed frame MUST appear by commandAcceptedFrame + 1
+full mix completion MUST occur by durationFrames + 1
+```
+
+This applies to the local VIEW compositor output, not to downstream stream latency. See AC-17.
+
+## 7.10 Overlay level (DSK)
+
+Composition order:
+
+```text
+View = overlay(transition(sceneA, sceneB))
+```
+
+Overlay elements (ticker, logo bug, breaking banner, clock) live on the overlay level, composited after the transition. They persist across scene transitions.
+
+Overlays have independent `overlay.show` / `overlay.hide` commands with their own enter/exit animations.
+
+## 7.11 Chroma key
+
+The chroma key effect MUST be GPU-shader-based.
+
+Parameters:
+
+| Parameter | Range | Default |
+|---|---:|---:|
+| `enabled` | bool | true |
+| `color` | green/blue/custom | green |
+| `customColorHex` | `#RRGGBB` | n/a |
+| `tolerance` | 0.0–1.0 | 0.30 |
+| `softness` | 0.0–1.0 | 0.20 |
+| `spillSuppression` | 0.0–1.0 | 0.50 |
+| `edgeFeather` | 0.0–1.0 | 0.10 |
+
+The keyer MUST support a garbage matte.
+
+Chroma key MUST run in real time at 1080p30 on Tier-1 hardware.
+
+## 7.12 DVE and PiP
+
+The architecture MUST support DVE transforms.
+
+v1 MVP only requires static PiP guest placement and cut between PiP/full layouts.
+
+Normalized transform space:
+
+```text
+x: 0.0 = left
+y: 0.0 = top
+w: 1.0 = full canvas width
+h: 1.0 = full canvas height
+```
+
+Example PiP:
+
+```json
+{
+  "x": 0.66,
+  "y": 0.05,
+  "w": 0.30,
+  "h": 0.30
+}
+```
+
+## 7.13 Frame budget
+
+For 1080p30:
+
+```text
+frame deadline = 33.333 ms
+```
+
+A frame is dropped if VIEW output is not submitted by its deadline.
+
+Target budget on Tier-1:
+
+| Stage | Target |
+|---|---:|
+| state resolution | < 1 ms |
+| element graph eval | < 2 ms |
+| GPU render | < 8 ms |
+| encode submission | < 2 ms |
+| OS/driver slack | remainder |
+
+The engine MUST NOT block the render loop on:
+
+1. control-plane WebSocket I/O,
+2. thumbnail generation,
+3. RSS fetch,
+4. non-critical disk writes,
+5. telemetry flush.
+
+## 7.14 Fallback slate
+
+The show manifest MUST define `fallbackAssetId`.
+
+The fallback asset MUST be resident in memory/VRAM after show load.
+
+On segment failure, the engine MUST cut to fallback slate no later than one frame after the failure deadline.
+
+Fallback triggers:
+
+1. Missing live asset.
+2. Decode failure.
+3. Camera device loss.
+4. Guest source loss while live.
+5. GPU render fault.
+6. Watchdog miss.
+7. Unrecoverable state error.
+
+Fallback MUST be automatic and MUST NOT require operator action.
+
+---
+
+## 7.15 House rate reconciliation (normative, new in v0.4)
+
+A package declares the rate it was authored at (`show.video.frameRate`); an engine runs at a rate of its own. Nothing compared them, so a 25 fps package loaded on a 30 fps engine mapped every non-house-rate asset against the wrong denominator — timed items running short, cadence conversion silently wrong — with no path detecting it.
+
+1. On `show.load`, if the package's declared `show.video.frameRate` differs from the rate the engine is running, the control plane MUST **reject** the load with `E_PREFLIGHT_FAILED` and a message naming both rates. It MUST NOT load the package at the wrong rate and warn.
+2. `nbe-preflight` MUST report the package's declared rate in `resources.declaredHouseRate` (§19.2.1) unconditionally, and MUST **warn** rather than fail when it is told a target rate that differs. A package is valid at the rate it declares; whether *this* engine can play it is a different question, and preflight validating a package in isolation cannot answer it. Preflight MUST NOT warn merely because a package declares a rate — that would make every package non-air-ready and teach operators to pass `--allow-warnings` by reflex.
+3. The engine MUST log the declared rate and its own rate at load, **whether or not they match** — a match is evidence too, and an operator reading a log after a bad show needs to see that the rates were checked, not infer it from an absence.
+
+The split is the point: **the side that knows both facts is the side that refuses.** Preflight knows the package; only the control plane knows the package *and* the running engine. Putting the refusal in preflight would require telling preflight what machine it is validating for, which changes its contract from "is this package valid" to "is this package valid here" — and that contract belongs to the control plane (§5.1 #1, #4).
+
+# 8. Subsystem 4 — Audio engine
+
+## 8.1 Core requirements
+
+The audio engine MUST run at:
+
+```text
+48 kHz
+float32 internal processing
+```
+
+Audio MUST be synchronized to the master show clock.
+
+The audio graph MUST include these buses:
+
+| Bus | Purpose |
+|---|---|
+| `mic` | anchor microphone |
+| `clip` | clip/subsegment audio |
+| `music` | music bed |
+| `sfx` | soundboard effects |
+| `guest` | remote guest audio |
+| `master` | final mix |
+| `guestReturn` | per-guest mix-minus return (see 8.6) |
+| `ifb` | anchor monitor/talkback (see 8.6) |
+
+## 8.2 Bus controls
+
+Each bus MUST support:
+
+| Control | Range |
+|---|---:|
+| gain | -60 dB to +12 dB |
+| mute | boolean |
+| meter | peak + RMS |
+| solo | boolean, monitor only (PFL) |
+
+The master bus MUST have:
+
+1. compressor,
+2. limiter,
+3. loudness-safe output,
+4. peak metering.
+
+## 8.3 Ducking
+
+The music bus MUST support ducking.
+
+Default duck behavior:
+
+| Parameter | Default |
+|---|---:|
+| depth | -6 dB |
+| attack | 10 ms |
+| release | 250 ms |
+| trigger | manual `audio.duck` or voice-detected mic |
+
+Ducking MUST NOT affect `mic` or `guest` buses unless explicitly configured.
+
+## 8.4 Soundboard
+
+Soundboard assets MUST be preloaded into RAM at show load.
+
+Trigger latency MUST be under:
+
+```text
+20 ms
+```
+
+on Tier-1 hardware.
+
+Soundboard playback MUST NOT cause dropped video frames.
+
+## 8.5 Guest audio (inbound)
+
+Guest audio from WHIP/WebRTC MUST pass through:
+
+1. jitter buffer,
+2. echo cancellation,
+3. noise suppression,
+4. automatic gain control,
+5. loudness normalization toward house target.
+
+Default jitter buffer:
+
+| Condition | Target |
+|---|---:|
+| good network | 200 ms |
+| variable network | 300–500 ms |
+| hard maximum | 1000 ms |
+
+If guest audio fails, the guest element MUST be muted automatically.
+
+## 8.6 Guest return, mix-minus, and IFB
+
+### 8.6.1 Guest return requirement
+
+For every connected guest, the engine MUST create a return audio mix.
+
+Guest return MUST be mix-minus:
+
+```text
+guestReturn(guestId) = programReturnMix - that guest's own inbound audio
+```
+
+The guest MUST NOT receive their own voice from the NBE return path.
+
+This applies even if the guest is muted in program.
+
+### 8.6.2 Default guest return mix
+
+For guest `G`:
+
+```text
+guestReturn(G) =
+    mic
+  + clip
+  + music
+  + sfx
+  + all guest buses except G
+  + master insert effects where safe
+```
+
+It MUST exclude:
+
+```text
+guestBus(G)
+```
+
+It SHOULD exclude any effect return that contains `guestBus(G)`.
+
+### 8.6.3 Guest return transport
+
+The guest return mix MUST be sent as the outbound audio track of the guest’s WebRTC session.
+
+Guest return MUST be independent from the master program mix.
+
+Guest return MUST support:
+
+| Control | Requirement |
+|---|---|
+| gain | -60 dB to +12 dB |
+| mute | boolean |
+| metering | peak/RMS |
+| mode | `programMinusSelf`, `producerMix`, `mute` |
+
+Default mode:
+
+```text
+programMinusSelf
+```
+
+### 8.6.4 Anchor IFB
+
+An `ifb` bus is defined.
+
+Default anchor IFB mix:
+
+```text
+ifb = program mix - anchor mic + talkback
+```
+
+If no talkback source exists:
+
+```text
+ifb = program mix - anchor mic
+```
+
+IFB is intended for anchor monitoring and producer interruption. It is not required in the public program output.
+
+### 8.6.5 Echo prevention
+
+The engine MUST guarantee that a guest’s own audio does not enter their own return path.
+
+If a guest is connected through WHIP/WebRTC:
+
+1. inbound guest audio enters `guestBus(guestId)`,
+2. `guestBus(guestId)` may enter program mix,
+3. `guestBus(guestId)` MUST NOT enter `guestReturn(guestId)`.
+
+A failure of this rule is an `E_AUDIO` fault.
+
+## 8.7 Audio behavior during transitions
+
+### 8.7.1 Click-free rule
+
+All audio gain changes MUST be click-free.
+
+Minimum ramp:
+
+```text
+5 ms
+```
+
+Default ramp:
+
+```text
+10 ms
+```
+
+Maximum default ramp:
+
+```text
+50 ms
+```
+
+Hard sample-step cuts are forbidden.
+
+### 8.7.2 `view.take` audio behavior
+
+`view.take` payload includes an optional `audio` object (see Section 16).
+
+### 8.7.3 Audio transition modes
+
+| Mode | Behavior |
+|---|---|
+| `follow` | Follow the item's `audioPolicy` (AFV). |
+| `crossfade` | Crossfade outgoing and incoming audio over `audio.durationFrames`. |
+| `cut` | Cut audio at boundary, but apply click-free ramp. |
+| `mute` | Incoming audio muted; outgoing audio ramped out. |
+
+### 8.7.4 Interaction with `audioPolicy`
+
+When `audio.transition = follow`:
+
+| Item `audioPolicy` | Behavior |
+|---|---|
+| `clip` | Clip audio is active and crossfaded or ramped according to transition. |
+| `bed` | Clip audio is muted; music bed continues. |
+| `mute` | Incoming clip audio is muted; outgoing audio ramped out. |
+
+### 8.7.5 Video `mix` default
+
+If video transition is `mix` and no audio override is given, audio MUST crossfade over the same duration.
+
+Crossfade curve:
+
+```text
+equal-power crossfade
+```
+
+Linear crossfade is allowed, but equal-power is recommended.
+
+### 8.7.6 Video `cut` default
+
+If video transition is `cut`, audio MUST follow `audioPolicy` and MUST apply at least a 5 ms ramp at any start/stop boundary.
+
+### 8.7.7 Live camera and guest audio
+
+For live camera and guest sources:
+
+| Transition | Audio behavior |
+|---|---|
+| `cut` | 10 ms ramp by default |
+| `mix` | crossfade over transition duration |
+| `mute` | ramp out and mute |
+
+---
+
+## 8.9 Audio and the master clock (normative, new in v0.3.3)
+
+Section 8.1 requires audio to be synchronized to the master show clock, and
+Section 11.5.1 sets the tolerance. This section says how, because the audio
+device does not run on the show's clock and cannot be made to.
+
+**There is one clock.** The master show clock (Section 11) is authoritative for
+what should be heard, exactly as it is for what should be seen. The audio
+device's callback is a *cadence*, not a clock: it asks for N samples whenever
+the hardware is ready, at a rate that drifts against every other clock in the
+machine.
+
+The mapping is the same discipline Section 12.1 applies to video:
+
+```text
+sampleForMasterFrame(F) = (F - t0) * sampleRate / houseFrameRate
+```
+
+A clip's audio is read at the sample offset its item's position implies — never
+from a playback cursor that advances on its own. A source that has been on air
+for `F - t0` frames is heard at exactly that offset, so a video frame and its
+audio cannot disagree about where they are.
+
+**Drift is measured, not assumed.** Each callback records the master frame it
+was serving. The difference between the samples the device has consumed and the
+samples the master clock implies is the drift, and it is reported
+(Section 10.1). Correction follows Section 11.5.1: adjust audio presentation, or
+drop/hold non-critical frames, within ±1 frame over a 30-minute show. Unbounded
+drift is forbidden.
+
+**Thread discipline (Section 7.13 applied to audio).** The audio callback runs
+on the device's real-time thread, at a higher priority than the render loop and
+with a harder deadline: a late video frame is a dropped frame, a late audio
+callback is an audible hole. Therefore:
+
+1. The callback MUST NOT allocate, lock, block, or perform I/O.
+2. The render loop MUST NOT call into the audio graph, and the audio callback
+   MUST NOT call into the renderer. Neither may wait on the other.
+3. Control reaches the callback through lock-free structures; meters and
+   counters leave the same way.
+4. Everything expensive — decode, resampling, soundboard preload — happens at
+   load or arm time, on other threads.
+
+## 8.10 Audio faults (normative, new in v0.3.3)
+
+An **underrun** is a callback the engine could not fill in time: the device
+asked for samples and the graph had none ready, so the hardware emitted silence
+or repeated its buffer. It is the audio equivalent of a dropped frame, and it is
+counted the same way (Section 10.1).
+
+| Condition | Meaning | Response |
+|---|---|---|
+| Underrun | a callback deadline was missed | count it; log the first of each episode |
+| Sustained underruns | the audio graph cannot keep up | raise the `E_AUDIO` condition in status (Section 10.4) and log loudly |
+| Device loss | the output device disappeared | `E_AUDIO`; attempt reopen with backoff; never block the render loop |
+
+**An audio fault MUST NOT trigger the video fallback slate.** The Section 10.3
+watchdog exists to keep a broken picture off air; a glitch in the audio graph
+does not make the picture wrong, and cutting the View to a slate because a
+soundboard sample underran would turn a small fault into a visible one. The two
+subsystems fail independently and report independently.
+
+---
+
+# 9. Subsystem 5 — Output/distribution
+
+## 9.1 Outputs
+
+The engine MUST support:
+
+1. Local full-screen view display.
+2. Local preview display.
+3. Local crash-safe recording.
+4. One live streaming output in MVP: RTMP or SRT.
+5. WHIP output as future/contribution output.
+
+MVP hard ceiling:
+
+```text
+1 local display output
+1 preview output
+1 recording output
+1 RTMP or SRT output
+```
+
+## 9.2 Hardware encoding
+
+Live encoding MUST use hardware encoders only.
+
+| Platform | Encoder |
+|---|---|
+| Apple Silicon | VideoToolbox H.264 or HEVC |
+| Linux/NVIDIA | NVENC H.264 or HEVC |
+
+CPU x264 in the live path is forbidden.
+
+If no hardware encoder is available, output start MUST fail with:
+
+```text
+E_NO_HARDWARE_ENCODER
+```
+
+## 9.3 Recording
+
+Recording MUST be crash-safe.
+
+Default container:
+
+```text
+fragmented MP4
+```
+
+Allowed alternative:
+
+```text
+Matroska
+```
+
+Recording MUST remain playable if the process is killed with `SIGKILL`.
+
+Fragment policy:
+
+| Property | Requirement |
+|---|---:|
+| fragment interval | ≤ 1 second |
+| moov placement | fragmented/init segment safe |
+| audio interleaving | yes |
+| finalization required | no |
+
+Recording MUST include:
+
+1. program video,
+2. master audio,
+3. timecode metadata if available.
+
+Markers (Section 10.6) SHOULD be written as recording chapters where the container supports them.
+
+## 9.4 Streaming
+
+Default MVP stream:
+
+| Property | Value |
+|---|---|
+| Protocol | RTMP or SRT |
+| Video | H.264 High |
+| Resolution | 1920x1080 |
+| Frame rate | 30 fps |
+| Video bitrate | 6–12 Mbps recommended |
+| Audio | AAC 48 kHz |
+| Audio bitrate | 192 kbps |
+| Keyframe interval | 1 second |
+
+Stream failure MUST NOT stop local playout.
+
+Stream reconnect MUST be automatic.
+
+## 9.5 Local network survivability
+
+Local playout MUST continue if:
+
+1. WAN is lost,
+2. RTMP endpoint is unreachable,
+3. WHIP guest connection drops,
+4. RSS ticker feed fails.
+
+In those cases:
+
+| Component | Behavior |
+|---|---|
+| local playout | continue |
+| recording | continue |
+| stream | retry/backoff |
+| guest element | placeholder or fallback if live |
+| RSS ticker | last cached items or manual items |
+
+## 9.6 WHIP auth, TURN vending, NDI feature flag, WHEP preview
+
+### 9.6.1 WHIP authentication
+
+WHIP ingest endpoints MUST require bearer authentication.
+
+Example:
+
+```http
+POST /nbe/v0.3/whip/guest/GUEST_ID
+Authorization: Bearer <guest-token>
+```
+
+If token is missing or invalid, the endpoint MUST return HTTP 401.
+
+Guest links are JWT-signed, expiring, limited-use, and revocable by `jti` (Section 10.7).
+
+### 9.6.2 TURN credential vending
+
+The control plane MUST vend time-limited TURN credentials.
+
+Credentials MAY be returned by:
+
+```text
+guest.connect
+guest.getTurn
+```
+
+Credential response shape:
+
+```json
+{
+  "uris": [
+    "turn:turn.nbe.local:3478?transport=udp"
+  ],
+  "username": "1768000000:guest1",
+  "credential": "redacted",
+  "ttlSec": 600
+}
+```
+
+TURN credentials MUST expire.
+
+Failure to vend credentials MUST return `E_TURN`.
+
+ICE failure MUST return `E_ICE`.
+
+Self-hosted TURN (e.g., coturn via environment configuration) is the default posture. Managed TURN provider integrations are a later option (Section 25).
+
+**Credential derivation (normative, new in v0.3.2).** The shape above is not enough to produce a credential that a TURN server will accept. Vended credentials MUST follow the long-term-credential REST convention:
+
+```text
+username   = <unixExpiry> ":" <guestId>
+credential = base64( HMAC-SHA1( sharedSecret, username ) )
+ttlSec     = <unixExpiry> - now
+```
+
+where `sharedSecret` is the TURN server's configured static-auth secret, held by the control plane and never returned to a client.
+
+A control plane with no TURN secret configured MUST fail `guest.getTurn` with `E_UNSUPPORTED_FEATURE` and MUST NOT return placeholder or randomly generated credentials. Fabricated credentials are worse than an explicit failure: they defer the error to ICE, mid-show, where it is indistinguishable from a network fault.
+
+### 9.6.3 NDI feature flag
+
+NDI is optional.
+
+The core build MUST be NDI-free unless explicitly enabled.
+
+Manifest or node config MAY declare:
+
+```json
+{
+  "features": {
+    "ndi": {
+      "enabled": false
+    }
+  }
+}
+```
+
+If NDI is disabled:
+
+1. NDI camera sources MUST NOT initialize.
+2. Preflight MUST fail or warn according to target profile.
+3. Runtime commands referencing NDI sources MUST fail with `E_UNSUPPORTED_FEATURE`.
+
+### 9.6.4 WHEP preview for iPhone and remote operators
+
+Preview and View MUST be served over WHEP.
+
+Endpoints:
+
+```text
+POST /nbe/v0.3/whep/program
+POST /nbe/v0.3/whep/preview
+```
+
+Authentication:
+
+```http
+Authorization: Bearer <controller-token>
+```
+
+MJPEG fallback:
+
+```text
+GET /nbe/v0.3/mjpeg/program
+GET /nbe/v0.3/mjpeg/preview
+```
+
+MJPEG MUST be disabled by default and enabled only in dev mode.
+
+This is the remote-operator path (Section 5.8): the producer sees what the audience sees, hardware-decoded, with no virtual-camera detour.
+
+## 9.7 Multi-output unification (normative)
+
+One composite produces one GPU frame. Display, recording, streaming, and preview outputs are hardware-encoder sessions sharing those rendered frames via GPU texture sharing (Metal `IOSurface`, Vulkan external memory).
+
+Running record + stream concurrently MUST NOT add CPU load beyond encoder-session overhead, and MUST NOT recomposite.
+
+---
+
+# 10. Subsystem 6 — Monitoring, reliability, abuse, degradation
+
+## 10.1 Telemetry
+
+The engine MUST emit telemetry at least once per second.
+
+Telemetry fields:
+
+```json
+{
+  "ts": 1768000000000,
+  "showState": "RUNNING",
+  "masterClockFrame": 54000,
+  "viewItem": "B2",
+  "previewItem": "B3",
+  "droppedFramesTotal": 0,
+  "renderGpuTimeMs": 4.7,
+  "decodeSessions": 4,
+  "vramUsedMib": 1830,
+  "textureCacheUsedMib": 512,
+  "streamState": "live",
+  "streamBufferMs": 210,
+  "recordState": "recording",
+  "recordSpaceMib": 512000,
+  "masterClockDriftMs": 0.2,
+  "fallbackActive": false,
+  "qualityProfile": "consumer",
+  "degradationRung": 0,
+  "automationHold": false,
+  "audioUnderrunsTotal": 0,
+  "audioDriftMs": 0.4,
+  "busPeakDbfs": { "master": -12.3, "mic": -18.0 }
+}
+```
+
+The three audio fields are new in v0.3.3. Before them a show could glitch
+audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
+missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
+drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
+operator can see which bus is hot without opening a meter bridge.
+
+### 10.1.1 Field ownership and the merge (normative, new in v0.3.2)
+
+Two processes hold the truth for different fields, and the control plane is the single emitter. Ownership:
+
+| Owner | Fields |
+|---|---|
+| Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs` |
+
+**`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
+
+| Source | Meaning |
+|---|---|
+| `manifest.qualityProfile` | The **requested** profile — what the show asks for. |
+| The render node's startup probe (Section 10.5) | The **effective** profile — what this hardware can actually sustain. |
+
+The effective profile MUST NOT exceed the requested one: a show asking for `consumer` never gets promoted to `pro` because the machine is fast. The engine reports the effective profile in `engineTelemetry`, and the control plane emits that value when the engine report is fresh, falling back to the requested profile when it is stale or absent (with `engineConnected: false` already signalling why). A control plane running with no render node reports what the show asked for, which is the only honest answer available to it.
+
+The render node reports its fields over `engineTelemetry` (Section 5.9.3) at 1 Hz. The control plane caches the last report with its arrival time and merges. When no report has arrived within the staleness threshold (default 2 seconds), the engine-owned fields report stub values and the tick carries `engineConnected: false`.
+
+The emitted field shape is always complete. A telemetry consumer MUST never see a missing field, whatever the engine's state — an absent field and a stubbed field are different failures and only one of them is diagnosable.
+
+## 10.2 Dropped-frame definition
+
+A dropped frame is any VIEW frame not presented/submitted by its master-clock deadline.
+
+Preview-only misses are not counted as live dropped frames but MUST be logged as preview misses.
+
+## 10.3 Watchdog
+
+The render node MUST implement a frame watchdog. It watches **video** frames:
+an audio fault is reported through Section 8.10 and never activates the
+fallback slate.
+
+If the render loop misses a deadline by more than:
+
+```text
+1 frame
+```
+
+the watchdog MUST:
+
+1. log fault,
+2. increment fault counter,
+3. activate fallback slate if the fault affects VIEW.
+
+## 10.4 Health endpoint
+
+The control plane MUST expose:
+
+```text
+GET /nbe/v0.3/status
+```
+
+Response MUST include:
+
+1. show load state,
+2. master clock state,
+3. render node health,
+4. stream health,
+5. recording health,
+6. preflight state,
+7. last error.
+
+## 10.5 Quality profiles and the degradation ladder
+
+The engine probes hardware at startup and selects a named quality profile:
+
+```text
+potato | consumer | pro | reference
+```
+
+The probe selects the **effective** profile, capped by the manifest's requested profile (Section 10.1.1). The engine reports it in `engineTelemetry`; the control plane does not second-guess it.
+
+Normative yield order under sustained load:
+
+1. Preview frame rate.
+2. Loop caches evict to streaming.
+3. Effect quality.
+4. Multiview tiles.
+
+The View MUST NOT be degraded. Telemetry MUST expose the current ladder rung as `degradationRung`.
+
+## 10.6 Coverage additions
+
+- **Multiview**: operator grid render target composited from existing textures: view, preview, source thumbnails, meters, tally borders.
+- **Snapshots**: named, recallable state of the entire View, including overlay visibility.
+- **Markers**: rundown bookmarks that double as recording chapters.
+- **Tally**: live-source indication (borders/labels), operator- and talent-facing.
+- **Captions**: WebVTT-class sidecar output alongside the stream. Later burn-in uses a dedicated Overlay element on the DSK level (Section 25).
+
+## 10.7 Abuse and moderation model (first-class)
+
+This is a worker-network broadcast system; assume hostile attention.
+
+1. **Guest links**: JWT-signed, expiring, limited-use, revocable by `jti`. Revocation takes effect on the control plane immediately.
+2. **Ticker**: rate limiting on RSS and manual injection (flood protection). RSS text remains sanitized display text, never markup (Assumption 13).
+3. **Call-ins**: guest admission is always producer-gated; there is no anonymous path to air.
+4. **Audit log**: append-only structured JSON log of all control-plane actions and auth events, retained locally.
+
+### 10.7.1 Audit record shape (normative, new in v0.3.2)
+
+"Structured JSON" is not a contract for an artifact that exists to be read after an incident. One JSON object per line, append-only:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `ts` | yes | Unix milliseconds. |
+| `kind` | yes | `command` \| `auth` \| `automation` \| `engine`. |
+| `outcome` | yes | `ok` \| `rejected`. |
+| `role` | yes | The role the token resolved to; `null` for a failed handshake. |
+| `tokenId` | yes | A stable non-reversible token identifier (e.g. a truncated hash). The token itself MUST NOT be logged. |
+| `remote` | auth records | Peer address. |
+| `requestId` | command records | The envelope `id`. |
+| `command` | command records | The canonical command name. |
+| `rawCommand` | when aliased | The deprecated name as sent (Assumption 17). |
+| `errorCode` | rejected records | The Section 16 code. |
+| `stateVersionBefore` / `stateVersionAfter` | command records | The version either side of the attempt. |
+| `reason` | rejected auth | Why the handshake failed — this detail belongs here, never in the response to the peer (Section 5.3). |
+
+Every attempt is recorded, not every success: **rejected commands, role denials, and failed handshakes MUST be written**. An audit log that contains only permitted actions cannot answer the question it exists for. Automation actions are recorded with `kind: "automation"` (AC-25 §4).
+
+Retention is local and operator-controlled. The log MUST be durable across a control-plane crash to the same degree as the show state: an implementation that buffers audit records in memory and loses them on abnormal exit does not satisfy this section. If the configured destination is unavailable at boot, the control plane MUST refuse to start rather than run unaudited.
+
+## 10.8 Failure UI
+
+Operator UI MUST show:
+
+| State | Color/indication |
+|---|---|
+| READY | neutral/gray |
+| ARMED | yellow |
+| LIVE | red |
+| PLAYING | green |
+| MISSING | flashing red outline |
+| ERROR | red banner |
+| FALLBACK | full-screen warning |
+
+---
+
+# 11. Cross-cutting concern — Master clock
+
+## 11.1 Authority
+
+There MUST be one master show clock.
+
+All of the following MUST derive timing from it:
+
+1. video playout,
+2. audio playout,
+3. graphics animation,
+4. ticker scroll,
+5. transitions,
+6. recording timestamps,
+7. telemetry frame numbers,
+8. loop phase.
+
+## 11.2 Clock source
+
+The master clock MUST be based on a monotonic system clock.
+
+It MUST NOT use wall-clock time as its primary source.
+
+Wall-clock time MAY drive the `clock` element, but not frame scheduling.
+
+## 11.3 Clock epoch
+
+The master clock epoch is set by:
+
+```text
+show.start
+```
+
+After start:
+
+```text
+masterTimeSeconds = monotonicNow - epoch
+masterFrame = floor(masterTimeSeconds * houseFrameRate)
+```
+
+For 30 fps:
+
+```text
+masterFrame = floor(masterTimeSeconds * 30)
+```
+
+## 11.4 Clock states
+
+| State | Meaning |
+|---|---|
+| `STOPPED` | no frame advancement |
+| `RUNNING` | normal show clock |
+| `HELD` | operator freeze, emergency |
+| `SLAVE` | optional future sync to external timecode |
+
+v1 MUST implement `STOPPED` and `RUNNING`.
+
+## 11.5 Drift policy
+
+### 11.5.1 Local deterministic sources
+
+For local sources:
+
+```text
+audio/video sync MUST remain within ±1 frame of the master show clock over a 30-minute show.
+```
+
+Local sources include:
+
+1. preloaded clips,
+2. background loops,
+3. alpha loops,
+4. graphics,
+5. local camera capture,
+6. soundboard audio,
+7. music bed,
+8. recording output.
+
+If drift exceeds one frame, the engine MUST log and correct by adjusting audio presentation or dropping/holding non-critical frames. It MUST NOT allow unbounded drift.
+
+### 11.5.2 Remote guest sources
+
+Remote guest sources are asynchronous.
+
+For guest sources:
+
+```text
+guest audio and guest video MUST be internally synchronized to the guest ingest timeline within ±1 frame.
+```
+
+But:
+
+```text
+guest stream offset relative to the NBE master clock MAY be arbitrary.
+```
+
+Guest sources MUST NOT be forced to the master clock in a way that breaks guest A/V lip-sync.
+
+### 11.5.3 Guest video frame-selection policy
+
+Guest video MUST use:
+
+```text
+hold-latest-complete-frame
+```
+
+At each VIEW frame deadline, the compositor MUST use the most recent completely decoded guest frame available.
+
+If no new complete frame has arrived, the compositor MUST repeat the previous guest frame.
+
+If no guest frame has arrived for more than:
+
+```text
+500 ms
+```
+
+the guest element MUST display a placeholder.
+
+If the guest element is the only meaningful view source and no placeholder is available, the engine MUST activate fallback slate.
+
+Guest video SHOULD sync to guest audio presentation time, not to master clock.
+
+## 11.6 Command timing
+
+Commands take effect at the next safe frame boundary unless the command specifies immediate emergency behavior.
+
+TAKE MUST begin no later than the next frame boundary after acceptance.
+
+---
+
+# 12. Cross-cutting concern — Deterministic loops
+
+## 12.1 Loop function
+
+All loops MUST be pure functions of the master clock.
+
+For a loop with:
+
+```text
+periodFrames = P
+t0Frames = t0
+```
+
+the source frame index for master frame `F` is:
+
+```text
+sourceIndex = (F - t0) mod P
+```
+
+If negative in pre-roll, use mathematical modulo producing non-negative index.
+
+No loop restart event is permitted.
+
+No loop boundary may be distinguishable from any other frame unless the source content itself differs.
+
+## 12.2 Loop cache policy
+
+Each loop asset MAY define:
+
+```json
+{
+  "periodFrames": 300,
+  "t0Frames": 0,
+  "cachePolicy": "auto",
+  "vramBudgetMib": 128
+}
+```
+
+Cache policies:
+
+| Policy | Behavior |
+|---|---|
+| `auto` | engine decides |
+| `vram` | attempt full VRAM residency |
+| `stream` | stream from disk/decoder |
+
+## 12.3 Cache texture formats
+
+The loop cache MUST declare a texture format.
+
+Default formats:
+
+| Content | Default format | Bytes per 1080p frame | Approx MiB/frame |
+|---|---|---:|---:|
+| opaque video loop | NV12 / equivalent 4:2:0 | 3,110,400 | 2.97 |
+| alpha loop conservative | RGBA8 | 8,294,400 | 7.91 |
+| alpha loop planar | NV12 + alpha | 5,184,000 | 4.94 |
+| optional compressed | BC7 | 2,073,600 | 1.98 |
+
+Alpha loops require an alpha plane. Relative to opaque NV12, planar alpha roughly doubles memory cost. RGBA8 is the conservative default.
+
+BC7 is optional and MUST only be used if:
+
+1. the asset was precompressed offline,
+2. the GPU supports BC7 sampling,
+3. the engine validates quality acceptable for broadcast.
+
+Implementation note (v0.2.1): literal NV12 texture support in `wgpu` is limited. Implementations SHOULD use two-plane YUV — `R8Unorm` for Y and `Rg8Unorm` for UV — with a shader-side BT.709 conversion matrix. "NV12" in this document means that or an equivalent 4:2:0 planar representation.
+
+Implementation note (v0.4): the ladder is normative but not yet built. The engine decodes to RGBA8 on every path, so **every loop is held as RGBA8** — the ones declaring `nv12`, `nv12Alpha` or `bc7`, and equally the ones declaring nothing, which take `auto` and would otherwise land on the NV12 rung. Preflight's §12.11.1 arithmetic plans the format the manifest asked for, because a resource report answers the question the manifest asked — which means **any loop whose planned format is not RGBA8 makes `vramDemandMib` an under-estimate of what this engine will actually hold, and may report a loop as VRAM-resident that the engine will stream.** Two worked cases: a 200-frame 1080p loop declaring `bc7` with `vramBudgetMib: 512` reports 396 MiB resident where the engine holds RGBA8 and streams; a 60-frame 1080p loop declaring **no** `textureFormat` reports 178 MiB as NV12 where the engine holds 474 MiB. The undeclared case is the default case, so this applies to most loops, not to an exotic few. Until the ladder is implemented, the smaller number is not the safe one. Closing this is the format ladder's own work, tracked with §12.6's clamp.
+
+## 12.4 Budgets
+
+Default MVP budgets:
+
+| Budget | Value |
+|---|---:|
+| absolute short-loop frame cap | 900 frames |
+| default per-loop budget | 256 MiB |
+| default total short-loop budget | 512 MiB |
+
+The 900-frame cap is necessary but not sufficient.
+
+A loop is VRAM-resident only if all of the following are true:
+
+```text
+periodFrames <= 900
+periodFrames <= maxFramesByBudget
+totalShortLoopCache <= totalBudget
+device working set allows allocation
+```
+
+## 12.5 Frame budget formula
+
+For a selected texture format:
+
+```text
+frameCostBytes = textureBytesPerFrame
+frameCostMiB  = frameCostBytes / (1024 * 1024)
+
+maxFramesByBudget = floor(effectivePerLoopBudgetMiB / frameCostMiB)
+```
+
+A loop is VRAM-resident only if:
+
+```text
+periodFrames <= maxFramesByBudget
+```
+
+Otherwise it MUST be streamed, unless `cachePolicy: vram` is mandatory, in which case preflight MUST fail.
+
+Example caps at 1080p with 256 MiB per loop:
+
+| Format | Max frames | Approx duration at 30 fps |
+|---|---:|---:|
+| NV12 opaque | 86 | 2.87 s |
+| RGBA8 alpha | 32 | 1.07 s |
+| NV12 + alpha | 51 | 1.70 s |
+| BC7 | 129 | 4.30 s |
+
+The 900-frame allowance is dead code for full-screen RGBA loops and MUST NOT be interpreted as sufficient.
+
+## 12.6 Apple unified-memory rule
+
+On Metal/Apple Silicon:
+
+```text
+effectivePerLoopBudgetMiB =
+    min(
+      manifest perLoopBudgetMib,
+      engine default perLoopBudgetMib,
+      deviceSafeBudgetMib
+    )
+```
+
+`deviceSafeBudgetMib` MUST be derived from:
+
+```text
+MTLDevice.recommendedMaxWorkingSetSize
+```
+
+The engine MUST reserve working set for:
+
+1. view/preview render targets,
+2. live camera textures,
+3. guest textures,
+4. fallback slate,
+5. encoder interop surfaces.
+
+Loop cache MUST NOT exceed the remaining safe budget.
+
+If `vramBudgetMib` exceeds device safe budget, the engine MUST clamp it and log a warning.
+
+## 12.7 VRAM ring buffer
+
+VRAM-resident loops MUST use a texture ring buffer or texture array.
+
+Frame selection:
+
+```text
+textureSlot = sourceIndex mod P
+```
+
+There MUST be no decoder restart at loop wrap.
+
+## 12.8 Long-loop streaming
+
+Long loops MUST use double-buffered read-ahead.
+
+Minimum read-ahead:
+
+```text
+max(2 * GOP length, 60 frames)
+```
+
+Wrap policy:
+
+1. Before loop end, pre-stage decoder/seek for frame 0.
+2. Maintain next-window buffer.
+3. Wrap MUST NOT block the render thread.
+4. If wrap read-ahead fails, the loop element MUST fall back to frozen frame or fallback slate if live.
+
+## 12.9 Loop metadata precedence
+
+If both `asset.loop` and `element.loop` exist:
+
+```text
+element.loop overrides asset.loop
+```
+
+If `element.loop` is absent:
+
+```text
+asset.loop is used
+```
+
+If neither exists and element kind is `videoLoop`, preflight MUST fail.
+
+Preflight MUST validate the effective loop against the actual asset duration.
+
+Effective loop texture-format resolution order:
+
+```text
+element.loop.textureFormat
+asset.loop.textureFormat
+engine default
+```
+
+## 12.10 Loop preflight
+
+Preflight MUST verify:
+
+1. `expectedDurationFrames == loop.periodFrames` if both present.
+2. first frame decodes,
+3. last frame decodes,
+4. wrap index is valid,
+5. no audio gap if loop has audio,
+6. no VFR.
+
+Preflight MUST report per loop:
+
+```json
+{
+  "assetId": "globe_loop",
+  "periodFrames": 300,
+  "selectedTextureFormat": "bc7",
+  "frameCostMib": 1.98,
+  "effectiveBudgetMib": 256,
+  "maxFramesByBudget": 129,
+  "cachePolicySelected": "stream",
+  "vramResident": false,
+  "reason": "periodFrames exceeds maxFramesByBudget"
+}
+```
+
+---
+
+## 12.11 Package resource model (normative, new in v0.4)
+
+§12.5 bounds a *single* loop against a per-loop budget. Nothing bounded the *package*. A schema-legal, preflight-passing manifest could therefore demand an order of magnitude more memory than the reference target has: `vramBudgetMib` has a minimum of 1 and no maximum, `assets` and `scenes` have no `maxItems`, and preflight performed no resource arithmetic at all. Forty ten-second RGBA8 loops passed preflight and reported `airReady: true`.
+
+### 12.11.1 Package demand
+
+Preflight MUST compute the worst-case resident demand of a package:
+
+```text
+loopDemandMiB    = Σ over VRAM-resident loops of (periodFrames × frameCostMiB)
+imageDemandMiB   = Σ over image assets of (width × height × 4) / 1MiB
+slateDemandMiB   = fallback slate at house resolution, RGBA8
+targetsDemandMiB = view + preview render targets, RGBA8
+
+vramDemandMib    = loopDemandMiB + imageDemandMiB + slateDemandMiB + targetsDemandMiB
+
+audioDemandMib   = Σ over audio-bearing assets of
+                   (durationSeconds × 48000 × 2 ch × 4 B) / 1MiB
+```
+
+Audio is included because §8.4 makes soundboard and clip audio RAM-resident from `show.load`: one hour of declared audio is 1.32 GiB of system memory, which is not negligible against a 16 GB machine.
+
+### 12.11.2 The two memory models
+
+The envelope depends on the target's memory architecture, and the contract MUST speak both:
+
+| Model | `vramCeilingMiB` | Where it comes from |
+|---|---|---|
+| **Discrete** (the reference target, §0.3) | the selected adapter's dedicated VRAM | adapter report; `docs/hardware-baseline.txt` records it for the reference machine |
+| **Unified** (Apple Silicon) | `deviceSafeBudgetMib` per §12.6 | `MTLDevice.recommendedMaxWorkingSetSize`, minus the reservations §12.6 lists |
+
+On a discrete target, `audioDemandMib` competes for system RAM and `vramDemandMib` for adapter memory, and they MUST be checked separately. On a unified target they compete for the same pool and MUST be checked against it jointly. An implementation that hard-codes either model is wrong on the other.
+
+### 12.11.3 The check
+
+1. Preflight MUST report `vramDemandMib` and `audioDemandMib` in its report (§19.2), **always** — a number an operator can read is the point, not only a threshold that trips.
+2. Preflight MUST NOT warn or fail merely because a package declares a demand. A warning every package earns is a warning operators learn to pass `--allow-warnings` past, which is how a warning stops meaning anything — the same reasoning as §7.15 #2, and it applies for the same reason.
+3. **When, and only when, a resource ceiling is supplied to preflight**, it MUST warn if demand exceeds that ceiling, naming the offending assets. Preflight validating a package in isolation cannot know what machine it will play on, so it reports the number and says nothing further.
+4. The **refusal** belongs to whoever knows both the package and the machine. §7.15 puts that at `show.load` for the house rate; the resource ceiling is the same shape of question, and v0.4 deliberately stops at reporting: no component in this revision knows the running engine's adapter budget. Wiring that is Prompt 07's, and the trigger is the §12.6 clamp's — the first Apple Silicon machine or the first package declaring more than 1 GiB of loop budget.
+5. The engine MUST clamp per §12.6 on unified memory, and MUST log the selected adapter's ceiling on discrete memory, so the two numbers can be compared after the fact.
+
+The asymmetry in 2 and 3 is deliberate and mirrors §7.15's house-rate rule: **the side that knows both facts is the side that refuses.**
+
+# 13. Cross-cutting concern — Automation engine
+
+## 13.1 Rule model
+
+An automation rule is:
+
+```text
+trigger + conditions → command
+```
+
+The command is any command-bus command. Automation actions face the same preconditions as a human operator's commands.
+
+## 13.2 Triggers
+
+| Trigger | Fires when |
+|---|---|
+| `mediaEnd` | a timed item completes |
+| `mediaStart` | a timed item starts |
+| `timer` | a show-clock elapsed time is reached |
+| `timeOfDay` | a wall-clock time is reached |
+| `audioLevel` | a bus crosses a level threshold |
+| `hotkey` | a binding fires |
+| `rssKeyword` | an RSS item matches a keyword rule |
+| `streamHealth` | stream state changes (e.g., reconnecting) |
+| `stateChange` | a specified state transition occurs |
+
+## 13.3 Execution semantics
+
+1. Rules evaluate against state changes, not per frame.
+2. Every automation action is written to the audit log (Section 10.7).
+3. Automation actions are rate-limited; a rule MUST NOT fire more than once per frame.
+
+## 13.4 Cycle detection
+
+Preflight MUST statically reject rules whose action can re-trigger themselves directly or transitively. The runtime MUST also suppress a rule that fires itself.
+
+## 13.5 Automation hold
+
+`automation.hold` is the global kill switch. When held:
+
+1. all automation triggers are suppressed within 1 frame,
+2. `autoFollow` is suppressed,
+3. telemetry reports `automationHold: true`.
+
+---
+
+# 14. Cross-cutting concern — Plugin system
+
+## 14.1 Plugin kinds
+
+Two sandboxed plugin kinds:
+
+1. **Effect plugins**: WGSL fragment shaders with declared uniform parameters.
+2. **Element plugins**: WASM modules that produce frames or data.
+
+## 14.2 Sandboxing
+
+- Effect plugins are strictly fragment shaders operating on bound textures, validated via `naga`. They MUST NOT execute arbitrary compute shaders that bypass the render graph.
+- Element plugins run in a Wasmtime/Wasmer-class runtime with strict WASI capabilities: no network, no disk writes outside designated temp mounts, no ambient authority.
+- The WASM runtime MUST enforce a hard memory limit per plugin instance (default 64 MiB, configurable via `maxMemoryMib` in the manifest). Exceeding this limit MUST terminate the plugin instance and replace its output with a transparent/black frame, without crashing the render node.
+
+## 14.3 Manifest declaration and permissions
+
+Both kinds are manifest-declared (`plugins` array), version-pinned, and permission-listed:
+
+```json
+{
+  "id": "lowerthird_anim",
+  "kind": "element",
+  "source": "plugins/lowerthird_anim.wasm",
+  "version": "0.1.0",
+  "permissions": [],
+  "maxMemoryMib": 64
+}
+```
+
+Permissions are deny-by-default. An empty list means no network, no disk, no camera, no microphone.
+
+## 14.4 Preflight validation
+
+Preflight MUST verify, for every declared plugin:
+
+1. the package exists and its hash matches,
+2. WGSL shaders compile via `naga`,
+3. WASM modules load and declare only their manifest permissions,
+4. declared permissions are enforceable by the runtime,
+5. `maxMemoryMib` is within the enforceable range (≥ 16).
+
+## 14.5 Frame format (v1)
+
+Element plugins output RGBA8 into an engine-provided texture. NV12 plane output is a later optimization, not v1 (Section 25).
+
+## 14.6 Plugin API
+
+The plugin API is versioned. Plugins declare the API version they were built against; the engine refuses to load plugins built against an incompatible API version.
+
+---
+
+# 15. Manifest JSON Schema v0.3
+
+The normative manifest schema lives at `schemas/manifest.v0.4.json` in the repository. That file is the byte-exact normative artifact; nothing embedded in this document overrides it.
+
+What is new in v0.3:
+
+1. `manifestVersion` const `"0.3"`.
+2. Top-level `scenes` (required), `overlays`, `transitions`, `automation`, `plugins`, `qualityProfile`.
+3. `rundown` is a flat `Sequence` of `Item`s; Segment/Subsegment remain as conventional levels. (v0.3.2 described it as recursive; v0.4 retired the nesting hook — see §16.4.)
+4. `Layer` is replaced by `Element`, retaining every v0.2 property and adding `sceneRef`, `pluginId`, `children`, `enterAnimation`, `exitAnimation`, and the new element kinds `sceneRef`, `group`, `plugin` with their conditional requirements.
+5. `Item` kinds: `sceneRef`, `clipRef`, `liveRef`, `slate`. (`sequenceRef` was retired in v0.4 — see §16.4.)
+6. New definitions: `Scene`, `Overlay`, `Element`, `Animation`, `TransitionPreset`, `AutomationRule`, `Sequence`, `Item`, `Plugin`.
+7. `Asset.kind` gains `wasm` and `wgsl`.
+8. v0.3.1: `Plugin` gains `maxMemoryMib` (integer, ≥ 16, default 64, hard-enforced by the WASM runtime); `Scene` gains `base` and `mergeMode` (scene extension, Section 7.8); `Item` carries `audioPolicy` (`clip`/`bed`/`mute`, default `clip`), preserving the v0.2 subsegment audio behavior through migration.
+
+Migration from v0.2 is mechanical via `nbe-migrate` (Section 6.7). A v0.2 package is rejected by a v0.3 preflight until migrated; this is verified (AC-28).
+
+---
+
+# 16. Command API
+
+All commands use the WebSocket envelope defined in Section 5.4.
+
+`program.*` commands remain as deprecated aliases mapping 1:1 to `view.*` for one spec version, emitting a deprecation warning in telemetry (Assumption 17). `layer.*` commands map to `element.*` likewise.
+
+Error code registry (normative):
+
+| Code | Meaning |
+|---|---|
+| `E_BAD_PAYLOAD` | Payload failed schema validation. |
+| `E_FORBIDDEN_STATE` | Current state does not permit the command. |
+| `E_NOT_FOUND` | Referenced entity does not exist. |
+| `E_ASSET_MISSING` | Referenced asset is missing. |
+| `E_DECODE` | Decode failure. |
+| `E_ENGINE` | Render engine failure. |
+| `E_VERSION_CONFLICT` | Stale `baseStateVersion`. |
+| `E_UNSUPPORTED` | Feature unsupported in current runtime mode. |
+| `E_UNSUPPORTED_FEATURE` | Optional feature is disabled, e.g. NDI. |
+| `E_AUTH` | Authentication or role failure. |
+| `E_NO_HARDWARE_ENCODER` | No compliant hardware encoder available. |
+| `E_NETWORK` | Generic network failure. |
+| `E_PREFLIGHT_FAILED` | Preflight did not pass. |
+| `E_AUDIO` | Audio graph or device failure. |
+| `E_DISK` | Recording or media disk failure. |
+| `E_TIMEOUT` | Operation timed out (reserved for async network boundaries: TURN vending, WHIP handshake, RSS fetches). |
+| `E_TURN` | TURN credential vending failure. |
+| `E_ICE` | WebRTC ICE failure. |
+| `E_RATE_LIMITED` | The caller exceeded a rate limit (Section 10.7 flood protection). New in v0.3.2. |
+
+`E_RATE_LIMITED` is distinct from `E_FORBIDDEN_STATE` and MUST NOT be substituted for it: an operator whose ticker injection is throttled needs to know the command was well-formed, permitted, and merely too frequent. A rate-limited command MUST NOT mutate state and MUST NOT bump `stateVersion`.
+
+## 16.0 Command authorization matrix (normative, new in v0.3.2)
+
+The Section 5.3 role descriptions are intent, not a contract; this matrix is the contract. A role may issue a command only where marked. `admin` may issue every command and is omitted from the table. `render` may issue none — it is a receive-and-report channel (Section 5.9), and a command arriving on a `render` session MUST fail with `E_AUTH`.
+
+| Command family | `monitor` | `operator` | `producer` |
+|---|:--:|:--:|:--:|
+| `show.load`, `show.preflight`, `show.unload` | — | — | ✓ |
+| `show.start` | — | — | — |
+| `show.stop` | — | ✓ | — |
+| `preview.*`, `view.*` | — | ✓ | — |
+| `scene.*`, `item.*` | — | ✓ | — |
+| `element.*`, `graphic.*`, `breaking.*`, `overlay.*` | — | ✓ | — |
+| `ticker.*` | — | ✓ | ✓ |
+| `soundboard.*`, `audio.*`, `guest.mute` | — | ✓ | — |
+| `guest.connect`, `guest.disconnect` | — | — | ✓ |
+| `guest.setLayout`, `guest.placeholder`, `guest.configureReturn`, `guest.getTurn` | — | ✓ | — |
+| `automation.*` | — | ✓ | — |
+| `snapshot.*` | — | ✓ | — |
+| `marker.add` | — | ✓ | ✓ |
+| `clock.configure` | — | ✓ | — |
+| `plugin.reload` | — | — | — |
+| `record.*`, `stream.*` | — | ✓ | — |
+| `system.status`, `system.telemetry.*` | ✓ | ✓ | ✓ |
+
+Three permissions are deliberate and were previously ambiguous:
+
+1. **`show.start` is admin-only.** Starting a show commits to air; the operator's authority begins once the show is running.
+2. **`show.stop` is available to the operator.** Stopping is the emergency path, and gating it behind an absent admin is a worse failure than an unnecessary stop.
+3. **`plugin.reload` is admin-only.** It loads code, which makes it a configuration action, not a live one.
+
+Guest admission stays producer-gated (Section 10.7 §3): `guest.connect` is a producer/admin command precisely so no operator-level path to air exists.
+
+## 16.1 Show commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `show.load` | `{ packagePath: string, mode?: "load"\|"reload" }` | no live view; package house rate matches the engine (§7.15) | show `UNLOADED -> LOADED` | `E_BAD_PAYLOAD`, `E_NOT_FOUND`, `E_ENGINE`, `E_PREFLIGHT_FAILED` |
+| `show.preflight` | `{ strict?: boolean }` | show loaded | sets preflight state | `E_PREFLIGHT_FAILED` |
+| `show.start` | `{ startClock?: boolean, allowWarnings?: boolean }` | preflight passed (see below) | show `LOADED -> RUNNING`, clock `STOPPED -> RUNNING` | `E_FORBIDDEN_STATE` |
+| `show.stop` | see below | show running unless force | show `RUNNING -> STOPPED`; outputs quiesced | `E_FORBIDDEN_STATE`, `E_DISK`, `E_NETWORK` |
+| `show.unload` | `{}` | not live | show `LOADED/RUNNING -> UNLOADED` | `E_FORBIDDEN_STATE` |
+
+`show.stop` payload and behavior:
+
+```json
+{
+  "quiesceOutputs": true,
+  "force": false
+}
+```
+
+When `show.stop` is received:
+
+1. If recording is active, the engine MUST issue an internal `record.stop`.
+2. If streaming is active, the engine MUST issue an internal `stream.stop`.
+3. The engine MUST wait up to 2 seconds for graceful output shutdown.
+4. The show clock then transitions to `STOPPED`.
+5. If graceful shutdown exceeds 2 seconds, the engine MUST force-stop outputs and log a warning.
+
+| `quiesceOutputs` | `force` | Active outputs | Result |
+|---:|---:|---|---|
+| true | false | yes | graceful automatic stop |
+| true | true | yes | immediate stop, warning logged |
+| false | false | yes | fail with `E_FORBIDDEN_STATE` |
+| false | true | yes | immediate stop |
+| any | any | no | stop show |
+
+Recording remains crash-safe because fragmented MP4 or MKV fragments are already written.
+
+**What "graceful" means (normative, clarified in v0.3.2).** Step 3's two-second wait is a wait for the render node's `appliedStateVersion` acknowledgement of the stop directives, per Section 5.9.5. An implementation that waits for nothing, or that treats its own state mutation as the acknowledgement, does not implement this step: the timeout branch must be reachable in production, not only under test. On timeout the engine force-stops outputs and logs a warning naming the elapsed window.
+
+**`show.start` and preflight warnings (normative, clarified in v0.3.2).** Against the Section 19.1 exit codes:
+
+| Preflight outcome | `show.start` |
+|---|---|
+| exit `0` (air-ready) | permitted |
+| exit `1` (warnings only) | refused with `E_FORBIDDEN_STATE` unless `allowWarnings: true` is passed explicitly |
+| exit `2` (errors) | refused with `E_FORBIDDEN_STATE` |
+
+A warnings-only package is loadable — warnings exist to be seen and judged — but going to air on one is an explicit operator decision, never an inference. `airReady` remains true only at exit `0` (SPEC 19.1).
+
+## 16.2 View/Preview commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `preview.set` | `{ itemRef: string }` | item exists and READY/ARMED | target `READY -> ARMED`; previous preview may return to READY | `E_NOT_FOUND`, `E_ASSET_MISSING` |
+| `view.take` | see below | preview armed | preview item becomes LIVE or PLAYING; previous live becomes READY; audio transition executes | `E_FORBIDDEN_STATE`, `E_AUDIO`, `E_ENGINE` |
+| `view.cut` | `{ itemRef: string }` | item exists | immediate view switch to item | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+| `view.fallback` | `{ reason?: string }` | always allowed | VIEW switches to fallback slate | `E_ENGINE` |
+
+`view.take` payload schema:
+
+```json
+{
+  "transition": { "enum": ["cut", "mix", "wipe", "sting", "move", "dve"] },
+  "preset": { "type": "string" },
+  "durationFrames": { "type": "integer", "minimum": 0, "maximum": 600 },
+  "audio": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "transition": { "enum": ["follow", "crossfade", "cut", "mute"] },
+      "durationFrames": { "type": "integer", "minimum": 1, "maximum": 600 },
+      "rampMs": { "type": "number", "minimum": 5, "maximum": 50 }
+    }
+  }
+}
+```
+
+Defaults:
+
+```json
+{
+  "transition": "cut",
+  "audio": { "transition": "follow", "rampMs": 10 }
+}
+```
+
+If `transition == "mix"` and `audio.durationFrames` is absent, audio crossfade duration MUST equal video `durationFrames`.
+
+If `preset` is present, the named transition preset supplies kind, duration, easing, and per-element overrides; explicit fields in the payload override the preset.
+
+## 16.3 Scene commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `scene.arm` | `{ sceneId: string }` | scene exists | scene ARMED in preview | `E_NOT_FOUND`, `E_ASSET_MISSING` |
+| `scene.apply` | `{ sceneId: string, target: "view"\|"preview" }` | scene exists | scene applied to target bus | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+
+## 16.4 Sequence/item commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `item.arm` | `{ itemId: string }` | item exists | item `READY -> ARMED` | `E_NOT_FOUND`, `E_ASSET_MISSING` |
+| `item.unarm` | `{ itemId: string }` | armed | item `ARMED -> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+| `item.stop` | `{ itemId: string }` | playing | item `PLAYING -> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+| `item.reset` | `{ itemId: string }` | item in `DONE`, `MISSING`, or `ERROR` | item `-> READY` | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
+
+`item.reset` is new in v0.3.2. Section 17.3 has always defined `reset` transitions out of `DONE`, `MISSING`, and `ERROR`, but no command produced that event, so those states were terminal for any client — an item that failed once could not be recovered without reloading the show. `item.reset` on an unrecoverable `ERROR` MUST leave the item in `ERROR` (the Section 17.3 "unrecoverable" row) and report `E_FORBIDDEN_STATE`.
+
+**`sequenceRef` is retired in v0.4.** v0.3.2 reserved it: `Item.kind = "sequenceRef"` and the `sequence.*` commands described nested sequences, while the schema declared exactly one Sequence — `rundown` — whose `items` are Items, not Sequences. There was no registry to resolve a `sequenceRef` against, and the hook sat unresolvable for four patch levels.
+
+v0.4 withdraws it rather than resolving it, on evidence gathered against a procedure fixed **before** the evidence was collected (`docs/review-midpoint-report.md` §6): zero references to `sequenceRef` in any P1–P6 manifest, fixture or wire log, and no Prompt 07–13 upgrade pass naming a requirement the flat rundown cannot express. Companion mapping, crossfades and overlays were disqualified as evidence in advance, because none of them interacts with sequence structure.
+
+Accordingly:
+
+1. `Item.kind` no longer admits `sequenceRef`. A manifest carrying one is invalid and preflight MUST fail it.
+2. `sequence.arm` and `sequence.unarm` are removed from the §16 command surface.
+3. `Sequence` remains a flat, ordered container of Items. `rundown` is the only Sequence.
+
+Deleting a reserved hook is cheaper than maintaining a fiction. If nested rundown blocks are wanted later, they arrive as a designed schema revision with a registry — not as a hook nobody could implement.
+
+`VOCABULARY.md`'s "recursive, ordered container of Items" is corrected to match with this revision.
+
+## 16.5 Element/graphic commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `element.toggle` | `{ elementId: string, scope?: string, visible?: boolean }` | element exists | element visibility toggled | `E_NOT_FOUND` |
+| `element.set` | `{ elementId: string, patch: { visible?, opacity?, transform?, chromaKey? } }` | element exists | element properties updated | `E_BAD_PAYLOAD`, `E_NOT_FOUND` |
+| `graphic.show` | `{ templateId: string, fields: object, elementId?: string, z?: integer }` | template exists | graphic element becomes visible | `E_NOT_FOUND`, `E_BAD_PAYLOAD` |
+| `graphic.hide` | `{ elementId?: string, templateId?: string }` | graphic visible/known | graphic hidden | `E_NOT_FOUND` |
+| `graphic.update` | `{ elementId: string, fields: object }` | graphic exists | graphic fields updated | `E_NOT_FOUND`, `E_BAD_PAYLOAD` |
+| `breaking.show` | `{ headline: string, subhead?: string }` | breaking template exists | breaking banner visible | `E_NOT_FOUND` |
+| `breaking.hide` | `{}` | breaking visible or hidden | breaking banner hidden | none |
+
+## 16.6 Overlay commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `overlay.show` | `{ overlayId: string, animation?: string }` | overlay exists | overlay visible with its enter animation | `E_NOT_FOUND` |
+| `overlay.hide` | `{ overlayId: string }` | overlay visible | overlay hidden with its exit animation | `E_NOT_FOUND` |
+
+## 16.7 Ticker commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `ticker.setSource` | `{ source: "manual"\|"rss"\|"mixed" }` | ticker element exists | ticker source changed | `E_NOT_FOUND` |
+| `ticker.override` | see below | ticker exists | ticker queue updated | `E_BAD_PAYLOAD`, `E_NOT_FOUND` |
+| `ticker.clearOverride` | `{}` | ticker exists | manual override cleared | `E_NOT_FOUND` |
+| `ticker.refreshRss` | `{ feedId?: string }` | RSS configured | RSS cache refreshed | `E_NETWORK`, `E_BAD_PAYLOAD` |
+
+`ticker.override` payload schema:
+
+```json
+{
+  "items": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "language": { "type": "string" },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 100000, "default": 0 },
+        "ttlSec": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "mode": { "enum": ["replace", "prepend", "append"], "default": "replace" }
+}
+```
+
+Ticker ordering rules:
+
+1. Breaking override items appear first.
+2. Higher `priority` appears before lower `priority`.
+3. For equal priority, insertion order is preserved.
+4. `language` is metadata only in v1.
+
+## 16.8 Soundboard/audio commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `soundboard.play` | `{ assetId: string, gainDb?: number }` | asset preloaded | playback started | `E_NOT_FOUND`, `E_AUDIO` |
+| `soundboard.stop` | `{ playbackId?: string, assetId?: string }` | playback active or known | playback stopped | `E_NOT_FOUND` |
+| `soundboard.stopAll` | `{}` | always | all SFX stopped | none |
+| `audio.bus.set` | see below | bus exists | bus params changed | `E_BAD_PAYLOAD`, `E_AUDIO`, `E_NOT_FOUND` |
+| `audio.duck` | `{ bus: "music", enabled: boolean, depthDb?: number, attackMs?: number, releaseMs?: number }` | duck-capable bus | duck state changed | `E_BAD_PAYLOAD` |
+| `guest.mute` | `{ guestId: string, muted: boolean }` | guest exists | guest audio muted/unmuted | `E_NOT_FOUND` |
+
+`audio.bus.set` payload schema:
+
+```json
+{
+  "bus": { "enum": ["mic", "clip", "music", "sfx", "guest", "master", "guestReturn", "ifb"] },
+  "guestId": { "type": "string" },
+  "gainDb": { "type": "number", "minimum": -60, "maximum": 12 },
+  "muted": { "type": "boolean" }
+}
+```
+
+If `bus == "guestReturn"`, `guestId` is REQUIRED. If `bus != "guestReturn"`, `guestId` MUST be ignored.
+
+## 16.9 Guest commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `guest.connect` | `{ guestId: string, whipUrl: string, displayName?: string }` | guest not connected | guest source `READY` | `E_NETWORK`, `E_BAD_PAYLOAD` |
+| `guest.disconnect` | `{ guestId: string }` | guest exists | guest source disconnected | `E_NOT_FOUND` |
+| `guest.setLayout` | `{ guestId: string, layout: "pip"\|"full" }` | guest element exists | guest transform updated | `E_NOT_FOUND` |
+| `guest.placeholder` | `{ guestId: string, assetId?: string }` | guest exists | placeholder set | `E_NOT_FOUND` |
+| `guest.configureReturn` | see below | guest exists | guest return bus updated | `E_NOT_FOUND`, `E_AUDIO`, `E_BAD_PAYLOAD` |
+| `guest.getTurn` | see below | control plane TURN vending enabled | none; returns credentials | `E_TURN`, `E_AUTH`, `E_NOT_FOUND` |
+
+`guest.configureReturn` payload schema:
+
+```json
+{
+  "guestId": { "type": "string" },
+  "mode": { "enum": ["programMinusSelf", "producerMix", "mute"] },
+  "includeOtherGuests": { "type": "boolean", "default": true },
+  "gainDb": { "type": "number", "minimum": -60, "maximum": 12 },
+  "muted": { "type": "boolean" }
+}
+```
+
+Required: `["guestId"]`. Default mode: `"programMinusSelf"`.
+
+`guest.getTurn` payload schema:
+
+```json
+{
+  "guestId": { "type": "string" },
+  "ttlSec": { "type": "integer", "minimum": 30, "maximum": 86400, "default": 600 }
+}
+```
+
+Response data schema:
+
+```json
+{
+  "uris": { "type": "array", "items": { "type": "string" } },
+  "username": { "type": "string" },
+  "credential": { "type": "string" },
+  "ttlSec": { "type": "integer" }
+}
+```
+
+## 16.10 Automation commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `automation.enable` | `{ ruleId: string }` | rule exists | rule enabled | `E_NOT_FOUND` |
+| `automation.disable` | `{ ruleId: string }` | rule exists | rule disabled | `E_NOT_FOUND` |
+| `automation.hold` | `{ hold: boolean }` | always | global hold state set within 1 frame | none |
+
+## 16.11 Snapshot and marker commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `snapshot.save` | `{ name: string }` | always | snapshot saved | `E_DISK` |
+| `snapshot.recall` | `{ name: string }` | snapshot exists | view state restored | `E_NOT_FOUND` |
+| `marker.add` | `{ name: string, timecode?: string }` | show running | marker added; recording chapter written if container supports it | `E_DISK` |
+
+## 16.12 Plugin commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `plugin.reload` | `{ pluginId: string }` | plugin exists | plugin reloaded | `E_ENGINE`, `E_AUTH` |
+
+## 16.13 Clock commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `clock.configure` | see below | clock element exists | clock config updated | `E_NOT_FOUND`, `E_BAD_PAYLOAD` |
+
+`clock.configure` payload schema:
+
+```json
+{
+  "elementId": { "type": "string" },
+  "clock": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": { "enum": ["wall", "showElapsed"] },
+      "timezone": { "type": "string" },
+      "format": { "enum": ["HH:mm", "HH:mm:ss", "hh:mm A", "locale"] },
+      "locale": { "type": "string" },
+      "blinkColon": { "type": "boolean" }
+    }
+  }
+}
+```
+
+Required: `["elementId"]`.
+
+## 16.14 Output commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `record.start` | `{ outputId?: string }` | show running, encoder available | recording active | `E_NO_HARDWARE_ENCODER`, `E_DISK` |
+| `record.stop` | `{}` | recording active | recording stopped | `E_FORBIDDEN_STATE` |
+| `stream.start` | `{ outputId?: string, url?: string }` | show running, encoder available | stream active | `E_NO_HARDWARE_ENCODER`, `E_NETWORK` |
+| `stream.stop` | `{}` | stream active | stream stopped | `E_FORBIDDEN_STATE` |
+
+## 16.15 System commands
+
+| Command | Payload schema | Preconditions | State transitions | Failure modes |
+|---|---|---|---|---|
+| `system.status` | `{}` | always | none | none |
+| `system.telemetry.subscribe` | `{ intervalMs?: integer }` | always | telemetry subscription active | `E_BAD_PAYLOAD` |
+| `system.telemetry.unsubscribe` | `{}` | subscribed | telemetry subscription removed | none |
+
+---
+
+# 17. State machine
+
+## 17.1 Item states
+
+An item is a Sequence, Item, or playable source item.
+
+States:
+
+| State | Meaning | UI indication |
+|---|---|---|
+| `READY` | Valid, not armed, not live. | gray |
+| `ARMED` | In preview/next, preloaded. | yellow |
+| `LIVE` | Live non-timed source on VIEW. | red |
+| `PLAYING` | Timed media active on VIEW. | green with red live border |
+| `DONE` | Timed item completed. Optional state. | dim green |
+| `MISSING` | Required asset/source missing. | flashing red outline |
+| `ERROR` | Runtime failure. | red banner |
+
+## 17.2 Scene states
+
+| State | Meaning |
+|---|---|
+| `IDLE` | Declared, not in use. |
+| `ARMED` | Instantiated on the preview bus. |
+| `VIEW` | Instantiated on the view bus. |
+| `TRANSITIONING` | In an active transition between buses. |
+
+(These were named to avoid collision with the Preview bus; see the v0.3 red-team notes in git history.)
+
+## 17.3 Transition table
+
+| Current | Event/command | Guard | Next | Side effects |
+|---|---|---|---|---|
+| `READY` | `arm` | asset valid | `ARMED` | preload, set preview |
+| `READY` | asset missing detected | missing | `MISSING` | alert UI |
+| `READY` | decode error | failure | `ERROR` | alert UI |
+| `ARMED` | `unarm` | not live | `READY` | release preview |
+| `ARMED` | `take` | live source | `LIVE` | view switch |
+| `ARMED` | `take` | timed media | `PLAYING` | view switch, start media clock |
+| `ARMED` | asset missing detected | missing | `MISSING` | alert UI, fallback if preview required |
+| `ARMED` | decode error | failure | `ERROR` | fallback if armed critical |
+| `LIVE` | `take` away | another item goes live | `READY` | remove from view |
+| `LIVE` | device loss | camera/guest lost | `ERROR` | fallback if view |
+| `PLAYING` | end reached | duration complete | `DONE` | mark complete |
+| `PLAYING` | `stop` | operator stop | `READY` | stop media |
+| `PLAYING` | `take` away | another item goes live | `READY` | remove from view |
+| `PLAYING` | decode error | failure | `ERROR` | fallback if view |
+| `DONE` | `reset`/`arm` | asset valid | `READY` or `ARMED` | reset counters |
+| `MISSING` | asset restored | preflight pass | `READY` | clear alert |
+| `MISSING` | `reset` | operator asserts the asset is back | `READY` | clear alert |
+| `MISSING` | unrecoverable | manual reset | `ERROR` | alert |
+| `ERROR` | `reset` | recoverable | `READY` | clear fault |
+| `ERROR` | unrecoverable | none | remains `ERROR` | require reload |
+
+Event sources (clarified in v0.3.2): `arm`, `unarm`, `take`, `stop`, and `reset` are produced by the Section 16 commands of the same name (`reset` by `item.reset`, Section 16.4). "asset missing detected", "decode error", "end reached", and "device loss" are produced by the render node's `itemEvent` frames (Section 5.9.3) — the control plane never synthesizes them, because it never touches media.
+
+## 17.4 Automation hold interaction
+
+If `automation.hold` is active, all automation triggers and `autoFollow` are suppressed within 1 frame (Section 13.5).
+
+## 17.5 Contradictory items (normative, new in v0.4)
+
+An Item's `kind` selects what it shows. Fields belonging to a different `kind` are not merely ignored — they are a contradiction, and the two halves of the engine may resolve them differently.
+
+`{"kind": "slate", "sceneRef": "SCN_A1"}` validated schema-clean and preflighted `airReady: true` in v0.3, while being self-contradictory: the renderer short-circuited on `kind` and drew the slate, and the audio path read `sceneRef` and resolved the scene's clip. The result on air was a slate with the previous item's audio still going out.
+
+1. An Item MUST NOT carry fields belonging to a `kind` other than its own. Specifically: a `slate` item MUST NOT carry `sceneRef` or `assetId`; a `sceneRef` item MUST NOT carry `assetId`.
+2. `nbe-preflight` MUST fail a package containing such an item, naming the item and the contradictory field.
+3. Implementations MUST NOT resolve the contradiction by precedence. There is no correct precedence: the manifest is wrong, and guessing which half to honour is how the two halves came to disagree.
+
+This is the general form of a defect the midpoint review found five times in one function: a value inferred from structure where the manifest already stated the answer. Where a field and a `kind` disagree, the package is invalid.
+
+## 17.6 Text diagram
+
+```text
+                    asset restored
+              +-----------------------------+
+              |                             |
+              v                             |
+          +--------+     arm      +--------+
+   +----->| READY  |------------->| ARMED  |
+   |      +--------+              +--------+
+   |         ^                      |    |
+   |         | unarm/reset          |    | take(live source)
+   |         +----------------------+    |
+   |         |                           v
+   |         |                        +------+
+   |         |                        | LIVE |
+   |         |                        +------+
+   |         |                           |
+   |         | take away/stop/reset      |
+   +-------------------------------------+
+   |
+   |         take(timed media)
+   |      +--------------------------+
+   |      |                          v
+   |   +---------+  end reached   +------+
+   |   | PLAYING |--------------->| DONE |
+   |   +---------+                +------+
+   |      |                          |
+   |      | stop/take away/reset     | reset/arm
+   +---------------------------------+
+   |
+   |      asset missing / decode failure / device loss
+   +--------------------------------------------------> MISSING / ERROR
+```
+
+---
+
+# 18. Cadence rules
+
+## 18.1 House rate
+
+Default house rate:
+
+```text
+30 fps
+```
+
+All final show media MUST be normalized to house rate before live load.
+
+## 18.2 Cadence preservation
+
+If asset manifest says:
+
+```json
+"cadence": "preserve"
+```
+
+the pipeline MUST use frame holds only.
+
+Motion interpolation is forbidden unless:
+
+```json
+"cadence": "interpolate"
+```
+
+and the pipeline explicitly supports it.
+
+v1 MAY reject `interpolate` assets as unsupported.
+
+## 18.3 Hold patterns
+
+For 30 fps house rate:
+
+| Source fps | Ratio | Hold pattern | Notes |
+|---:|---:|---|---|
+| 15 | 2.0 | `2` | every source frame held 2 output frames |
+| 10 | 3.0 | `3` | every source frame held 3 output frames |
+| 12 | 2.5 | `2,3,2,3` | alternating pulldown |
+| 24 | 1.25 | duplicate every fourth source frame | 4 source frames → 5 output frames |
+
+Example 15 → 30:
+
+```text
+source:  S0 S1 S2 S3
+output:  S0 S0 S1 S1 S2 S2 S3 S3
+```
+
+Example 12 → 30:
+
+```text
+source:  S0 S1 S2 S3
+output:  S0 S0 S1 S1 S1 S2 S2 S3 S3 S3
+```
+
+Example 24 → 30:
+
+```text
+source:  S0 S1 S2 S3 S4
+output:  S0 S1 S2 S3 S3 S4
+```
+
+## 18.4 25 fps and 29.97 fps
+
+25 fps and 29.97 fps assets are forbidden by default. They are allowed only if the asset contains explicit pulldown metadata.
+
+25→30 uses `repeatNthSourceFrame` with `n = 5` (duplicate every fifth source frame):
+
+```text
+source:  S0 S1 S2 S3 S4
+output:  S0 S1 S2 S3 S4 S4
+```
+
+29.97→30 uses `repeatOnePerNSourceFrames` with `n = 1000` (one held frame per ~1000 source frames, about one per 33 seconds):
+
+```text
+source frames 0..999 produce output frames 0..1000
+```
+
+The exact frame to repeat MUST be documented in the asset pipeline and verified by preflight.
+
+## 18.5 Unsupported source rates
+
+Any custom cadence MAY use explicit pattern mode:
+
+```json
+{
+  "pulldown": {
+    "mode": "pattern",
+    "pattern": [2, 3, 2, 3]
+  }
+}
+```
+
+If an unsupported source frame rate has no valid pulldown metadata, preflight MUST fail.
+
+The `Pulldown` schema definition (one of `pattern`, `repeatNthSourceFrame`, `repeatOnePerNSourceFrames`) is normative in `schemas/manifest.v0.4.json`. The v0.1 `pulldownPattern` field is deprecated; `pulldown` wins if both are present.
+
+## 18.6 Cadence preflight
+
+Preflight MUST verify:
+
+1. output frame rate equals house rate,
+2. output duration matches expected duration,
+3. duplicate-frame pattern matches declared cadence where feasible,
+4. no interpolated intermediate frames are present for `preserve` assets,
+5. VFR is absent.
+
+---
+
+# 19. Preflight details
+
+## 19.1 Exit status
+
+`preflight` MUST exit with:
+
+| Code | Meaning |
+|---:|---|
+| 0 | air-ready |
+| 1 | warnings only, not air-ready unless `--allow-warnings` |
+| 2 | errors, not air-ready |
+
+CI MUST block load on exit code != 0 unless explicitly overridden.
+
+## 19.2 Report schema
+
+`preflight_report.json` MUST include:
+
+```json
+{
+  "manifestValid": true,
+  "airReady": true,
+  "errors": [],
+  "warnings": [],
+  "resources": {
+    "vramDemandMib": 412,
+    "audioDemandMib": 22,
+    "declaredHouseRate": 30
+  },
+  "assets": [
+    {
+      "id": "A1",
+      "kind": "video",
+      "exists": true,
+      "sha256Ok": true,
+      "decodeFirstFrameOk": true,
+      "decodeLastFrameOk": true,
+      "cfr": true,
+      "frameRate": 30,
+      "width": 1920,
+      "height": 1080,
+      "durationFrames": 900,
+      "cadenceOk": true,
+      "loudness": {
+        "integratedLufs": -16.1,
+        "truePeakDbtp": -1.7
+      }
+    }
+  ],
+  "loops": [
+    {
+      "assetId": "globe_loop",
+      "periodFrames": 300,
+      "seamless": true,
+      "cachePolicySelected": "vram"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "SCN_A1",
+      "referencesOk": true,
+      "dagOk": true
+    }
+  ],
+  "plugins": [
+    {
+      "pluginId": "lowerthird_anim",
+      "sandboxOk": true
+    }
+  ],
+  "contactSheet": "contact_sheet.jpg"
+}
+```
+
+The `loops` entries MUST follow the extended report shape defined in Section 12.10.
+
+### 19.2.1 Resource and reconciliation fields (new in v0.4)
+
+`resources` is REQUIRED and MUST always be populated, whether or not a threshold trips (§12.11.3 #1):
+
+| Field | Meaning |
+|---|---|
+| `vramDemandMib` | worst-case resident texture demand, per §12.11.1 |
+| `audioDemandMib` | RAM-resident audio demand, per §12.11.1 |
+| `declaredHouseRate` | the package's `show.video.frameRate`, so a caller that knows the engine's rate can compare (§7.15) |
+
+A number an operator can read is the deliverable, not merely a threshold that trips. Preflight validating a package in isolation reports these and warns; the control plane, which knows both the package and the running engine, is the side that refuses (§7.15, §12.11.3).
+
+## 19.3 Seeded failure tests
+
+The preflight test suite MUST include:
+
+1. Missing asset reference.
+2. VFR clip.
+3. 25 fps clip in 30 fps show without pattern.
+4. Alpha video with no alpha channel.
+5. Loop period mismatch.
+6. Broken SHA-256.
+7. Missing fallback asset.
+8. Out-of-range loudness.
+9. Invalid hotkey action.
+10. Missing template field.
+11. 29.97 fps asset without pulldown metadata.
+12. **A contradictory Item** — e.g. `{"kind": "slate", "sceneRef": …}` (Section 17.5). Without this row a checklist implementer lawfully passes a package the renderer and the audio path resolve differently.
+13. **A loop period beyond Section 12.4's absolute cap** — the schema permits any `periodFrames`, so the bound is preflight's to enforce, by name and without panicking.
+14. VRAM-residency request that exceeds `maxFramesByBudget`.
+15. Circular sub-scene reference.
+16. Self-triggering automation rule.
+17. Plugin failing sandbox validation.
+18. Unresolvable `sceneRef`, `pluginId`, or group `children` entry.
+
+---
+
+# 20. MVP scope hard ceiling
+
+The MVP MUST NOT exceed the following live complexity:
+
+| Item | Maximum |
+|---|---:|
+| live camera sources | 1 |
+| preloaded clips per sequence | 3 |
+| background loops | 1 |
+| alpha logo loops | 1 |
+| simultaneous WHIP guests | 1 |
+| lower-third templates | headline + name |
+| breaking banner | 1 |
+| ticker | manual + RSS |
+| clock | 1 |
+| transitions | cut + crossfade |
+| overlays | 2 (ticker + logo bug) |
+| outputs | local view, preview, recording, one RTMP/SRT |
+| resolution | 1920x1080 |
+| frame rate | 30 fps |
+
+Advanced automation, plugins, sub-scenes, and move-class transitions are post-MVP but schema-supported. The MVP MAY support future schema fields, but acceptance is based only on the above.
+
+---
+
+# 21. Hardware tiers
+
+These tiers are normative for 1080p30 house rate unless otherwise stated.
+
+## Floor device — reference minimum
+
+The 2019 dual-GPU Intel/Radeon MacBook Pro (i7, 16 GB) is the named reference floor device.
+
+1. The OBS baseline comparison (AC-11) MUST also run on the floor device.
+2. Quality profiles MUST keep the floor device viable via the degradation ladder (Section 10.5).
+3. The floor device is a benchmark and CI target, not the recommended show machine.
+
+## Tier 0 — prototype
+
+Purpose: workflow testing only.
+
+| Component | Minimum |
+|---|---|
+| CPU | 4-core modern CPU |
+| RAM | 16 GB |
+| GPU | modern iGPU |
+| Storage | NVMe or SATA SSD |
+| Encode | not guaranteed |
+| Use | not trusted live |
+
+## Tier 1 — trusted live 1080p30
+
+Purpose: MVP acceptance target.
+
+| Component | Requirement |
+|---|---|
+| CPU | Apple M-series Pro or Ryzen 7 / Intel i7 modern |
+| GPU | Apple GPU or RTX 3060/4060-class |
+| RAM | 32 GB |
+| Storage | NVMe |
+| Decode | hardware H.264/HEVC/ProRes where applicable |
+| Encode | VideoToolbox or NVENC |
+| Network | 1 GbE |
+| Internet up | 10–20 Mbps minimum |
+
+## Tier 2 — comfortable production
+
+| Component | Requirement |
+|---|---|
+| CPU | Apple M-series Max or Ryzen 9 / Intel i9 |
+| GPU | RTX 4070-class or Apple Max |
+| RAM | 64 GB |
+| Storage | separate media and recording SSDs |
+| Network | 2.5 GbE |
+
+## Tier 3 — 4K/showcase 60 fps
+
+| Component | Requirement |
+|---|---|
+| CPU | Apple Ultra-class or high-end workstation |
+| GPU | RTX 4080/4090-class |
+| RAM | 64–128 GB |
+| Storage | high-throughput NVMe |
+| Network | 10 GbE |
+
+## Cloud node
+
+Purpose: guests, distribution, backup, benchmarking. Not primary local render path.
+
+| Component | Requirement |
+|---|---|
+| GPU | NVIDIA L4/A10-class |
+| vCPU | 8–16 |
+| RAM | 16–32 GB |
+| Encode | NVENC |
+| Network | 1 Gbps |
+
+## iPhone
+
+Role: controller/monitor only.
+
+| Requirement | Minimum |
+|---|---|
+| Device | iPhone 12 or newer |
+| Wi-Fi | 5 GHz |
+| Role | WebSocket controller, preview/view monitor (WHEP) |
+| Forbidden | live renderer, primary compositor |
+
+---
+
+# 22. Acceptance criteria
+
+Each criterion is independently testable.
+
+## AC-1 — Manifest schema validation
+
+Given a valid show package, `preflight` MUST validate the manifest against the normative NBE manifest schema (`schemas/manifest.v0.4.json`) and return exit code 0.
+
+## AC-2 — Missing asset detection
+
+Given a seeded manifest referencing a nonexistent asset, `preflight` MUST fail with a machine-readable error identifying the asset ID and path.
+
+## AC-3 — VFR detection
+
+Given a seeded VFR clip, `preflight` MUST fail and report `cfr: false`.
+
+## AC-4 — Cadence preservation
+
+Given 15, 10, 12, and 24 fps source assets normalized to 30 fps with `cadence: preserve`, preflight MUST verify the declared hold patterns and fail if motion interpolation is detected.
+
+## AC-5 — 30-minute zero-drop live show
+
+On a Tier-1 reference machine, a 30-minute continuous live show at 1080p30, single operator, with MVP maximum elements active, MUST produce zero dropped VIEW frames.
+
+Measurement:
+
+```text
+droppedFramesTotal == 0
+```
+
+over the full show.
+
+## AC-6 — Crash-safe recording
+
+If the render process is killed with `SIGKILL` during recording, the resulting fragmented MP4 or MKV file MUST be playable by `ffprobe` and at least one reference player.
+
+## AC-7 — Fallback slate latency
+
+If a live item source fails, the engine MUST cut to the fallback slate no later than one frame after the missed deadline.
+
+Measurement:
+
+```text
+fallbackVisibleFrame <= failureFrame + 1
+```
+
+## AC-8 — Master clock drift
+
+For local deterministic sources:
+
+```text
+audio/video sync drift MUST remain within ±1 frame of the master show clock over a 30-minute show on Tier-1 hardware.
+```
+
+For remote guest sources:
+
+```text
+guest audio/video sync MUST remain within ±1 frame relative to the guest ingest timeline.
+```
+
+Guest offset relative to master clock is not a failure condition.
+
+## AC-9 — Deterministic loop wrap
+
+For a VRAM-resident loop, ten consecutive loop wraps MUST occur with:
+
+1. zero dropped frames,
+2. no decoder restart event,
+3. no visible hitch in frame presentation,
+4. frame index computed by modulo.
+
+## AC-10 — Internet loss survivability
+
+If WAN is disconnected during live local playout:
+
+1. local view continues,
+2. recording continues,
+3. stream enters reconnect/backoff,
+4. no VIEW frames are dropped due to stream failure.
+
+## AC-11 — OBS baseline comparison
+
+The same show package MUST be runnable through an OBS baseline adapter.
+
+A published comparison MUST report:
+
+1. dropped frames,
+2. CPU utilization,
+3. GPU utilization,
+4. glass-to-glass latency,
+5. take latency,
+6. recording crash safety.
+
+NBE MUST be no worse than OBS baseline for dropped frames, CPU utilization, and GPU utilization on Tier-1 hardware.
+
+The comparison MUST also run on the floor device (Section 21), with results published separately.
+
+## AC-12 — Companion command path
+
+A Bitfocus Companion button mapped to `view.take` MUST cause a successful take via the WebSocket command bus with no custom Stream Deck plugin.
+
+## AC-13 — Soundboard latency
+
+A soundboard trigger MUST produce audible output within 20 ms on Tier-1 hardware and MUST NOT cause dropped VIEW frames.
+
+## AC-14 — Loudness compliance
+
+All preflighted audio assets MUST be within:
+
+```text
+-16 LUFS ±0.5 LUFS
+true peak <= -1.5 dBTP +0.2 dB allowance
+```
+
+or preflight MUST fail.
+
+## AC-15 — Ticker RTL/Unicode
+
+The ticker MUST correctly render at least:
+
+1. English LTR,
+2. Arabic RTL,
+3. Spanish accented text,
+4. emoji or symbol if packaged font supports it.
+
+Scrolling MUST remain at target frame rate.
+
+## AC-16 — Single-operator usability
+
+A single operator MUST be able to:
+
+1. load a package,
+2. run preflight,
+3. arm first sequence,
+4. start show,
+5. take between items,
+6. trigger lower third,
+7. trigger breaking banner,
+8. play soundboard effect,
+9. start/stop recording,
+10. start/stop stream,
+
+without using a keyboard-driven debug console.
+
+## AC-17 — Normative take latency
+
+On localhost, an accepted `view.take` command MUST change the local VIEW output within:
+
+```text
+2 frames
+```
+
+For `mix`, the first mixed frame MUST appear by the next frame after acceptance.
+
+## AC-18 — Mix-minus isolation
+
+With a guest source replaced by a -20 dBFS 1 kHz test tone and no other program sources active, the corresponding `guestReturn` bus MUST measure the tone at or below:
+
+```text
+-80 dBFS
+```
+
+This verifies that the guest does not receive their own audio.
+
+## AC-19 — Audio transition click-free behavior
+
+During any `view.take`, `item.stop`, `soundboard.stop`, or bus mute/unmute:
+
+1. gain changes MUST have ramps ≥ 5 ms,
+2. no hard sample-step cut is allowed,
+3. recorded master output MUST contain no click impulse exceeding -60 dBFS in a silent test pass.
+
+## AC-20 — WHEP preview
+
+A WHEP client MUST be able to fetch both:
+
+```text
+/nbe/v0.3/whep/program
+/nbe/v0.3/whep/preview
+```
+
+using bearer auth.
+
+Preview startup on a local network SHOULD occur within:
+
+```text
+2 seconds
+```
+
+MJPEG endpoints MUST remain disabled unless dev mode is enabled.
+
+## AC-21 — Loop budget math
+
+Given a 1080p opaque NV12 loop with:
+
+```json
+{
+  "periodFrames": 90,
+  "cachePolicy": "vram",
+  "vramBudgetMib": 256
+}
+```
+
+preflight MUST reject VRAM residency or force streaming because 90 frames exceeds the 86-frame NV12 budget.
+
+Given a 1080p BC7 loop with:
+
+```json
+{
+  "periodFrames": 120,
+  "cachePolicy": "vram",
+  "vramBudgetMib": 256
+}
+```
+
+preflight MAY accept VRAM residency if BC7 is supported and total cache budget allows it.
+
+## AC-22 — 25/29.97 explicit pulldown
+
+Given a 25 fps asset with no pulldown metadata, preflight MUST fail.
+
+Given a 29.97 fps asset with no pulldown metadata, preflight MUST fail.
+
+Given valid explicit pulldown metadata, preflight MUST verify the resulting 30 fps CFR output and pass only if the declared pattern is present.
+
+## AC-23 — Move (state-diff transition)
+
+Given two scenes sharing an element ID at different transforms, a `move` transition MUST:
+
+1. match elements by persistent identity,
+2. complete the tween frame-exact within `durationFrames`,
+3. drop zero frames during the move,
+4. honor the declared easing within one frame of phase error.
+
+## AC-24 — DSK persistence
+
+A ticker on the overlay level MUST survive a complex scene move transition untouched and without recomposition artifacts.
+
+## AC-25 — Automation
+
+1. A rule MUST fire within 1 frame of its trigger condition becoming true.
+2. `automation.hold` MUST cancel pending actions within 1 frame.
+3. Cycle detection MUST reject self-triggering rules at preflight.
+4. Every automation action MUST appear in the audit log.
+
+## AC-26 — Plugin sandbox
+
+A permissionless WASM element plugin MUST provably be unable to touch network or disk, verified via WASI capability enforcement. The runtime MUST also terminate a plugin instance that exceeds its `maxMemoryMib` budget and substitute a transparent frame, without crashing the render node.
+
+## AC-27 — Degradation order
+
+Under simulated GPU overload:
+
+1. preview frame rate degrades first,
+2. loop caches evict to streaming,
+3. effect quality steps down,
+4. multiview tiles drop,
+5. VIEW drops zero frames throughout.
+
+## AC-28 — Migration
+
+A v0.2 show package run through `nbe-migrate` MUST produce a valid v0.3 package that passes preflight with identical visual and audio output. A v0.2 manifest presented directly to a v0.3 preflight MUST be rejected.
+
+## AC-29 — Sub-scenes
+
+1. Recursion depth cap (4) MUST be enforced.
+2. Circular sub-scene references MUST be rejected at preflight.
+
+---
+
+# 23. Non-goals for v1
+
+The following are explicitly out of scope for v1:
+
+1. 24/7 Channel scheduler implementation.
+2. AI background replacement.
+3. Unreal/Unity virtual set.
+4. Screen/app mirroring ingest.
+5. CPU x264 live encoding.
+6. Custom Stream Deck plugin.
+7. Timeline dates or calendar scheduling.
+8. Multi-machine synchronized channel playout.
+9. HDR output.
+10. Full motion-interpolated frame-rate conversion.
+11. Multi-operator conflict resolution beyond basic state versioning.
+12. Browser-based live renderer.
+13. iPhone as render node.
+14. Virtual-camera patterns (forbidden by the operator topology, Section 5.8).
+15. Managed-TURN-only dependency (self-hosted first, Section 9.6.2).
+16. Compute-shader plugins (fragment shaders only, Section 14.2).
+
+The manifest schema MUST NOT preclude future Channel scheduling, but v1 MUST NOT implement it.
+
+---
+
+# 24. Risks and mitigations
+
+| Risk | Severity | Mitigation |
+|---|---:|---|
+| Thermal throttling on laptop render node | High | Use desktop/mini workstation for live; enforce Tier-1 GPU budget; monitor thermal state; reduce loop cache; prefer hardware decode/encode; degradation ladder. |
+| VideoToolbox decode-session limits | High | Limit simultaneous active decode sources; preload short loops into textures; reuse decode sessions; fail early in preflight if decode budget exceeded. |
+| VRAM pressure from loop caches | High | Enforce per-loop and total cache budgets; evict non-live loops; stream long loops; fallback to still frame if texture pressure critical. |
+| WebRTC jitter causing guest freeze | Medium | Jitter buffer 200–500 ms; placeholder on loss; automatic fallback if guest is live; separate guest from local playout clock. |
+| Single-operator cognitive load | High | Big preview/view UI; color states; armed next item; one-button TAKE; automatic fallback; minimal menus during live. |
+| `wgpu` driver/platform differences | Medium | Conformance suite; Metal-first path; Linux Vulkan secondary path; OBS baseline benchmark; feature flags for backend-specific paths. |
+| Audio/video drift | Medium | Master clock authority; audio device clock monitoring; drift correction; acceptance test over 30 minutes. |
+| RSS feed malicious or malformed | Medium | Sanitize text; disable markup; cache last known items; manual override; feed timeout; rate limiting. |
+| Recording corruption on crash | High | Fragmented MP4 or MKV; 1-second fragments; kill-test in CI. |
+| Disk I/O stalls during long loops | Medium | NVMe requirement; double-buffer read-ahead; preflight disk read benchmark; separate media disk on Tier-2+. |
+| Companion misconfiguration | Medium | Generate Companion bindings from manifest; preflight validates action names and payload schemas. |
+| OBS baseline comparison unfair | Low/Medium | Define fixed test package, hardware, metrics, and capture method in test harness. |
+| State-diff transition complexity | High | Precompute diffs at arm time; cap sub-scene recursion; enforce DAG; frame-quantized tweens. |
+| WASM/WGSL plugin exploits | High | Strict WASI capabilities; `naga` validation; deny-by-default permissions; per-instance memory ceiling; AC-26. |
+| Floor device thermal throttling | High | Degradation ladder; preview fps drop first; loop eviction; View never degraded. |
+| Automation infinite loops | Medium | Static cycle detection at preflight; runtime self-trigger suppression; global `automation.hold`. |
+| Abuse via guest links/RSS/call-ins | Medium | Signed expiring revocable JWT links; rate limiting; producer-gated admission; audit log. |
+
+---
+
+# 25. Resolved open questions
+
+## 25.1 Carried from v0.2 (normative)
+
+| # | Question | Ruling |
+|---:|---|---|
+| 1 | 25/29.97 fps policy | Allowed only with explicit pulldown metadata. 25→30 duplicates every fifth frame. 29.97→30 adds one hold per ~1000 source frames. |
+| 2 | Smelter API compatibility | Benchmark concepts only. No API compatibility requirement. |
+| 3 | WHIP auth | Bearer token in headers. TURN credentials vended by control plane. |
+| 4 | NDI dependency | Optional, feature-flagged. Core build remains NDI-free. |
+| 5 | fMP4 vs MKV default | Fragmented MP4 confirmed as default. |
+| 6 | VRAM on unified memory | `vramBudgetMib` is soft and capped by Metal `recommendedMaxWorkingSetSize`. |
+| 7 | Channel schema fields | Existing minimal fields are sufficient. No additional reservation. |
+| 8 | Ticker languages | Single mixed feed with priority flags. Language is metadata only in v1. |
+| 9 | ISO recording | Master-only in v1. `isolation` schema hook reserved. |
+| 10 | iPhone preview transport | WHEP is primary. MJPEG is dev-mode fallback only. |
+
+## 25.2 Resolved in v0.3 (normative)
+
+| # | Question | Ruling |
+|---:|---|---|
+| 1 | WASM element plugin frame format | RGBA8 into an engine-provided texture for v1. NV12 plane output is a later optimization. |
+| 2 | Snapshot scope | The entire View state, including overlay visibility. A snapshot restores what the audience sees. |
+| 3 | TURN providers | Self-hosted coturn via environment configuration first; managed-provider integrations later. |
+| 4 | Caption burn-in (later) | A dedicated Overlay element on the DSK level — not a post-composite shader pass. |
+| 5 | Sequence depth limit | **Superseded by v0.4 (§16.4).** The rundown is flat; `sequenceRef` was retired rather than resolved, so there is no depth to limit. |
+
+v0.2.1 errata (adopted):
+
+1. NV12 loop-cache textures are implemented as two-plane YUV (`R8Unorm` + `Rg8Unorm`) with shader-side BT.709 conversion; literal NV12 texture formats are not assumed in `wgpu`.
+2. `mixDurationFrames` minimum is 1; a 0-frame mix is a cut, and the schema enforces it.
+3. `E_TIMEOUT` is reserved for async network boundaries (TURN vending, WHIP handshake, RSS fetches) and is wired in the control plane and guest ingest modules.
+
+---
+
+# 26. Implementation handoff notes
+
+For coding agents, the implementation order SHOULD be:
+
+1. Manifest schema validator and preflight skeleton.
+2. Control-plane WebSocket server and state machine.
+3. Render-node command bridge.
+4. Basic view/preview compositor with color sources and image/video elements.
+5. Video decode integration with hardware decoder.
+6. Audio graph with master bus.
+7. Ticker and lower-third template renderer.
+8. Stream Deck/Companion command mapping.
+9. Recording output with fragmented MP4.
+10. RTMP/SRT output with hardware encoder.
+11. Telemetry and fallback slate.
+12. OBS baseline benchmark harness.
+
+Additional sequencing requirements:
+
+- Implement loop cache format accounting before VRAM caching.
+- Implement guest return/mix-minus at the same time as WebRTC guest ingest.
+- Implement audio ramps before the first live TAKE test.
+- Implement WHEP preview after the WebRTC stack exists.
+- Implement TURN vending before remote guest testing.
+- Add 25/29.97 pulldown tests to preflight CI.
+- Implement `nbe-migrate` when the v0.3 schema lands, with the v0.2 fixture as its test input.
+- Implement the scene/element model on top of the core compositor; automation after the command bus is stable; plugins last.
+
+Every subsystem MUST be testable without requiring all other subsystems to be complete.
+
+The definition of done for any subsystem is:
+
+```text
+schema-valid
+state-safe
+telemetry-visible
+acceptance-tested
+mix-minus-safe
+click-free
+loop-budget-accounted
+sandbox-verified
+degradation-ordered
+```
+
+---
+
+# 27. Unresolved open questions (v0.4 candidates)
+
+The following are unresolved in v0.3 and deferred to v0.4 or later:
+
+1. **Snapshot persistence.** Where are snapshots stored? If the show package is immutable post-preflight, snapshots must be written to a local user-state directory (e.g., `~/.nbe/snapshots/<show-id>/`). The exact serialization format (JSON state dump vs. binary blob) is TBD.
+2. **Multiview layout customization.** The Multiview grid (Section 10.6) is defined, but the layout (e.g., 2x2, 3x3, custom aspect ratios) is currently hardcoded or implicit. A manifest or runtime command schema for Multiview grid topology is needed.
+3. **WASM plugin threading.** Element plugins are currently single-threaded (main thread or dedicated worker). If a plugin requires heavy computation (e.g., fluid simulation), should the WASM sandbox support `wasm-threads`? This introduces shared-memory security implications.
+4. **Caption burn-in timing.** When captions are burned in via a DSK Overlay element (Section 25.2), how is the WebVTT timestamp synchronized with the NBE master clock? NTP drift between the caption source and the master clock needs a defined slew/clamp policy.
+5. **Channel scheduler state.** When the post-v1 Channel scheduler is built, how does it interact with `automation.hold`? Does a scheduled show load bypass the hold, or does the hold freeze the entire channel?
+
+---
+
+# Appendix A — v0.3 schema structural reference (for agent context)
+
+*Note: this appendix is informational, not normative. The byte-exact normative schema lives at `schemas/manifest.v0.4.json`. If this appendix and that file ever disagree, the file wins and the appendix has a bug.*
+
+**Top-level additions:**
+
+- `scenes`: array of `Scene` objects (required).
+- `overlays`: array of `Overlay` objects.
+- `transitions`: array of `TransitionPreset` objects.
+- `automation`: array of `AutomationRule` objects.
+- `plugins`: array of `Plugin` objects.
+- `qualityProfile`: enum `["potato", "consumer", "pro", "reference"]`.
+
+**Key `$defs` additions:**
+
+- `Scene`: `{ id, name?, base?, mergeMode?, elements: [Element], audio? }`
+- `Overlay`: `{ id, elements: [Element] }`
+- `Element`: `{ id, kind, z, visible?, assetId?, feedAssetId?, cameraId?, guestId?, templateId?, fields?, loop?, transform?, opacity?, chromaKey?, audio?, clock?, sceneRef?, pluginId?, children?, enterAnimation?, exitAnimation? }` — `kind` enum: `videoLoop, clip, camera, guest, graphic, ticker, clock, sceneRef, group, plugin`. Conditional requirements: `videoLoop`/`clip` → `assetId`; `camera` → `cameraId`; `guest` → `guestId`; `graphic`/`ticker` → `templateId`; `sceneRef` → `sceneRef`; `plugin` → `pluginId`; `group` → `children`.
+- `Animation`: `{ durationFrames, delayFrames?, easing, bezier? }` — easing enum: `linear, easeIn, easeOut, easeInOut, cubicBezier, spring`.
+- `TransitionPreset`: `{ id, kind?, durationFrames?, easing?, elementOverrides? }` — kind enum: `cut, mix, wipe, sting, move, dve`.
+- `AutomationRule`: `{ id, trigger: { kind, params? }, conditions?, action: { command, payload? }, enabled? }` — trigger kinds: `mediaEnd, mediaStart, timer, timeOfDay, audioLevel, hotkey, rssKeyword, streamHealth, stateChange`.
+- `Plugin`: `{ id, kind: effect|element, source, version?, maxMemoryMib?, permissions }` — `maxMemoryMib` integer ≥ 16, default 64; permissions default `[]` (deny by default).
+- `Sequence`: `{ id, title?, label?, items: [Item] }` (flat; `sequenceRef` retired in v0.4).
+- `Item`: `{ id, kind, sceneRef?, assetId?, sourceId?, durationFrames?, autoFollow?, audioPolicy? }` — kind enum: `sceneRef, clipRef, liveRef, slate`. Note: a `clipRef`-kind item references its clip via `assetId`; a `liveRef`-kind item references its live source via `sourceId`.
+
+**Command API endpoints added in v0.3:**
+
+- `view.take`, `view.cut`, `view.fallback` (with `program.*` deprecated aliases)
+- `scene.arm`, `scene.apply`
+- `overlay.show`, `overlay.hide`
+- `automation.enable`, `automation.disable`, `automation.hold`
+- `snapshot.save`, `snapshot.recall`
+- `marker.add`
+- `plugin.reload`
+- `item.arm/unarm/stop/reset`
+- `element.toggle/set` (with `layer.*` deprecated aliases)

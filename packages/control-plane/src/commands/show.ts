@@ -19,6 +19,22 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
         throw new CpError("E_FORBIDDEN_STATE", "a package is already loaded; pass mode: reload");
       }
       const loaded = await loadPackage(String(payload.packagePath), {});
+
+      // SPEC §7.15: the side that knows BOTH facts is the side that refuses.
+      // Preflight validates a package in isolation and cannot know the target;
+      // the control plane knows the package and the running engine. Loading a
+      // 25 fps package on a 30 fps engine mis-maps every non-house-rate asset
+      // — timed items run short, cadence conversion is silently wrong — and
+      // nothing downstream detects it. Reject rather than load-and-warn.
+      const engineRate = deps.houseRate;
+      if (engineRate !== undefined && loaded.pkg.houseRate !== engineRate) {
+        throw new CpError(
+          "E_PREFLIGHT_FAILED",
+          `houseRate: package declares ${loaded.pkg.houseRate} fps but this engine runs at ` +
+            `${engineRate} fps; loading it would mis-map every asset (SPEC §7.15)`,
+        );
+      }
+
       state.loadPackage(loaded.pkg);
       // SPEC §16.1: loading a warnings-only package is fine; going to air on
       // one is an explicit decision. `airReady` stays true only at exit 0.

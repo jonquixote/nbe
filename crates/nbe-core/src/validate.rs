@@ -4,16 +4,16 @@
 use thiserror::Error;
 
 /// The byte-exact normative schema, embedded at compile time.
-const SCHEMA_JSON: &str = include_str!("../../../schemas/manifest.v0.3.json");
+const SCHEMA_JSON: &str = include_str!("../../../schemas/manifest.v0.4.json");
 
 /// Errors produced by manifest validation.
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    /// The manifest's `manifestVersion` is not `"0.3"`.
-    /// AC-28: a v0.2 package presented to a v0.3 preflight MUST be rejected.
+    /// The manifest's `manifestVersion` is neither `"0.3"` nor `"0.4"`.
+    /// AC-28: a v0.2 package presented to a v0.3+ preflight MUST be rejected.
     #[error(
-        "migration required: manifest has manifestVersion \"{found}\", expected \"0.3\". \
-         Run `nbe-migrate` to convert this package to v0.3."
+        "migration required: manifest has manifestVersion \"{found}\", expected \"0.3\" or \"0.4\". \
+         Run `nbe-migrate` to convert this package."
     )]
     MigrationRequired { found: String },
 
@@ -48,13 +48,16 @@ fn compiled_validator() -> Result<&'static jsonschema::Validator, ValidationErro
 
 /// Check only the version gate. Cheap; runs before schema validation.
 ///
-/// A manifest whose `manifestVersion` is not `"0.3"` is a migration target,
+/// SPEC v0.4 accepts `"0.3"` and `"0.4"`: the only schema change is the
+/// removal of the `sequenceRef` hook, so a v0.3 manifest that never used it is
+/// a valid v0.4 manifest. A manifest at any other version is a migration
+/// target,
 /// not a malformed manifest — it gets a dedicated error so callers can
 /// give actionable guidance. A missing field is malformed instead.
 pub fn check_version(json: &serde_json::Value) -> Result<(), ValidationError> {
     match json.get("manifestVersion").and_then(|v| v.as_str()) {
         None => Err(ValidationError::MissingVersion),
-        Some("0.3") => Ok(()),
+        Some("0.3") | Some("0.4") => Ok(()),
         Some(other) => Err(ValidationError::MigrationRequired {
             found: other.to_string(),
         }),
@@ -123,6 +126,35 @@ mod tests {
             },
             "control": { "bindings": [] }
         })
+    }
+
+    #[test]
+    fn a_sequenceref_item_is_refused_at_validation() {
+        // SPEC §16.4 (v0.4): the hook is retired, and "retired" has to mean
+        // something a package can be measured against. The schema dropped
+        // `sequenceRef` from `Item.kind`; nothing asserted that a manifest
+        // using it is refused, so restoring the enum member would have gone
+        // unnoticed — and `ItemKind` still carried a `SequenceRef` variant the
+        // schema could no longer produce.
+        let mut m = minimal_valid_manifest();
+        // Only the retired `kind` — nothing else about this item is
+        // irregular, so the enum is the only thing that can refuse it. With
+        // `sequenceId` alongside, restoring the enum member still failed the
+        // test, but on the unknown property rather than on the retirement:
+        // a falsification that fails for the adjacent reason proves nothing.
+        m["rundown"]["items"] = serde_json::json!([
+            { "id": "A1", "kind": "sequenceRef" }
+        ]);
+        let err = validate_manifest(&m).expect_err("a retired hook must not validate");
+        let text = err.to_string();
+        assert!(
+            text.contains("kind") || text.contains("sequenceRef"),
+            "the refusal must point at the retired field; got {text}"
+        );
+
+        // And the retirement is scoped: a v0.3 manifest that never used the
+        // hook is still a valid v0.4 manifest (§16.4's migration note).
+        assert!(validate_manifest(&minimal_valid_manifest()).is_ok());
     }
 
     #[test]

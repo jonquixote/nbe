@@ -3,7 +3,7 @@
 //! The round-trip test is the point: every schema/model mismatch that
 //! Prompt 01b Step 1 fixed (numeric frameRate, ClockFormat, TextureFormat)
 //! is pinned by it. If the typed model drifts from
-//! `schemas/manifest.v0.3.json` again, this file fails first.
+//! `schemas/manifest.v0.4.json` again, this file fails first.
 
 use std::path::PathBuf;
 
@@ -120,6 +120,12 @@ fn preflight_report_shape_matches_spec_19_2() {
             sandbox_ok: true,
         }],
         contact_sheet: Some("contact_sheet.jpg".into()),
+        // SPEC §19.2.1 (v0.4): always populated, never optional.
+        resources: nbe_core::ResourceReport {
+            vram_demand_mib: 412,
+            audio_demand_mib: 22,
+            declared_house_rate: Some(30),
+        },
     };
     let v = serde_json::to_value(&report).expect("report must serialize");
 
@@ -138,6 +144,10 @@ fn preflight_report_shape_matches_spec_19_2() {
         assert!(v.get(key).is_some(), "report missing top-level key {key}");
     }
     assert_eq!(v["contactSheet"], "contact_sheet.jpg");
+    // SPEC §19.2.1: the resource block and its exact camelCase spelling.
+    assert_eq!(v["resources"]["vramDemandMib"], 412);
+    assert_eq!(v["resources"]["audioDemandMib"], 22);
+    assert_eq!(v["resources"]["declaredHouseRate"], 30);
 
     let asset = &v["assets"][0];
     for key in [

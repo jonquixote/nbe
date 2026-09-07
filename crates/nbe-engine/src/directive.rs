@@ -123,11 +123,6 @@ impl DirectiveHandler {
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
         // boundary — and is reported as `itemEvent: decodeError` so the
         // control plane can drive the item to ERROR (SPEC §5.9.3, §17.3).
-        let budget = crate::loop_cache::CacheBudget {
-            per_loop_mib: 1024,
-            total_mib: 4096,
-            recommended_working_set_mib: None,
-        };
         let mut library = crate::video::VideoLibrary::default();
         for (asset_id, kind) in &index.asset_kind {
             if kind != "video" && kind != "alphaVideo" {
@@ -137,6 +132,9 @@ impl DirectiveHandler {
                 continue;
             };
             let declared = index.declared_loop_period.get(asset_id).copied();
+            // SPEC §12.4's table, with this asset's declared ceiling where the
+            // manifest declares one — the same constructor preflight uses.
+            let budget = index.loop_budget(asset_id);
             match crate::video::load_video_asset(
                 asset_id,
                 &root.join(src),
@@ -388,13 +386,20 @@ impl DirectiveHandler {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             *self.state.view_item.lock().unwrap() = view;
-            // SPEC §5.9.4's snapshot names WHAT is on air but not since when,
-            // so a resynced timed item resumes from its first frame rather
-            // than guessing an origin. Recorded as a spec gap in
-            // agents/prompts/05-video-decode.md.
+            // SPEC §5.9.4 (v0.4): the snapshot carries `viewItemStartFrame` —
+            // §12.1's `t0` — so a resynced timed item resumes where it
+            // actually is. v0.3's snapshot said WHAT was on air but not SINCE
+            // WHEN, so this guessed `now`, and a clip forty seconds in jumped
+            // back to zero on air. Falling back to `now` when the field is
+            // absent keeps a v0.3 control plane working, badly, rather than
+            // not at all.
+            let t0 = snapshot
+                .get("viewItemStartFrame")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(now);
             self.state
                 .view_item_start_frame
-                .store(now, std::sync::atomic::Ordering::SeqCst);
+                .store(t0, std::sync::atomic::Ordering::SeqCst);
             // A resync supersedes any transition the engine was mid-way
             // through: the snapshot is the state, not a waypoint toward it.
             *self.state.transition.lock().unwrap() = None;

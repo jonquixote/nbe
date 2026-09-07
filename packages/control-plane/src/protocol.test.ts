@@ -12,7 +12,7 @@ import { CommandPayloadSchemas, CommandNames, ErrorCodeSchema, EnvelopeSchema } 
 // adding `item.reset` and `E_RATE_LIMITED` — while every test stayed green.
 // Parsing makes spec drift a red build instead of a silent divergence.
 
-const SPEC_PATH = new URL("../../../docs/spec.v0.3.md", import.meta.url);
+const SPEC_PATH = new URL("../../../docs/spec.v0.4.md", import.meta.url);
 
 function section16(): string {
   const spec = readFileSync(SPEC_PATH, "utf8");
@@ -59,8 +59,6 @@ const SAMPLE_PAYLOADS: Record<string, unknown> = {
   "view.fallback": {},
   "scene.arm": { sceneId: "SCN_A1" },
   "scene.apply": { sceneId: "SCN_A1", target: "preview" },
-  "sequence.arm": { sequenceId: "A" },
-  "sequence.unarm": { sequenceId: "A" },
   "item.arm": { itemId: "A1" },
   "item.unarm": { itemId: "A1" },
   "item.stop": { itemId: "A1" },

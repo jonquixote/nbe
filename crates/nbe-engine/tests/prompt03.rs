@@ -52,7 +52,7 @@ async fn clock_fsm_total_coverage() {
 #[test]
 fn clock_states_match_spec_11_4() {
     use std::fs;
-    let spec = fs::read_to_string("../../docs/spec.v0.3.md").unwrap();
+    let spec = fs::read_to_string("../../docs/spec.v0.4.md").unwrap();
     let clock_section = spec
         .split("# 11. Cross-cutting concern — Master clock")
         .nth(1)
@@ -218,6 +218,73 @@ async fn item_end_emitted_after_timed_duration() {
         out.iter().any(|f| matches!(f, nbe_protocol::EngineFrame::ItemEvent { event: nbe_protocol::ItemEvent::End, item_ref, .. } if item_ref == "A1")),
         "expected itemEvent end for A1; outgoing={:?}",
         out.len()
+    );
+}
+
+#[tokio::test]
+async fn a_resync_resumes_a_timed_item_where_it_actually_is() {
+    // SPEC §5.9.4 (v0.4). The v0.3 snapshot said WHAT was on air but not
+    // SINCE WHEN, so this guessed `now` — and after an outage of any length,
+    // "now" is wrong by exactly that length: a clip forty seconds in jumped
+    // back to zero, on air. The snapshot now carries viewItemStartFrame.
+    let (handler, state, _out) = make_engine();
+    state.clock.lock().unwrap().start();
+
+    let resync = directive(
+        "show.resync",
+        1,
+        serde_json::json!({
+            "showState": "RUNNING",
+            "viewItem": "A1",
+            "viewItemStartFrame": 1200,
+            "previewItem": null,
+            "itemStates": {},
+            "sceneStates": {},
+            "visibleOverlays": [],
+            "automationHold": false,
+            "stateVersion": 1
+        }),
+        serde_json::json!({}),
+    );
+    handler.apply(&resync).await.unwrap();
+
+    assert_eq!(
+        state
+            .view_item_start_frame
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1200,
+        "the engine must resume the item at the t0 the snapshot names, not at \
+         the frame it happened to reconnect on"
+    );
+}
+
+#[tokio::test]
+async fn a_resync_with_no_start_frame_still_loads() {
+    // A v0.3 control plane sends no viewItemStartFrame. Falling back to `now`
+    // keeps it working, badly, rather than not at all — the failure mode this
+    // replaces, kept only as a compatibility floor.
+    let (handler, state, _out) = make_engine();
+    state.clock.lock().unwrap().start();
+    let resync = directive(
+        "show.resync",
+        1,
+        serde_json::json!({
+            "showState": "RUNNING",
+            "viewItem": "A1",
+            "previewItem": null,
+            "itemStates": {},
+            "sceneStates": {},
+            "visibleOverlays": [],
+            "automationHold": false,
+            "stateVersion": 1
+        }),
+        serde_json::json!({}),
+    );
+    handler.apply(&resync).await.unwrap();
+    assert_eq!(
+        state.view_item.lock().unwrap().as_deref(),
+        Some("A1"),
+        "an older snapshot must still resync the item"
     );
 }
 

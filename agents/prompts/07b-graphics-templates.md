@@ -1,5 +1,27 @@
 # Agent Prompt 07 — Graphics: Ticker & Lower-Third Templates (crates/nbe-engine)
 
+> **Note (added when this document was re-homed as 07b).** This is the
+> graphics mission as it stood **before the midpoint pause** — recovered from
+> `26bf2f55^` after the 07 upgrade pass overwrote it in place. It is filed here
+> because 07 was split: `07-overlay-level.md` builds the spine and the overlay
+> level, and **07b composites onto the level 07 builds.**
+>
+> **It has not had its upgrade pass.** It gets one before execution, in the
+> same form 07's did: measured against the engine as it actually is, not as
+> this document imagined it.
+>
+> Two halves, dispositioned now so the upgrade pass starts from a known point:
+>
+> - **The scope decisions stand.** Packaged fonts with no host-system fallback
+>   (Assumption 11), no per-frame relayout (§6.5), RSS fetched and sanitized at
+>   the control plane and never in the engine. `docs/portability.md` row 7
+>   records the first two as portability assets; weakening them is a spec
+>   change, not a prompt change.
+> - **Step 0's inventory does not.** It predates the engine — it was written
+>   against Prompts 01–06 as planned, and P4/P5/P6 landed differently. Re-take
+>   it against the tree before executing, and against SPEC v0.4 rather than the
+>   v0.3.2 this document targets.
+
 **Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 6.5 (graphics and fonts), 7.10 (overlay level), 10.7 (RSS sanitize/rate-limit), 16.5 (graphic commands), 16.6 (overlay commands), 16.7 (ticker commands), 16.13 (clock.configure), AC-15 (RTL/Unicode), AC-24 (overlay persistence). Prerequisites: Agent Prompts 01–06 merged (compositor rendering video on the master clock, audio graph live).**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the graphics layer: text and templates rendered to GPU textures, the scrolling ticker, lower thirds, the breaking banner, and the clock. This is where the View starts looking like a news network.

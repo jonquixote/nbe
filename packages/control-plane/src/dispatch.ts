@@ -49,6 +49,14 @@ export interface DispatchDeps {
   /** how long show.stop waits for the engine's quiescence ack (SPEC §5.9.5) */
   showStopGraceMs?: number;
   /**
+   * The house rate the render node is running at, if known (SPEC §7.15).
+   *
+   * `show.load` rejects a package declaring a different rate. Undefined means
+   * "no engine rate known", in which case the check cannot run — that is a
+   * deployment without a render node, not a licence to load at any rate.
+   */
+  houseRate?: number | undefined;
+  /**
    * Waits for an `appliedStateVersion` >= `stateVersion` from a render node.
    * Resolves true when acknowledged in time, false on timeout or when no
    * render node is connected. Supplied in production by the server.
@@ -88,8 +96,6 @@ const OPERATOR_COMMANDS = new Set([
   "view.fallback",
   "scene.arm",
   "scene.apply",
-  "sequence.arm",
-  "sequence.unarm",
   "item.arm",
   "item.unarm",
   "item.stop",

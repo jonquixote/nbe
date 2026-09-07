@@ -109,6 +109,12 @@ pub struct PackageIndex {
     /// asset id → declared `loop.periodFrames` (SPEC §12.9: the manifest's
     /// declaration takes precedence over the decoded frame count).
     pub declared_loop_period: HashMap<String, u32>,
+    /// asset id → declared `loop.vramBudgetMib` (SPEC §12.4/§12.5).
+    ///
+    /// The engine ignored this entirely and planned every loop against a
+    /// hardcoded 1024 MiB, so a package asking for a small cache got a large
+    /// one and preflight's residency answer did not match the engine's.
+    pub declared_vram_budget_mib: HashMap<String, u32>,
     /// The house rate the manifest declares (`show.video.frameRate`).
     ///
     /// Carried so the engine can check it against the rate it is actually
@@ -117,6 +123,26 @@ pub struct PackageIndex {
     /// a 25 fps package loaded without that variable mapped every
     /// non-house-rate asset against 30 and no path detected it.
     pub declared_house_rate: Option<u32>,
+}
+
+impl PackageIndex {
+    /// The §12.4 budget one loop asset is planned against.
+    ///
+    /// Named once, here, because the engine and preflight must plan the same
+    /// loop against the same ceiling. The engine used to build a
+    /// `CacheBudget { per_loop_mib: 1024, total_mib: 4096 }` inline at the load
+    /// site — four and eight times §12.4's table, a Prompt 05 placeholder that
+    /// outlived the spec section that would have corrected it — and read the
+    /// manifest's `vramBudgetMib` not at all. Preflight meanwhile held §12.4's
+    /// real numbers, so the two sides of one shared planner disagreed about
+    /// which loops are resident: a 100-frame 1080p RGBA8 loop was streamed and
+    /// charged nothing by preflight while the engine made it resident at
+    /// 791 MiB, and the package was air-ready.
+    pub fn loop_budget(&self, asset_id: &str) -> nbe_core::loop_cache::CacheBudget {
+        nbe_core::loop_cache::CacheBudget::from_manifest(
+            self.declared_vram_budget_mib.get(asset_id).copied(),
+        )
+    }
 }
 
 /// One element, reduced to what this prompt can draw.
@@ -180,6 +206,14 @@ impl PackageIndex {
             {
                 idx.declared_loop_period
                     .insert(id.to_string(), period as u32);
+            }
+            if let Some(mib) = asset
+                .get("loop")
+                .and_then(|l| l.get("vramBudgetMib"))
+                .and_then(|v| v.as_u64())
+            {
+                idx.declared_vram_budget_mib
+                    .insert(id.to_string(), mib.min(u32::MAX as u64) as u32);
             }
             if kind != "image" {
                 continue; // video is decoded by `video.rs`, not here
@@ -616,5 +650,89 @@ impl Transition {
 
     pub fn is_complete(&self, frame: u64) -> bool {
         self.progress(frame) >= 1.0
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use nbe_core::loop_cache::{self, CachePolicy, LoopSpec};
+
+    fn index_with_loop(loop_json: &str) -> PackageIndex {
+        let manifest: serde_json::Value = serde_json::from_str(&format!(
+            r#"{{
+              "manifestVersion": "0.4",
+              "show": {{ "video": {{ "width": 1920, "height": 1080, "frameRate": 30 }} }},
+              "assets": [
+                {{ "id": "L", "kind": "video", "source": "media/l.mp4", "loop": {loop_json} }}
+              ],
+              "scenes": [], "rundown": {{ "id": "R", "items": [] }}
+            }}"#
+        ))
+        .expect("fixture parses");
+        PackageIndex::build(&manifest, std::path::Path::new("/nonexistent"))
+    }
+
+    /// A 100-frame 1080p RGBA8 loop, planned the way the engine plans it.
+    fn plan_100_rgba8(budget: loop_cache::CacheBudget) -> loop_cache::CachePlan {
+        loop_cache::plan(
+            LoopSpec {
+                width: 1920,
+                height: 1080,
+                period_frames: 100,
+                has_alpha: false,
+                // The engine's decode path is RGBA8 today (`video.rs`).
+                yuv_sampling: false,
+                gop_frames: 0,
+                declared_format: None,
+            },
+            budget,
+        )
+    }
+
+    #[test]
+    fn an_undeclared_loop_is_planned_against_the_spec_table() {
+        // SPEC §12.4: 256 MiB per loop, 512 MiB total. The engine planned every
+        // loop against a hardcoded 1024/4096 instead — four and eight times the
+        // table — so it held loops preflight had reported as streamed and
+        // charged nothing for. Nothing tested it, which is why a placeholder
+        // from Prompt 05 survived the section that superseded it.
+        let index = index_with_loop(r#"{ "periodFrames": 100 }"#);
+        let budget = index.loop_budget("L");
+        assert_eq!(budget.per_loop_mib, loop_cache::DEFAULT_PER_LOOP_MIB);
+        assert_eq!(budget.total_mib, loop_cache::DEFAULT_TOTAL_LOOP_MIB);
+        assert_eq!(budget.effective_mib(), 256);
+
+        // And the consequence that made the divergence visible: at 256 MiB a
+        // 100-frame RGBA8 loop does NOT fit (32 frames do), so the engine
+        // streams it — the same answer preflight reports.
+        let plan = plan_100_rgba8(budget);
+        assert_eq!(plan.max_frames_by_budget, 32);
+        assert_eq!(plan.cache_policy_selected, CachePolicy::Streaming);
+    }
+
+    #[test]
+    fn a_declared_vram_budget_is_honoured() {
+        // The engine read `vramBudgetMib` nowhere, so a package asking for a
+        // small cache got a large one.
+        let small = index_with_loop(r#"{ "periodFrames": 100, "vramBudgetMib": 128 }"#);
+        assert_eq!(small.loop_budget("L").per_loop_mib, 128);
+        assert_eq!(small.loop_budget("L").effective_mib(), 128);
+
+        // A declaration ABOVE §12.4's total is still bounded by it: the total
+        // short-loop budget is shared, and one loop may not claim past it.
+        let large = index_with_loop(r#"{ "periodFrames": 100, "vramBudgetMib": 1024 }"#);
+        assert_eq!(large.loop_budget("L").per_loop_mib, 1024);
+        assert_eq!(
+            large.loop_budget("L").effective_mib(),
+            loop_cache::DEFAULT_TOTAL_LOOP_MIB,
+            "§12.4's total is a ceiling, not a suggestion"
+        );
+
+        // An asset with no loop at all falls back to the table.
+        assert_eq!(
+            small.loop_budget("nosuch").per_loop_mib,
+            loop_cache::DEFAULT_PER_LOOP_MIB
+        );
     }
 }
