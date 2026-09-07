@@ -55,6 +55,7 @@ impl PlaybackTracker {
     }
 }
 
+#[derive(Clone)]
 pub struct DirectiveHandler {
     state: SharedEngineState,
     outgoing: SharedOutgoing,
@@ -73,7 +74,23 @@ impl DirectiveHandler {
     /// Apply a directive; advance the last-applied stateVersion on success.
     pub async fn apply(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         match d.command.as_str() {
-            "show.load" => self.on_show_load(d)?,
+            // `show.load` decodes every video asset in the package — seconds of
+            // blocking CPU work. Run inline on the async directive path it owned
+            // the runtime: a measured 4.02 s load let no other task run at all,
+            // so `show.start` could not be applied and the telemetry pump could
+            // not tick. That is the whole of "R5: the clock does not start
+            // promptly" — the clock was never the defect. `MasterClock` is
+            // `(now - epoch) * rate` and runs from the instant `start()` is
+            // called; it read 0 because `show.start` had not been applied yet,
+            // and it jumped to 150 because five seconds of it had gone
+            // unobserved. Blocking work belongs on the blocking pool.
+            "show.load" => {
+                let handler = self.clone();
+                let frame = d.clone();
+                tokio::task::spawn_blocking(move || handler.on_show_load(&frame))
+                    .await
+                    .map_err(|e| DirectiveError::Invalid(format!("show.load panicked: {e}")))??;
+            }
             "show.start" => self.on_show_start(d)?,
             "show.stop" => self.on_show_stop(d)?,
             "view.take" | "view.cut" => self.on_take(d)?,

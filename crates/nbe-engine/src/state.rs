@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::Notify;
 
 /// The engine's shared mutable state. All writes go through handlers; readers
 /// (telemetry, watchdog) see a coherent snapshot via atomics.
@@ -256,16 +257,35 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct OutgoingQueue {
     inner: Mutex<VecDeque<EngineFrame>>,
+    /// Wakes the outbound pump the moment a frame is queued.
+    ///
+    /// Without it the pump only looked at this queue once per
+    /// `telemetry_interval_ms`, so every engine frame — including §5.9.5's
+    /// `appliedStateVersion` acknowledgements — was quantised to 1 Hz. The
+    /// acks were never missing; they were up to a second late, and a
+    /// `stateChange` frame snapshots `renderNode` at command-accept time, which
+    /// is always before a second has passed. That is the whole of "R6:
+    /// appliedStateVersion freezes after resync".
+    ready: Notify,
 }
 
 impl OutgoingQueue {
     pub fn push(&self, frame: EngineFrame) {
         self.inner.lock().unwrap().push_back(frame);
+        self.ready.notify_one();
     }
 
     pub fn drain(&self) -> Vec<EngineFrame> {
         let mut q = self.inner.lock().unwrap();
         q.drain(..).collect()
+    }
+
+    /// Resolves when a frame has been queued since the last drain.
+    ///
+    /// `Notify::notify_one` stores one permit, so a push that happens between
+    /// a drain and this await still wakes it — no frame waits for the next one.
+    pub async fn ready(&self) {
+        self.ready.notified().await;
     }
 }
 
