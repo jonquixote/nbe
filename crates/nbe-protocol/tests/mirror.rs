@@ -427,3 +427,70 @@ fn rust_and_typescript_agree_on_the_engine_frame_kinds() {
     let ours: BTreeSet<&str> = EngineFrame::KINDS.iter().copied().collect();
     assert_eq!(ours, ts_kinds);
 }
+
+/// Every numbered list in the normative spec numbers consistently.
+///
+/// §19.3's "the preflight test suite MUST include" list acquired a second item
+/// 12 and a second item 13 when two rows were inserted without renumbering the
+/// four behind them: eighteen entries numbered to sixteen. Nothing consumes
+/// those numbers programmatically, so nothing broke — but the document cites
+/// its own checklist rows by number elsewhere (`§12.11.3 #1`, `§7.15 #2`), and
+/// two reviewers read past it.
+///
+/// This lives here rather than in CI because the spec is already this file's
+/// fixture, and a check that only runs on a runner is a check nobody runs
+/// before pushing. It is scoped to the spec documents on purpose: review
+/// reports quote defects like this one verbatim as evidence, and a lint that
+/// flagged the evidence would be a lint people learn to ignore.
+#[test]
+fn the_specs_numbered_lists_number_consistently() {
+    let mut problems = Vec::new();
+    for entry in std::fs::read_dir(repo_root().join("docs")).expect("docs is readable") {
+        let path = entry.expect("readable entry").path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !(name.starts_with("spec.v") && name.ends_with(".md")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("spec is readable");
+        // A run is consecutive lines opening with `N. `; anything else ends it.
+        let mut run: Vec<(usize, u32)> = Vec::new();
+        let check = |run: &[(usize, u32)], problems: &mut Vec<String>| {
+            if run.len() < 3 {
+                return;
+            }
+            let mut seen: BTreeSet<u32> = BTreeSet::new();
+            for (line, n) in run {
+                if !seen.insert(*n) {
+                    problems.push(format!(
+                        "{name}:{line}: item {n} repeats inside the list starting at line {}",
+                        run[0].0
+                    ));
+                }
+            }
+        };
+        for (i, line) in text.lines().enumerate() {
+            let numbered = line
+                .split_once(". ")
+                .and_then(|(head, _)| head.parse::<u32>().ok());
+            match numbered {
+                Some(n) => run.push((i + 1, n)),
+                None => {
+                    if !line.trim().is_empty() {
+                        check(&run, &mut problems);
+                        run.clear();
+                    }
+                }
+            }
+        }
+        check(&run, &mut problems);
+    }
+    assert!(
+        problems.is_empty(),
+        "numbered lists must not repeat an item number:\n  {}",
+        problems.join("\n  ")
+    );
+}

@@ -195,7 +195,22 @@ fn the_report_always_carries_the_resource_block() {
 
 /// A package whose assets are spliced in verbatim, for resource arithmetic.
 fn package_with_assets(dir: &Path, assets: &str) -> std::path::PathBuf {
-    let root = dir.join("respkg");
+    package_at(dir, "respkg", 1920, 1080, assets)
+}
+
+/// The same, at a declared house resolution.
+///
+/// Every fixture in this file was 1080p, which is exactly why the §12.5 gate
+/// could fall back to a hardcoded 1920x1080 while the estimator fell back to
+/// the house frame and no test noticed: at 1080p the two wrong chains agree.
+fn package_at(
+    dir: &Path,
+    name: &str,
+    house_w: u32,
+    house_h: u32,
+    assets: &str,
+) -> std::path::PathBuf {
+    let root = dir.join(name);
     std::fs::create_dir_all(root.join("media")).unwrap();
     let mut png = Vec::new();
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
@@ -212,7 +227,7 @@ fn package_with_assets(dir: &Path, assets: &str) -> std::path::PathBuf {
       "network": {{ "id": "nbe", "name": "T" }},
       "show": {{
         "id": "s", "title": "T",
-        "video": {{ "width": 1920, "height": 1080, "frameRate": 30, "colorSpace": "rec709" }},
+        "video": {{ "width": {house_w}, "height": {house_h}, "frameRate": 30, "colorSpace": "rec709" }},
         "audio": {{ "sampleRate": 48000, "loudnessTargetLufs": -16.0, "truePeakDbtp": -1.5 }},
         "fallbackAssetId": "slate"
       }},
@@ -528,4 +543,53 @@ fn an_uncountable_audio_duration_is_named_not_a_panic() {
     );
     // And the report still carries the resource block it always carries.
     assert!(report["resources"]["audioDemandMib"].is_number());
+}
+
+#[test]
+fn a_loop_is_planned_at_one_resolution_not_two() {
+    // SPEC §12.5. The §12.5 gate and the resource estimator both call the same
+    // shared planner, and both still disagreed: the gate assembled its inputs
+    // with a hardcoded 1920x1080 fallback, the estimator with the house frame.
+    // At 1080p — every other fixture in this file — the two agree by accident.
+    //
+    // A 4K show whose loop asset cannot be probed separates them. At 3840x2160
+    // RGBA8 a frame is 31.64 MiB, so §12.4's 256 MiB default holds 8 frames,
+    // not the 32 it holds at 1080p. 30 frames therefore do NOT fit, and
+    // `cachePolicy: "vram"` is mandatory, so §12.5 says preflight MUST fail.
+    //
+    // Before the fix: the gate planned at 1080p (30 <= 32, "fits", no error)
+    // while the estimator planned at 4K (30 > 8, streamed, charged nothing) —
+    // exit 0, `airReady: true`, and the loop absent from the number the
+    // operator plans against.
+    let dir = tempfile::tempdir().unwrap();
+    let root = package_at(
+        dir.path(),
+        "uhd",
+        3840,
+        2160,
+        r#", { "id": "L", "kind": "video", "source": "media/slate.png", "format": "h264",
+              "loop": { "periodFrames": 30, "textureFormat": "rgba8", "cachePolicy": "vram" } }"#,
+    );
+    let (code, report) = run(&root, &[]);
+    assert_eq!(code, 2, "a 4K loop that cannot fit is not air-ready");
+    assert_eq!(
+        report["airReady"], false,
+        "§12.5: a mandatory `vram` loop that does not fit MUST fail preflight"
+    );
+    let errors = report["errors"].as_array().expect("errors array");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("loopBudget")),
+        "the failure must name the budget rule; got {errors:?}"
+    );
+    // And the refusal names the plan it refused on: 8 frames at 4K, which is
+    // the number only a gate that used the house frame can produce.
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("budget's 8")),
+        "the gate must have planned at the house frame, not at 1080p's 32; \
+         got {errors:?}"
+    );
 }

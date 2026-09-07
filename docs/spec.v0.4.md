@@ -2030,6 +2030,8 @@ BC7 is optional and MUST only be used if:
 
 Implementation note (v0.2.1): literal NV12 texture support in `wgpu` is limited. Implementations SHOULD use two-plane YUV — `R8Unorm` for Y and `Rg8Unorm` for UV — with a shader-side BT.709 conversion matrix. "NV12" in this document means that or an equivalent 4:2:0 planar representation.
 
+Implementation note (v0.4): the ladder is normative but not yet built. The engine decodes to RGBA8 on every path, so a loop declaring `nv12`, `nv12Alpha` or `bc7` is held as RGBA8 regardless. Preflight's §12.11.1 arithmetic honours the declaration, because a resource report answers the question the manifest asked — which means **a declared format below RGBA8 makes `vramDemandMib` an under-estimate of what this engine will actually hold, and may report a loop as VRAM-resident that the engine will stream.** A 200-frame 1080p loop declaring `bc7` with `vramBudgetMib: 512` reports 396 MiB resident; the same loop as RGBA8 does not fit that budget at all and streams, holding a read-ahead window instead. Until the ladder is implemented, the smaller number is not the safe one. Closing this is the format ladder's own work, tracked with §12.6's clamp.
+
 ## 12.4 Budgets
 
 Default MVP budgets:
@@ -3062,11 +3064,11 @@ The preflight test suite MUST include:
 11. 29.97 fps asset without pulldown metadata.
 12. **A contradictory Item** — e.g. `{"kind": "slate", "sceneRef": …}` (Section 17.5). Without this row a checklist implementer lawfully passes a package the renderer and the audio path resolve differently.
 13. **A loop period beyond Section 12.4's absolute cap** — the schema permits any `periodFrames`, so the bound is preflight's to enforce, by name and without panicking.
-12. VRAM-residency request that exceeds `maxFramesByBudget`.
-13. Circular sub-scene reference.
-14. Self-triggering automation rule.
-15. Plugin failing sandbox validation.
-16. Unresolvable `sceneRef`, `pluginId`, or group `children` entry.
+14. VRAM-residency request that exceeds `maxFramesByBudget`.
+15. Circular sub-scene reference.
+16. Self-triggering automation rule.
+17. Plugin failing sandbox validation.
+18. Unresolvable `sceneRef`, `pluginId`, or group `children` entry.
 
 ---
 

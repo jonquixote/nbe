@@ -11,6 +11,16 @@
 //! One rule, one implementation — the same discipline the renderer applies to
 //! `drawn_elements`, applied across crates.
 //!
+//! **One rule, two inputs, deliberately.** Preflight passes the manifest's
+//! `declared_format`; the engine passes `None`, because its decode path
+//! produces RGBA8 whatever the manifest asked for. That is not a disagreement
+//! about the rule — but it does mean that until §12.3's ladder is implemented,
+//! preflight's number for a loop declaring a format below RGBA8 sits *below*
+//! what the engine will hold, and the two can even disagree about residency
+//! policy (preflight `Vram`, engine `Streaming`). Whoever implements the
+//! ladder closes this; until then, do not read the smaller number as the safe
+//! one.
+//!
 //! The order is mandated (§26 sequencing): **format accounting first**, then
 //! the budget, then the policy. `frameCostMiB` comes from the selected texture
 //! format; `maxFramesByBudget` comes from the effective budget; only then does

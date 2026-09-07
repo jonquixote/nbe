@@ -192,6 +192,15 @@ pub fn load_video_asset(
             // manifest asked for: this path decodes to RGBA8 regardless, so
             // passing a declared format here would make the plan describe a
             // residency the engine does not hold.
+            //
+            // The other half of that, which a reader needs to hear: preflight
+            // DOES honour the declaration (§12.11.1 reports declared demand),
+            // so for any format below RGBA8 its number is an UNDER-estimate of
+            // what this engine holds, and it can report a loop VRAM-resident
+            // that this path will stream. Measured: a 200-frame 1080p `bc7`
+            // loop at `vramBudgetMib: 512` reports 396 MiB resident here and
+            // streams there. The smaller number is not the safe one until the
+            // §12.3 ladder is real.
             declared_format: None,
         },
         budget,

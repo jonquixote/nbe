@@ -27,19 +27,64 @@ const ABSOLUTE_LOOP_FRAME_CAP: u64 = 900;
 /// SPEC §8.4 residency for one second of clip audio: 48 kHz x 2 ch x f32.
 const AUDIO_BYTES_PER_SECOND: u64 = 48_000 * 2 * 4;
 
+/// The pixel dimensions one frame of an asset occupies (SPEC §12.11.1).
+///
+/// The chain is fixed **here**, and no caller may supply its own: the asset's
+/// **probed** size where preflight measured it, otherwise the **house** frame
+/// from `show.video`. (The schema declares no per-asset resolution, so there is
+/// no third rung to consult — `show.video` is the declaration.) The house frame
+/// over-states a small asset rather than under-stating a large one, which is
+/// the direction a resource report should err.
+///
+/// This was two chains. The §12.5 gate fell back to a hardcoded 1920x1080 while
+/// the estimator fell back to the house frame, so on a 4K package with an
+/// unprobed loop asset the gate planned at 1080p — where 30 RGBA8 frames fit
+/// the 256 MiB default — while the estimator planned at 4K, where 7 do: the
+/// package came back `airReady: true` with §12.5's mandatory-`vram` failure
+/// silenced and the loop charged nothing. Both halves called one shared
+/// function and still disagreed, because a shared function is only shared if
+/// its arguments are too.
+fn asset_dimensions(
+    id: &str,
+    manifest: &serde_json::Value,
+    report: &nbe_core::PreflightReport,
+) -> (u64, u64) {
+    let video = manifest.get("show").and_then(|s| s.get("video"));
+    let house = |field: &str, fallback: u64| {
+        video
+            .and_then(|v| v.get(field))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(fallback)
+    };
+    let probed = report.assets.iter().find(|a| a.id == id);
+    (
+        probed
+            .and_then(|a| a.width)
+            .map(u64::from)
+            .unwrap_or_else(|| house("width", 1920)),
+        probed
+            .and_then(|a| a.height)
+            .map(u64::from)
+            .unwrap_or_else(|| house("height", 1080)),
+    )
+}
+
 /// SPEC §12.5's residency decision for one declared loop.
 ///
 /// Both callers — the estimator ("what does this package demand?") and the
 /// §12.5 mandatory-`vram` check ("does this package fit?") — must answer from
 /// the same plan, or preflight contradicts itself inside a single run. The plan
 /// itself lives in `nbe-core` so preflight and the engine cannot disagree
-/// either.
+/// either. Every input the plan needs is assembled here, from the manifest and
+/// the report: a caller passes the asset, not the arithmetic.
 fn loop_plan(
     asset: &serde_json::Value,
     lm: &serde_json::Value,
-    width: u64,
-    height: u64,
+    manifest: &serde_json::Value,
+    report: &nbe_core::PreflightReport,
 ) -> nbe_core::loop_cache::CachePlan {
+    let id = asset.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let (width, height) = asset_dimensions(id, manifest, report);
     use nbe_core::loop_cache::{CacheBudget, CacheTextureFormat, LoopSpec};
     let kind = asset.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let declared_format = lm
@@ -408,13 +453,7 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             // as a different picture than the one they authored.
             let lm = asset.get("loop").expect("checked above");
             if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("vram") {
-                let probed = report.assets.iter().find(|a| a.id == id);
-                let plan = loop_plan(
-                    asset,
-                    lm,
-                    probed.and_then(|a| a.width).map(u64::from).unwrap_or(1920),
-                    probed.and_then(|a| a.height).map(u64::from).unwrap_or(1080),
-                );
+                let plan = loop_plan(asset, lm, &manifest_json, &report);
                 if plan.cache_policy_selected != nbe_core::loop_cache::CachePolicy::Vram {
                     had_errors = true;
                     report.push_error(format!(
@@ -510,17 +549,9 @@ fn resource_demand(
     {
         let id = asset.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let kind = asset.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let probed = report.assets.iter().find(|a| a.id == id);
-        // The asset's OWN dimensions where preflight measured them; the house
-        // format is a fallback, not the default.
-        let w = probed
-            .and_then(|a| a.width)
-            .map(u64::from)
-            .unwrap_or(house_w);
-        let h = probed
-            .and_then(|a| a.height)
-            .map(u64::from)
-            .unwrap_or(house_h);
+        // One chain, shared with the loop planner: probed, else the house
+        // frame.
+        let (w, h) = asset_dimensions(id, manifest, report);
 
         match asset.get("loop") {
             Some(lm) => {
@@ -540,17 +571,18 @@ fn resource_demand(
                     .get("cachePolicy")
                     .and_then(|v| v.as_str())
                     .unwrap_or("auto");
-                let plan = loop_plan(asset, lm, w, h);
+                let plan = loop_plan(asset, lm, manifest, report);
                 let fits = plan.cache_policy_selected == nbe_core::loop_cache::CachePolicy::Vram;
                 if declared == "stream" || !fits {
                     continue;
                 }
 
-                // §12.3's table, read off the plan rather than re-tabulated
-                // here. A second copy of the ladder is a second place to be
-                // wrong about what a frame costs.
-                let px = w.saturating_mul(h);
-                let per_frame = (px as f64 * plan.selected_texture_format.bytes_per_pixel()) as u64;
+                // The charge is read off the plan — format AND resolution —
+                // rather than re-derived here. A second copy of the ladder is a
+                // second place to be wrong about what a frame costs, and a
+                // second copy of the dimensions is how the §12.5 gate and this
+                // estimator came to disagree about the same loop.
+                let per_frame = (plan.frame_cost_mib * MIB as f64) as u64;
                 // Saturating, not wrapping. `periodFrames` has `minimum: 1`
                 // and NO maximum in the schema, so a package may legally
                 // declare a period near u64::MAX. That PANICKED preflight in
