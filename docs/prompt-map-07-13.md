@@ -50,6 +50,30 @@ rather than fading with the pass that found them.
    it as a bug. It becomes live the moment shader-side YUV lands — the same
    moment §12.3's format ladder does, and the two should be closed together.
 
+### Carried into 07 from the spine's own review pass (recorded 2026-09-07)
+
+Two observations the independent pass over `9bd18f9` reproduced and declined to
+file. Both are recorded so they have an owner rather than fading with the pass.
+
+1. **`DEFAULT_METER_WINDOW_MS` and `telemetry_interval_ms` are two constants for
+   one number.** R2's fix holds peaks across a meter window and publishes on its
+   boundary, and the intent is that the window equals the interval a telemetry
+   tick reports. That is true only while both constants read 1000:
+   `AudioDriver` is constructed with `(state, sink, house_rate)` and has no
+   access to `EngineConfig`, so it cannot derive the window from the interval.
+   Not filed because the interval is hardcoded in `main.rs` and in
+   `EngineConfig::default()` with no env override, so no user can create the
+   divergence — but this is the §12.4 budget defect photographed one step before
+   it became real, and that one cost three fix rounds. **Whoever makes the
+   telemetry interval configurable owns deriving the window from it.**
+
+2. **The meter window rolls on audio-block count, not wall clock.** If the
+   driver's cycle rate drifts, window and tick slide relative to each other, so
+   a tick reports the most recently *completed* window rather than the interval
+   it nominally covers. Acceptable for a peak meter, and recorded in §10.1's
+   implementation notes so nobody later asserts tighter timing on `busPeakDbfs`
+   in ignorance of it.
+
 ### 07 was split into 07 and 07b (recorded 2026-09-05)
 
 The upgrade pass rewrote 07 in place, and what it wrote is a different document

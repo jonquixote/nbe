@@ -60,7 +60,13 @@ Rules:
    binaries** — the last mutation compiled is the one still in `target/`, so
    rebuild from the restored tree before trusting any number you measure
    afterwards; the v0.4 close-out pass nearly filed a false HIGH regression off
-   an artifact built under a mutation it had already reverted.
+   an artifact built under a mutation it had already reverted. And **know what
+   your restore actually restores**: `git checkout <commit> -- <path>` *stages*
+   what it writes, so a following `git checkout -- .` restores from the index
+   and silently keeps the other commit's sources. `git reset --hard HEAD` is the
+   restore. The 07-spine pass caught this only because `git status` said 7 where
+   it expected 0 — the eighth variant of this trap, and the first that survives
+   a restore that looks like it worked.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
 

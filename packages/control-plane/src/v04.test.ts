@@ -302,3 +302,105 @@ test("the recovery record carries the LOADED package's manifest version, not a c
   state.loadPackage({ ...pkg(), manifestVersion: "0.3" });
   assert.equal(state.manifestIdentity()?.manifestVersion, "0.3");
 });
+
+test("a wedged preflight fails show.load by name instead of never answering", async () => {
+  // The control plane shelled out to `nbe-preflight` with no timeout, no
+  // killSignal and no AbortSignal. A binary that never answered left the
+  // command accepted and unresolved forever: no §16 response, no terminal state
+  // in the audit log, and — because the child process handle keeps Node's event
+  // loop open — a test suite that reported its failures and then hung instead of
+  // exiting. One missing option caused all three.
+  const WebSocket = (await import("ws")).default;
+  const { createControlPlaneServer } = await import("./server.js");
+  const { AuditLog } = await import("./audit.js");
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { randomUUID } = await import("node:crypto");
+
+  // A binary that exists, starts, and never answers.
+  const bin = join(mkdtempSync(join(tmpdir(), "nbe-wedge-")), "wedged-preflight");
+  writeFileSync(bin, "#!/bin/sh\nsleep 100000\n", { mode: 0o755 });
+
+  const dir = mkdtempSync(join(tmpdir(), "nbe-wedge-pkg-"));
+  mkdirSync(join(dir, "media"), { recursive: true });
+  writeFileSync(join(dir, "manifest.json"), "{}");
+
+  const state = new ControlPlaneState();
+  const auditPath = join(mkdtempSync(join(tmpdir(), "nbe-wedge-audit-")), "audit.jsonl");
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  process.env.NBE_PREFLIGHT_BIN = bin;
+  process.env.NBE_PREFLIGHT_TIMEOUT_MS = "1500";
+
+  const server = await createControlPlaneServer({
+    port: 0,
+    auth: { tokens: { "wedge-token": "admin" } },
+    audit: new AuditLog(auditPath),
+    state,
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+  });
+
+  try {
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
+      headers: { authorization: "Bearer wedge-token", "x-nbe-role": "admin" },
+    });
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    const started = Date.now();
+    const resp = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("show.load never answered")), 20_000);
+      const onMsg = (buf: Buffer) => {
+        const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+        if (msg.kind !== "telemetry" && msg.kind !== "stateChange") {
+          clearTimeout(timer);
+          ws.off("message", onMsg);
+          resolve(msg);
+        }
+      };
+      ws.on("message", onMsg);
+      ws.send(
+        JSON.stringify({ v: "0.3", id: randomUUID(), command: "show.load", payload: { packagePath: dir } }),
+      );
+    });
+    const elapsed = Date.now() - started;
+    ws.close();
+
+    // 1. It answers, and it answers near the bound rather than at some
+    //    unrelated timeout further out.
+    assert.ok(elapsed < 10_000, `show.load must answer near its 1500 ms bound; took ${elapsed} ms`);
+    assert.equal(resp.status, "error");
+    const error = resp.error as { code?: string; message?: string };
+    assert.equal(error.code, "E_PREFLIGHT_FAILED");
+    assert.match(
+      String(error.message),
+      /did not answer within 1500 ms/,
+      "the failure must name the bound it exceeded, not just fail",
+    );
+
+    // 2. Nothing is half-loaded.
+    assert.equal(state.pkg, null, "a load that never got a verdict must load nothing");
+    assert.equal(state.showState, "UNLOADED");
+
+    // 3. The audit log has a terminal state for the command. "Accepted, never
+    //    resolved" is exactly what leaves an audit trail with a beginning and
+    //    no end.
+    assert.ok(existsSync(auditPath), "the audit log exists");
+    const records = readFileSync(auditPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const loadRec = records.find((r) => r.command === "show.load");
+    assert.ok(loadRec, `show.load must be audited; got ${JSON.stringify(records)}`);
+    assert.notEqual(loadRec!.outcome, "ok", "a wedged preflight is not an ok outcome");
+  } finally {
+    await server.close();
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});

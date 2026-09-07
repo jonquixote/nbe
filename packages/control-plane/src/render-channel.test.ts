@@ -28,6 +28,14 @@ const RENDER = "render-token";
 const OPERATOR = "operator-token";
 const MONITOR = "monitor-token";
 
+// A wedged `nbe-preflight` used to hang this whole suite: `show.load` never
+// answered, and the unbounded child process kept Node's event loop open, so the
+// suite reported its results and never exited. The bound lives in
+// `runPreflight` now; this keeps the suite's share of it short, well inside
+// `send()`'s own 15 s deadline, so a wedged binary produces named failures in
+// seconds instead of minutes.
+process.env.NBE_PREFLIGHT_TIMEOUT_MS ??= "5000";
+
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
 let pkgPath: string;
