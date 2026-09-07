@@ -699,8 +699,8 @@ mod budget_tests {
         // from Prompt 05 survived the section that superseded it.
         let index = index_with_loop(r#"{ "periodFrames": 100 }"#);
         let budget = index.loop_budget("L");
-        assert_eq!(budget.per_loop_mib, loop_cache::DEFAULT_PER_LOOP_MIB);
-        assert_eq!(budget.total_mib, loop_cache::DEFAULT_TOTAL_LOOP_MIB);
+        assert_eq!(budget.per_loop_mib(), loop_cache::DEFAULT_PER_LOOP_MIB);
+        assert_eq!(budget.total_mib(), loop_cache::DEFAULT_TOTAL_LOOP_MIB);
         assert_eq!(budget.effective_mib(), 256);
 
         // And the consequence that made the divergence visible: at 256 MiB a
@@ -716,13 +716,13 @@ mod budget_tests {
         // The engine read `vramBudgetMib` nowhere, so a package asking for a
         // small cache got a large one.
         let small = index_with_loop(r#"{ "periodFrames": 100, "vramBudgetMib": 128 }"#);
-        assert_eq!(small.loop_budget("L").per_loop_mib, 128);
+        assert_eq!(small.loop_budget("L").per_loop_mib(), 128);
         assert_eq!(small.loop_budget("L").effective_mib(), 128);
 
         // A declaration ABOVE §12.4's total is still bounded by it: the total
         // short-loop budget is shared, and one loop may not claim past it.
         let large = index_with_loop(r#"{ "periodFrames": 100, "vramBudgetMib": 1024 }"#);
-        assert_eq!(large.loop_budget("L").per_loop_mib, 1024);
+        assert_eq!(large.loop_budget("L").per_loop_mib(), 1024);
         assert_eq!(
             large.loop_budget("L").effective_mib(),
             loop_cache::DEFAULT_TOTAL_LOOP_MIB,
@@ -731,7 +731,7 @@ mod budget_tests {
 
         // An asset with no loop at all falls back to the table.
         assert_eq!(
-            small.loop_budget("nosuch").per_loop_mib,
+            small.loop_budget("nosuch").per_loop_mib(),
             loop_cache::DEFAULT_PER_LOOP_MIB
         );
     }

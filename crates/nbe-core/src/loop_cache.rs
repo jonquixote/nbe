@@ -151,16 +151,18 @@ pub const DEFAULT_TOTAL_LOOP_MIB: u32 = 512;
 pub const ABSOLUTE_LOOP_FRAME_CAP: u32 = 900;
 
 /// The budget a loop is planned against.
+///
+/// **The fields are private on purpose.** They were `pub` on a `Copy` struct,
+/// which left `let mut b = index.loop_budget(id); b.per_loop_mib = 1024;` as a
+/// way to hold a budget that disagrees with §12.4 — no struct literal for
+/// `spec_budgets.rs` to refuse, and it compiled. Construction goes through
+/// [`CacheBudget::from_manifest`] and reading goes through the accessors, so
+/// the only budget that can exist is one §12.4 sanctions.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheBudget {
-    /// Per-loop ceiling in MiB.
-    pub per_loop_mib: u32,
-    /// Total cache ceiling in MiB, shared across loops.
-    pub total_mib: u32,
-    /// The adapter's recommended working-set size in MiB, if known. On Apple
-    /// unified memory this clamps the budget (SPEC §12.6) — VRAM is the same
-    /// silicon the rest of the show is running on.
-    pub recommended_working_set_mib: Option<u32>,
+    per_loop_mib: u32,
+    total_mib: u32,
+    recommended_working_set_mib: Option<u32>,
 }
 
 impl CacheBudget {
@@ -183,6 +185,33 @@ impl CacheBudget {
             // this from `MTLDevice.recommendedMaxWorkingSetSize` (§12.6).
             recommended_working_set_mib: None,
         }
+    }
+
+    /// The declared or default per-loop ceiling, before any clamp (§12.4).
+    pub fn per_loop_mib(&self) -> u32 {
+        self.per_loop_mib
+    }
+
+    /// The total short-loop ceiling, shared across loops (§12.4).
+    pub fn total_mib(&self) -> u32 {
+        self.total_mib
+    }
+
+    /// The adapter's recommended working-set size in MiB, if known. On Apple
+    /// unified memory this clamps the budget (§12.6) — VRAM is the same silicon
+    /// the rest of the show is running on.
+    pub fn recommended_working_set_mib(&self) -> Option<u32> {
+        self.recommended_working_set_mib
+    }
+
+    /// A budget clamped to an adapter's working set (SPEC §12.6).
+    ///
+    /// No production caller yet: the reference target is discrete (§0.3), and
+    /// the clamp's trigger is the first Apple Silicon machine or the first
+    /// package declaring more than 1 GiB of loop budget.
+    pub fn with_working_set(mut self, recommended_mib: u32) -> Self {
+        self.recommended_working_set_mib = Some(recommended_mib);
+        self
     }
 
     /// The effective per-loop budget after the unified-memory clamp.
@@ -217,8 +246,16 @@ pub fn plan(spec: LoopSpec, budget: CacheBudget) -> CachePlan {
         (effective_budget_mib as f64 / frame_cost_mib).floor() as u32
     };
 
-    // 3. Policy.
-    let fits = spec.period_frames > 0 && spec.period_frames <= max_frames_by_budget;
+    // 3. Policy. §12.4 states residency as a CONJUNCTION — `periodFrames <=
+    //    900` AND `<= maxFramesByBudget` AND the total budget — and this
+    //    implemented only the middle one. `ABSOLUTE_LOOP_FRAME_CAP` sat in this
+    //    module, applied by preflight alone, so an engine run directly on a
+    //    package (the dress-rehearsal path, which does not gate on preflight)
+    //    would hold a 2000-frame small-resolution loop resident against the
+    //    spec. The cap belongs where the rest of the decision is.
+    let fits = spec.period_frames > 0
+        && spec.period_frames <= max_frames_by_budget
+        && spec.period_frames <= ABSOLUTE_LOOP_FRAME_CAP;
     let read_ahead_frames = (2 * spec.gop_frames).max(60);
     let (cache_policy_selected, reason) = if fits {
         (
@@ -229,6 +266,14 @@ pub fn plan(spec: LoopSpec, budget: CacheBudget) -> CachePlan {
                 frame_cost_mib,
                 spec.period_frames as f64 * frame_cost_mib,
                 effective_budget_mib
+            ),
+        )
+    } else if spec.period_frames > ABSOLUTE_LOOP_FRAME_CAP {
+        (
+            CachePolicy::Streaming,
+            format!(
+                "{} frames exceeds SPEC §12.4's absolute short-loop cap of {} frames; streaming with {} frames read-ahead",
+                spec.period_frames, ABSOLUTE_LOOP_FRAME_CAP, read_ahead_frames
             ),
         )
     } else {
@@ -399,6 +444,50 @@ mod tests {
         assert!(!p.vram_resident);
         // SPEC §12.8: max(2 * GOP, 60).
         assert_eq!(p.read_ahead_frames, 60);
+    }
+
+    #[test]
+    fn the_900_frame_cap_is_part_of_the_residency_decision() {
+        // SPEC §12.4 states residency as a conjunction: `periodFrames <= 900`
+        // AND `<= maxFramesByBudget` AND the total budget. Only the middle one
+        // was implemented here, and `ABSOLUTE_LOOP_FRAME_CAP` sat in this module
+        // applied by preflight alone — so an engine run directly on a package,
+        // which is the dress-rehearsal path and gates on no preflight, would
+        // hold a loop resident that the spec says must stream.
+        //
+        // A small frame makes the budget conjunct irrelevant and the cap the
+        // only thing deciding: 320x180 NV12 is 0.082 MiB, so 256 MiB holds
+        // 3106 frames.
+        let small = |period: u32| {
+            plan(
+                LoopSpec {
+                    width: 320,
+                    height: 180,
+                    period_frames: period,
+                    has_alpha: false,
+                    yuv_sampling: true,
+                    gop_frames: 0,
+                    declared_format: None,
+                },
+                CacheBudget::from_manifest(None),
+            )
+        };
+        assert!(
+            small(2000).max_frames_by_budget > 2000,
+            "the budget must not be what refuses this, or the test proves nothing"
+        );
+        assert_eq!(small(2000).cache_policy_selected, CachePolicy::Streaming);
+        assert!(small(2000).reason.contains("900"), "{}", small(2000).reason);
+
+        // The cap is inclusive, and one frame past it is not.
+        assert_eq!(
+            small(ABSOLUTE_LOOP_FRAME_CAP).cache_policy_selected,
+            CachePolicy::Vram
+        );
+        assert_eq!(
+            small(ABSOLUTE_LOOP_FRAME_CAP + 1).cache_policy_selected,
+            CachePolicy::Streaming
+        );
     }
 
     #[test]
