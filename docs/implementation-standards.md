@@ -56,7 +56,11 @@ Rules:
    itself: **do not edit during a falsification pass.** The restore step is
    indiscriminate — it discards a fix written between two cases just as readily
    as it discards the mutation. Finish the pass, commit, then resume editing.
-   That is the seventh instance.
+   That is the seventh instance. And **a falsification battery leaves stale
+   binaries** — the last mutation compiled is the one still in `target/`, so
+   rebuild from the restored tree before trusting any number you measure
+   afterwards; the v0.4 close-out pass nearly filed a false HIGH regression off
+   an artifact built under a mutation it had already reverted.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
 
