@@ -522,3 +522,98 @@ test("preflightBin prefers the release build, because it is 8x cheaper", async (
     if (prevBin !== undefined) process.env.NBE_PREFLIGHT_BIN = prevBin;
   }
 });
+
+test("the bound covers a package that declares no durations at all", async () => {
+  // The derivation read only `expectedDurationFrames` and `loop.periodFrames`,
+  // and both are optional — the schema requires id/kind/source, and §12.10 says
+  // "if both present". A package declaring neither derived 0 frames and got the
+  // 60 s floor however much video it held. Reproduced by the review pass on the
+  // fix's own 1200-frame fixture with the field removed: killed at 60,299 ms
+  // while being air-ready, exit 0, zero warnings. Worse than the flat 600 s
+  // constant it replaced, for exactly that class.
+  //
+  // Bytes are the input that cannot be absent.
+  const { preflightBound, expectedDecodeBytes, expectedDecodeFrames } = await import("./package.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  // 1200 frames of 1080p, the pass's fixture shape: 8 clips of ~100 KB each.
+  const CLIP_BYTES = 100_290;
+  const pkg = (declare: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "nbe-nodur-"));
+    mkdirSync(join(dir, "media"), { recursive: true });
+    const assets: Record<string, unknown>[] = [];
+    for (let i = 0; i < 8; i++) {
+      writeFileSync(join(dir, "media", `c${i}.mp4`), Buffer.alloc(CLIP_BYTES));
+      assets.push({
+        id: `c${i}`,
+        kind: "video",
+        source: `media/c${i}.mp4`,
+        ...(declare ? { expectedDurationFrames: 150 } : {}),
+      });
+    }
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ assets }));
+    return dir;
+  };
+
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  try {
+    const undeclared = pkg(false);
+    assert.equal(expectedDecodeFrames(undeclared), 0, "nothing is declared — that is the case");
+    assert.equal(expectedDecodeBytes(undeclared), 8 * CLIP_BYTES, "but the bytes are on disk");
+
+    // Debug decodes this package in ~156 s (measured). The bound must cover it.
+    process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "debug", "nbe-preflight");
+    const dbg = preflightBound(undeclared);
+    assert.equal(dbg.basis, "bytes", "with nothing declared, the file sizes are the input");
+    assert.ok(
+      dbg.ms > 156_000,
+      `the pass's fixture decodes in ~156 s in debug; the bound must cover it (got ${dbg.ms} ms)`,
+    );
+
+    // Release decodes it in ~17 s.
+    process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "release", "nbe-preflight");
+    const rel = preflightBound(undeclared);
+    assert.ok(rel.ms > 17_000, `release decodes it in ~17 s (got ${rel.ms} ms)`);
+
+    // A declaration that under-states the truth is a WARNING, not a rejection,
+    // so such a package still has to load. The bytes term covers the truth.
+    const liar = mkdtempSync(join(tmpdir(), "nbe-liar-"));
+    mkdirSync(join(liar, "media"), { recursive: true });
+    writeFileSync(join(liar, "media", "big.mp4"), Buffer.alloc(10_000 * 668));
+    writeFileSync(
+      join(liar, "manifest.json"),
+      JSON.stringify({
+        assets: [{ id: "big", kind: "video", source: "media/big.mp4", expectedDurationFrames: 100 }],
+      }),
+    );
+    process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "debug", "nbe-preflight");
+    const lied = preflightBound(liar);
+    assert.equal(lied.basis, "bytes", "the declaration under-states; the bytes do not");
+    assert.ok(
+      lied.ms > 10_000 * 130,
+      `10,000 frames cost ~1300 s in debug; a bound from the declared 100 would be 60 s (got ${lied.ms} ms)`,
+    );
+
+    // Nothing to measure at all still gets the floor, not zero.
+    const empty = mkdtempSync(join(tmpdir(), "nbe-empty-"));
+    writeFileSync(join(empty, "manifest.json"), JSON.stringify({ assets: [] }));
+    assert.equal(preflightBound(empty).basis, "floor");
+    assert.equal(preflightBound(empty).ms, 60_000);
+
+    // And the override still wins and is still strict.
+    process.env.NBE_PREFLIGHT_TIMEOUT_MS = "0";
+    assert.equal(preflightBound(undeclared).basis, "bytes", '"0" must not disable the bound');
+    process.env.NBE_PREFLIGHT_TIMEOUT_MS = "4321";
+    assert.equal(preflightBound(undeclared).ms, 4321);
+    assert.equal(preflightBound(undeclared).basis, "override");
+  } finally {
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});

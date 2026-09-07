@@ -6,7 +6,7 @@
 //!   (`./generated/manifest-schema.js`); here we only index structure needed
 //!   for the state machine (items, scenes, elements, assets, …).
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -74,6 +74,32 @@ const MS_PER_FRAME_DEBUG = 200;
 const PREFLIGHT_SAFETY_FACTOR = 3;
 
 /**
+ * Decode cost per MB of referenced media, measured — the term that cannot be
+ * absent.
+ *
+ * Timed on this repo's fixtures, four copies each, both profiles:
+ *
+ *   `A1.mp4`      1080p, a real encode      23.4 s/MB release   204.7 debug
+ *   `cfr_30.mp4`  640x360, synthetic         63.3 s/MB release   204.6 debug
+ *   `av_tone.mp4` audio-heavy                 7.7 s/MB release    29.2 debug
+ *
+ * The **worst** row is the one that matters, not the typical: cost per MB rises
+ * as content compresses, because the same bytes carry more frames. These are
+ * the worst observed, rounded up. Real broadcast media at 5-50 Mbps is far
+ * denser than any of these, so for real packages this term is loose — which is
+ * the point. It exists to keep an undeclared package off the floor, not to be
+ * precise.
+ *
+ * **Consequence, stated deliberately:** on a large package this term dominates
+ * `max()` and the bound becomes generous. That is the trade taken knowingly. A
+ * wedged process never finishes, so a generous bound still catches it; a tight
+ * bound that refuses a legitimate load is the defect this whole sequence has
+ * been chasing.
+ */
+const MS_PER_MB_RELEASE = 80_000;
+const MS_PER_MB_DEBUG = 250_000;
+
+/**
  * The floor, for packages whose declared work is small or unreadable.
  *
  * A package with no declared durations still gets a minute: process spawn,
@@ -90,6 +116,12 @@ export const PREFLIGHT_FLOOR_MS = 60_000;
  * manifest, so anything unreadable, missing or malformed contributes zero and
  * the caller falls back to the floor. Deciding validity is preflight's job, and
  * this must not pre-empt it — it only needs a size.
+ *
+ * **This input is optional and may be absent.** `expectedDurationFrames` and
+ * `loop.periodFrames` are both optional — the schema requires only
+ * `id`/`kind`/`source`, and §12.10 says "if both present" — so a perfectly
+ * valid package can declare neither. See `expectedDecodeBytes` for the term
+ * that covers that case.
  */
 export function expectedDecodeFrames(packagePath: string): number {
   try {
@@ -117,11 +149,44 @@ export function expectedDecodeFrames(packagePath: string): number {
   }
 }
 
+/**
+ * Bytes of referenced video media, from the filesystem.
+ *
+ * The input that **cannot be absent**: a package that references media has
+ * bytes on disk whether or not it says anything about them, and `stat` costs
+ * nothing before a decode. A missing or unreadable file contributes zero — its
+ * absence is preflight's finding to report, not this function's to pre-empt.
+ */
+export function expectedDecodeBytes(packagePath: string): number {
+  try {
+    const manifest = JSON.parse(readFileSync(join(packagePath, "manifest.json"), "utf8")) as {
+      assets?: Array<{ kind?: string; source?: string }>;
+    };
+    let bytes = 0;
+    for (const a of manifest.assets ?? []) {
+      if (a.kind !== "video" && a.kind !== "alphaVideo") continue;
+      if (typeof a.source !== "string") continue;
+      try {
+        bytes += statSync(join(packagePath, a.source)).size;
+      } catch {
+        // Missing asset: preflight's error to raise, not a reason to guess.
+      }
+    }
+    return bytes;
+  } catch {
+    return 0;
+  }
+}
+
 export interface PreflightBound {
   ms: number;
   frames: number;
   msPerFrame: number;
+  bytes: number;
+  msPerMb: number;
   derived: boolean;
+  /** Which term set the bound: the declaration, the file sizes, or the floor. */
+  basis: "frames" | "bytes" | "floor" | "override";
 }
 
 /**
@@ -140,23 +205,30 @@ export interface PreflightBound {
  */
 export function preflightBound(packagePath?: string): PreflightBound {
   const bin = preflightBin();
-  const msPerFrame = bin.includes(`${sep}release${sep}`) ? MS_PER_FRAME_RELEASE : MS_PER_FRAME_DEBUG;
+  const release = bin.includes(`${sep}release${sep}`);
+  const msPerFrame = release ? MS_PER_FRAME_RELEASE : MS_PER_FRAME_DEBUG;
+  const msPerMb = release ? MS_PER_MB_RELEASE : MS_PER_MB_DEBUG;
   const frames = packagePath ? expectedDecodeFrames(packagePath) : 0;
-  const derivedMs = frames * msPerFrame * PREFLIGHT_SAFETY_FACTOR;
+  const bytes = packagePath ? expectedDecodeBytes(packagePath) : 0;
+
+  // Two terms and a floor, and `max()` so neither can undercut the other. The
+  // declaration is tighter when it is there; the file sizes are there even when
+  // the declaration is not, and they also cover a declaration that under-states
+  // the truth — which is not a rejection today, only a warning, so such a
+  // package still has to load.
+  const framesMs = frames * msPerFrame * PREFLIGHT_SAFETY_FACTOR;
+  const bytesMs = (bytes / (1024 * 1024)) * msPerMb * PREFLIGHT_SAFETY_FACTOR;
 
   const raw = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
   if (raw !== undefined && /^\+?\d+$/.test(raw)) {
     const n = Number(raw);
     if (Number.isSafeInteger(n) && n > 0) {
-      return { ms: n, frames, msPerFrame, derived: false };
+      return { ms: n, frames, msPerFrame, bytes, msPerMb, derived: false, basis: "override" };
     }
   }
-  return {
-    ms: Math.max(PREFLIGHT_FLOOR_MS, derivedMs),
-    frames,
-    msPerFrame,
-    derived: true,
-  };
+  const ms = Math.max(PREFLIGHT_FLOOR_MS, framesMs, bytesMs);
+  const basis = ms === framesMs ? "frames" : ms === bytesMs ? "bytes" : "floor";
+  return { ms: Math.round(ms), frames, msPerFrame, bytes, msPerMb, derived: true, basis };
 }
 
 export interface PreflightResult {
@@ -244,10 +316,14 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
   // half-loaded because this throws before any state is touched.
   if (pre.timedOut) {
     const b = preflightBound(packagePath);
-    const how = b.derived
-      ? `${b.frames} frames at ${b.msPerFrame} ms/frame x ${PREFLIGHT_SAFETY_FACTOR} safety` +
-        (b.ms === PREFLIGHT_FLOOR_MS ? `, floored at ${PREFLIGHT_FLOOR_MS} ms` : "")
-      : "NBE_PREFLIGHT_TIMEOUT_MS override";
+    const how =
+      b.basis === "override"
+        ? "NBE_PREFLIGHT_TIMEOUT_MS override"
+        : b.basis === "frames"
+          ? `${b.frames} declared frames at ${b.msPerFrame} ms/frame x ${PREFLIGHT_SAFETY_FACTOR} safety`
+          : b.basis === "bytes"
+            ? `${(b.bytes / (1024 * 1024)).toFixed(1)} MB of media at ${b.msPerMb} ms/MB x ${PREFLIGHT_SAFETY_FACTOR} safety`
+            : `floor, from ${b.frames} declared frames and ${b.bytes} bytes of media`;
     throw new CpError(
       "E_PREFLIGHT_FAILED",
       `preflight produced no verdict within ${b.ms} ms for ${packagePath} (${how}); ` +

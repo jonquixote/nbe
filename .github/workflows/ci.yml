@@ -13,6 +13,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - name: the unsafe exception stays in crates/nbe-decode
         run: |
@@ -95,6 +107,18 @@ jobs:
         with:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
       # Release, deliberately: the control plane shells this binary out of
       # `show.load`, and the debug build decodes at 130 ms/frame against
       # release's 16.7 — an 8x difference that decides whether an ordinary
@@ -185,6 +209,18 @@ jobs:
         with:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
       # Both binaries are real dependencies: the rehearsal spawns the engine
       # and shells preflight. With either missing every step fails for a reason
       # unrelated to the show — measured at 12 of 12 with the engine absent.
