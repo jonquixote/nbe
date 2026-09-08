@@ -110,6 +110,39 @@ const MS_PER_MB_DEBUG = 250_000;
 export const PREFLIGHT_FLOOR_MS = 60_000;
 
 /**
+ * The ceiling. A bound with a floor and no ceiling is only half a bound.
+ *
+ * **This one is operator-facing, and deliberately not a decode estimate.** The
+ * control plane executes a connection's commands strictly in arrival order —
+ * `server.ts` chains them so `show.load`'s subprocess cannot race the next
+ * command — so the bound is also how long one load may leave that channel
+ * answering nothing. Without a ceiling, a 100 MB package with no declared
+ * durations derived 20.8 hours on debug and 6.7 on release, and a realistic
+ * 1.8 GB bulletin put it in days. That is a worse outcome than the flat 600 s
+ * this derivation replaced, which at least capped the stall at ten minutes.
+ *
+ * Derivation, measured on the §0.3 reference target (`hardware-baseline.txt`:
+ * 6-core Intel i7 @ 2.6 GHz):
+ *
+ *   release decode           15.0-15.9 ms/frame
+ *   one hour of 1080p/30     108,000 frames -> ~28.6 min of decode
+ *   a 30-minute show          54,000 frames -> ~14.3 min
+ *
+ * One hour is ~2x the decode of a full hour of 1080p footage, and ~4x a
+ * half-hour show. §20 caps MVP complexity at three preloaded clips, one
+ * background loop and one alpha loop, so a conformant package sits far inside
+ * that. Beyond it the operator raises `NBE_PREFLIGHT_TIMEOUT_MS` knowingly —
+ * which is the override's purpose now, and what the refusal message says.
+ *
+ * Note the ceiling does **not** scale with the build profile, on purpose: it
+ * bounds an operator's experience, not a decoder's throughput. A debug-built
+ * preflight on an hour of footage costs ~3.9 h and will be refused by it. Debug
+ * is the developer fallback (`preflightBin`), and being told why in one hour
+ * beats a silent four.
+ */
+export const PREFLIGHT_CEILING_MS = 3_600_000;
+
+/**
  * Frames preflight will decode for this package, from the manifest.
  *
  * Defensive by construction: this runs *before* preflight has judged the
@@ -185,8 +218,10 @@ export interface PreflightBound {
   bytes: number;
   msPerMb: number;
   derived: boolean;
-  /** Which term set the bound: the declaration, the file sizes, or the floor. */
-  basis: "frames" | "bytes" | "floor" | "override";
+  /** Which term set the bound. */
+  basis: "frames" | "bytes" | "floor" | "ceiling" | "override";
+  /** What the terms derived before the ceiling was applied. */
+  derivedMs: number;
 }
 
 /**
@@ -219,16 +254,32 @@ export function preflightBound(packagePath?: string): PreflightBound {
   const framesMs = frames * msPerFrame * PREFLIGHT_SAFETY_FACTOR;
   const bytesMs = (bytes / (1024 * 1024)) * msPerMb * PREFLIGHT_SAFETY_FACTOR;
 
+  const derivedMs = Math.round(Math.max(PREFLIGHT_FLOOR_MS, framesMs, bytesMs));
+
+  // The override may exceed the ceiling — that is its purpose now. An operator
+  // with a legitimately enormous package raises it knowingly; the refusal
+  // message below names the remedy.
   const raw = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
   if (raw !== undefined && /^\+?\d+$/.test(raw)) {
     const n = Number(raw);
     if (Number.isSafeInteger(n) && n > 0) {
-      return { ms: n, frames, msPerFrame, bytes, msPerMb, derived: false, basis: "override" };
+      return {
+        ms: n, frames, msPerFrame, bytes, msPerMb,
+        derived: false, basis: "override", derivedMs,
+      };
     }
   }
-  const ms = Math.max(PREFLIGHT_FLOOR_MS, framesMs, bytesMs);
-  const basis = ms === framesMs ? "frames" : ms === bytesMs ? "bytes" : "floor";
-  return { ms: Math.round(ms), frames, msPerFrame, bytes, msPerMb, derived: true, basis };
+
+  const ms = Math.min(PREFLIGHT_CEILING_MS, derivedMs);
+  const basis =
+    ms < derivedMs
+      ? "ceiling"
+      : derivedMs === Math.round(framesMs)
+        ? "frames"
+        : derivedMs === Math.round(bytesMs)
+          ? "bytes"
+          : "floor";
+  return { ms, frames, msPerFrame, bytes, msPerMb, derived: true, basis, derivedMs };
 }
 
 export interface PreflightResult {
@@ -319,11 +370,17 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
     const how =
       b.basis === "override"
         ? "NBE_PREFLIGHT_TIMEOUT_MS override"
-        : b.basis === "frames"
-          ? `${b.frames} declared frames at ${b.msPerFrame} ms/frame x ${PREFLIGHT_SAFETY_FACTOR} safety`
-          : b.basis === "bytes"
-            ? `${(b.bytes / (1024 * 1024)).toFixed(1)} MB of media at ${b.msPerMb} ms/MB x ${PREFLIGHT_SAFETY_FACTOR} safety`
-            : `floor, from ${b.frames} declared frames and ${b.bytes} bytes of media`;
+        : b.basis === "ceiling"
+          ? `capped at the ${PREFLIGHT_CEILING_MS} ms ceiling; this package derives ` +
+            `${b.derivedMs} ms from ${(b.bytes / (1024 * 1024)).toFixed(1)} MB of media and ` +
+            `${b.frames} declared frames. One load may not leave this connection ` +
+            `unanswered for longer — commands run in arrival order. If the package ` +
+            `genuinely needs it, raise NBE_PREFLIGHT_TIMEOUT_MS past the ceiling`
+          : b.basis === "frames"
+            ? `${b.frames} declared frames at ${b.msPerFrame} ms/frame x ${PREFLIGHT_SAFETY_FACTOR} safety`
+            : b.basis === "bytes"
+              ? `${(b.bytes / (1024 * 1024)).toFixed(1)} MB of media at ${b.msPerMb} ms/MB x ${PREFLIGHT_SAFETY_FACTOR} safety`
+              : `floor, from ${b.frames} declared frames and ${b.bytes} bytes of media`;
     throw new CpError(
       "E_PREFLIGHT_FAILED",
       `preflight produced no verdict within ${b.ms} ms for ${packagePath} (${how}); ` +

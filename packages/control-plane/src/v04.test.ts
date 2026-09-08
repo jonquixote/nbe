@@ -588,21 +588,40 @@ test("the bound covers a package that declares no durations at all", async () =>
 
     // A declaration that under-states the truth is a WARNING, not a rejection,
     // so such a package still has to load. The bytes term covers the truth.
+    //
+    // This fixture is built so ONLY the bytes term can save it. An earlier
+    // version declared 100 frames on each of eight assets, which gave a frames
+    // term of 800 x 200 x 3 = 480 s — already enough to cover the real decode,
+    // so the test passed whether or not the bytes term existed. It passed for
+    // the wrong reason, which is the hardest kind of green to notice. Here one
+    // asset declares 100 and seven declare nothing, so the frames term is
+    // 100 x 200 x 3 = 60 s, i.e. the floor, and the floor would kill it.
     const liar = mkdtempSync(join(tmpdir(), "nbe-liar-"));
     mkdirSync(join(liar, "media"), { recursive: true });
-    writeFileSync(join(liar, "media", "big.mp4"), Buffer.alloc(10_000 * 668));
-    writeFileSync(
-      join(liar, "manifest.json"),
-      JSON.stringify({
-        assets: [{ id: "big", kind: "video", source: "media/big.mp4", expectedDurationFrames: 100 }],
-      }),
-    );
+    const liarAssets: Record<string, unknown>[] = [];
+    for (let i = 0; i < 8; i++) {
+      writeFileSync(join(liar, "media", `c${i}.mp4`), Buffer.alloc(CLIP_BYTES));
+      liarAssets.push({
+        id: `c${i}`,
+        kind: "video",
+        source: `media/c${i}.mp4`,
+        ...(i === 0 ? { expectedDurationFrames: 100 } : {}),
+      });
+    }
+    writeFileSync(join(liar, "manifest.json"), JSON.stringify({ assets: liarAssets }));
     process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "debug", "nbe-preflight");
     const lied = preflightBound(liar);
+    assert.equal(lied.frames, 100, "only one asset declares, and it under-states");
     assert.equal(lied.basis, "bytes", "the declaration under-states; the bytes do not");
+    assert.equal(
+      Math.max(60_000, lied.frames * lied.msPerFrame * 3),
+      60_000,
+      "the frames term alone is the floor — it is the bytes term or nothing",
+    );
     assert.ok(
-      lied.ms > 10_000 * 130,
-      `10,000 frames cost ~1300 s in debug; a bound from the declared 100 would be 60 s (got ${lied.ms} ms)`,
+      lied.ms > 156_000 * 2,
+      `these 1,200 real frames cost ~156 s in debug and the frames term alone ` +
+        `would be 60 s; the bound must cover the truth with headroom (got ${lied.ms} ms)`,
     );
 
     // Nothing to measure at all still gets the floor, not zero.
@@ -617,6 +636,78 @@ test("the bound covers a package that declares no durations at all", async () =>
     process.env.NBE_PREFLIGHT_TIMEOUT_MS = "4321";
     assert.equal(preflightBound(undeclared).ms, 4321);
     assert.equal(preflightBound(undeclared).basis, "override");
+  } finally {
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test("the bound has a ceiling, because one load may not mute the connection", async () => {
+  // `max(floor, frames, bytes)` only ever grows, and the control plane runs a
+  // connection's commands strictly in arrival order (`server.ts`: show.load's
+  // subprocess "must not race the next command"). So the bound is also how long
+  // one load may leave that channel answering nothing. Measured before the
+  // ceiling: a 100 MB package with no declared durations derived 20.8 hours on
+  // debug and 6.7 on release, during which `system.status` sent two seconds
+  // after `show.load` got no reply in thirty. That is worse than the flat 600 s
+  // this derivation replaced, which capped the stall at ten minutes.
+  const { preflightBound, PREFLIGHT_CEILING_MS, PREFLIGHT_FLOOR_MS } = await import("./package.js");
+  const { mkdtempSync, mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
+    await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const bigPkg = (megabytes: number): string => {
+    const dir = mkdtempSync(join(tmpdir(), "nbe-ceil-"));
+    mkdirSync(join(dir, "media"), { recursive: true });
+    const f = join(dir, "media", "big.mp4");
+    closeSync(openSync(f, "w"));
+    truncateSync(f, megabytes * 1024 * 1024);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ assets: [{ id: "big", kind: "video", source: "media/big.mp4" }] }),
+    );
+    return dir;
+  };
+
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  try {
+    process.env.NBE_PREFLIGHT_BIN = join("/x", "target", "debug", "nbe-preflight");
+    const big = preflightBound(bigPkg(100));
+
+    // Without the ceiling this was 75,000,000 ms — 20.8 hours.
+    assert.equal(big.basis, "ceiling", "a bound this large is the ceiling's job");
+    assert.equal(big.ms, PREFLIGHT_CEILING_MS);
+    assert.ok(
+      big.derivedMs > PREFLIGHT_CEILING_MS,
+      `the terms must actually have exceeded the ceiling, or this proves nothing ` +
+        `(derived ${big.derivedMs} ms)`,
+    );
+    assert.ok(
+      big.ms <= 3_600_000,
+      "one hour is the most a single load may serialize the channel",
+    );
+
+    // The ceiling is above the floor, or the bound has no room to derive
+    // anything at all.
+    assert.ok(PREFLIGHT_CEILING_MS > PREFLIGHT_FLOOR_MS);
+
+    // A package inside the ceiling is unaffected — the cap must not become the
+    // answer for everything.
+    const small = preflightBound(bigPkg(1));
+    assert.notEqual(small.basis, "ceiling");
+    assert.ok(small.ms < PREFLIGHT_CEILING_MS);
+
+    // The override may exceed the ceiling. That is its purpose now: an operator
+    // with a legitimately enormous package raises it knowingly.
+    process.env.NBE_PREFLIGHT_TIMEOUT_MS = String(PREFLIGHT_CEILING_MS * 4);
+    const over = preflightBound(bigPkg(100));
+    assert.equal(over.basis, "override");
+    assert.equal(over.ms, PREFLIGHT_CEILING_MS * 4, "the ceiling does not clamp a deliberate override");
   } finally {
     if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
     else process.env.NBE_PREFLIGHT_BIN = prevBin;

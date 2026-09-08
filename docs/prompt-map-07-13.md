@@ -77,6 +77,27 @@ release binary rather than an outstanding fix, and the rehearsal's own timing
 assumptions re-measured against it — a step that used to wait 46 s for a load
 may now be measuring something else entirely.
 
+### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
+
+The bound `nbe-preflight` runs under is derived from two measured constant
+pairs — `MS_PER_FRAME_{RELEASE,DEBUG}` and `MS_PER_MB_{RELEASE,DEBUG}` — plus a
+floor and a ceiling. Their provenance is **confirmed against the spec's own
+reference target**: the measurements were taken on a 6-core Intel i7 @ 2.6 GHz,
+which is the machine `docs/hardware-baseline.txt` records, and §0.3 makes that
+machine normative for §12.11's arithmetic. They are not numbers from an
+arbitrary laptop.
+
+**Residual, with an owner.** CI runs `macos-14` — Apple Silicon, a different
+architecture, where neither pair has been measured. The direction is very likely
+favourable (hardware decode), and nothing is at risk today because CI's own
+fixtures land on the 60 s floor with better than 17x margin. But it is
+unmeasured, and the rehearsal is the job that will care first.
+
+**3d's promotion re-baselines both pairs on the runner** before the rehearsal
+becomes a required gate. A real-time gate whose timing constants were measured
+on a different architecture is a gate that will flake for a reason nobody looks
+at.
+
 ### Carried into 07 from the spine's own review pass (recorded 2026-09-07)
 
 Two observations the independent pass over `9bd18f9` reproduced and declined to

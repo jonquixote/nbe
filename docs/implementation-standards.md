@@ -66,7 +66,13 @@ Rules:
    and silently keeps the other commit's sources. `git reset --hard HEAD` is the
    restore. The 07-spine pass caught this only because `git status` said 7 where
    it expected 0 — the eighth variant of this trap, and the first that survives
-   a restore that looks like it worked.
+   a restore that looks like it worked. The ninth is **a full disk**: `cargo
+   build` truncated a release binary to 1,712 bytes and still exited through the
+   pass's pipeline without a visible error, so the next probe failed with
+   `exit 127` and read like a defect in the code under test. On a machine under
+   disk pressure, check the artifact's size or hash after a build before
+   trusting anything measured with it — same class as the stale binary, new
+   cause, and this one leaves no dirty file to notice.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
 
