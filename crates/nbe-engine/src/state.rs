@@ -89,10 +89,15 @@ pub struct EngineState {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
-    /// item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
+    /// Item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
     /// §8.7.3 takes). Built once at `show.load` by walking item → scene →
     /// elements → asset, so a take is a map lookup and never a graph walk.
     pub item_audio: Mutex<std::collections::BTreeMap<String, String>>,
+    /// One overlay's on-air state (SPEC §7.10). Timelines key off the master
+    /// clock: `anim_start` is the master frame the animation begins — the frame
+    /// after the command lands, the same boundary discipline AC-17 imposes on a
+    /// take — never a transition frame.
+    pub overlays: Mutex<std::collections::BTreeMap<String, OverlayRuntime>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -133,6 +138,7 @@ impl EngineState {
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
+            overlays: Mutex::new(std::collections::BTreeMap::new()),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -307,3 +313,27 @@ impl OutgoingQueue {
 
 pub type SharedEngineState = Arc<EngineState>;
 pub type SharedOutgoing = Arc<OutgoingQueue>;
+
+/// One overlay's on-air state (SPEC §7.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayRuntime {
+    pub on_air: bool,
+    /// Master frame the current animation began on (the frame after the show/
+    /// hide command landed).
+    pub anim_start: u64,
+    /// Length of the current animation in frames.
+    pub duration_frames: u64,
+    /// Which direction the current animation travels.
+    pub phase: OverlayPhase,
+}
+
+/// What the overlay's current animation is doing, as a master-clock function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPhase {
+    /// animating in (opacity 0 → 1).
+    Enter,
+    /// fully on air (opacity 1).
+    Steady,
+    /// animating out (opacity 1 → 0); the overlay drops when it completes.
+    Exit,
+}

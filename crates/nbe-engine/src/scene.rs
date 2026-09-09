@@ -98,6 +98,17 @@ pub struct PackageIndex {
     pub item_audio_policy: HashMap<String, String>,
     /// scene id → elements, already sorted low-z to high-z.
     pub scenes: HashMap<String, Vec<ElementSpec>>,
+    /// overlay id → elements, already sorted low-z to high-z (§7.10). Same
+    /// `ElementSpec` shape as scenes: the overlay level composites the same
+    /// elements the transition composites, only per its own on-air set.
+    pub overlays: HashMap<String, Vec<ElementSpec>>,
+    /// overlay id → enter-animation duration in frames, read off the elements'
+    /// declared `enterAnimation` at index time. The bound is the maximum across
+    /// the overlay's elements; 1 when nothing is declared (a show lands at the
+    /// next frame boundary and is complete on it).
+    pub overlay_enter_frames: HashMap<String, u64>,
+    /// overlay id → exit-animation duration in frames, same derivation.
+    pub overlay_exit_frames: HashMap<String, u64>,
     /// asset id → decoded image, for `image`-kind assets only.
     pub images: HashMap<String, DecodedImage>,
     /// asset id → kind, so video references can be skipped by scope, not error.
@@ -163,6 +174,12 @@ pub struct ElementSpec {
     pub color: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
+    /// `enterAnimation.durationFrames`, if the element declares one. The
+    /// overlay level reads these to bound a show/hide animation (§7.10); the
+    /// scene path does not animate.
+    pub enter_frames: Option<u64>,
+    /// `exitAnimation.durationFrames`, same derivation.
+    pub exit_frames: Option<u64>,
 }
 
 impl PackageIndex {
@@ -247,6 +264,34 @@ impl PackageIndex {
                 .collect();
             elements.sort_by_key(|e| e.z);
             idx.scenes.insert(id.to_string(), elements);
+        }
+
+        for overlay in manifest
+            .get("overlays")
+            .and_then(|s| s.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = overlay.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let mut elements: Vec<ElementSpec> = overlay
+                .get("elements")
+                .and_then(|e| e.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(element_spec)
+                .collect();
+            elements.sort_by_key(|e| e.z);
+            idx.overlay_enter_frames.insert(
+                id.to_string(),
+                elements.iter().filter_map(|e| e.enter_frames).max().unwrap_or(1),
+            );
+            idx.overlay_exit_frames.insert(
+                id.to_string(),
+                elements.iter().filter_map(|e| e.exit_frames).max().unwrap_or(1),
+            );
+            idx.overlays.insert(id.to_string(), elements);
         }
 
         index_sequence(manifest.get("rundown"), &mut idx);
@@ -569,6 +614,14 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
         color,
         rect: rect_of(e.get("transform")),
         opacity,
+        enter_frames: e
+            .get("enterAnimation")
+            .and_then(|a| a.get("durationFrames"))
+            .and_then(|v| v.as_u64()),
+        exit_frames: e
+            .get("exitAnimation")
+            .and_then(|a| a.get("durationFrames"))
+            .and_then(|v| v.as_u64()),
     })
 }
 
