@@ -146,10 +146,12 @@ There are **two** structural collector declarations, not one — `v04.test.ts:76
 `:901`, consumed at `:773` and `:905` — so the signature is two `TS2345` plus two `TS2339`:
 
 ```
-src/v04.test.ts(773,66): error TS2345: Property 'refusalBypassed' is missing in type 'BoundDecision'
+src/v04.test.ts(773,66): error TS2345: Argument of type 'BoundDecision' is not assignable to parameter of type '{ event: string; outcome: string; refusalBypassed: boolean; basis: string; }'.
+  Property 'refusalBypassed' is missing in type 'BoundDecision' but required in type '{ event: string; outcome: string; refusalBypassed: boolean; basis: string; }'.
 src/v04.test.ts(835,20): error TS2339: Property 'refusalBypassed' does not exist on type 'BoundDecision'.
 src/v04.test.ts(852,32): error TS2339: Property 'refusalBypassed' does not exist on type 'BoundDecision'.
-src/v04.test.ts(905,64): error TS2345: Property 'refusalBypassed' is missing in type 'BoundDecision'
+src/v04.test.ts(905,64): error TS2345: Argument of type 'BoundDecision' is not assignable to parameter of type '{ event: string; outcome: string; refusalBypassed: boolean; basis: string; }'.
+  Property 'refusalBypassed' is missing in type 'BoundDecision' but required in type '{ event: string; outcome: string; refusalBypassed: boolean; basis: string; }'.
 ```
 
 The cause was a `head -4` pipe on the evidence paste, which cut the fourth error exactly at
