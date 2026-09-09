@@ -97,6 +97,12 @@ than a P7 code edit**, and it joins the next-spec-revision queue alongside `erro
 that revision owns deciding between the two readings and renaming the field if the second
 one wins.
 
+### `refusalBypassed` semantics (recorded 2026-09-09)
+
+refusalBypassed keys on the refusal, not on where the operator set the bound; whether the
+bound crossed the ceiling is appliedMs > ceilingMs, derivable from the stored fields and
+deliberately not stored.
+
 ### Recorded deviation: `error.details` on the §5.4 envelope (recorded 2026-09-08)
 
 §5.4 and §16 define an error response's `error` as `{code, message}`; the control plane now
@@ -107,6 +113,24 @@ next spec revision, which should absorb `error.details` as an optional member.
 (The §19.2 note proposed by an earlier prompt is **cancelled**: there is no §19.2 deviation,
 because the decode bound never reaches `preflight_report.json` — that file is written by the
 Rust binary, which has no knowledge of the caller's bound.)
+
+### Open observation: the control-plane gate greps TAP, and the TAP is a reporter choice (recorded 2026-09-08)
+
+The control-plane job's "tests pass and actually run" gate parses `node --test`
+output for `^# pass` / `^# fail` summary lines — the TAP reporter's format. A
+future Node bump that changes the default reporter (newer Node defaults to the
+spec reporter) breaks this gate **loudly, not vacuously**: reproduced by running
+the green suite under the spec reporter and feeding that log through the gate
+verbatim — node exits 0 with all tests passing, the log contains zero `# pass`
+lines, and the gate exits 1 on the `expected 0 failures` check (`${failed:-1}`
+is 1 when the grep matches nothing; the `passed < 30` check would trip next).
+No silent green is possible from this direction, which is why this is an
+observation and not a finding.
+
+**Disposition is the maintainer's.** The two readings are: pin the reporter
+(`--test-reporter=tap`) so the gate's input format is a contract rather than a
+coincidence, or rewrite the gate to parse the reporter's machine-readable
+output. Whoever bumps the Node version past the TAP default owns choosing.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 

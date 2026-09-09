@@ -760,7 +760,7 @@ test("refusal_records_decision", async () => {
   const seen: Array<{
     event: string;
     outcome: string;
-    overrideUsed: boolean;
+    refusalBypassed: boolean;
     basis: string;
   }> = [];
   const prevBin = process.env.NBE_PREFLIGHT_BIN;
@@ -787,7 +787,7 @@ test("refusal_records_decision", async () => {
     // Per the specified definition: the override was passed AND derivedMs
     // exceeded ceilingMs, so this is true — regardless of the override's own
     // value. See `override_records_decision` for the case that reads false.
-    assert.equal(details.overrideUsed, true);
+    assert.equal(details.refusalBypassed, true);
     assert.ok(String(details.remedy).length > 0, "the remedy travels as a field, not only inside the message");
 
     assert.equal(seen.length, 1, "exactly one decision per load");
@@ -832,7 +832,7 @@ test("override_records_decision", async () => {
   try {
     const d = boundDecision(dir, preflightBound(dir), "ran");
     assert.equal(d.event, "preflight.bound_decision");
-    assert.equal(d.overrideUsed, true, "the override was passed AND the derivation exceeded the ceiling");
+    assert.equal(d.refusalBypassed, true, "the override was passed AND the derivation exceeded the ceiling");
     assert.ok(d.derivedMs > d.ceilingMs);
     assert.equal(d.appliedMs, PREFLIGHT_CEILING_MS * 4, "the override is what actually applied");
     assert.equal(d.outcome, "ran");
@@ -849,7 +849,7 @@ test("override_records_decision", async () => {
     const smallDecision = boundDecision(small, preflightBound(small), "ran");
     assert.equal(smallDecision.basis, "override");
     assert.ok(smallDecision.derivedMs <= PREFLIGHT_CEILING_MS);
-    assert.equal(smallDecision.overrideUsed, false, "no ceiling was overridden here");
+    assert.equal(smallDecision.refusalBypassed, false, "no ceiling was overridden here");
   } finally {
     if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
     else process.env.NBE_PREFLIGHT_BIN = prevBin;
@@ -898,7 +898,7 @@ test("normal_records_decision", async () => {
   const seen: Array<{
     event: string;
     outcome: string;
-    overrideUsed: boolean;
+    refusalBypassed: boolean;
     basis: string;
   }> = [];
   try {
@@ -909,7 +909,7 @@ test("normal_records_decision", async () => {
   }
   assert.equal(seen.length, 1, "a decision is recorded on the normal path too");
   assert.equal(seen[0]!.event, "preflight.bound_decision");
-  assert.equal(seen[0]!.overrideUsed, false);
+  assert.equal(seen[0]!.refusalBypassed, false);
   assert.equal(seen[0]!.outcome, "ran", "preflight answered; the bound did not refuse it");
   assert.equal(seen[0]!.basis, "floor", "a one-pixel package derives nothing and takes the floor");
 });

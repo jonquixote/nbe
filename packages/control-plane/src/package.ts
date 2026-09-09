@@ -228,7 +228,7 @@ export interface BoundDecision {
   floorMs: number;
   basis: PreflightBound["basis"];
   /** The override was passed AND the derivation exceeded the ceiling. */
-  overrideUsed: boolean;
+  refusalBypassed: boolean;
   /** The bound actually applied. */
   appliedMs: number;
   outcome: "refused" | "ran";
@@ -249,7 +249,7 @@ export function boundDecision(
     // Not merely "an override was set": an override below the ceiling changes
     // nothing about the ceiling, and counting it as used would make the field
     // answer a different question than the one it is named for.
-    overrideUsed: bound.basis === "override" && bound.derivedMs > PREFLIGHT_CEILING_MS,
+    refusalBypassed: bound.basis === "override" && bound.derivedMs > PREFLIGHT_CEILING_MS,
     appliedMs: bound.ms,
     outcome,
   };
@@ -454,7 +454,7 @@ export async function loadPackage(
         derivedMs: decision.derivedMs,
         ceilingMs: decision.ceilingMs,
         basis: decision.basis,
-        overrideUsed: decision.overrideUsed,
+        refusalBypassed: decision.refusalBypassed,
         remedy,
       },
     );
