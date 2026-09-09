@@ -77,31 +77,29 @@ release binary rather than an outstanding fix, and the rehearsal's own timing
 assumptions re-measured against it — a step that used to wait 46 s for a load
 may now be measuring something else entirely.
 
-### Open observation: `overrideUsed` keys on the derivation, not the applied bound (recorded 2026-09-08)
+### `refusalBypassed` keys on the derivation, not the applied bound (recorded 2026-09-08, renamed 2026-09-09)
 
-`preflight.bound_decision.overrideUsed` is defined as **the override was passed AND
+`preflight.bound_decision.refusalBypassed` is defined as **the override was passed AND
 `derivedMs` exceeded `ceilingMs`**. That definition stands; implementation and tests follow
 it, and this note changes neither.
 
-The wrinkle: it turns on the *derivation*, not on what the override actually did. An
-operator setting `NBE_PREFLIGHT_TIMEOUT_MS=1200` against a package deriving 75,000,000 ms
-records `overrideUsed: true` — yet 1,200 ms is far **below** the 3,600,000 ms ceiling, so no
-ceiling was overridden; the override made the bound *tighter*. A reader who takes the field
-to mean "the operator knowingly went past the ceiling" is misled in exactly the case the
-field exists to flag.
+The observation as originally filed: the condition turns on the *derivation*, not on what
+the override actually did. An operator setting `NBE_PREFLIGHT_TIMEOUT_MS=1200` against a
+package deriving 75,000,000 ms records true — yet 1,200 ms is far **below** the 3,600,000 ms
+ceiling, so no ceiling was overridden; the override made the bound *tighter*. Under the
+field's original name, `overrideUsed`, a reader who took it to mean "the operator knowingly
+went past the ceiling" was misled in exactly the case the field exists to flag.
 
-The alternative is `appliedMs > ceilingMs`, which reads true only when the bound actually in
-force exceeds the ceiling. **This is a definition change, therefore a spec amendment rather
-than a P7 code edit**, and it joins the next-spec-revision queue alongside `error.details`
-(§5.4/§16, below) and `decodeFailuresTotal` (§10.1, from the F1/F2 round). Whoever opens
-that revision owns deciding between the two readings and renaming the field if the second
-one wins.
+**The rename to `refusalBypassed` (2026-09-09) closes that misreading rather than moving
+it.** In the 1,200 ms case a refusal genuinely was bypassed: 75,000,000 ms exceeds the
+ceiling, so absent the override `loadPackage` would have refused, and the override is why it
+ran instead. The field is now named for the thing its condition actually tests. What the
+field does not report is whether the bound *in force* exceeds the ceiling — that is
+`appliedMs > ceilingMs`, derivable from the stored fields and deliberately not stored.
 
-### `refusalBypassed` semantics (recorded 2026-09-09)
-
-refusalBypassed keys on the refusal, not on where the operator set the bound; whether the
-bound crossed the ceiling is appliedMs > ceilingMs, derivable from the stored fields and
-deliberately not stored.
+Consequently the definition change this note once queued is **closed by the rename**, not
+carried. The next-spec-revision queue still holds `error.details` (§5.4/§16, below) and
+`decodeFailuresTotal` (§10.1, from the F1/F2 round).
 
 ### Recorded deviation: `error.details` on the §5.4 envelope (recorded 2026-09-08)
 
@@ -131,6 +129,34 @@ observation and not a finding.
 (`--test-reporter=tap`) so the gate's input format is a contract rather than a
 coincidence, or rewrite the gate to parse the reporter's machine-readable
 output. Whoever bumps the Node version past the TAP default owns choosing.
+
+### Finding R7 (new) — control-plane test 34 saw a fourth directive where three were expected (recorded 2026-09-09)
+
+`render-role session receives directives in order with correct stateVersion` failed once
+with `expected 3, actual 4`, on the run immediately following a heavy Rust build. It passed
+nine further runs in the same tree, giving an observed rate of roughly **1 in 11**. The run
+that failed was the most heavily loaded one, so the working reading is **load-sensitive
+timing**, the same family as R2 (a 33 ms window sampled at 1 Hz) and R5 (the clock not
+advancing within 2 ticks of `show.start`).
+
+**Unconfirmed as pre-existing.** The attempt to reproduce it at `5e2b595` used a scratch
+`git worktree`, which has its own empty `target/` and therefore no release
+`nbe-preflight` — three unrelated tests failed environmentally there, so that run proves
+nothing in either direction and its numbers are not recorded here. Establishing whether the
+flake predates the `refusalBypassed` rename needs a build in the same tree, not a
+side-by-side worktree.
+
+**The open question is which failure it is.** `expected 3, actual 4` has two readings that
+call for different fixes: the fourth directive was a **duplicate** — the same directive
+redelivered, a redelivery bug — or it was an **extra `stateVersion` bump**, an ordering bug
+in which a directive that should not have been counted advanced the version. The assertion
+counts, so it cannot distinguish them. Whoever picks this up should capture the directive
+payloads on failure before theorising; a retry loop that only re-runs until green will
+discard the one artifact that answers the question.
+
+**Disposition: Prompt 07, alongside R2 and R5.** Numbering continues the R-series filed in
+`docs/review-midpoint-report.md` §3.4–§3.8 and §11.2 (R1–R6); that report is a sealed CLEAN
+verdict and is not amended to hold this.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 

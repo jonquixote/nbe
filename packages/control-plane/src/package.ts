@@ -246,9 +246,9 @@ export function boundDecision(
     ceilingMs: PREFLIGHT_CEILING_MS,
     floorMs: PREFLIGHT_FLOOR_MS,
     basis: bound.basis,
-    // Not merely "an override was set": an override below the ceiling changes
-    // nothing about the ceiling, and counting it as used would make the field
-    // answer a different question than the one it is named for.
+    // Not merely "an override was set": an override below the ceiling bypasses
+    // no refusal, and counting it as one would make the field answer a
+    // different question than the one it is named for.
     refusalBypassed: bound.basis === "override" && bound.derivedMs > PREFLIGHT_CEILING_MS,
     appliedMs: bound.ms,
     outcome,
