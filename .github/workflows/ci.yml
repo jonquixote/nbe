@@ -80,6 +80,25 @@ jobs:
             echo "expected at least one prompt04 test to run"; exit 1
           fi
           echo "prompt04 tests that ran: $ran"
+      - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
+        # §7.10's golden-frame suite is headless wgpu, like prompt04. The floor
+        # (5) covers the render subset specifically: index/directive tests run
+        # without a GPU, so counting them is not enough to prove the compositor
+        # was exercised.
+        run: |
+          out=$(cargo test -p nbe-engine --test prompt07_overlay 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          if [ "$ran" -lt 5 ]; then
+            echo "expected at least 5 prompt07_overlay tests to run"; exit 1
+          fi
+          echo "prompt07_overlay tests that ran: $ran"
+      - name: overlay_show fixture passes (four overlay kinds)
+        run: |
+          cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
+          grep -q '"airReady": true' tests/fixtures/overlay_show/preflight_report.json
       - name: v0.3 fixture passes
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show_v0.3
