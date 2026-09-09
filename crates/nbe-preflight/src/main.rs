@@ -511,6 +511,31 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         let template_ids: HashSet<String> = ids("templates");
         let scene_ids: HashSet<String> = ids("scenes");
 
+        // A template's fonts must resolve too: `fontAssetIds` lives on the
+        // template, not the element, so it is checked against the template the
+        // element names.
+        let template_fonts: std::collections::HashMap<String, Vec<String>> = manifest_json
+            .get("templates")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| {
+                        let id = t.get("id").and_then(|v| v.as_str())?.to_string();
+                        let fonts = t
+                            .get("fontAssetIds")
+                            .and_then(|f| f.as_array())
+                            .map(|f| {
+                                f.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some((id, fonts))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mut seen = HashSet::new();
         for overlay in overlays {
             let id = overlay.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -540,6 +565,15 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                         report.push_error(format!(
                             "overlayTemplate: overlay \"{id}\" references undeclared templateId \"{tid}\""
                         ));
+                    } else if let Some(fonts) = template_fonts.get(tid) {
+                        for font in fonts {
+                            if !asset_ids.contains(font) {
+                                had_errors = true;
+                                report.push_error(format!(
+                                    "overlayFont: overlay \"{id}\" template \"{tid}\" references undeclared fontAssetId \"{font}\""
+                                ));
+                            }
+                        }
                     }
                 }
                 if let Some(sid) = el.get("sceneRef").and_then(|v| v.as_str()) {

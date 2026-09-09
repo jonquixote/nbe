@@ -144,7 +144,10 @@ export class ControlPlaneState {
   breakingVisible = false;
   breakingFields: { headline: string; subhead?: string } | null = null;
   visibleOverlays = new Set<string>();
-  /** overlay id → current animation phase, for §16.6 snapshot surfacing. */
+  /** overlay id → the animation phase of its most recent show/hide command. It
+   *  is command-moment state, not a live clock: a shown overlay reports "enter"
+   *  until further notice, a hidden one is simply absent from the snapshot's
+   *  `overlays[]` (which derives from `visibleOverlays`). */
   overlayAnimation = new Map<string, string>();
 
   tickerSource: "manual" | "rss" | "mixed" = "manual";
@@ -370,6 +373,9 @@ export class ControlPlaneState {
     this.previewItem = snap.previewItem;
     this.itemStates = new Map(Object.entries(snap.itemStates));
     this.visibleOverlays = new Set(snap.visibleOverlays);
+    // The snapshot snapshots WHAT is on air, not the transient animation
+    // phase; a recalled overlay comes back steady rather than mid-enter/exit.
+    this.overlayAnimation.clear();
     this.automationHold = snap.automationHold;
   }
 

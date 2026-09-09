@@ -423,7 +423,13 @@ impl DirectiveHandler {
         };
         let mut overlays = self.state.overlays.lock().unwrap();
         match (show, overlays.get(overlay_id).copied()) {
-            (true, Some(ov)) if ov.on_air => {} // show on on-air: idle no-op
+            // Show on an on-air overlay is a no-op only when it is Steady or
+            // Entering. A show during an Exit revives the overlay: the control
+            // plane re-adds and forwards (its `visibleOverlays` was already
+            // deleted on hide), so the engine must flip it back to Enter rather
+            // than let it drop at exit-complete — otherwise the two layers
+            // disagree about the overlay's fate.
+            (true, Some(ov)) if ov.on_air && ov.phase != crate::state::OverlayPhase::Exit => {}
             (false, Some(ov)) if ov.phase == crate::state::OverlayPhase::Exit => {} // hide already hiding
             (false, None) => {} // hide on hidden: idle no-op
             (true, _) => {

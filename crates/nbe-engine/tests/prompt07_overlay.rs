@@ -184,6 +184,55 @@ async fn overlay_show_keys_off_the_next_frame_boundary_and_reads_enter_frames() 
 }
 
 #[tokio::test]
+async fn overlay_show_during_exit_revives_the_overlay_not_noops() {
+    let dir = tempfile::tempdir().unwrap();
+    write_overlay_package(dir.path());
+    let (state, handler) = loaded(dir.path()).await;
+
+    handler
+        .apply(&directive(
+            "overlay.show",
+            2,
+            serde_json::json!({ "overlayId": "bug" }),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    handler
+        .apply(&directive(
+            "overlay.hide",
+            3,
+            serde_json::json!({ "overlayId": "bug" }),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        state.overlays.lock().unwrap().get("bug").map(|o| o.phase),
+        Some(OverlayPhase::Exit)
+    );
+
+    // A show arriving mid-exit must flip back to Enter, not no-op and let the
+    // overlay drop when the exit completes.
+    handler
+        .apply(&directive(
+            "overlay.show",
+            4,
+            serde_json::json!({ "overlayId": "bug" }),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    let ov = state.overlays.lock().unwrap().get("bug").copied().unwrap();
+    assert_eq!(
+        ov.phase,
+        OverlayPhase::Enter,
+        "show during exit must revive the overlay"
+    );
+    assert_eq!(ov.duration_frames, 10, "re-keyed to the enter animation");
+}
+
+#[tokio::test]
 async fn overlay_show_on_an_on_air_overlay_is_an_idempotent_noop() {
     let dir = tempfile::tempdir().unwrap();
     write_overlay_package(dir.path());
