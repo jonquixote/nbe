@@ -12,7 +12,16 @@ import type { ErrorCode, Role } from "./protocol.js";
 
 export interface AuditRecord {
   ts: number;
-  kind: "command" | "auth";
+  /**
+   * `preflight` records a decode-bound decision (SPEC §10.7: "every
+   * control-plane action"). §10.7 already precedents extra kinds — automation
+   * actions are recorded with `kind: "automation"` (AC-25 §4).
+   */
+  kind: "command" | "auth" | "preflight";
+  /** Stable event name for a non-command action, e.g. `preflight.bound_decision`. */
+  event?: string;
+  /** Free-form structured detail for such an event. */
+  detail?: Record<string, unknown>;
   // auth
   outcome?: "ok" | "rejected";
   // shared

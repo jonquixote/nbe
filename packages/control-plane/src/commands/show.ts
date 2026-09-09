@@ -3,7 +3,13 @@
 //! show.stop implements the Section 16.1 quiescence truth table.
 
 import { CpError } from "../protocol.js";
-import { loadPackage, runPreflight, type PreflightResult } from "../package.js";
+import {
+  boundDecision,
+  loadPackage,
+  preflightBound,
+  runPreflight,
+  type PreflightResult,
+} from "../package.js";
 import type { CommandRegistry, DispatchDeps, HandlerCtx, HandlerOutput } from "../dispatch.js";
 import { SHOW_STOP_FORCE_WARNING } from "../dispatch.js";
 
@@ -18,7 +24,9 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
       if (state.pkg && payload.mode !== "reload") {
         throw new CpError("E_FORBIDDEN_STATE", "a package is already loaded; pass mode: reload");
       }
-      const loaded = await loadPackage(String(payload.packagePath), {});
+      const loaded = await loadPackage(String(payload.packagePath), {
+        ...(deps.recordBoundDecision ? { onBoundDecision: deps.recordBoundDecision } : {}),
+      });
 
       // SPEC §7.15: the side that knows BOTH facts is the side that refuses.
       // Preflight validates a package in isolation and cannot know the target;
@@ -56,7 +64,14 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
     handler: async (ctx): Promise<HandlerOutput> => {
       const pkg = ctx.state.pkg;
       if (!pkg) throw new CpError("E_FORBIDDEN_STATE", "no show loaded; load a package first");
+      // `show.preflight` makes the same ceiling decision `show.load` does, so
+      // it records one too — the audit answers "what did the control plane
+      // decide", not "which command asked".
+      const preBound = preflightBound(pkg.packagePath);
       const result: PreflightResult = await runPreflight(pkg.packagePath, {});
+      deps.recordBoundDecision?.(
+        boundDecision(pkg.packagePath, preBound, result.timedOut ? "refused" : "ran"),
+      );
       if (result.exitCode === 2) {
         ctx.state.preflightPassed = false;
         ctx.state.lastError = "preflight failed";

@@ -44,10 +44,17 @@ export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 /** Error thrown by command handlers; becomes the Section 5.4 error response. */
 export class CpError extends Error {
   readonly code: ErrorCode;
-  constructor(code: ErrorCode, message: string) {
+  /**
+   * Machine-readable detail for a caller that must act on the error rather
+   * than display it. Additive: the §5.4 envelope defines `error` as
+   * `{code, message}`, so a client that ignores this sees no change.
+   */
+  readonly details?: Record<string, unknown>;
+  constructor(code: ErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "CpError";
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -79,15 +86,27 @@ export interface ErrorResponse {
   requestId: string;
   status: "error";
   stateVersion: number;
-  error: { code: ErrorCode; message: string };
+  error: { code: ErrorCode; message: string; details?: Record<string, unknown> };
 }
 
 export function okResponse(requestId: string, stateVersion: number, data: Record<string, unknown> = {}): SuccessResponse {
   return { v: PROTOCOL_VERSION, requestId, status: "ok", stateVersion, data };
 }
 
-export function errorResponse(requestId: string, stateVersion: number, code: ErrorCode, message: string): ErrorResponse {
-  return { v: PROTOCOL_VERSION, requestId, status: "error", stateVersion, error: { code, message } };
+export function errorResponse(
+  requestId: string,
+  stateVersion: number,
+  code: ErrorCode,
+  message: string,
+  details?: Record<string, unknown>,
+): ErrorResponse {
+  return {
+    v: PROTOCOL_VERSION,
+    requestId,
+    status: "error",
+    stateVersion,
+    error: details === undefined ? { code, message } : { code, message, details },
+  };
 }
 
 // ---------------------------------------------------------------------------

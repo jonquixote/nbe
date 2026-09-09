@@ -211,6 +211,50 @@ export function expectedDecodeBytes(packagePath: string): number {
   }
 }
 
+/**
+ * A ceiling decision, recorded on every path (SPEC §10.7).
+ *
+ * The refusal message already says all of this in prose. A string is what an
+ * operator reads; this is what a log query answers. Both, because the two
+ * audiences are different — and because "how long is too long" has been the
+ * longest-running defect class on this branch, so its decisions should be
+ * countable rather than greppable.
+ */
+export interface BoundDecision {
+  event: "preflight.bound_decision";
+  packagePath: string;
+  derivedMs: number;
+  ceilingMs: number;
+  floorMs: number;
+  basis: PreflightBound["basis"];
+  /** The override was passed AND the derivation exceeded the ceiling. */
+  overrideUsed: boolean;
+  /** The bound actually applied. */
+  appliedMs: number;
+  outcome: "refused" | "ran";
+}
+
+export function boundDecision(
+  packagePath: string,
+  bound: PreflightBound,
+  outcome: BoundDecision["outcome"],
+): BoundDecision {
+  return {
+    event: "preflight.bound_decision",
+    packagePath,
+    derivedMs: bound.derivedMs,
+    ceilingMs: PREFLIGHT_CEILING_MS,
+    floorMs: PREFLIGHT_FLOOR_MS,
+    basis: bound.basis,
+    // Not merely "an override was set": an override below the ceiling changes
+    // nothing about the ceiling, and counting it as used would make the field
+    // answer a different question than the one it is named for.
+    overrideUsed: bound.basis === "override" && bound.derivedMs > PREFLIGHT_CEILING_MS,
+    appliedMs: bound.ms,
+    outcome,
+  };
+}
+
 export interface PreflightBound {
   ms: number;
   frames: number;
@@ -359,14 +403,26 @@ export interface LoadedPackage {
   warnings: string[];
 }
 
-export async function loadPackage(packagePath: string, opts: { allowWarnings?: boolean } = {}): Promise<LoadedPackage> {
+export async function loadPackage(
+  packagePath: string,
+  opts: {
+    allowWarnings?: boolean;
+    /**
+     * Sink for the ceiling decision, called on EVERY path — refused, and ran.
+     * Optional so the many tests that call `loadPackage` directly need no
+     * wiring; the command handler supplies the audit log.
+     */
+    onBoundDecision?: (d: BoundDecision) => void;
+  } = {},
+): Promise<LoadedPackage> {
+  const bound = preflightBound(packagePath);
   const pre = await runPreflight(packagePath, opts);
   // A preflight that never answered is not a verdict, and "accepted, never
   // resolved" is the behaviour being abolished: the load fails by name, the
   // dispatcher's audit record gets its terminal state, and nothing is
   // half-loaded because this throws before any state is touched.
   if (pre.timedOut) {
-    const b = preflightBound(packagePath);
+    const b = bound;
     const how =
       b.basis === "override"
         ? "NBE_PREFLIGHT_TIMEOUT_MS override"
@@ -381,13 +437,31 @@ export async function loadPackage(packagePath: string, opts: { allowWarnings?: b
             : b.basis === "bytes"
               ? `${(b.bytes / (1024 * 1024)).toFixed(1)} MB of media at ${b.msPerMb} ms/MB x ${PREFLIGHT_SAFETY_FACTOR} safety`
               : `floor, from ${b.frames} declared frames and ${b.bytes} bytes of media`;
+    const decision = boundDecision(packagePath, b, "refused");
+    opts.onBoundDecision?.(decision);
+    const remedy =
+      "Raise NBE_PREFLIGHT_TIMEOUT_MS only if a real run legitimately exceeds that" +
+      (b.basis === "ceiling" ? "; past the ceiling if the package genuinely needs it" : "");
     throw new CpError(
       "E_PREFLIGHT_FAILED",
       `preflight produced no verdict within ${b.ms} ms for ${packagePath} (${how}); ` +
         `the binary was killed. Raise NBE_PREFLIGHT_TIMEOUT_MS only if a real run ` +
         `legitimately exceeds that`,
+      // Additive: the §5.4 envelope defines `error` as {code, message}. A
+      // caller that must decide what to do — raise the override, split the
+      // package — needs the numbers, not the sentence.
+      {
+        derivedMs: decision.derivedMs,
+        ceilingMs: decision.ceilingMs,
+        basis: decision.basis,
+        overrideUsed: decision.overrideUsed,
+        remedy,
+      },
     );
   }
+  // Preflight answered. Whatever it decided, the bound did not refuse it.
+  opts.onBoundDecision?.(boundDecision(packagePath, bound, "ran"));
+
   if (pre.exitCode === 2) {
     const why = pre.report?.errors.join("; ") || pre.stderr || "preflight failed";
     throw new CpError("E_PREFLIGHT_FAILED", `preflight failed for ${packagePath}: ${why}`);

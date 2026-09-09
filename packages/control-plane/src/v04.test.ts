@@ -715,3 +715,221 @@ test("the bound has a ceiling, because one load may not mute the connection", as
     else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
   }
 });
+
+// ---------------------------------------------------------------------------
+// The ceiling decision leaves a record on every path (SPEC §10.7)
+// ---------------------------------------------------------------------------
+
+/** A package big enough that its derived bound exceeds the ceiling. */
+async function overCeilingPackage(): Promise<string> {
+  const { mkdtempSync, mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
+    await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "nbe-dec-"));
+  mkdirSync(join(dir, "media"), { recursive: true });
+  const f = join(dir, "media", "big.mp4");
+  closeSync(openSync(f, "w"));
+  truncateSync(f, 100 * 1024 * 1024); // 100 MB -> derives well past the ceiling
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({ assets: [{ id: "big", kind: "video", source: "media/big.mp4" }] }),
+  );
+  return dir;
+}
+
+/** A preflight stand-in that never answers. */
+async function wedgedBinary(): Promise<string> {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const bin = join(mkdtempSync(join(tmpdir(), "nbe-wedge-")), "wedged");
+  writeFileSync(bin, "#!/bin/sh\nexec sleep 100000\n", { mode: 0o755 });
+  return bin;
+}
+
+test("refusal_records_decision", async () => {
+  // The refusal already said all of this in prose. A string is what an operator
+  // reads; these are what a log query answers, and "how long is too long" has
+  // been the longest-running defect class on this branch — its decisions should
+  // be countable, not greppable.
+  const { loadPackage, PREFLIGHT_CEILING_MS } = await import("./package.js");
+  const dir = await overCeilingPackage();
+  const bin = await wedgedBinary();
+
+  const seen: Array<{
+    event: string;
+    outcome: string;
+    overrideUsed: boolean;
+    basis: string;
+  }> = [];
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  process.env.NBE_PREFLIGHT_BIN = bin;
+  process.env.NBE_PREFLIGHT_TIMEOUT_MS = "1200"; // stand in for the ceiling, to stay quick
+  try {
+    let threw: { code?: string; details?: Record<string, unknown> } | null = null;
+    try {
+      await loadPackage(dir, { onBoundDecision: (d) => seen.push(d) });
+    } catch (e) {
+      threw = e as { code?: string; details?: Record<string, unknown> };
+    }
+    assert.ok(threw, "a wedged preflight must refuse");
+    assert.equal(threw!.code, "E_PREFLIGHT_FAILED");
+
+    const details = threw!.details as Record<string, unknown>;
+    assert.ok(details, "the error carries machine-readable detail, not only a sentence");
+    assert.ok(
+      (details.derivedMs as number) > (details.ceilingMs as number),
+      `derivedMs must exceed ceilingMs for this package (got ${details.derivedMs} vs ${details.ceilingMs})`,
+    );
+    assert.equal(details.ceilingMs, PREFLIGHT_CEILING_MS);
+    // Per the specified definition: the override was passed AND derivedMs
+    // exceeded ceilingMs, so this is true — regardless of the override's own
+    // value. See `override_records_decision` for the case that reads false.
+    assert.equal(details.overrideUsed, true);
+    assert.ok(String(details.remedy).length > 0, "the remedy travels as a field, not only inside the message");
+
+    assert.equal(seen.length, 1, "exactly one decision per load");
+    assert.equal(seen[0]!.event, "preflight.bound_decision");
+    assert.equal(seen[0]!.outcome, "refused");
+
+    // The F3 stale-report guard is untouched: a timeout is not a verdict.
+    //
+    // This needs a report ON DISK to mean anything. A killed binary writes
+    // none, so asserting null against an empty directory passes whether or not
+    // the guard exists — it would prove nothing. Planting an air-ready report
+    // first is what makes the assertion discriminating: with the guard the run
+    // still reports null, without it the run adopts this stale verdict.
+    const { writeFileSync } = await import("node:fs");
+    const { join: joinPath } = await import("node:path");
+    writeFileSync(
+      joinPath(dir, "preflight_report.json"),
+      JSON.stringify({ manifestValid: true, airReady: true, errors: [], warnings: [] }),
+    );
+    const { runPreflight } = await import("./package.js");
+    const again = await runPreflight(dir);
+    assert.equal(again.timedOut, true);
+    assert.equal(again.report, null, "a timed-out run must not adopt a stale report as its verdict");
+  } finally {
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test("override_records_decision", async () => {
+  // The override's purpose is to exceed the ceiling knowingly. When it does,
+  // the record says so — that is the difference between an operator who chose
+  // and a bound that drifted.
+  const { boundDecision, preflightBound, PREFLIGHT_CEILING_MS } = await import("./package.js");
+  const dir = await overCeilingPackage();
+  const prevBin = process.env.NBE_PREFLIGHT_BIN;
+  const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+  process.env.NBE_PREFLIGHT_BIN = "/x/target/release/nbe-preflight";
+  process.env.NBE_PREFLIGHT_TIMEOUT_MS = String(PREFLIGHT_CEILING_MS * 4);
+  try {
+    const d = boundDecision(dir, preflightBound(dir), "ran");
+    assert.equal(d.event, "preflight.bound_decision");
+    assert.equal(d.overrideUsed, true, "the override was passed AND the derivation exceeded the ceiling");
+    assert.ok(d.derivedMs > d.ceilingMs);
+    assert.equal(d.appliedMs, PREFLIGHT_CEILING_MS * 4, "the override is what actually applied");
+    assert.equal(d.outcome, "ran");
+
+    // The flag turns on `derivedMs > ceilingMs`, not on the override's own
+    // value: a package whose derivation stays under the ceiling reads false
+    // even with an override set, because there was no ceiling to override.
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const small = mkdtempSync(join(tmpdir(), "nbe-small-"));
+    writeFileSync(join(small, "manifest.json"), JSON.stringify({ assets: [] }));
+    process.env.NBE_PREFLIGHT_TIMEOUT_MS = "5000";
+    const smallDecision = boundDecision(small, preflightBound(small), "ran");
+    assert.equal(smallDecision.basis, "override");
+    assert.ok(smallDecision.derivedMs <= PREFLIGHT_CEILING_MS);
+    assert.equal(smallDecision.overrideUsed, false, "no ceiling was overridden here");
+  } finally {
+    if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
+    else process.env.NBE_PREFLIGHT_BIN = prevBin;
+    if (prevTimeout === undefined) delete process.env.NBE_PREFLIGHT_TIMEOUT_MS;
+    else process.env.NBE_PREFLIGHT_TIMEOUT_MS = prevTimeout;
+  }
+});
+
+test("normal_records_decision", async () => {
+  // The always-present contract: a conformant package records a decision too.
+  // A log that only holds refusals cannot answer "how often does this happen".
+  const { loadPackage } = await import("./package.js");
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const dir = mkdtempSync(join(tmpdir(), "nbe-norm-"));
+  mkdirSync(join(dir, "media"), { recursive: true });
+  writeFileSync(
+    join(dir, "media", "slate.png"),
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  );
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: "0.4",
+      network: { id: "nbe", name: "T" },
+      show: {
+        id: "s",
+        title: "T",
+        video: { width: 1920, height: 1080, frameRate: 30, colorSpace: "rec709" },
+        audio: { sampleRate: 48000, loudnessTargetLufs: -16, truePeakDbtp: -1.5 },
+        fallbackAssetId: "slate",
+      },
+      control: { bindings: [] },
+      assets: [{ id: "slate", kind: "image", source: "media/slate.png", format: "png" }],
+      scenes: [{ id: "SCN", elements: [{ id: "bg", kind: "graphic", z: 0, templateId: "TPL" }] }],
+      templates: [{ id: "TPL", kind: "generic" }],
+      rundown: { id: "R", items: [{ id: "A1", kind: "sceneRef", sceneRef: "SCN" }] },
+    }),
+  );
+
+  const seen: Array<{
+    event: string;
+    outcome: string;
+    overrideUsed: boolean;
+    basis: string;
+  }> = [];
+  try {
+    await loadPackage(dir, { onBoundDecision: (d) => seen.push(d) });
+  } catch {
+    // Whether this package is air-ready is not what the test is about; the
+    // decision is recorded either way, which is the contract.
+  }
+  assert.equal(seen.length, 1, "a decision is recorded on the normal path too");
+  assert.equal(seen[0]!.event, "preflight.bound_decision");
+  assert.equal(seen[0]!.overrideUsed, false);
+  assert.equal(seen[0]!.outcome, "ran", "preflight answered; the bound did not refuse it");
+  assert.equal(seen[0]!.basis, "floor", "a one-pixel package derives nothing and takes the floor");
+});
+
+test("envelope_shape", async () => {
+  // §5.4's envelope is unchanged; `details` is additive. A client that reads
+  // only {code, message} sees exactly what it saw before.
+  const { errorResponse } = await import("./protocol.js");
+  const plain = errorResponse("req-1", 7, "E_PREFLIGHT_FAILED", "no verdict");
+  assert.deepEqual(Object.keys(plain).sort(), ["error", "requestId", "stateVersion", "status", "v"]);
+  assert.deepEqual(Object.keys(plain.error).sort(), ["code", "message"], "no details member when none is supplied");
+  assert.equal(plain.v, "0.3");
+  assert.equal(plain.status, "error");
+
+  const withDetails = errorResponse("req-2", 7, "E_PREFLIGHT_FAILED", "no verdict", {
+    derivedMs: 1,
+    ceilingMs: 2,
+  });
+  assert.deepEqual(Object.keys(withDetails).sort(), ["error", "requestId", "stateVersion", "status", "v"]);
+  assert.deepEqual(Object.keys(withDetails.error).sort(), ["code", "details", "message"]);
+  assert.equal(withDetails.error.code, "E_PREFLIGHT_FAILED");
+  assert.equal(withDetails.error.message, "no verdict");
+});

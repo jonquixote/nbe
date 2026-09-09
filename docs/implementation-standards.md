@@ -109,6 +109,23 @@ Every prompt MUST also state, in its constraints:
 - **Hygiene**: caching, logging, error-type tightening, path cleanup, dependency trimming. Hygiene-only prompts MUST NOT alter runtime behaviour.
 - **Proof of hygiene**: all prior tests remain unchanged and green. If a hygiene change requires modifying an existing test, it is a behaviour change — reclassify it and say so.
 - **Behaviour**: anything observable by a caller, a test, a CI gate, or an operator. Behaviour changes require their own prompt and acceptance criteria.
+- **Verify a build artifact before a later step consumes it.** Any build step
+  whose output a later step uses MUST verify that output first — a size sanity
+  floor, a recorded hash, or a smoke execution. Rationale: under disk pressure
+  `cargo build` has produced a truncated 1,712-byte "release binary" **with a
+  clean exit code**; the consumer then failed `exit 127` and the failure read as
+  a defect in the code under test rather than in the build. Verify the artifact
+  at build time, not at probe time — a probe that fails for a build reason costs
+  a whole debugging session pointed at the wrong file.
+
+## 4a. Blocked work items
+
+When a prompt contains independent work items and one is blocked by a false assumption in
+the prompt, complete the independent items, stop the blocked item at the decision point,
+and report both. Halt the entire prompt only when the items share files or code paths, or
+when the block undermines the prompt's premise. A blocked item is reported with: the false
+assumption, the measurement that disproved it, the candidate resolutions, and why each is
+a decision above the agent's authority.
 
 ## 5. Definition of done (all prompts)
 

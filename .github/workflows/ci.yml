@@ -98,6 +98,15 @@ jobs:
     # mean the preflight gates silently checked less there, which is the kind
     # of gate Standards §2 forbids.
     runs-on: macos-14
+    env:
+      # Standards §4: verify a build artifact before a later step consumes it.
+      # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
+      # once produced a truncated 1,712-byte "release binary" and still exited
+      # 0; the consuming step then failed `exit 127` and the failure read as a
+      # defect in the code under test. One megabyte is far above any truncation
+      # and far below a real build, so this floor catches that without being
+      # sensitive to ordinary size drift.
+      PREFLIGHT_MIN_BYTES: "1000000"
     defaults:
       run:
         working-directory: packages/control-plane
@@ -126,6 +135,20 @@ jobs:
       # `target/release` for the same reason.
       - run: cargo build -p nbe-preflight --release
         working-directory: .
+      - name: the release binary is real, not a truncated write
+        working-directory: .
+        run: |
+          bin=target/release/nbe-preflight
+          size=$(stat -f%z "$bin" 2>/dev/null || stat -c%s "$bin")
+          echo "nbe-preflight: $size bytes (floor $PREFLIGHT_MIN_BYTES)"
+          if [ "$size" -lt "$PREFLIGHT_MIN_BYTES" ]; then
+            echo "TRUNCATED BUILD: $bin is $size bytes, below the $PREFLIGHT_MIN_BYTES floor."
+            echo "The build step exited 0 but did not write a whole binary — check disk space."
+            exit 1
+          fi
+          # A size floor catches truncation; executing it catches a binary that
+          # is the right size and still will not run.
+          "$bin" --version
       - run: npm ci
       - run: npx tsc --noEmit
       - name: generated manifest types match the schema
@@ -203,6 +226,15 @@ jobs:
     name: dress rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)
     runs-on: macos-14
     continue-on-error: true
+    env:
+      # Standards §4: verify a build artifact before a later step consumes it.
+      # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
+      # once produced a truncated 1,712-byte "release binary" and still exited
+      # 0; the consuming step then failed `exit 127` and the failure read as a
+      # defect in the code under test. One megabyte is far above any truncation
+      # and far below a real build, so this floor catches that without being
+      # sensitive to ordinary size drift.
+      PREFLIGHT_MIN_BYTES: "1000000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -229,6 +261,20 @@ jobs:
       # what makes step 3 flaky.
       - run: cargo build -p nbe-engine
       - run: cargo build -p nbe-preflight --release
+      - name: the release binary is real, not a truncated write
+        working-directory: .
+        run: |
+          bin=target/release/nbe-preflight
+          size=$(stat -f%z "$bin" 2>/dev/null || stat -c%s "$bin")
+          echo "nbe-preflight: $size bytes (floor $PREFLIGHT_MIN_BYTES)"
+          if [ "$size" -lt "$PREFLIGHT_MIN_BYTES" ]; then
+            echo "TRUNCATED BUILD: $bin is $size bytes, below the $PREFLIGHT_MIN_BYTES floor."
+            echo "The build step exited 0 but did not write a whole binary — check disk space."
+            exit 1
+          fi
+          # A size floor catches truncation; executing it catches a binary that
+          # is the right size and still will not run.
+          "$bin" --version
       - run: npm ci
         working-directory: packages/control-plane
       - name: play the show

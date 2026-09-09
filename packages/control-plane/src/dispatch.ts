@@ -23,6 +23,7 @@ import {
   type Role,
 } from "./protocol.js";
 import type { RenderBridge } from "./render-bridge.js";
+import type { BoundDecision } from "./package.js";
 import type { ControlPlaneState } from "./state.js";
 
 export interface PersistHooks {
@@ -56,6 +57,12 @@ export interface DispatchDeps {
    * deployment without a render node, not a licence to load at any rate.
    */
   houseRate?: number | undefined;
+  /**
+   * Records a decode-bound ceiling decision (SPEC §10.7: the audit log holds
+   * every control-plane action). Supplied by the server from its `AuditLog`;
+   * optional so tests that build deps by hand need no wiring.
+   */
+  recordBoundDecision?: (d: BoundDecision) => void;
   /**
    * Waits for an `appliedStateVersion` >= `stateVersion` from a render node.
    * Resolves true when acknowledged in time, false on timeout or when no

@@ -77,6 +77,37 @@ release binary rather than an outstanding fix, and the rehearsal's own timing
 assumptions re-measured against it — a step that used to wait 46 s for a load
 may now be measuring something else entirely.
 
+### Open observation: `overrideUsed` keys on the derivation, not the applied bound (recorded 2026-09-08)
+
+`preflight.bound_decision.overrideUsed` is defined as **the override was passed AND
+`derivedMs` exceeded `ceilingMs`**. That definition stands; implementation and tests follow
+it, and this note changes neither.
+
+The wrinkle: it turns on the *derivation*, not on what the override actually did. An
+operator setting `NBE_PREFLIGHT_TIMEOUT_MS=1200` against a package deriving 75,000,000 ms
+records `overrideUsed: true` — yet 1,200 ms is far **below** the 3,600,000 ms ceiling, so no
+ceiling was overridden; the override made the bound *tighter*. A reader who takes the field
+to mean "the operator knowingly went past the ceiling" is misled in exactly the case the
+field exists to flag.
+
+The alternative is `appliedMs > ceilingMs`, which reads true only when the bound actually in
+force exceeds the ceiling. **This is a definition change, therefore a spec amendment rather
+than a P7 code edit**, and it joins the next-spec-revision queue alongside `error.details`
+(§5.4/§16, below) and `decodeFailuresTotal` (§10.1, from the F1/F2 round). Whoever opens
+that revision owns deciding between the two readings and renaming the field if the second
+one wins.
+
+### Recorded deviation: `error.details` on the §5.4 envelope (recorded 2026-09-08)
+
+§5.4 and §16 define an error response's `error` as `{code, message}`; the control plane now
+adds an optional `details` member, carried today by `E_PREFLIGHT_FAILED` on a decode-bound
+refusal so a caller can act on the numbers rather than parse the sentence — an input to the
+next spec revision, which should absorb `error.details` as an optional member.
+
+(The §19.2 note proposed by an earlier prompt is **cancelled**: there is no §19.2 deviation,
+because the decode bound never reaches `preflight_report.json` — that file is written by the
+Rust binary, which has no knowledge of the caller's bound.)
+
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
 The bound `nbe-preflight` runs under is derived from two measured constant
