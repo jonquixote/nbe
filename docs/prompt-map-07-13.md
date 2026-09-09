@@ -93,13 +93,21 @@ went past the ceiling" was misled in exactly the case the field exists to flag.
 **The rename to `refusalBypassed` (2026-09-09) closes that misreading rather than moving
 it.** In the 1,200 ms case a refusal genuinely was bypassed: 75,000,000 ms exceeds the
 ceiling, so absent the override `loadPackage` would have refused, and the override is why it
-ran instead. The field is now named for the thing its condition actually tests. What the
+ran instead. The field is now named for the thing its condition actually tests:
+**`refusalBypassed` keys on the refusal, not on where the operator set the bound.** What the
 field does not report is whether the bound *in force* exceeds the ceiling — that is
 `appliedMs > ceilingMs`, derivable from the stored fields and deliberately not stored.
 
 Consequently the definition change this note once queued is **closed by the rename**, not
 carried. The next-spec-revision queue still holds `error.details` (§5.4/§16, below) and
 `decodeFailuresTotal` (§10.1, from the F1/F2 round).
+
+This section is a merge. `8538701` added the mandated semantics sentence as its own
+section; `3014c9d` folded it into this one because the two were disagreeing about whether
+`appliedMs > ceilingMs` was a queued replacement definition or a derivable non-field.
+Reviewer finding **F2** recorded that the merge deleted prompt-mandated verbatim text
+without ratification; the merge is now **ratified retroactively** and both halves of the
+mandated substance are stated above. No separate verbatim section returns.
 
 ### Recorded deviation: `error.details` on the §5.4 envelope (recorded 2026-09-08)
 
@@ -129,6 +137,26 @@ observation and not a finding.
 (`--test-reporter=tap`) so the gate's input format is a contract rather than a
 coincidence, or rewrite the gate to parse the reporter's machine-readable
 output. Whoever bumps the Node version past the TAP default owns choosing.
+
+### Correction: the `8538701` falsification produced four tsc errors, not three (recorded 2026-09-09)
+
+`8538701`'s commit message states that reverting the field in the emitter produced "three
+errors (the structural collector type and two property accesses)". It produced **four**.
+There are **two** structural collector declarations, not one — `v04.test.ts:763` and
+`:901`, consumed at `:773` and `:905` — so the signature is two `TS2345` plus two `TS2339`:
+
+```
+src/v04.test.ts(773,66): error TS2345: Property 'refusalBypassed' is missing in type 'BoundDecision'
+src/v04.test.ts(835,20): error TS2339: Property 'refusalBypassed' does not exist on type 'BoundDecision'.
+src/v04.test.ts(852,32): error TS2339: Property 'refusalBypassed' does not exist on type 'BoundDecision'.
+src/v04.test.ts(905,64): error TS2345: Property 'refusalBypassed' is missing in type 'BoundDecision'
+```
+
+The cause was a `head -4` pipe on the evidence paste, which cut the fourth error exactly at
+the boundary. The falsification itself was sound and reached further than claimed; only the
+record understated it. Raised as reviewer finding **F1**, and it is the third recorded
+instance of a truncating pipe producing a false claim in this project — hence the standards
+rule now forbidding them in evidence.
 
 ### Finding R7 (new) — control-plane test 34 saw a fourth directive where three were expected (recorded 2026-09-09)
 

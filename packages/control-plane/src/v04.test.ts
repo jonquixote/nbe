@@ -849,7 +849,7 @@ test("override_records_decision", async () => {
     const smallDecision = boundDecision(small, preflightBound(small), "ran");
     assert.equal(smallDecision.basis, "override");
     assert.ok(smallDecision.derivedMs <= PREFLIGHT_CEILING_MS);
-    assert.equal(smallDecision.refusalBypassed, false, "no ceiling was overridden here");
+    assert.equal(smallDecision.refusalBypassed, false, "no refusal was bypassed here");
   } finally {
     if (prevBin === undefined) delete process.env.NBE_PREFLIGHT_BIN;
     else process.env.NBE_PREFLIGHT_BIN = prevBin;

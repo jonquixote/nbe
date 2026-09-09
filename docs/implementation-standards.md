@@ -75,6 +75,14 @@ Rules:
    cause, and this one leaves no dirty file to notice.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
+5. **Evidence pastes are complete.** Pipes that truncate output (`head`,
+   `tail`) or swallow exit status are forbidden in falsification and gate
+   evidence. If length forces truncation, state the total count and what was
+   cut. Truncation has produced a false claim three times here: a
+   falsification piped through `head -1` that swallowed its exit status, a
+   `head -1` that masked a smoke-path exit code, and a `head -4` that cut the
+   fourth of four `tsc` errors and put "three errors" into a commit message
+   permanently.
 
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
@@ -87,6 +95,19 @@ runners printed, not a hand-tallied figure. The `rust` and `control-plane` CI
 jobs echo their summaries in a collapsed group for exactly this purpose; quote
 those lines. Arithmetic across suites has been wrong often enough that it is no
 longer an acceptable source.
+
+## 2c. Records and mandated text
+
+Text mandated verbatim by a prompt stays verbatim until the mandating authority
+ratifies a change. A later commit may merge or reword it only with disclosure in
+its report; absent disclosure and ratification, absence of the mandated text is
+a finding.
+
+Merging two records sections is often the right call — sections that disagree
+with each other are worse than sections that repeat each other. The rule does
+not forbid the merge; it forbids the merge going unrecorded. State it in the
+report, and leave the merged section carrying every half of the substance the
+original mandate covered.
 
 ## 3. Prompt structure
 
