@@ -144,6 +144,8 @@ export class ControlPlaneState {
   breakingVisible = false;
   breakingFields: { headline: string; subhead?: string } | null = null;
   visibleOverlays = new Set<string>();
+  /** overlay id → current animation phase, for §16.6 snapshot surfacing. */
+  overlayAnimation = new Map<string, string>();
 
   tickerSource: "manual" | "rss" | "mixed" = "manual";
   tickerItems: Array<{ text: string; language?: string; priority: number; ttlSec?: number }> = [];
@@ -319,6 +321,11 @@ export class ControlPlaneState {
       itemStates: Object.fromEntries(this.itemStates),
       sceneStates: Object.fromEntries(this.sceneStates),
       visibleOverlays: Array.from(this.visibleOverlays),
+      overlays: Array.from(this.visibleOverlays).map((id) => ({
+        id,
+        onAir: true,
+        animationState: this.overlayAnimation.get(id) ?? "steady",
+      })),
       automationHold: this.automationHold,
       fallbackActive: this.fallbackActive,
       stateVersion: this.stateVersion,
@@ -392,6 +399,7 @@ export class ControlPlaneState {
     this.elementOverrides.clear();
     this.graphics.clear();
     this.visibleOverlays.clear();
+    this.overlayAnimation.clear();
     this.automationRules.clear();
     this.fallbackActive = false;
   }
