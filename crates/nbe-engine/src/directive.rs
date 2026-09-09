@@ -423,9 +423,9 @@ impl DirectiveHandler {
         };
         let mut overlays = self.state.overlays.lock().unwrap();
         match (show, overlays.get(overlay_id).copied()) {
-            (true, Some(ov)) if ov.on_air => {}   // show on on-air: idle no-op
+            (true, Some(ov)) if ov.on_air => {} // show on on-air: idle no-op
             (false, Some(ov)) if ov.phase == crate::state::OverlayPhase::Exit => {} // hide already hiding
-            (false, None) => {}                   // hide on hidden: idle no-op
+            (false, None) => {} // hide on hidden: idle no-op
             (true, _) => {
                 let start = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
                 overlays.insert(

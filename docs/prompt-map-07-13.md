@@ -289,3 +289,51 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
+
+### The overlay level's four questions answered (recorded 2026-09-09, step 5)
+
+The 07 prompt's §5.2 questions, answered before the code that implements them:
+
+1. **Directive surface.** §16.6's `overlay.show { overlayId, animation? }` /
+   `overlay.hide { overlayId }` needs no schema work; the existing surface is the
+   answer. On receipt the engine applies the direction at the next frame boundary
+   (`anim_start = master_frame + 1`, the same discipline AC-17 imposes on a take),
+   never mid-frame, and a take never interrupts an overlay animation in flight.
+2. **Ticker text stack.** Owned by 07b. The overlay level makes no rasterization
+   decisions; it resolves overlay elements through the same `layer_for` walk as
+   scene elements, so layout and rasterization stay off the frame path exactly as
+   they do for scenes (§7.13). Nothing here weakens the packaged-font rule.
+3. **Preview semantics.** The spec is silent; **no rule is invented**. Overlays do
+   not composite on the Preview bus. Recorded as a v0.4 candidate.
+4. **Persistence identity.** An overlay is identified by its manifest `id`; its
+   pixels are untouched by a take (composition is `overlay(transition(A, B))`, so
+   the overlay level is applied after the transition output every frame).
+   `visibleOverlays` in §5.9.4 is a full snapshot: a present array — including an
+   **empty** one — replaces the on-air set wholesale; an absent key leaves it
+   alone (v0.4 §5.9.4's normative sentence, implemented here ahead of the merge).
+
+**Recorded assumption (spec is silent):** `overlay.show` on an on-air overlay and
+`overlay.hide` on a hidden overlay succeed as **idempotent no-ops**, returned with
+`data.noop: true` and noted in the change stream; idempotent commands still
+dispatch normally (one stateVersion bump, one audit record, one directive),
+because acceptance accounting must not depend on the mutation's effect.
+
+**Recorded clarification (fallback vs overlays; input to the next spec
+revision):** SPEC §7.14 (§6.9 in the prompt's numbering) is silent on whether
+overlays survive a fallback cut. Resolved per the FTB-above-DSK semantics the
+prompt cites from the (unmerged, absent-in-repo) industry gap analysis: the
+fallback slate composites **above** the overlay level — a fallback cut covers
+ticker, bug, banner, and clock — and on recovery the pre-fallback on-air set
+returns.
+
+The prompt's referenced research docs (`docs/industry-gap-analysis-and-z-axis.md`,
+`docs/move-parity-and-virtual-set-roadmap.md`) are **absent from the repo**; the
+clarification above is prompt-derived, not text-derived, and that provenance is
+deliberately recorded.
+
+Element renderers: this step is the composition level only. Overlay elements
+resolve through the same `layer_for` path as scene elements; `ticker`, `clock`,
+and `breakingBanner` glyph rasterization is 07b's scope. D1–D7 (rotation, pivot,
+path, extended easings beyond the schema enum, scaleMode, z-swap,
+`element.animate`) remain out; per-source envelopes and the `sfx` ramp invariant
+stay with the audio work and are not deferred into this step's tail.

@@ -49,7 +49,11 @@ fn write(dir: &Path, overlays: serde_json::Value) {
 fn report_errors(report: &serde_json::Value) -> Vec<String> {
     report["errors"]
         .as_array()
-        .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -80,7 +84,13 @@ fn duplicate_overlay_ids_fail() {
     );
     let (code, report) = run(tmp.path());
     assert_eq!(code, 2);
-    assert!(report_errors(&report).iter().any(|e| e.contains("duplicateOverlay")), "errors: {:?}", report_errors(&report));
+    assert!(
+        report_errors(&report)
+            .iter()
+            .any(|e| e.contains("duplicateOverlay")),
+        "errors: {:?}",
+        report_errors(&report)
+    );
 }
 
 #[test]
@@ -95,7 +105,13 @@ fn overlay_element_with_missing_asset_reference_fails() {
     );
     let (code, report) = run(tmp.path());
     assert_eq!(code, 2);
-    assert!(report_errors(&report).iter().any(|e| e.contains("overlayAsset")), "errors: {:?}", report_errors(&report));
+    assert!(
+        report_errors(&report)
+            .iter()
+            .any(|e| e.contains("overlayAsset")),
+        "errors: {:?}",
+        report_errors(&report)
+    );
 }
 
 #[test]
@@ -110,5 +126,11 @@ fn overlay_element_with_missing_template_reference_fails() {
     );
     let (code, report) = run(tmp.path());
     assert_eq!(code, 2);
-    assert!(report_errors(&report).iter().any(|e| e.contains("overlayTemplate")), "errors: {:?}", report_errors(&report));
+    assert!(
+        report_errors(&report)
+            .iter()
+            .any(|e| e.contains("overlayTemplate")),
+        "errors: {:?}",
+        report_errors(&report)
+    );
 }

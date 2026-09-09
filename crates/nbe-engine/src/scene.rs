@@ -285,11 +285,19 @@ impl PackageIndex {
             elements.sort_by_key(|e| e.z);
             idx.overlay_enter_frames.insert(
                 id.to_string(),
-                elements.iter().filter_map(|e| e.enter_frames).max().unwrap_or(1),
+                elements
+                    .iter()
+                    .filter_map(|e| e.enter_frames)
+                    .max()
+                    .unwrap_or(1),
             );
             idx.overlay_exit_frames.insert(
                 id.to_string(),
-                elements.iter().filter_map(|e| e.exit_frames).max().unwrap_or(1),
+                elements
+                    .iter()
+                    .filter_map(|e| e.exit_frames)
+                    .max()
+                    .unwrap_or(1),
             );
             idx.overlays.insert(id.to_string(), elements);
         }
