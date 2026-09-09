@@ -95,6 +95,7 @@ impl DirectiveHandler {
             "show.stop" => self.on_show_stop(d)?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
+            "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
@@ -392,6 +393,67 @@ impl DirectiveHandler {
         Ok(())
     }
 
+    /// Overlay show/hide (SPEC §7.10). The control plane already validated the
+    /// overlay against the package; the engine is lenient and tracks on-air
+    /// state only. The animation keys off the master clock at the frame *after*
+    /// the command lands — the same boundary discipline as a take — and a take
+    /// never touches these timelines.
+    fn on_overlay(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let Some(overlay_id) = d.target.get("overlayId").and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+        let show = d.command == "overlay.show";
+        // The declared enter/exit duration lives in the loaded package index;
+        // without one, a single frame is the honest fallback (no animation).
+        let frames = {
+            let pkg = self.state.package.lock().unwrap();
+            match pkg.as_ref() {
+                Some(idx) if show => idx
+                    .overlay_enter_frames
+                    .get(overlay_id)
+                    .copied()
+                    .unwrap_or(1),
+                Some(idx) => idx
+                    .overlay_exit_frames
+                    .get(overlay_id)
+                    .copied()
+                    .unwrap_or(1),
+                None => 1,
+            }
+        };
+        let mut overlays = self.state.overlays.lock().unwrap();
+        match (show, overlays.get(overlay_id).copied()) {
+            (true, Some(ov)) if ov.on_air => {}   // show on on-air: idle no-op
+            (false, Some(ov)) if ov.phase == crate::state::OverlayPhase::Exit => {} // hide already hiding
+            (false, None) => {}                   // hide on hidden: idle no-op
+            (true, _) => {
+                let start = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
+                overlays.insert(
+                    overlay_id.to_string(),
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: start,
+                        duration_frames: frames,
+                        phase: crate::state::OverlayPhase::Enter,
+                    },
+                );
+            }
+            (false, Some(_)) => {
+                let start = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
+                overlays.insert(
+                    overlay_id.to_string(),
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: start,
+                        duration_frames: frames,
+                        phase: crate::state::OverlayPhase::Exit,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let snapshot = &d.payload;
         let show_state = snapshot
@@ -442,6 +504,30 @@ impl DirectiveHandler {
             self.state
                 .preview_item_start_frame
                 .store(now, std::sync::atomic::Ordering::SeqCst);
+        }
+        // §5.9.4 (v0.4, implemented here per step 5's mandate): `visibleOverlays`
+        // is a full snapshot, not a patch. A present array — including an empty
+        // one — replaces the on-air set wholesale; an absent key leaves it alone.
+        if let Some(visible) = snapshot.get("visibleOverlays").and_then(|v| v.as_array()) {
+            let ids: Vec<String> = visible
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            let mut overlays = self.state.overlays.lock().unwrap();
+            overlays.clear();
+            for id in ids {
+                // Resynced overlays are authoritative state, not an animation:
+                // they land steady.
+                overlays.insert(
+                    id,
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: now,
+                        duration_frames: 1,
+                        phase: crate::state::OverlayPhase::Steady,
+                    },
+                );
+            }
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
