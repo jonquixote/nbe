@@ -445,6 +445,19 @@ impl PackageIndex {
         items
     }
 
+    /// Resolve one overlay to drawable layers (§7.10). An overlay composites above
+    /// the transition; its elements resolve through the same `layer_for` walk as
+    /// scene elements, so the two can never disagree about what a given element
+    /// draws.
+    pub fn resolve_overlay(&self, overlay_id: &str) -> ResolvedScene {
+        let layers = self
+            .overlays
+            .get(overlay_id)
+            .map(|els| els.iter().filter_map(|e| self.layer_for(e)).collect())
+            .unwrap_or_default();
+        ResolvedScene { layers }
+    }
+
     /// Resolve one item reference to drawable layers. An item that resolves to
     /// nothing yields an empty scene, which renders as black — a defined
     /// picture, not an error.
