@@ -63,7 +63,7 @@ test("overlay.show puts the overlay on air, bumps once, surfaces in the snapshot
   const { deps, state, bridge } = makeDeps();
   const before = state.stateVersion;
 
-  const r = await run(deps, "overlay.show", { overlayId: "bug", animation: "wipe" });
+  const r = await run(deps, "overlay.show", { overlayId: "bug", animation: { durationFrames: 20 } });
 
   assert.equal(r.stateVersion, before + 1, "one bump per accepted command");
   assert.ok(state.visibleOverlays.has("bug"));
@@ -77,7 +77,7 @@ test("overlay.show puts the overlay on air, bumps once, surfaces in the snapshot
   assert.equal(sent.length, 1);
   assert.equal(sent[0]!.command, "overlay.show");
   assert.deepEqual(sent[0]!.target, { overlayId: "bug" }, "engine reads overlayId from target");
-  assert.deepEqual(sent[0]!.payload, { animation: "wipe" }, "the animation override reaches the render node");
+  assert.deepEqual(sent[0]!.payload, { animation: { durationFrames: 20 } }, "the animation override reaches the render node verbatim");
 });
 
 test("a noop overlay command forwards no directive", async () => {

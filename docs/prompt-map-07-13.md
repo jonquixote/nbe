@@ -337,3 +337,37 @@ and `breakingBanner` glyph rasterization is 07b's scope. D1–D7 (rotation, pivo
 path, extended easings beyond the schema enum, scaleMode, z-swap,
 `element.animate`) remain out; per-source envelopes and the `sfx` ramp invariant
 stay with the audio work and are not deferred into this step's tail.
+
+### Step 5b records — overlay level as built (recorded 2026-09-10)
+
+Three entries, as-built, honest about the delta from the step-5 prompt:
+
+a. **Idempotency assumption:** `overlay.show` on an on-air overlay /
+`overlay.hide` on a hidden one is an idempotent success — the command is
+accepted, stateVersion bumps once, `data.noop: true` is returned, and NO
+directive is forwarded. (The step-5 prompt said "noted in telemetry";
+as-built is `data.noop`. The code comment in `commands/state.ts` cites a
+"recorded assumption" — this entry makes that citation true. It supersedes
+the step-5 entry above, which wrongly stated "one directive": a noop
+forwards nothing — `overlay.test.ts` "a noop overlay command forwards no
+directive" guards this.)
+
+b. **Fallback clarification, flagged as input to the next spec revision:**
+the spec is silent on overlay/fallback interaction; the implementation
+follows FTB-above-DSK semantics — fallback covers overlays; recovery
+restores the pre-fallback on-air set. (`render.rs` gates the whole
+scene+overlay branch under `show_fallback`; runtimes are preserved, alpha
+stays a pure function of the master clock, housekeeping drops defer to the
+first non-fallback frame.)
+
+c. **Reductions, stated plainly:** overlay animations are linear alpha
+ramps, duration-honoured, with declared easing unread and no positional
+enter/exit; overlays composite on the View bus only; the snapshot's
+`animationState` is command-moment state, not a live clock (a shown overlay
+reports "enter" until further notice). (`payload.animation.easing`, when
+carried, is ignored — see the `on_overlay` comment pointing here.)
+
+Backlog line (known debt, not fixed here): the `overlay_show` fixture's
+placeholder PNGs (`media/logo.png`, `media/fallback.png`) are stubs. The
+render-proof suite therefore uses solid graphic fills for pixel-exact
+asserts; `ticker`/`clock` glyph rasterization remains 07b's scope.

@@ -410,7 +410,18 @@ impl DirectiveHandler {
         let show = d.command == "overlay.show";
         // The declared enter/exit duration lives in the loaded package index;
         // without one, a single frame is the honest fallback (no animation).
-        let frames = {
+        // payload.animation.durationFrames, when present, overrides the package
+        // bound for that show/hide. Easing, if carried, is ignored: overlay
+        // animations are linear alpha ramps (see records doc entry c).
+        let override_frames = d
+            .payload
+            .get("animation")
+            .and_then(|a| a.get("durationFrames"))
+            .and_then(|v| v.as_u64())
+            .filter(|v| *v >= 1);
+        let frames = if let Some(o) = override_frames {
+            o
+        } else {
             let pkg = self.state.package.lock().unwrap();
             match pkg.as_ref() {
                 Some(idx) if show => idx

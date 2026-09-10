@@ -219,8 +219,10 @@ export const CommandPayloadSchemas = {
   "breaking.show": z.object({ headline: z.string().min(1), subhead: z.string().optional() }).strict(),
   "breaking.hide": z.object({}).strict(),
 
-  // 16.6 overlay
-  "overlay.show": z.object({ overlayId: id, animation: z.string().optional() }).strict(),
+  // 16.6 overlay — animation is the schema's Animation object
+  // (manifest $defs/Animation: durationFrames + optional easing etc.),
+  // forwarded verbatim; the engine reads durationFrames and ignores easing.
+  "overlay.show": z.object({ overlayId: id, animation: z.object({ durationFrames: z.number().int().min(1).optional(), delayFrames: z.number().int().min(0).optional(), easing: z.string().optional() }).passthrough().optional() }).strict(),
   "overlay.hide": z.object({ overlayId: id }).strict(),
 
   // 16.7 ticker

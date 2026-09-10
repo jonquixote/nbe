@@ -410,6 +410,15 @@ impl RenderLoop {
             Bus::View => &self.targets.view,
             Bus::Preview => &self.targets.preview,
         };
+        // §7.10 / FTB-above-DSK: the fallback slate composites ABOVE the
+        // overlay level. Under fallback no overlay draws reach the View — the
+        // `else` branch (scene + overlay_draws) is skipped entirely, so a
+        // fallback frame contains no overlay pixels. Overlay runtimes are NOT
+        // cleared: recovery restores the pre-fallback on-air set. Animation
+        // alpha stays a pure function of the master clock throughout;
+        // housekeeping drops (completed exits) defer to the first
+        // non-fallback frame because overlay_draws — the only place that
+        // drops — does not run while the slate is up.
         let show_fallback = bus == Bus::View && self.state.fallback_active.load(Ordering::SeqCst);
 
         let mut draws: Vec<(wgpu::Texture, LayerUniform)> = Vec::new();

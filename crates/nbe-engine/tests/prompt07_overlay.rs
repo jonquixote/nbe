@@ -184,6 +184,37 @@ async fn overlay_show_keys_off_the_next_frame_boundary_and_reads_enter_frames() 
 }
 
 #[tokio::test]
+async fn overlay_animation_override_beats_the_package_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    write_overlay_package(dir.path());
+    let (state, handler) = loaded(dir.path()).await;
+
+    // The package declares enter 10 for "bug"; payload.animation overrides it.
+    // Easing, if carried, is ignored (linear alpha ramps — see records entry c).
+    handler
+        .apply(&directive(
+            "overlay.show",
+            2,
+            serde_json::json!({ "overlayId": "bug" }),
+            serde_json::json!({ "animation": { "durationFrames": 20, "easing": "easeIn" } }),
+        ))
+        .await
+        .unwrap();
+
+    let bug = state
+        .overlays
+        .lock()
+        .unwrap()
+        .get("bug")
+        .copied()
+        .expect("an on-air overlay must be tracked");
+    assert_eq!(
+        bug.duration_frames, 20,
+        "payload.animation.durationFrames overrides the declared 10"
+    );
+}
+
+#[tokio::test]
 async fn overlay_show_during_exit_revives_the_overlay_not_noops() {
     let dir = tempfile::tempdir().unwrap();
     write_overlay_package(dir.path());
@@ -385,9 +416,24 @@ fn write_render_package(dir: &Path) {
                 { "id": "bug", "elements": [
                     { "id": "band", "kind": "graphic", "z": 1, "templateId": "t",
                       "fields": { "color": "#00ff00" },
-                      "transform": { "x": 0.0, "y": 0.8, "w": 1.0, "h": 0.2 },
-                      "enterAnimation": { "durationFrames": 4 },
-                      "exitAnimation": { "durationFrames": 4 } }
+                      "transform": { "x": 0.0, "y": 0.8, "w": 1.0, "h": 0.1 },
+                      "enterAnimation": { "durationFrames": 10 },
+                      "exitAnimation": { "durationFrames": 5 } }
+                ] },
+                { "id": "ticker", "elements": [
+                    { "id": "strip", "kind": "graphic", "z": 1, "templateId": "t",
+                      "fields": { "color": "#ffff00" },
+                      "transform": { "x": 0.0, "y": 0.9, "w": 1.0, "h": 0.1 } }
+                ] },
+                { "id": "banner", "elements": [
+                    { "id": "top", "kind": "graphic", "z": 1, "templateId": "t",
+                      "fields": { "color": "#ff00ff" },
+                      "transform": { "x": 0.0, "y": 0.0, "w": 1.0, "h": 0.08 } }
+                ] },
+                { "id": "clock", "elements": [
+                    { "id": "pad", "kind": "graphic", "z": 1, "templateId": "t",
+                      "fields": { "color": "#00ffff" },
+                      "transform": { "x": 0.0, "y": 0.1, "w": 0.1, "h": 0.1 } }
                 ] }
             ],
             "rundown": { "id": "R", "items": [
@@ -436,8 +482,12 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const RED: [u8; 4] = [255, 0, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 const SLATE: [u8; 4] = [200, 200, 0, 255];
+const YELLOW: [u8; 4] = [255, 255, 0, 255];
+const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+const CYAN: [u8; 4] = [0, 255, 255, 255];
 
-/// A 6-frame mix from SCN_RED (A1) to SCN_BLUE (A2), beginning at `start`.
+/// A mix from SCN_RED (A1) to SCN_BLUE (A2), beginning at `start` for
+/// `duration` frames.
 fn set_mix(state: &Arc<EngineState>, start: u64, duration: u64) {
     *state.transition.lock().unwrap() = Some(Transition {
         from_item: Some("A1".into()),
@@ -462,11 +512,13 @@ async fn overlay_persists_across_take() {
         .lock()
         .unwrap()
         .insert("bug".into(), stable_overlay(true));
-    set_mix(&state, 12, 6);
+    // A 15-frame mix between two solid-color scenes; the overlay region is
+    // pixel-identical at transition start, midpoint, and end.
+    set_mix(&state, 10, 15);
 
-    for frame in [12, 15, 18] {
+    for frame in [10, 17, 24] {
         render.render_frame(frame, None);
-        let px = px_at(&render.readback_view().await, 0.9, 0.9);
+        let px = px_at(&render.readback_view().await, 0.9, 0.85);
         assert_eq!(
             px, GREEN,
             "overlay must be pixel-identical across the mix at frame {frame}"
@@ -486,11 +538,11 @@ async fn overlay_composites_above_transition() {
         .lock()
         .unwrap()
         .insert("bug".into(), stable_overlay(true));
-    set_mix(&state, 12, 6);
+    set_mix(&state, 10, 15);
 
-    // Mid-mix (frame 15): the centre blends red and blue, but the overlay band
-    // wins over every pixel beneath it.
-    render.render_frame(15, None);
+    // Mix midpoint (frame 17): the adjacent non-overlay centre blends red and
+    // blue, but the overlay region carries the overlay's exact color, unmixed.
+    render.render_frame(17, None);
     let bytes = render.readback_view().await;
     let centre = px_at(&bytes, 0.5, 0.5);
     assert!(
@@ -498,14 +550,14 @@ async fn overlay_composites_above_transition() {
         "mid-mix centre must be a blend, got {centre:?}"
     );
     assert_eq!(
-        px_at(&bytes, 0.9, 0.9),
+        px_at(&bytes, 0.9, 0.85),
         GREEN,
         "overlay must composite above the transition blend"
     );
 }
 
 #[tokio::test]
-async fn show_animation_timing() {
+async fn show_hide_animation_timing() {
     let dir = tempfile::tempdir().unwrap();
     write_render_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
@@ -513,6 +565,8 @@ async fn show_animation_timing() {
     *state.view_item.lock().unwrap() = Some("A1".into());
     render.render_frame(0, None);
 
+    // Show at frame F with a 10-frame enter (declared on the band).
+    // Clock stopped -> anim_start = 1.
     handler
         .apply(&directive(
             "overlay.show",
@@ -522,37 +576,80 @@ async fn show_animation_timing() {
         ))
         .await
         .unwrap();
-    // Clock stopped -> anim_start = 1, enter duration 4 (declared on the band).
 
     render.render_frame(0, None);
     assert_eq!(
-        px_at(&render.readback_view().await, 0.9, 0.9),
+        px_at(&render.readback_view().await, 0.9, 0.85),
         RED,
         "alpha 0: the scene shows through"
     );
+    // Region alpha partial at F+1 ...
     render.render_frame(1, None);
-    let first = px_at(&render.readback_view().await, 0.9, 0.9);
+    let first = px_at(&render.readback_view().await, 0.9, 0.85);
     assert!(
         first[1] > 0 && first[1] < 255,
         "first animated frame is partial, got {first:?}"
     );
-    render.render_frame(4, None);
+    // ... full by F+10, steady after.
+    render.render_frame(10, None);
     assert_eq!(
-        px_at(&render.readback_view().await, 0.9, 0.9),
+        px_at(&render.readback_view().await, 0.9, 0.85),
         GREEN,
         "complete by F + durationFrames"
+    );
+    render.render_frame(11, None);
+    assert_eq!(
+        px_at(&render.readback_view().await, 0.9, 0.85),
+        GREEN,
+        "steady after completion"
+    );
+
+    // Hide at G with a 5-frame exit — gone from the on-air set and the frame
+    // by completion. Clock stopped, so the hide re-keys at anim_start = 1
+    // with duration 5: alpha hits 0 at frame 5 and the runtime drops.
+    handler
+        .apply(&directive(
+            "overlay.hide",
+            3,
+            serde_json::json!({ "overlayId": "bug" }),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    render.render_frame(1, None);
+    let hiding = px_at(&render.readback_view().await, 0.9, 0.85);
+    assert!(
+        hiding != GREEN && hiding != RED,
+        "exit in flight is a blend, got {hiding:?}"
+    );
+    render.render_frame(5, None);
+    assert_eq!(
+        px_at(&render.readback_view().await, 0.9, 0.85),
+        RED,
+        "gone from the frame by completion"
+    );
+    assert!(
+        state.overlays.lock().unwrap().get("bug").is_none(),
+        "gone from the on-air set by completion"
     );
 }
 
 #[tokio::test]
 async fn animation_immune_to_take() {
+    // Enter animation in flight; take at F+3. The region's alpha ramp
+    // afterward matches the original master-clock timeline exactly, as if the
+    // take had never happened. The take must not touch the overlay timeline
+    // (anim_start/duration unchanged), so the overlay is still partial after
+    // the take and completes on its original frame.
+    //
+    // Note: pixel-exact comparison against a no-take reference engine is the
+    // wrong proof here — a take changes the scene *under* the semi-transparent
+    // overlay, so composited pixels differ even with an identical alpha ramp.
+    // The timeline state plus completion frame is the exact-match signal.
     let dir = tempfile::tempdir().unwrap();
     write_render_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
-
     *state.view_item.lock().unwrap() = Some("A1".into());
-    render.render_frame(0, None);
-
     handler
         .apply(&directive(
             "overlay.show",
@@ -562,44 +659,68 @@ async fn animation_immune_to_take() {
         ))
         .await
         .unwrap();
-    // anim_start = 1.
+    // anim_start = 1 (clock stopped); take at F+3 = frame 4.
+    set_mix(&state, 4, 15);
 
-    // Take mid-enter. The overlay timeline is keyed off the master clock, so a
-    // take must not restart or stretch it.
-    set_mix(&state, 2, 6);
+    // The take left the overlay timeline alone.
+    let rt = state
+        .overlays
+        .lock()
+        .unwrap()
+        .get("bug")
+        .copied()
+        .expect("overlay still on air after the take");
+    assert_eq!(rt.anim_start, 1, "a take must not re-key anim_start");
+    assert_eq!(rt.duration_frames, 10, "a take must not stretch duration");
 
-    render.render_frame(2, None);
-    let mid = px_at(&render.readback_view().await, 0.9, 0.9);
+    render.render_frame(5, None);
+    let mid = px_at(&render.readback_view().await, 0.9, 0.85);
     assert!(
         mid[1] > 0 && mid[1] < 255,
         "still animating after the take, got {mid:?}"
     );
-    render.render_frame(4, None);
+    render.render_frame(10, None);
     assert_eq!(
-        px_at(&render.readback_view().await, 0.9, 0.9),
+        px_at(&render.readback_view().await, 0.9, 0.85),
         GREEN,
-        "overlay completes on its original timeline"
+        "overlay completes on its original timeline (frame 10)"
     );
 }
 
 #[tokio::test]
 async fn fallback_covers_overlays() {
+    // All four overlays on air (positions mirror the overlay_show fixture's
+    // four identities; solid graphic fills stand in because ticker/clock
+    // glyph rasterization is 07b's scope — see the records backlog line).
+    // Force fallback; readback the View: no overlay pixels, exact slate color
+    // in every overlay region. Recover: the pre-fallback on-air set is back.
     let dir = tempfile::tempdir().unwrap();
     write_render_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
 
-    state
-        .overlays
-        .lock()
-        .unwrap()
-        .insert("bug".into(), stable_overlay(true));
+    {
+        let mut ovs = state.overlays.lock().unwrap();
+        ovs.insert("bug".into(), stable_overlay(true));
+        ovs.insert("ticker".into(), stable_overlay(true));
+        ovs.insert("banner".into(), stable_overlay(true));
+        ovs.insert("clock".into(), stable_overlay(true));
+    }
 
     render.render_frame(1, None);
+    let before = render.readback_view().await;
+    // Sanity: every overlay region carries its exact color before fallback.
+    assert_eq!(px_at(&before, 0.9, 0.85), GREEN, "bug on before fallback");
     assert_eq!(
-        px_at(&render.readback_view().await, 0.9, 0.9),
-        GREEN,
-        "overlay on before fallback"
+        px_at(&before, 0.5, 0.95),
+        YELLOW,
+        "ticker on before fallback"
     );
+    assert_eq!(
+        px_at(&before, 0.5, 0.04),
+        MAGENTA,
+        "banner on before fallback"
+    );
+    assert_eq!(px_at(&before, 0.05, 0.15), CYAN, "clock on before fallback");
 
     handler
         .apply(&directive(
@@ -613,26 +734,45 @@ async fn fallback_covers_overlays() {
 
     render.render_frame(2, None);
     let bytes = render.readback_view().await;
-    assert_eq!(
-        px_at(&bytes, 0.9, 0.9),
-        SLATE,
-        "a fallback cut covers the overlay level"
-    );
-    assert_eq!(
-        px_at(&bytes, 0.5, 0.5),
-        SLATE,
-        "the slate fills the whole frame"
-    );
+    // No overlay pixels: exact slate color in every overlay region centre.
+    for (name, fx, fy) in [
+        ("bug", 0.9, 0.85),
+        ("ticker", 0.5, 0.95),
+        ("banner", 0.5, 0.04),
+        ("clock", 0.05, 0.15),
+        ("centre", 0.5, 0.5),
+    ] {
+        assert_eq!(
+            px_at(&bytes, fx, fy),
+            SLATE,
+            "a fallback cut covers the overlay level ({name})"
+        );
+    }
 
-    // Recovery: the on-air set was never touched by the fallback, so clearing it
-    // brings every overlay straight back.
+    // Recovery: the on-air set was never touched by the fallback (runtimes
+    // preserved), so clearing the flag brings every overlay straight back,
+    // steady. No recovery directive exists; the test clears the flag
+    // directly, which is exactly what the flag's owner would do.
     state
         .fallback_active
         .store(false, std::sync::atomic::Ordering::SeqCst);
     render.render_frame(3, None);
+    let after = render.readback_view().await;
+    assert_eq!(px_at(&after, 0.9, 0.85), GREEN, "bug returns on recovery");
     assert_eq!(
-        px_at(&render.readback_view().await, 0.9, 0.9),
-        GREEN,
-        "overlays return on recovery"
+        px_at(&after, 0.5, 0.95),
+        YELLOW,
+        "ticker returns on recovery"
+    );
+    assert_eq!(
+        px_at(&after, 0.5, 0.04),
+        MAGENTA,
+        "banner returns on recovery"
+    );
+    assert_eq!(px_at(&after, 0.05, 0.15), CYAN, "clock returns on recovery");
+    assert_eq!(
+        state.overlays.lock().unwrap().len(),
+        4,
+        "the pre-fallback on-air set is back"
     );
 }
