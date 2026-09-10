@@ -73,7 +73,11 @@ What exists, where it lives, and what this prompt must add. Every row is read fr
 ## Step 2 — Templates
 
 - The five §6.5 template classes — `lowerThirdHeadline`, `lowerThirdName`, `breakingBanner`, `ticker`, `clock` — as typed JSON layouts per the `GraphicTemplate` definition.
-- **Open question this prompt must close, not inherit:** the old text said "as JSON layouts in `templates/graphics/`". **No such directory exists.** Today `templateId` references resolve against the show package (`main.rs:566`). Either create the directory as a library of shipped defaults *and* say how package-local templates override it, or drop it and keep templates package-local. Pick one and write it down; do not leave both readings open.
+- **Open question this prompt must close, not inherit — and it is not the question the delta addendum first stated.** `templates/graphics/` **does exist**, and has since the founding scaffold (`7704eb8`). It holds one tracked file, `README.md`, reading: *"Template JSON layouts plus packaged font assets. Rendered to GPU textures by `nbe-engine` (SDF/Skia-class text rendering). There is no HTML/browser render path in the engine."*
+
+  So the real tension is **scaffold-intent versus package-resident**. The scaffold put template layouts *and packaged fonts* in the repo at `templates/graphics/`. The implemented resolution reads `templateId` from the show package (`main.rs:566`), and `fontAssetIds` resolves against assets the manifest declares (`main.rs:514-525`) — i.e. package-resident. Both readings are live in the tree right now, one as a README and one as code.
+
+  **This bears directly on Step 0b's font-asset requirement:** repo-resident per the scaffold, package-resident per the package model, and the answer decides where the license-clean font is committed and how preflight sees it. Decide it in this prompt's execution — with the user, since the scaffold's intent is theirs — and write the decision down. Do not leave both readings open, and do not resolve it by deleting the README.
 - Wire the §16.5 commands: `graphic.show`, `graphic.hide`, `graphic.update`. Fields are editable live; the element re-lays out once on update and holds via texture otherwise.
 
 ## Step 3 — The ticker
@@ -131,6 +135,6 @@ Per Standards §5, plus:
 - The As-Built Ledger's four "does not exist" rows are implemented, or explicitly re-deferred **in writing with a named owner**.
 - The font asset is committed, license-clean, and its licence recorded.
 - The placeholder-PNG re-baseline is its own commit with the before/after values quoted.
-- The `templates/graphics/` question is closed in this document, not left to the reader.
+- The `templates/graphics/` question — scaffold-intent versus package-resident, and therefore where the font asset lives — is closed in this document, not left to the reader.
 - Falsification table in the report: behaviour removed → test that failed, complete pastes.
 - CI summary lines quoted verbatim from the runners, per Standards §2b.

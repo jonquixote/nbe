@@ -289,6 +289,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
+| **The dress-rehearsal CI job is `continue-on-error`** | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. Not that PR's work. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
