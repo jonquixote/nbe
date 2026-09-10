@@ -399,7 +399,12 @@ impl DirectiveHandler {
     /// the command lands — the same boundary discipline as a take — and a take
     /// never touches these timelines.
     fn on_overlay(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        let Some(overlay_id) = d.target.get("overlayId").and_then(|v| v.as_str()) else {
+        let Some(overlay_id) = d
+            .target
+            .get("overlayId")
+            .and_then(|v| v.as_str())
+            .or_else(|| d.payload.get("overlayId").and_then(|v| v.as_str()))
+        else {
             return Ok(());
         };
         let show = d.command == "overlay.show";

@@ -7,7 +7,10 @@ import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.j
 export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   // overlay
   reg.set("overlay.show", {
-    forward: true,
+    // forward:false — the directive is produced explicitly below so it carries
+    // the overlayId on `target` (mirroring view.take's `target: { itemRef }`),
+    // which is what the engine's on_overlay reads.
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
       const overlayId = String(payload.overlayId);
       ctx.state.requireOverlay(overlayId);
@@ -18,12 +21,16 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
       }
       ctx.state.visibleOverlays.add(overlayId);
       ctx.state.overlayAnimation.set(overlayId, "enter");
-      return {};
+      const directive: Record<string, unknown> = {};
+      if (payload.animation !== undefined) directive.animation = payload.animation;
+      return {
+        extraDirectives: [{ command: "overlay.show", target: { overlayId }, payload: directive }],
+      };
     },
   });
 
   reg.set("overlay.hide", {
-    forward: true,
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
       const overlayId = String(payload.overlayId);
       ctx.state.requireOverlay(overlayId);
@@ -32,8 +39,10 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
         return { data: { noop: true } };
       }
       ctx.state.visibleOverlays.delete(overlayId);
-      ctx.state.overlayAnimation.set(overlayId, "exit");
-      return {};
+      ctx.state.overlayAnimation.delete(overlayId);
+      return {
+        extraDirectives: [{ command: "overlay.hide", target: { overlayId }, payload: {} }],
+      };
     },
   });
 

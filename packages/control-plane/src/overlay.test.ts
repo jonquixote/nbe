@@ -63,7 +63,7 @@ test("overlay.show puts the overlay on air, bumps once, surfaces in the snapshot
   const { deps, state, bridge } = makeDeps();
   const before = state.stateVersion;
 
-  const r = await run(deps, "overlay.show", { overlayId: "bug" });
+  const r = await run(deps, "overlay.show", { overlayId: "bug", animation: "wipe" });
 
   assert.equal(r.stateVersion, before + 1, "one bump per accepted command");
   assert.ok(state.visibleOverlays.has("bug"));
@@ -71,10 +71,22 @@ test("overlay.show puts the overlay on air, bumps once, surfaces in the snapshot
   assert.deepEqual(snapshot.overlays, [
     { id: "bug", onAir: true, animationState: "enter" },
   ]);
-  // Forwarded to the render bridge like every forward:true command.
+  // The directive is the engine-facing wire contract: overlayId rides `target`
+  // (what on_overlay reads), the optional animation rides `payload`.
   const sent = bridge.drain();
   assert.equal(sent.length, 1);
   assert.equal(sent[0]!.command, "overlay.show");
+  assert.deepEqual(sent[0]!.target, { overlayId: "bug" }, "engine reads overlayId from target");
+  assert.deepEqual(sent[0]!.payload, { animation: "wipe" }, "the animation override reaches the render node");
+});
+
+test("a noop overlay command forwards no directive", async () => {
+  const { deps, bridge } = makeDeps();
+  await run(deps, "overlay.show", { overlayId: "bug" });
+  bridge.drain(); // drop the real transition's directive
+
+  await run(deps, "overlay.show", { overlayId: "bug" }); // idempotent no-op
+  assert.equal(bridge.drain().length, 0, "a noop must not re-trigger the render node");
 });
 
 test("overlay.show on an on-air overlay is an idempotent noop", async () => {
