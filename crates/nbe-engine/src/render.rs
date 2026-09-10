@@ -410,6 +410,15 @@ impl RenderLoop {
             Bus::View => &self.targets.view,
             Bus::Preview => &self.targets.preview,
         };
+        // §7.10 / FTB-above-DSK: the fallback slate composites ABOVE the
+        // overlay level. Under fallback no overlay draws reach the View — the
+        // `else` branch (scene + overlay_draws) is skipped entirely, so a
+        // fallback frame contains no overlay pixels. Overlay runtimes are NOT
+        // cleared: recovery restores the pre-fallback on-air set. Animation
+        // alpha stays a pure function of the master clock throughout;
+        // housekeeping drops (completed exits) defer to the first
+        // non-fallback frame because overlay_draws — the only place that
+        // drops — does not run while the slate is up.
         let show_fallback = bus == Bus::View && self.state.fallback_active.load(Ordering::SeqCst);
 
         let mut draws: Vec<(wgpu::Texture, LayerUniform)> = Vec::new();
@@ -428,6 +437,13 @@ impl RenderLoop {
                         draws.push(d);
                     }
                 }
+            }
+            // §7.10: `View = overlay(transition(A, B))`. Overlay elements
+            // composite after the transition output, every frame, and only on
+            // the View bus (Preview semantics are left to a future revision —
+            // the spec is silent and no rule is invented).
+            if bus == Bus::View {
+                self.overlay_draws(frame, &mut draws);
             }
         }
 
@@ -557,9 +573,76 @@ impl RenderLoop {
         self.gpu.readback_rgba(&self.targets.view).await
     }
 
+    /// The on-air overlay draws for this frame, appended after the transition
+    /// output. Each overlay's alpha is its master-clock animation value, and a
+    /// completed exit drops the overlay from the on-air set (§7.10).
+    fn overlay_draws(&self, frame: u64, draws: &mut Vec<(wgpu::Texture, LayerUniform)>) {
+        let mut to_drop = Vec::new();
+        let on_air: Vec<(String, f32, u64)> = {
+            let mut overlays = self.state.overlays.lock().unwrap();
+            let mut out = Vec::new();
+            for (id, rt) in overlays.iter() {
+                let alpha = overlay_alpha(*rt, frame);
+                if rt.phase == crate::state::OverlayPhase::Exit && alpha <= 0.0 {
+                    to_drop.push(id.clone());
+                    continue;
+                }
+                out.push((id.clone(), alpha, rt.anim_start));
+            }
+            for id in &to_drop {
+                overlays.remove(id);
+            }
+            out
+        };
+        if on_air.is_empty() {
+            return;
+        }
+        let index = self.state.package.lock().unwrap();
+        let Some(index) = index.as_ref() else {
+            return;
+        };
+        for (id, alpha, t0) in on_air {
+            for layer in index.resolve_overlay(&id).layers {
+                // Overlay timelines key off the master clock. A video overlay
+                // reads from its own went-on-air frame (`anim_start`, the first
+                // frame it was visible), independent of any take — §12.1's t0.
+                if let Some(d) = self.draw_for(&layer, alpha, frame, t0) {
+                    draws.push(d);
+                }
+            }
+        }
+    }
+
     /// Read the Preview target back as RGBA8.
     pub async fn readback_preview(&self) -> Vec<u8> {
         self.gpu.readback_rgba(&self.targets.preview).await
+    }
+}
+
+/// An overlay's opacity this frame, a pure function of the master clock and the
+/// frame it went on/off air (§7.10). `anim_start` is `master_frame + 1` as set
+/// by the directive, so the first animated frame is `anim_start` and completion
+/// lands at `anim_start + duration_frames - 1`.
+fn overlay_alpha(rt: crate::state::OverlayRuntime, frame: u64) -> f32 {
+    use crate::state::OverlayPhase;
+    match rt.phase {
+        OverlayPhase::Steady => 1.0,
+        OverlayPhase::Enter => {
+            let elapsed = frame as i64 - rt.anim_start as i64 + 1;
+            if elapsed <= 0 {
+                0.0
+            } else {
+                (elapsed as f32 / rt.duration_frames.max(1) as f32).min(1.0)
+            }
+        }
+        OverlayPhase::Exit => {
+            let elapsed = frame as i64 - rt.anim_start as i64 + 1;
+            if elapsed <= 0 {
+                1.0
+            } else {
+                (1.0 - elapsed as f32 / rt.duration_frames.max(1) as f32).max(0.0)
+            }
+        }
     }
 }
 

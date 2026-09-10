@@ -982,6 +982,9 @@ fn the_driver_drains_intents_and_they_reach_the_graph() {
     // driver PUBLISHED. Reading the graph's own meters here would read them
     // after `publish` reset them — always silence, and a test that passes
     // whether or not the intent was ever applied.
+    // One block per window, so every cycle publishes: this test is about the
+    // gain reaching the graph, not about the meter's window.
+    driver.set_meter_window(driver.block_duration());
     for f in 1..8 {
         driver.cycle(f);
     }
@@ -1000,6 +1003,7 @@ fn the_driver_drains_intents_and_they_reach_the_graph() {
     // PUBLISHED peaks here too — the graph's own meters are reset by publish.
     let fresh_state = Arc::new(EngineState::new(HOUSE_RATE));
     let mut fresh = driver_with_null_sink(fresh_state.clone());
+    fresh.set_meter_window(fresh.block_duration());
     fresh.graph.set_source(
         BusId::Music,
         vec![Source::Tone {
@@ -1025,6 +1029,9 @@ fn the_driver_drains_intents_and_they_reach_the_graph() {
 fn the_driver_publishes_the_v0_3_3_telemetry_fields() {
     let state = Arc::new(EngineState::new(HOUSE_RATE));
     let mut driver = driver_with_null_sink(state.clone());
+    // One block per meter window: this test is about the published fields
+    // being real, not about R2's windowing.
+    driver.set_meter_window(driver.block_duration());
     driver.graph.set_source(
         BusId::Mic,
         vec![Source::Tone {
@@ -1166,6 +1173,12 @@ fn a_ramp_shorter_than_the_floor_is_still_a_ramp() {
 fn peaks_are_windowed_so_a_meter_falls_again() {
     let state = Arc::new(EngineState::new(HOUSE_RATE));
     let mut driver = driver_with_null_sink(state.clone());
+    // A window of two blocks. Peaks are held across a window and published on
+    // its boundary — R2: they used to be published and reset every block, so a
+    // tick covering one second reported one 33 ms block of it, about 3%, and a
+    // 0.4 s soundboard stab was a coin toss. Two blocks keeps this test fast
+    // while still making it cross a real boundary rather than a per-block reset.
+    driver.set_meter_window(driver.block_duration() * 2);
     driver.graph.set_source(
         BusId::Mic,
         vec![Source::Tone {
@@ -1174,12 +1187,14 @@ fn peaks_are_windowed_so_a_meter_falls_again() {
         }],
     );
     driver.cycle(0);
+    driver.cycle(1);
     let loud = state.bus_peaks.lock().unwrap().get("mic").copied().unwrap();
 
     // Silence the source; the next window must report silence, not the
     // loudest moment since the show began.
     driver.graph.set_source(BusId::Mic, Vec::new());
-    driver.cycle(1);
+    driver.cycle(2);
+    driver.cycle(3);
     let quiet = state.bus_peaks.lock().unwrap().get("mic").copied().unwrap();
 
     assert!(
@@ -1461,4 +1476,46 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
     // unmissable; this join cannot see it, because the swap has already taken
     // the bus through silence by the time the gain moves.
     println!("muted take: baseline {baseline:.1} dBFS, muted {worst:.1} dBFS");
+}
+
+#[test]
+fn a_transient_shorter_than_the_window_still_reaches_the_meter() {
+    // R2. `publish` wrote the block's peaks and reset every ~33 ms while
+    // telemetry sampled once per second, so each tick reported one block —
+    // about 3% of the interval it claimed to cover. A 0.4 s soundboard stab
+    // landing in the other 97% simply never appeared: rehearsal step 6 was red
+    // in 4 of 6 runs, and an operator watching `busPeakDbfs` saw a strobe.
+    //
+    // The decision is peak-hold across the window. This is the case that
+    // decides it: a transient in the FIRST block of a four-block window, with
+    // silence after it, must still be what the window reports.
+    let state = Arc::new(EngineState::new(HOUSE_RATE));
+    let mut driver = driver_with_null_sink(state.clone());
+    driver.set_meter_window(driver.block_duration() * 4);
+
+    driver.graph.set_source(
+        BusId::Sfx,
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: db_to_linear(-6.0),
+        }],
+    );
+    driver.cycle(0);
+    driver.graph.set_source(BusId::Sfx, Vec::new());
+    for f in 1..4 {
+        driver.cycle(f);
+    }
+
+    let sfx = state
+        .bus_peaks
+        .lock()
+        .unwrap()
+        .get("sfx")
+        .copied()
+        .expect("sfx is metered");
+    assert!(
+        (sfx - -6.0).abs() < 1.5,
+        "the window must report its loudest moment, not its last block; the \
+         transient was -6 dBFS and the window reported {sfx:.1} dBFS"
+    );
 }

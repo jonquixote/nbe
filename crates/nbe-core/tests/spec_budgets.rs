@@ -63,6 +63,12 @@ fn only_loop_cache_constructs_a_cache_budget_from_literals() {
     // The constants are single-source only if the struct is constructed in one
     // place. `CacheBudget::from_manifest` is that place; a struct literal
     // anywhere else is how 1024/4096 came to exist beside 256/512.
+    //
+    // `CacheBudget`'s fields are private now, so the compiler refuses a literal
+    // in any other crate outright — and refuses the mutation this grep never
+    // saw (`let mut b = …; b.per_loop_mib = 1024;`), which is why the fields
+    // were closed rather than the lint widened. What remains for this test is
+    // proliferation *inside* `nbe-core`, where privacy does not apply.
     let mut offenders = Vec::new();
     let mut stack = vec![repo_root().join("crates")];
     while let Some(dir) = stack.pop() {

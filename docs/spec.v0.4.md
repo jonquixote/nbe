@@ -1692,6 +1692,17 @@ missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
 
+Implementation note (v0.4): `busPeakDbfs` is a **peak-hold across a meter
+window**, not an instantaneous sample. The engine's audio graph meters every
+block (~33 ms) and holds the loudest value until the window closes, so a
+transient shorter than a telemetry interval still reaches the operator — it did
+not before, and a 0.4 s soundboard stab was reported about 3% of the time. Two
+consequences for anyone reading these values: a peak may be up to one window old
+by the time a tick carries it, and the window is closed on the engine's own
+audio-block count rather than on the tick's wall clock, so the two can slide
+relative to each other under load. The field answers "did this bus peak, and how
+hot" — it is not a source of timing.
+
 ### 10.1.1 Field ownership and the merge (normative, new in v0.3.2)
 
 Two processes hold the truth for different fields, and the control plane is the single emitter. Ownership:

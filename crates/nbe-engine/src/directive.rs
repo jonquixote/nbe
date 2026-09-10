@@ -55,6 +55,7 @@ impl PlaybackTracker {
     }
 }
 
+#[derive(Clone)]
 pub struct DirectiveHandler {
     state: SharedEngineState,
     outgoing: SharedOutgoing,
@@ -73,11 +74,28 @@ impl DirectiveHandler {
     /// Apply a directive; advance the last-applied stateVersion on success.
     pub async fn apply(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         match d.command.as_str() {
-            "show.load" => self.on_show_load(d)?,
+            // `show.load` decodes every video asset in the package — seconds of
+            // blocking CPU work. Run inline on the async directive path it owned
+            // the runtime: a measured 4.02 s load let no other task run at all,
+            // so `show.start` could not be applied and the telemetry pump could
+            // not tick. That is the whole of "R5: the clock does not start
+            // promptly" — the clock was never the defect. `MasterClock` is
+            // `(now - epoch) * rate` and runs from the instant `start()` is
+            // called; it read 0 because `show.start` had not been applied yet,
+            // and it jumped to 150 because five seconds of it had gone
+            // unobserved. Blocking work belongs on the blocking pool.
+            "show.load" => {
+                let handler = self.clone();
+                let frame = d.clone();
+                tokio::task::spawn_blocking(move || handler.on_show_load(&frame))
+                    .await
+                    .map_err(|e| DirectiveError::Invalid(format!("show.load panicked: {e}")))??;
+            }
             "show.start" => self.on_show_start(d)?,
             "show.stop" => self.on_show_stop(d)?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
+            "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
@@ -159,6 +177,9 @@ impl DirectiveHandler {
                     // control plane uses for auth failures (SPEC §5.3).
                     tracing::error!(asset = %asset_id, err = %e, "video asset failed to decode");
                     library.failures.insert(asset_id.clone(), e.to_string());
+                    self.state
+                        .decode_failures_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     // `itemEvent` is addressed to a rundown Item, because that
                     // is what the §17.3 state machine tracks. Reporting an
@@ -166,9 +187,18 @@ impl DirectiveHandler {
                     // cannot attribute to anything.
                     let affected = index.items_using_asset(asset_id);
                     if affected.is_empty() {
+                        // F1/F2. This branch used to be a `warn!` and nothing
+                        // else: deleting the line left the suite green, because
+                        // a log line is not an effect. The count is the effect —
+                        // it is the only evidence an unattributable decode
+                        // failure happened, since no Item will ever go ERROR
+                        // for it.
+                        self.state
+                            .unattributable_decode_failures_total
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         tracing::warn!(
                             asset = %asset_id,
-                            "decode failure affects no rundown item; nothing to report"
+                            "decode failure affects no rundown item; counted, not reported as an itemEvent"
                         );
                     }
                     for item_ref in affected {
@@ -363,6 +393,92 @@ impl DirectiveHandler {
         Ok(())
     }
 
+    /// Overlay show/hide (SPEC §7.10). The control plane already validated the
+    /// overlay against the package; the engine is lenient and tracks on-air
+    /// state only. The animation keys off the master clock at the frame *after*
+    /// the command lands — the same boundary discipline as a take — and a take
+    /// never touches these timelines.
+    fn on_overlay(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let Some(overlay_id) = d
+            .target
+            .get("overlayId")
+            .and_then(|v| v.as_str())
+            .or_else(|| d.payload.get("overlayId").and_then(|v| v.as_str()))
+        else {
+            return Ok(());
+        };
+        let show = d.command == "overlay.show";
+        // The declared enter/exit duration lives in the loaded package index;
+        // without one, a single frame is the honest fallback (no animation).
+        // payload.animation.durationFrames, when present, overrides the package
+        // bound for that show/hide. Easing and delayFrames, if carried, are
+        // ignored: overlay animations are linear alpha ramps (see records doc
+        // entry c).
+        let override_frames = d
+            .payload
+            .get("animation")
+            .and_then(|a| a.get("durationFrames"))
+            .and_then(|v| v.as_u64())
+            .filter(|v| *v >= 1);
+        let frames = if let Some(o) = override_frames {
+            o
+        } else {
+            let pkg = self.state.package.lock().unwrap();
+            match pkg.as_ref() {
+                Some(idx) if show => idx
+                    .overlay_enter_frames
+                    .get(overlay_id)
+                    .copied()
+                    .unwrap_or(1),
+                Some(idx) => idx
+                    .overlay_exit_frames
+                    .get(overlay_id)
+                    .copied()
+                    .unwrap_or(1),
+                None => 1,
+            }
+        };
+        // Read the clock before locking `overlays` so no lock is held across
+        // the clock acquire (keeps the lock order clock-after-overlays
+        // direction failed-friendlier).
+        let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
+        let mut overlays = self.state.overlays.lock().unwrap();
+        match (show, overlays.get(overlay_id).copied()) {
+            // Show on an on-air overlay is a no-op only when it is Steady or
+            // Entering. A show during an Exit revives the overlay: the control
+            // plane re-adds and forwards (its `visibleOverlays` was already
+            // deleted on hide), so the engine must flip it back to Enter rather
+            // than let it drop at exit-complete — otherwise the two layers
+            // disagree about the overlay's fate.
+            (true, Some(ov)) if ov.on_air && ov.phase != crate::state::OverlayPhase::Exit => {}
+            (false, Some(ov)) if ov.phase == crate::state::OverlayPhase::Exit => {} // hide already hiding
+            (false, None) => {} // hide on hidden: idle no-op
+            (true, _) => {
+                overlays.insert(
+                    overlay_id.to_string(),
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: next_frame,
+                        duration_frames: frames,
+                        phase: crate::state::OverlayPhase::Enter,
+                    },
+                );
+            }
+            (false, Some(_)) => {
+                overlays.insert(
+                    overlay_id.to_string(),
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: next_frame,
+                        duration_frames: frames,
+                        phase: crate::state::OverlayPhase::Exit,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let snapshot = &d.payload;
         let show_state = snapshot
@@ -413,6 +529,30 @@ impl DirectiveHandler {
             self.state
                 .preview_item_start_frame
                 .store(now, std::sync::atomic::Ordering::SeqCst);
+        }
+        // §5.9.4 (v0.4, implemented here per step 5's mandate): `visibleOverlays`
+        // is a full snapshot, not a patch. A present array — including an empty
+        // one — replaces the on-air set wholesale; an absent key leaves it alone.
+        if let Some(visible) = snapshot.get("visibleOverlays").and_then(|v| v.as_array()) {
+            let ids: Vec<String> = visible
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            let mut overlays = self.state.overlays.lock().unwrap();
+            overlays.clear();
+            for id in ids {
+                // Resynced overlays are authoritative state, not an animation:
+                // they land steady.
+                overlays.insert(
+                    id,
+                    crate::state::OverlayRuntime {
+                        on_air: true,
+                        anim_start: now,
+                        duration_frames: 1,
+                        phase: crate::state::OverlayPhase::Steady,
+                    },
+                );
+            }
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");

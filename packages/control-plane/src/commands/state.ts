@@ -7,22 +7,42 @@ import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.j
 export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   // overlay
   reg.set("overlay.show", {
-    forward: true,
+    // forward:false — the directive is produced explicitly below so it carries
+    // the overlayId on `target` (mirroring view.take's `target: { itemRef }`),
+    // which is what the engine's on_overlay reads.
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
       const overlayId = String(payload.overlayId);
       ctx.state.requireOverlay(overlayId);
+      // §16.6 + recorded assumption: show on an on-air overlay is an
+      // idempotent success no-op, noted as `data.noop` for the change stream.
+      if (ctx.state.visibleOverlays.has(overlayId)) {
+        return { data: { noop: true } };
+      }
       ctx.state.visibleOverlays.add(overlayId);
-      return {};
+      ctx.state.overlayAnimation.set(overlayId, "enter");
+      const directive: Record<string, unknown> = {};
+      if (payload.animation !== undefined) directive.animation = payload.animation;
+      return {
+        extraDirectives: [{ command: "overlay.show", target: { overlayId }, payload: directive }],
+      };
     },
   });
 
   reg.set("overlay.hide", {
-    forward: true,
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
       const overlayId = String(payload.overlayId);
       ctx.state.requireOverlay(overlayId);
+      // Mirror of show: hide on a hidden overlay is an idempotent no-op.
+      if (!ctx.state.visibleOverlays.has(overlayId)) {
+        return { data: { noop: true } };
+      }
       ctx.state.visibleOverlays.delete(overlayId);
-      return {};
+      ctx.state.overlayAnimation.delete(overlayId);
+      return {
+        extraDirectives: [{ command: "overlay.hide", target: { overlayId }, payload: {} }],
+      };
     },
   });
 

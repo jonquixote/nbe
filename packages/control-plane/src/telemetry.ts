@@ -27,6 +27,8 @@ export interface TelemetryTick {
   // control-plane-owned
   viewItem: string | null;
   previewItem: string | null;
+  /** On-air overlays (SPEC §7.10); surfaces `overlay.show`/`hide`. */
+  visibleOverlays: string[];
   streamState: string;
   recordState: string;
   automationHold: boolean;
@@ -71,6 +73,7 @@ export function buildTick(
     degradationRung: f?.degradationRung ?? 0,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
+    visibleOverlays: Array.from(state.visibleOverlays),
     streamState: state.streamState,
     recordState: state.recordState,
     automationHold: state.automationHold,

@@ -60,9 +60,40 @@ Rules:
    binaries** — the last mutation compiled is the one still in `target/`, so
    rebuild from the restored tree before trusting any number you measure
    afterwards; the v0.4 close-out pass nearly filed a false HIGH regression off
-   an artifact built under a mutation it had already reverted.
+   an artifact built under a mutation it had already reverted. And **know what
+   your restore actually restores**: `git checkout <commit> -- <path>` *stages*
+   what it writes, so a following `git checkout -- .` restores from the index
+   and silently keeps the other commit's sources. `git reset --hard HEAD` is the
+   restore. The 07-spine pass caught this only because `git status` said 7 where
+   it expected 0 — the eighth variant of this trap, and the first that survives
+   a restore that looks like it worked. The ninth is **a full disk**: `cargo
+   build` truncated a release binary to 1,712 bytes and still exited through the
+   pass's pipeline without a visible error, so the next probe failed with
+   `exit 127` and read like a defect in the code under test. On a machine under
+   disk pressure, check the artifact's size or hash after a build before
+   trusting anything measured with it — same class as the stale binary, new
+   cause, and this one leaves no dirty file to notice.
 4. **A test that passes with its behaviour deleted is a defect**, and is fixed
    or deleted in the same change — not carried as coverage.
+5. **Evidence pastes are complete.** Pipes that truncate output (`head`,
+   `tail`) or swallow exit status are forbidden in falsification and gate
+   evidence. If length forces truncation, state the total count and what was
+   cut. Truncation has produced a false claim three times here: a
+   falsification piped through `head -1` that swallowed its exit status, a
+   `head -1` that masked a smoke-path exit code, and a `head -4` that cut the
+   fourth of four `tsc` errors and put "three errors" into a commit message
+   permanently.
+6. **A commit's message names what it carries.** `chore`, `fix`, `refactor`
+   and formatting commits carry only what their label says; features, tests,
+   and records never ride under a formatting label. And **the label is never
+   evidence of content**: a review that samples commits reads every diff, so
+   "skipped, it was labeled chore" is a finding about the review, not about the
+   commit. Both halves come from one incident on this branch. `9872cd7`, titled
+   `chore: rustfmt`, carried +552/-17 — the render harness, five golden-frame
+   tests, the step-5 records, and a 131-line plan document. The review that
+   followed sampled 9 of its 10 commits, trusted the tenth's label, and on that
+   basis reported the render suite and the records as absent. The commit made
+   the claim possible; the review made it.
 
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
@@ -75,6 +106,19 @@ runners printed, not a hand-tallied figure. The `rust` and `control-plane` CI
 jobs echo their summaries in a collapsed group for exactly this purpose; quote
 those lines. Arithmetic across suites has been wrong often enough that it is no
 longer an acceptable source.
+
+## 2c. Records and mandated text
+
+Text mandated verbatim by a prompt stays verbatim until the mandating authority
+ratifies a change. A later commit may merge or reword it only with disclosure in
+its report; absent disclosure and ratification, absence of the mandated text is
+a finding.
+
+Merging two records sections is often the right call — sections that disagree
+with each other are worse than sections that repeat each other. The rule does
+not forbid the merge; it forbids the merge going unrecorded. State it in the
+report, and leave the merged section carrying every half of the substance the
+original mandate covered.
 
 ## 3. Prompt structure
 
@@ -97,6 +141,23 @@ Every prompt MUST also state, in its constraints:
 - **Hygiene**: caching, logging, error-type tightening, path cleanup, dependency trimming. Hygiene-only prompts MUST NOT alter runtime behaviour.
 - **Proof of hygiene**: all prior tests remain unchanged and green. If a hygiene change requires modifying an existing test, it is a behaviour change — reclassify it and say so.
 - **Behaviour**: anything observable by a caller, a test, a CI gate, or an operator. Behaviour changes require their own prompt and acceptance criteria.
+- **Verify a build artifact before a later step consumes it.** Any build step
+  whose output a later step uses MUST verify that output first — a size sanity
+  floor, a recorded hash, or a smoke execution. Rationale: under disk pressure
+  `cargo build` has produced a truncated 1,712-byte "release binary" **with a
+  clean exit code**; the consumer then failed `exit 127` and the failure read as
+  a defect in the code under test rather than in the build. Verify the artifact
+  at build time, not at probe time — a probe that fails for a build reason costs
+  a whole debugging session pointed at the wrong file.
+
+## 4a. Blocked work items
+
+When a prompt contains independent work items and one is blocked by a false assumption in
+the prompt, complete the independent items, stop the blocked item at the decision point,
+and report both. Halt the entire prompt only when the items share files or code paths, or
+when the block undermines the prompt's premise. A blocked item is reported with: the false
+assumption, the measurement that disproved it, the candidate resolutions, and why each is
+a decision above the agent's authority.
 
 ## 5. Definition of done (all prompts)
 

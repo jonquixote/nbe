@@ -140,18 +140,32 @@ impl RenderChannel {
         let out_tx = tx.clone();
         let pump_state = state.clone();
         let pump_outgoing = outgoing.clone();
+        // Engine frames leave as soon as they are queued; the telemetry tick
+        // keeps its own cadence. These were one loop, so an
+        // `appliedStateVersion` acknowledgement waited for the next telemetry
+        // interval — up to a second — and §5.9.5's quiescence handshake was
+        // racing a snapshot taken at command-accept time. The acks were never
+        // missing (`DirectiveHandler::apply` emits one per applied directive);
+        // they were late, which reads identically from outside.
         let pump = tokio::spawn(async move {
+            let mut next_tick = tokio::time::Instant::now();
             loop {
                 for frame in pump_outgoing.drain() {
                     if let Ok(s) = serde_json::to_string(&frame) {
                         let _ = out_tx.send(s).await;
                     }
                 }
-                let tick = build_tick(&pump_state);
-                if let Ok(s) = serde_json::to_string(&tick) {
-                    let _ = out_tx.send(s).await;
+                if tokio::time::Instant::now() >= next_tick {
+                    let tick = build_tick(&pump_state);
+                    if let Ok(s) = serde_json::to_string(&tick) {
+                        let _ = out_tx.send(s).await;
+                    }
+                    next_tick += interval;
                 }
-                tokio::time::sleep(interval).await;
+                tokio::select! {
+                    _ = pump_outgoing.ready() => {}
+                    _ = tokio::time::sleep_until(next_tick) => {}
+                }
             }
         });
 

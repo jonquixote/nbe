@@ -28,6 +28,14 @@ const RENDER = "render-token";
 const OPERATOR = "operator-token";
 const MONITOR = "monitor-token";
 
+// A wedged `nbe-preflight` used to hang this whole suite: `show.load` never
+// answered, and the unbounded child process kept Node's event loop open, so the
+// suite reported its results and never exited. The bound lives in
+// `runPreflight` now; this keeps the suite's share of it short, well inside
+// `send()`'s own 15 s deadline, so a wedged binary produces named failures in
+// seconds instead of minutes.
+process.env.NBE_PREFLIGHT_TIMEOUT_MS ??= "5000";
+
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
 let pkgPath: string;
@@ -84,12 +92,37 @@ function connect(ws: WebSocket): Promise<void> {
   });
 }
 
-function send(ws: WebSocket, command: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+/**
+ * A command, with a deadline.
+ *
+ * This had no timeout while its sibling `until()` did, and the asymmetry cost a
+ * whole CI run: when the `nbe-preflight` binary is not resolvable, `show.load`
+ * never answers, this promise never settles, every test still reports `ok` and
+ * the process never exits — so CI hits a wall-clock limit instead of reporting
+ * a failure. A suite that hangs tells you less than a suite that fails, because
+ * the failure names the cause.
+ */
+function send(
+  ws: WebSocket,
+  command: string,
+  payload: Record<string, unknown> = {},
+  timeoutMs = 15_000,
+): Promise<Record<string, unknown>> {
   const id = randomUUID();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off("message", onMsg);
+      reject(
+        new Error(
+          `no response to "${command}" within ${timeoutMs} ms — if this is ` +
+            `show.load, the nbe-preflight binary is probably not resolvable`,
+        ),
+      );
+    }, timeoutMs);
     const onMsg = (buf: Buffer) => {
       const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
       if (msg.requestId === id) {
+        clearTimeout(timer);
         ws.off("message", onMsg);
         resolve(msg);
       }

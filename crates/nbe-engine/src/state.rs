@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::Notify;
 
 /// The engine's shared mutable state. All writes go through handlers; readers
 /// (telemetry, watchdog) see a coherent snapshot via atomics.
@@ -63,6 +64,20 @@ pub struct EngineState {
     pub preview_missed: AtomicU64,
     /// Audio callbacks the graph could not fill in time (SPEC §8.10).
     pub audio_underruns_total: AtomicU64,
+    /// Every decode failure seen at `show.load` (SPEC §5.9.3).
+    ///
+    /// `VideoLibrary::failures` recorded them and nothing read it — F2. A
+    /// failure the manifest can attribute to a rundown Item becomes an
+    /// `itemEvent: decodeError`; one it cannot had no destination at all and
+    /// left only a `warn!` behind, which is the single place "logged, therefore
+    /// not swallowed" rested on an ungated line — F1.
+    pub decode_failures_total: AtomicU64,
+    /// The subset of the above that no rundown Item references.
+    ///
+    /// Counted separately because it is the operator-visible gap: nothing on
+    /// the §17.3 state machine will ever turn red for these, so the count is
+    /// the only evidence they happened.
+    pub unattributable_decode_failures_total: AtomicU64,
     /// Audio-to-master drift (SPEC §8.9), as `f64::to_bits` so the audio
     /// thread can publish it without a lock.
     pub audio_drift_ms_bits: AtomicU64,
@@ -74,10 +89,15 @@ pub struct EngineState {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
-    /// item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
+    /// Item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
     /// §8.7.3 takes). Built once at `show.load` by walking item → scene →
     /// elements → asset, so a take is a map lookup and never a graph walk.
     pub item_audio: Mutex<std::collections::BTreeMap<String, String>>,
+    /// One overlay's on-air state (SPEC §7.10). Timelines key off the master
+    /// clock: `anim_start` is the master frame the animation begins — the frame
+    /// after the command lands, the same boundary discipline AC-17 imposes on a
+    /// take — never a transition frame.
+    pub overlays: Mutex<std::collections::BTreeMap<String, OverlayRuntime>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -111,11 +131,14 @@ impl EngineState {
             dropped_frames_total: AtomicU64::new(0),
             preview_missed: AtomicU64::new(0),
             audio_underruns_total: AtomicU64::new(0),
+            decode_failures_total: AtomicU64::new(0),
+            unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
+            overlays: Mutex::new(std::collections::BTreeMap::new()),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -256,18 +279,61 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct OutgoingQueue {
     inner: Mutex<VecDeque<EngineFrame>>,
+    /// Wakes the outbound pump the moment a frame is queued.
+    ///
+    /// Without it the pump only looked at this queue once per
+    /// `telemetry_interval_ms`, so every engine frame — including §5.9.5's
+    /// `appliedStateVersion` acknowledgements — was quantised to 1 Hz. The
+    /// acks were never missing; they were up to a second late, and a
+    /// `stateChange` frame snapshots `renderNode` at command-accept time, which
+    /// is always before a second has passed. That is the whole of "R6:
+    /// appliedStateVersion freezes after resync".
+    ready: Notify,
 }
 
 impl OutgoingQueue {
     pub fn push(&self, frame: EngineFrame) {
         self.inner.lock().unwrap().push_back(frame);
+        self.ready.notify_one();
     }
 
     pub fn drain(&self) -> Vec<EngineFrame> {
         let mut q = self.inner.lock().unwrap();
         q.drain(..).collect()
     }
+
+    /// Resolves when a frame has been queued since the last drain.
+    ///
+    /// `Notify::notify_one` stores one permit, so a push that happens between
+    /// a drain and this await still wakes it — no frame waits for the next one.
+    pub async fn ready(&self) {
+        self.ready.notified().await;
+    }
 }
 
 pub type SharedEngineState = Arc<EngineState>;
 pub type SharedOutgoing = Arc<OutgoingQueue>;
+
+/// One overlay's on-air state (SPEC §7.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayRuntime {
+    pub on_air: bool,
+    /// Master frame the current animation began on (the frame after the show/
+    /// hide command landed).
+    pub anim_start: u64,
+    /// Length of the current animation in frames.
+    pub duration_frames: u64,
+    /// Which direction the current animation travels.
+    pub phase: OverlayPhase,
+}
+
+/// What the overlay's current animation is doing, as a master-clock function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPhase {
+    /// animating in (opacity 0 → 1).
+    Enter,
+    /// fully on air (opacity 1).
+    Steady,
+    /// animating out (opacity 1 → 0); the overlay drops when it completes.
+    Exit,
+}

@@ -13,6 +13,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - name: the unsafe exception stays in crates/nbe-decode
         run: |
@@ -68,6 +80,26 @@ jobs:
             echo "expected at least one prompt04 test to run"; exit 1
           fi
           echo "prompt04 tests that ran: $ran"
+      - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
+        # §7.10's suite is three levels in one target: index (2) + directive
+        # (6, GPU-free) + render (5, headless wgpu golden frames, like
+        # prompt04). The floor is the full count (13): a silently-skipped
+        # render test drops the total below it and fails the job, so the
+        # compositor cannot go unexercised while the gate stays green.
+        run: |
+          out=$(cargo test -p nbe-engine --test prompt07_overlay 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          if [ "$ran" -lt 13 ]; then
+            echo "expected at least 13 prompt07_overlay tests to run"; exit 1
+          fi
+          echo "prompt07_overlay tests that ran: $ran"
+      - name: overlay_show fixture passes (four overlay kinds)
+        run: |
+          cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
+          grep -q '"airReady": true' tests/fixtures/overlay_show/preflight_report.json
       - name: v0.3 fixture passes
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show_v0.3
@@ -86,6 +118,15 @@ jobs:
     # mean the preflight gates silently checked less there, which is the kind
     # of gate Standards §2 forbids.
     runs-on: macos-14
+    env:
+      # Standards §4: verify a build artifact before a later step consumes it.
+      # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
+      # once produced a truncated 1,712-byte "release binary" and still exited
+      # 0; the consuming step then failed `exit 127` and the failure read as a
+      # defect in the code under test. One megabyte is far above any truncation
+      # and far below a real build, so this floor catches that without being
+      # sensitive to ordinary size drift.
+      PREFLIGHT_MIN_BYTES: "1000000"
     defaults:
       run:
         working-directory: packages/control-plane
@@ -95,8 +136,39 @@ jobs:
         with:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build -p nbe-preflight
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
+      # Release, deliberately: the control plane shells this binary out of
+      # `show.load`, and the debug build decodes at 130 ms/frame against
+      # release's 16.7 — an 8x difference that decides whether an ordinary
+      # rundown preflights in one minute or ten. `preflightBin()` prefers
+      # `target/release` for the same reason.
+      - run: cargo build -p nbe-preflight --release
         working-directory: .
+      - name: the release binary is real, not a truncated write
+        working-directory: .
+        run: |
+          bin=target/release/nbe-preflight
+          size=$(stat -f%z "$bin" 2>/dev/null || stat -c%s "$bin")
+          echo "nbe-preflight: $size bytes (floor $PREFLIGHT_MIN_BYTES)"
+          if [ "$size" -lt "$PREFLIGHT_MIN_BYTES" ]; then
+            echo "TRUNCATED BUILD: $bin is $size bytes, below the $PREFLIGHT_MIN_BYTES floor."
+            echo "The build step exited 0 but did not write a whole binary — check disk space."
+            exit 1
+          fi
+          # A size floor catches truncation; executing it catches a binary that
+          # is the right size and still will not run.
+          "$bin" --version
       - run: npm ci
       - run: npx tsc --noEmit
       - name: generated manifest types match the schema
@@ -174,16 +246,55 @@ jobs:
     name: dress rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)
     runs-on: macos-14
     continue-on-error: true
+    env:
+      # Standards §4: verify a build artifact before a later step consumes it.
+      # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
+      # once produced a truncated 1,712-byte "release binary" and still exited
+      # 0; the consuming step then failed `exit 127` and the failure read as a
+      # defect in the code under test. One megabyte is far above any truncation
+      # and far below a real build, so this floor catches that without being
+      # sensitive to ordinary size drift.
+      PREFLIGHT_MIN_BYTES: "1000000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - uses: dtolnay/rust-toolchain@stable
+      # Cargo cache. 438 s of cold release build on each job that shells
+      # preflight, every run, was the tax for making that binary 8x faster —
+      # this makes the warm case ~0.6 s and leaves the speed-up free.
+      #
+      # `rust-cache` is chosen over a hand-rolled `actions/cache` for one
+      # property that matters here: it keys on `Cargo.lock` plus the rustc
+      # version, and it **deletes the workspace's own crates from `target/`
+      # before saving**, caching only dependencies. A cache that restored
+      # `nbe-preflight` itself could hand a job a binary built from other
+      # source — which is precisely the "stale binary looks fresh" failure this
+      # project has already been bitten by once, in a falsification battery.
+      - uses: Swatinem/rust-cache@v2
       # Both binaries are real dependencies: the rehearsal spawns the engine
       # and shells preflight. With either missing every step fails for a reason
       # unrelated to the show — measured at 12 of 12 with the engine absent.
-      - run: cargo build -p nbe-engine -p nbe-preflight
+      # Preflight in release for the same reason the control-plane job does:
+      # the rehearsal shells it from `show.load`, and its 46 s cost in debug is
+      # what makes step 3 flaky.
+      - run: cargo build -p nbe-engine
+      - run: cargo build -p nbe-preflight --release
+      - name: the release binary is real, not a truncated write
+        working-directory: .
+        run: |
+          bin=target/release/nbe-preflight
+          size=$(stat -f%z "$bin" 2>/dev/null || stat -c%s "$bin")
+          echo "nbe-preflight: $size bytes (floor $PREFLIGHT_MIN_BYTES)"
+          if [ "$size" -lt "$PREFLIGHT_MIN_BYTES" ]; then
+            echo "TRUNCATED BUILD: $bin is $size bytes, below the $PREFLIGHT_MIN_BYTES floor."
+            echo "The build step exited 0 but did not write a whole binary — check disk space."
+            exit 1
+          fi
+          # A size floor catches truncation; executing it catches a binary that
+          # is the right size and still will not run.
+          "$bin" --version
       - run: npm ci
         working-directory: packages/control-plane
       - name: play the show

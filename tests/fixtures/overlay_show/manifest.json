@@ -1,0 +1,122 @@
+{
+  "manifestVersion": "0.3",
+  "network": {
+    "id": "overlay-show",
+    "name": "Overlay level fixture"
+  },
+  "show": {
+    "id": "overlay-show",
+    "title": "Four overlay kinds",
+    "video": {
+      "width": 640,
+      "height": 360,
+      "frameRate": 30,
+      "colorSpace": "rec709",
+      "aspectRatio": "16:9"
+    },
+    "audio": {
+      "sampleRate": 48000,
+      "loudnessTargetLufs": -16,
+      "truePeakDbtp": -1.5
+    },
+    "fallbackAssetId": "fallback_slate"
+  },
+  "assets": [
+    {
+      "id": "fallback_slate",
+      "kind": "image",
+      "source": "media/fallback.png",
+      "format": "png"
+    },
+    {
+      "id": "logo",
+      "kind": "image",
+      "source": "media/logo.png",
+      "format": "png"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "SCN_PROG",
+      "elements": [
+        {
+          "id": "prog_fill",
+          "kind": "graphic",
+          "z": 1,
+          "templateId": "solid",
+          "fields": { "color": "#222222" }
+        }
+      ]
+    }
+  ],
+  "templates": [
+    { "id": "solid", "kind": "generic" }
+  ],
+  "overlays": [
+    {
+      "id": "ol_ticker",
+      "elements": [
+        {
+          "id": "ticker_band",
+          "kind": "ticker",
+          "z": 1,
+          "templateId": "solid",
+          "fields": { "color": "#ff0000" },
+          "transform": { "x": 0.0, "y": 0.9, "w": 1.0, "h": 0.1 }
+        }
+      ]
+    },
+    {
+      "id": "ol_bug",
+      "elements": [
+        {
+          "id": "logo_badge",
+          "kind": "clip",
+          "z": 1,
+          "assetId": "logo",
+          "transform": { "x": 0.85, "y": 0.02, "w": 0.13, "h": 0.16 }
+        }
+      ]
+    },
+    {
+      "id": "ol_banner",
+      "elements": [
+        {
+          "id": "banner_strip",
+          "kind": "graphic",
+          "z": 1,
+          "templateId": "solid",
+          "fields": { "color": "#0000ff" },
+          "transform": { "x": 0.0, "y": 0.0, "w": 1.0, "h": 0.08 }
+        }
+      ]
+    },
+    {
+      "id": "ol_clock",
+      "elements": [
+        {
+          "id": "clock_pad",
+          "kind": "graphic",
+          "z": 1,
+          "templateId": "solid",
+          "fields": { "color": "#00ff00" },
+          "transform": { "x": 0.0, "y": 0.0, "w": 0.1, "h": 0.08 }
+        }
+      ]
+    }
+  ],
+  "rundown": {
+    "id": "R",
+    "title": "Root rundown",
+    "items": [
+      {
+        "id": "A1",
+        "kind": "sceneRef",
+        "sceneRef": "SCN_PROG"
+      }
+    ]
+  },
+  "control": {
+    "bindings": []
+  }
+}

@@ -20,6 +20,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The meter window, in milliseconds (SPEC §10.1's telemetry cadence).
+///
+/// Peaks are held across this span and published on its boundary, so a tick
+/// reports the loudest moment of the interval it covers.
+const DEFAULT_METER_WINDOW_MS: u64 = 1000;
+
 /// Intents applied per cycle.
 ///
 /// Bounded because the drain runs on the audio cadence: an unbounded drain
@@ -81,6 +87,11 @@ pub struct AudioDriver {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4).
     library: BTreeMap<String, Arc<Vec<f32>>>,
     library_generation: u64,
+    /// Peaks accumulating inside the current meter window.
+    window_peaks: BTreeMap<String, f64>,
+    /// Blocks elapsed in the current window, and how many make one.
+    window_blocks: u32,
+    blocks_per_window: u32,
 }
 
 impl AudioDriver {
@@ -97,6 +108,14 @@ impl AudioDriver {
             block: vec![0.0; block_frames * CHANNELS],
             library: BTreeMap::new(),
             library_generation: u64::MAX,
+            window_peaks: BTreeMap::new(),
+            window_blocks: 0,
+            // One telemetry interval's worth of blocks, so a published meter
+            // covers exactly the interval a tick reports.
+            blocks_per_window: Self::blocks_per(
+                block_frames,
+                Duration::from_millis(DEFAULT_METER_WINDOW_MS),
+            ),
         }
     }
 
@@ -146,10 +165,19 @@ impl AudioDriver {
 
     /// Publish the v0.3.3 telemetry fields (SPEC §10.1).
     ///
-    /// Peaks are **windowed**: published then reset, so each telemetry tick
-    /// reports the peak of the interval it covers rather than the loudest
-    /// moment since the show began. That is the broadcast norm — a meter that
-    /// never falls tells an operator nothing after the first transient.
+    /// Peaks are **windowed to the telemetry interval, not to the audio
+    /// block**. This wrote the block's peaks and reset, every ~33 ms, while
+    /// telemetry sampled once per second: each tick therefore reported one
+    /// block — about 3% of the interval it claimed to cover — and a 0.4 s
+    /// soundboard stab was a coin toss (rehearsal step 6, red in 4 of 6 runs).
+    /// An operator saw a strobe, not a level.
+    ///
+    /// The decision, written down: **peak-hold across the telemetry interval.**
+    /// Each block max-merges into the published map; the tick builder takes the
+    /// accumulated peak and clears it, so every tick reports the loudest moment
+    /// of the interval it covers. Not a decay envelope — a decay needs a time
+    /// constant nobody has specified, and hold-and-clear needs none while
+    /// answering the question an operator actually asks ("did it peak?").
     fn publish(&mut self, master_frame: u64) {
         self.state
             .audio_underruns_total
@@ -158,8 +186,36 @@ impl AudioDriver {
             self.graph.drift_ms(master_frame).to_bits(),
             Ordering::SeqCst,
         );
-        *self.state.bus_peaks.lock().unwrap() = self.graph.bus_peaks();
+        for (bus, peak) in self.graph.bus_peaks() {
+            let slot = self.window_peaks.entry(bus).or_insert(f64::NEG_INFINITY);
+            if peak > *slot {
+                *slot = peak;
+            }
+        }
         self.graph.reset_meters();
+
+        // Roll the window over on its own boundary. The published map stays a
+        // plain snapshot — no reader has to clear it to make the next one
+        // correct, so `bus_peaks` can have more than one consumer.
+        self.window_blocks += 1;
+        if self.window_blocks >= self.blocks_per_window {
+            *self.state.bus_peaks.lock().unwrap() = std::mem::take(&mut self.window_peaks);
+            self.window_blocks = 0;
+        }
+    }
+
+    /// How many blocks of `block_frames` samples span `window`.
+    fn blocks_per(block_frames: usize, window: Duration) -> u32 {
+        let block = block_frames as f64 / SAMPLE_RATE as f64;
+        ((window.as_secs_f64() / block).round() as u32).max(1)
+    }
+
+    /// Test seam: shorten the meter window so a boundary is reachable in a
+    /// handful of blocks instead of a second of them.
+    pub fn set_meter_window(&mut self, window: Duration) {
+        self.blocks_per_window = Self::blocks_per(self.block.len() / CHANNELS, window);
+        self.window_blocks = 0;
+        self.window_peaks.clear();
     }
 
     /// The wall-clock duration one block represents.

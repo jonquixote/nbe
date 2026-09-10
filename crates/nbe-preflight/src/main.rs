@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 use nbe_core::{AssetReport, PreflightReport, ValidationError};
+use std::collections::HashSet;
 
 /// How many frames a preflight decode pass will read per asset. Preflight is
 /// allowed to be slow; it is not allowed to be unbounded.
@@ -485,6 +486,105 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                 "houseRate: package declares {declared} fps but the target runs at {target} fps; \
                  loading it there will mis-map every non-house-rate asset (SPEC §7.15)"
             ));
+        }
+    }
+
+    // SPEC §7.10 / step 5 §3.4: overlay IDs are unique across the `overlays`
+    // array, and overlay element references resolve against the same indexes a
+    // scene element's do. The schema already constrains overlay element shape
+    // (`Overlay` carries `Element[]`), so this is a reference check, not a
+    // shape check: an `assetId` must name a declared asset, a `templateId` a
+    // declared template, a `sceneRef` a declared scene.
+    if let Some(overlays) = manifest_json.get("overlays").and_then(|o| o.as_array()) {
+        let ids = |key: &str| -> HashSet<String> {
+            manifest_json
+                .get(key)
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let asset_ids: HashSet<String> = ids("assets");
+        let template_ids: HashSet<String> = ids("templates");
+        let scene_ids: HashSet<String> = ids("scenes");
+
+        // A template's fonts must resolve too: `fontAssetIds` lives on the
+        // template, not the element, so it is checked against the template the
+        // element names.
+        let template_fonts: std::collections::HashMap<String, Vec<String>> = manifest_json
+            .get("templates")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| {
+                        let id = t.get("id").and_then(|v| v.as_str())?.to_string();
+                        let fonts = t
+                            .get("fontAssetIds")
+                            .and_then(|f| f.as_array())
+                            .map(|f| {
+                                f.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some((id, fonts))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut seen = HashSet::new();
+        for overlay in overlays {
+            let id = overlay.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !seen.insert(id.to_string()) {
+                had_errors = true;
+                report.push_error(format!(
+                    "duplicateOverlay: id \"{id}\" appears more than once in the overlays array"
+                ));
+            }
+            for el in overlay
+                .get("elements")
+                .and_then(|e| e.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(aid) = el.get("assetId").and_then(|v| v.as_str()) {
+                    if !asset_ids.contains(aid) {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "overlayAsset: overlay \"{id}\" references undeclared assetId \"{aid}\""
+                        ));
+                    }
+                }
+                if let Some(tid) = el.get("templateId").and_then(|v| v.as_str()) {
+                    if !template_ids.contains(tid) {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "overlayTemplate: overlay \"{id}\" references undeclared templateId \"{tid}\""
+                        ));
+                    } else if let Some(fonts) = template_fonts.get(tid) {
+                        for font in fonts {
+                            if !asset_ids.contains(font) {
+                                had_errors = true;
+                                report.push_error(format!(
+                                    "overlayFont: overlay \"{id}\" template \"{tid}\" references undeclared fontAssetId \"{font}\""
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(sid) = el.get("sceneRef").and_then(|v| v.as_str()) {
+                    if !scene_ids.contains(sid) {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "overlaySceneRef: overlay \"{id}\" references undeclared sceneRef \"{sid}\""
+                        ));
+                    }
+                }
+            }
         }
     }
 

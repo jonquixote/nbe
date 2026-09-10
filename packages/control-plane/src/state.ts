@@ -144,6 +144,11 @@ export class ControlPlaneState {
   breakingVisible = false;
   breakingFields: { headline: string; subhead?: string } | null = null;
   visibleOverlays = new Set<string>();
+  /** overlay id → the animation phase of its most recent show/hide command. It
+   *  is command-moment state, not a live clock: a shown overlay reports "enter"
+   *  until further notice, a hidden one is simply absent from the snapshot's
+   *  `overlays[]` (which derives from `visibleOverlays`). */
+  overlayAnimation = new Map<string, string>();
 
   tickerSource: "manual" | "rss" | "mixed" = "manual";
   tickerItems: Array<{ text: string; language?: string; priority: number; ttlSec?: number }> = [];
@@ -319,6 +324,11 @@ export class ControlPlaneState {
       itemStates: Object.fromEntries(this.itemStates),
       sceneStates: Object.fromEntries(this.sceneStates),
       visibleOverlays: Array.from(this.visibleOverlays),
+      overlays: Array.from(this.visibleOverlays).map((id) => ({
+        id,
+        onAir: true,
+        animationState: this.overlayAnimation.get(id) ?? "steady",
+      })),
       automationHold: this.automationHold,
       fallbackActive: this.fallbackActive,
       stateVersion: this.stateVersion,
@@ -363,6 +373,9 @@ export class ControlPlaneState {
     this.previewItem = snap.previewItem;
     this.itemStates = new Map(Object.entries(snap.itemStates));
     this.visibleOverlays = new Set(snap.visibleOverlays);
+    // The snapshot snapshots WHAT is on air, not the transient animation
+    // phase; a recalled overlay comes back steady rather than mid-enter/exit.
+    this.overlayAnimation.clear();
     this.automationHold = snap.automationHold;
   }
 
@@ -392,6 +405,7 @@ export class ControlPlaneState {
     this.elementOverrides.clear();
     this.graphics.clear();
     this.visibleOverlays.clear();
+    this.overlayAnimation.clear();
     this.automationRules.clear();
     this.fallbackActive = false;
   }
@@ -420,6 +434,7 @@ export class ControlPlaneState {
       stateVersion: this.stateVersion,
       viewItem: this.viewItem,
       previewItem: this.previewItem,
+      visibleOverlays: Array.from(this.visibleOverlays),
       fallbackActive: this.fallbackActive,
       recordState: this.recordState,
       streamState: this.streamState,

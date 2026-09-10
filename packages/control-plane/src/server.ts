@@ -206,6 +206,20 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     rateLimiter,
     showStopGraceMs: opts.showStopGraceMs ?? 2000,
     houseRate: opts.houseRate,
+    // SPEC §10.7: every control-plane action reaches the audit log. A ceiling
+    // decision is one — it is the control plane deciding, on its own authority
+    // and without asking anyone, how long a load may take. `warn` for a
+    // refusal, `info` for a run: a refusal is an operator-visible outcome, a
+    // run is a fact you want to be able to count afterwards.
+    recordBoundDecision: (d) => {
+      audit.record({
+        kind: "preflight",
+        event: d.event,
+        outcome: d.outcome === "refused" ? "rejected" : "ok",
+        errorCode: d.outcome === "refused" ? "E_PREFLIGHT_FAILED" : null,
+        detail: { ...d, severity: d.outcome === "refused" ? "warn" : "info" },
+      });
+    },
     waitForGrace,
     emitDirectivesNow: (directives, stateVersion) => {
       for (const d of directives) {
@@ -488,7 +502,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           stateVersionBefore: before,
           stateVersionAfter: state.stateVersion,
         });
-        ws.send(JSON.stringify(errorResponse(envelope.id, state.stateVersion, e.code, e.message)));
+        ws.send(
+          JSON.stringify(
+            errorResponse(envelope.id, state.stateVersion, e.code, e.message, e.details),
+          ),
+        );
       }
     }
   });
