@@ -386,6 +386,28 @@ accumulated 0:00.02 of CPU time. That is a wait, not work, so the step-5b
 report's "hangs in video decode" is confirmed as a hang and the 8x debug/release
 ratio recorded above does not explain it. Release is unaffected.
 
+> **[CORRECTED 2026-09-10 by work order PREFLIGHT-BOUND — the paragraph above is
+> wrong about the mechanism, and the error was mine.]** The debug binary does
+> **not** block. Watched across 220 seconds it is state `RN` at 66–99% CPU
+> throughout, RSS climbing 389 MiB → 3.25 GiB, and a 226-sample `sample(1)`
+> stack is entirely in `probe_asset → decode_all → next_frame`, dominated by
+> bounds-checked `Vec<u8>::index_mut` and `unchecked_add::precondition_check`.
+> It is work — the same 1.87-billion-iteration BGRA→RGBA swizzle release runs,
+> unoptimized.
+>
+> The `SN`/0.0%/`0:00.02` reading came from probing with
+> `pgrep -f "target/debug/nbe-preflight" | head -1`, which matches **two**
+> processes and returns the **`timeout` wrapper**, not the worker. Demonstrated
+> side by side: `88387 SN 0.0 0:00.01 timeout` beside
+> `88389 RN 98.6 0:11.82 nbe-preflight`. I sampled the wrapper's idleness and
+> reported it as the subject's. The 180 s `exit 124` was real; the inference
+> about why was not. Root cause and the full cost model are in
+> `docs/preflight-bound-memo.md` §3.
+>
+> The original text is left standing per §2c rather than rewritten, because the
+> mistake is the instructive part: a `pgrep | head -1` that silently matches a
+> wrapper is now a named hazard alongside §2a rule 3's other restore traps.
+
 Measuring that turned up a second thing, and it is worse. On the normative
 baseline machine (i7-9750H, 6-core 2.6 GHz — `docs/hardware-baseline.txt`), the
 **release** binary's runtime on that same fixture varies **33.6 / 39.6 / 42.4 /
