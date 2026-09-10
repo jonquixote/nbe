@@ -411,8 +411,9 @@ impl DirectiveHandler {
         // The declared enter/exit duration lives in the loaded package index;
         // without one, a single frame is the honest fallback (no animation).
         // payload.animation.durationFrames, when present, overrides the package
-        // bound for that show/hide. Easing, if carried, is ignored: overlay
-        // animations are linear alpha ramps (see records doc entry c).
+        // bound for that show/hide. Easing and delayFrames, if carried, are
+        // ignored: overlay animations are linear alpha ramps (see records doc
+        // entry c).
         let override_frames = d
             .payload
             .get("animation")
