@@ -83,6 +83,17 @@ Rules:
    `head -1` that masked a smoke-path exit code, and a `head -4` that cut the
    fourth of four `tsc` errors and put "three errors" into a commit message
    permanently.
+6. **A commit's message names what it carries.** `chore`, `fix`, `refactor`
+   and formatting commits carry only what their label says; features, tests,
+   and records never ride under a formatting label. And **the label is never
+   evidence of content**: a review that samples commits reads every diff, so
+   "skipped, it was labeled chore" is a finding about the review, not about the
+   commit. Both halves come from one incident on this branch. `9872cd7`, titled
+   `chore: rustfmt`, carried +552/-17 — the render harness, five golden-frame
+   tests, the step-5 records, and a 131-line plan document. The review that
+   followed sampled 9 of its 10 commits, trusted the tenth's label, and on that
+   basis reported the render suite and the records as absent. The commit made
+   the claim possible; the review made it.
 
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole

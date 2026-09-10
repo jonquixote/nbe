@@ -367,6 +367,31 @@ enter/exit; overlays composite on the View bus only; the snapshot's
 reports "enter" until further notice). (`payload.animation.easing`, when
 carried, is ignored — see the `on_overlay` comment pointing here.)
 
+Backlog (row I of the step-5c audit, 2026-09-10): the **debug** `nbe-preflight`
+binary does not merely run slowly on `valid_show_v0.3` — it **blocks**. A
+180-second bounded run produced no output and exited 124; sampled three times
+during a 25-second run the process sat in state `SN` at 0.0% CPU having
+accumulated 0:00.02 of CPU time. That is a wait, not work, so the step-5b
+report's "hangs in video decode" is confirmed as a hang and the 8x debug/release
+ratio recorded above does not explain it. Release is unaffected.
+
+Measuring that turned up a second thing, and it is worse. On the normative
+baseline machine (i7-9750H, 6-core 2.6 GHz — `docs/hardware-baseline.txt`), the
+**release** binary's runtime on that same fixture varies **33.6 / 39.6 / 42.4 /
+54.7 / 67.4 / 81.7 / 106.3 seconds** across seven back-to-back samples with
+nothing else running. `preflightBound` derives **67,500 ms** for it (basis
+`frames`). `runPreflight` passes that as `timeout` with `killSignal: "SIGKILL"`,
+so two of those seven samples would have been killed and returned
+`timedOut: true, report: null` — `show.load` failing on a valid package, by
+coin flip. One sample landed 0.1 s under the bound. The CI fixture gate does not
+catch this because it invokes the binary directly, where no bound exists; the
+bound lives only in the control plane. **This is a finding against the bound
+machinery, not against step 5** — the terms and the safety factor were derived
+from per-frame costs that the reference fixture does not obey. Whoever opens it
+owns deciding between a larger safety factor, a bound derived from measured
+worst-case rather than mean, and making the decode cost itself less variable;
+raising the floor alone does not fix a 3.2x spread.
+
 Backlog line (known debt, not fixed here): the `overlay_show` fixture's
 placeholder PNGs (`media/logo.png`, `media/fallback.png`) are stubs. The
 render-proof suite therefore uses solid graphic fills for pixel-exact
