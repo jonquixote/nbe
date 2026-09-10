@@ -569,7 +569,7 @@ impl RenderLoop {
     /// completed exit drops the overlay from the on-air set (§7.10).
     fn overlay_draws(&self, frame: u64, draws: &mut Vec<(wgpu::Texture, LayerUniform)>) {
         let mut to_drop = Vec::new();
-        let on_air: Vec<(String, f32)> = {
+        let on_air: Vec<(String, f32, u64)> = {
             let mut overlays = self.state.overlays.lock().unwrap();
             let mut out = Vec::new();
             for (id, rt) in overlays.iter() {
@@ -578,7 +578,7 @@ impl RenderLoop {
                     to_drop.push(id.clone());
                     continue;
                 }
-                out.push((id.clone(), alpha));
+                out.push((id.clone(), alpha, rt.anim_start));
             }
             for id in &to_drop {
                 overlays.remove(id);
@@ -592,11 +592,12 @@ impl RenderLoop {
         let Some(index) = index.as_ref() else {
             return;
         };
-        for (id, alpha) in on_air {
+        for (id, alpha, t0) in on_air {
             for layer in index.resolve_overlay(&id).layers {
-                // Overlay timelines key off the master clock; t0 = 0 reads video
-                // overlays from the master frame, independent of any take.
-                if let Some(d) = self.draw_for(&layer, alpha, frame, 0) {
+                // Overlay timelines key off the master clock. A video overlay
+                // reads from its own went-on-air frame (`anim_start`, the first
+                // frame it was visible), independent of any take — §12.1's t0.
+                if let Some(d) = self.draw_for(&layer, alpha, frame, t0) {
                     draws.push(d);
                 }
             }

@@ -434,6 +434,7 @@ export class ControlPlaneState {
       stateVersion: this.stateVersion,
       viewItem: this.viewItem,
       previewItem: this.previewItem,
+      visibleOverlays: Array.from(this.visibleOverlays),
       fallbackActive: this.fallbackActive,
       recordState: this.recordState,
       streamState: this.streamState,

@@ -421,6 +421,10 @@ impl DirectiveHandler {
                 None => 1,
             }
         };
+        // Read the clock before locking `overlays` so no lock is held across
+        // the clock acquire (keeps the lock order clock-after-overlays
+        // direction failed-friendlier).
+        let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
         let mut overlays = self.state.overlays.lock().unwrap();
         match (show, overlays.get(overlay_id).copied()) {
             // Show on an on-air overlay is a no-op only when it is Steady or
@@ -433,24 +437,22 @@ impl DirectiveHandler {
             (false, Some(ov)) if ov.phase == crate::state::OverlayPhase::Exit => {} // hide already hiding
             (false, None) => {} // hide on hidden: idle no-op
             (true, _) => {
-                let start = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
                 overlays.insert(
                     overlay_id.to_string(),
                     crate::state::OverlayRuntime {
                         on_air: true,
-                        anim_start: start,
+                        anim_start: next_frame,
                         duration_frames: frames,
                         phase: crate::state::OverlayPhase::Enter,
                     },
                 );
             }
             (false, Some(_)) => {
-                let start = self.state.master_frame().map(|f| f + 1).unwrap_or(1);
                 overlays.insert(
                     overlay_id.to_string(),
                     crate::state::OverlayRuntime {
                         on_air: true,
-                        anim_start: start,
+                        anim_start: next_frame,
                         duration_frames: frames,
                         phase: crate::state::OverlayPhase::Exit,
                     },

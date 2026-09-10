@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import { ControlPlaneState, type PackageInfo } from "./state.js";
 import { MockRenderBridge } from "./render-bridge.js";
+import { buildTick, newWorldTelemetry } from "./telemetry.js";
 import { CpError } from "./protocol.js";
 
 const noPersist = { onDirty: () => {}, flushNow: () => {} };
@@ -110,10 +111,29 @@ test("unknown overlay refuses with ENOTFOUND; monitor is denied with E_AUTH", as
     () => run(deps, "overlay.show", { overlayId: "does-not-exist" }),
     (e: unknown) => e instanceof CpError && e.code === "E_NOT_FOUND",
   );
+  await assert.rejects(
+    () => run(deps, "overlay.hide", { overlayId: "does-not-exist" }),
+    (e: unknown) => e instanceof CpError && e.code === "E_NOT_FOUND",
+  );
   assert.equal(state.stateVersion, before, "a rejected command must not bump");
 
   await assert.rejects(
     () => run(deps, "overlay.show", { overlayId: "bug" }, "monitor"),
     (e: unknown) => e instanceof CpError && e.code === "E_AUTH",
   );
+  await assert.rejects(
+    () => run(deps, "overlay.hide", { overlayId: "bug" }, "monitor"),
+    (e: unknown) => e instanceof CpError && e.code === "E_AUTH",
+  );
+});
+
+test("overlay on-air state surfaces in the telemetry tick", async () => {
+  const { deps, state } = makeDeps();
+  await run(deps, "overlay.show", { overlayId: "bug" });
+
+  const tick = buildTick(state, newWorldTelemetry(), Date.now());
+  assert.deepEqual(tick.visibleOverlays, ["bug"], "show/hide must be telemetry-visible");
+  assert.deepEqual(state.statusSnapshot().visibleOverlays, ["bug"], "and /status-visible");
+  await run(deps, "overlay.hide", { overlayId: "bug" });
+  assert.deepEqual(buildTick(state, newWorldTelemetry(), Date.now()).visibleOverlays, []);
 });
