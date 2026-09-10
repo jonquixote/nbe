@@ -332,10 +332,15 @@ fallback slate composites **above** the overlay level — a fallback cut covers
 ticker, bug, banner, and clock — and on recovery the pre-fallback on-air set
 returns.
 
-The prompt's referenced research docs (`docs/industry-gap-analysis-and-z-axis.md`,
-`docs/move-parity-and-virtual-set-roadmap.md`) are **absent from the repo**; the
-clarification above is prompt-derived, not text-derived, and that provenance is
-deliberately recorded.
+**Provenance, updated 2026-09-10:** both referenced research docs are now **in
+the repo** — `docs/industry-gap-analysis-and-z-axis.md` and
+`docs/move-parity-and-virtual-set-roadmap.md`. The gap analysis §3.4 states the
+rule verbatim: "The fallback slate composites above the overlay level. A
+fallback cut MUST cover tickers, bugs, and banners." So the clarification above
+is **text-derived after all**, and the implementation matches its source rather
+than merely agreeing with a sentence quoted in a prompt. The earlier
+prompt-derived provenance is left visible above rather than rewritten, because
+it was true when written.
 
 Element renderers: this step is the composition level only. Overlay elements
 resolve through the same `layer_for` path as scene elements; `ticker`, `clock`,
@@ -440,8 +445,17 @@ asserts; `ticker`/`clock` glyph rasterization remains 07b's scope.
 
 Recorded in the deferral ledger above: **recommended before Prompt 08**, not 07b's scope, and it does not gate the 07 merge — the defect predates the branch and `main` carries it today. The step-5c auditor made the same recommendation independently. Both are on record; the sequence is the user's to ratify.
 
-### The dead research references
+### The research references — CLOSED 2026-09-10
 
-The two documents the step-5 prompt cites — `docs/industry-gap-analysis-and-z-axis.md` and `docs/move-parity-and-virtual-set-roadmap.md` — are **absent from the repo**, confirmed again at this close-out by a tree-wide search. The only things that reference them are this file and the step-5 plan.
+Both documents the step-5 prompt cites are now in the tree at exactly the cited
+paths, alongside a third: `docs/industry-gap-analysis-and-z-axis.md` (197 lines),
+`docs/move-parity-and-virtual-set-roadmap.md` (208 lines), and
+`docs/news-broadcast-features-research.md` (184 lines). The dead-unless-authored
+marker is **discharged by authoring**, which was the better of the two options
+the backlog offered.
 
-**Marked dead-unless-authored.** The FTB-above-DSK fallback clarification that leans on them is already recorded above as **prompt-derived** rather than research-derived, which is the honest provenance and needs no change. Backlog: either author the two documents, or strike the citations from the step-5 record and the plan so no future reader chases a source that never existed. Until one of those happens, no argument should rest on them — a citation to an absent document is weaker than no citation, because it looks like evidence.
+One consequence worth stating: the FTB-above-DSK fallback clarification, recorded
+twice as prompt-derived because its source could not be read, turns out to be
+text-derived — gap analysis §3.4 states it as a normative recommendation in the
+same words the implementation follows. The implementation was right and the
+provenance note was conservative; both records now say so.
