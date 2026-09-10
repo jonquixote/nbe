@@ -169,6 +169,21 @@ jobs:
           # A size floor catches truncation; executing it catches a binary that
           # is the right size and still will not run.
           "$bin" --version
+      # DIAGNOSTIC (work order PREFLIGHT-BOUND-2 §4). Times the streaming probe
+      # on the runner, because whether a fixture gate may exercise the bound path
+      # depends on the runner's spread, not on the dev machine's. Informational
+      # only: `continue-on-error` means it cannot fail the job.
+      - name: preflight timing on this runner (diagnostic, non-failing)
+        working-directory: .
+        continue-on-error: true
+        run: |
+          echo "runner: $(uname -m), $(sysctl -n hw.ncpu 2>/dev/null || nproc) cpus"
+          for i in 1 2 3 4 5; do
+            s=$(python3 -c 'import time;print(int(time.time()*1000))')
+            target/release/nbe-preflight --package-path tests/fixtures/valid_show_v0.3 >/dev/null 2>&1
+            e=$(python3 -c 'import time;print(int(time.time()*1000))')
+            echo "  run $i: $((e - s)) ms"
+          done
       - run: npm ci
       - run: npx tsc --noEmit
       - name: generated manifest types match the schema

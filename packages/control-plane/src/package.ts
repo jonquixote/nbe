@@ -61,8 +61,46 @@ export function preflightBin(): string {
  * crossed by 2 min 34 s of 1080p footage, ten ordinary clips, and told the
  * operator their binary was "wedged, not slow" when it was exactly slow.
  */
-const MS_PER_FRAME_RELEASE = 25;
-const MS_PER_FRAME_DEBUG = 200;
+/**
+ * Decode cost per declared frame, re-derived 2026-09-10 against the streaming
+ * probe (work order PREFLIGHT-BOUND-2).
+ *
+ * **The previous values described a defect, not a decoder.** `probe_asset`
+ * retained every decoded frame as RGBA8 and swizzled all of them, so for
+ * `valid_show_v0.3` (1920x1080, 900 frames, an 85 KiB file) it held 6.95 GiB,
+ * peaked at 4.7 GiB resident, and spent roughly half its wall time stalled on
+ * memory pressure rather than working. 25 ms/frame release and 200 ms/frame
+ * debug were honest measurements *of that path*. The path now retains only the
+ * one frame whose pixels a check reads (`has_alpha`) and decodes the rest for
+ * their timestamps alone, so both constants had to be re-measured.
+ *
+ * Measured on the §0.3 reference target (`hardware-baseline.txt`: 6-core Intel
+ * i7 @ 2.6 GHz, 16 GB), `valid_show_v0.3`, 900 declared frames:
+ *
+ *   release, 12 runs   probe_asset 4,059-5,052 ms   ->  4.51-5.61 ms/frame
+ *                      peak RSS 28.5-28.7 MB        (was 4.43-4.69 GiB)
+ *   debug,   11 runs   wall 3.64-13.5 s             ->  4.04-15.0 ms/frame
+ *                      (13.5 s was the cold first run; warm runs are ~4 s)
+ *
+ * The constants below take the **worst** observed rate and round up — 5.61 ->
+ * 8 release, 15.0 -> 25 debug — leaving ~1.4x and ~1.7x on the per-frame rate
+ * before `PREFLIGHT_SAFETY_FACTOR` multiplies it again.
+ *
+ * Headroom that produces for the reference fixture, which is the target this
+ * re-derivation was set (>=4x):
+ *
+ *   release  max(60,000 floor, 900*8*3 = 21,600, 19,927 bytes) = 60,000 ms
+ *            against a 5.05 s worst run  ->  11.9x, and floor-bound
+ *   debug    max(60,000 floor, 900*25*3 = 67,500, 62,273)      = 67,500 ms
+ *            against a 13.5 s worst run  ->  5.0x
+ *
+ * Note the release case is now bound by the **floor**, not by either term. That
+ * is the honest outcome: 900 frames of real decode is genuinely ~5 s of work,
+ * and the floor's own rationale (spawn, schema validation, asset hashing) is
+ * what dominates a package this small.
+ */
+const MS_PER_FRAME_RELEASE = 8;
+const MS_PER_FRAME_DEBUG = 25;
 
 /**
  * How much longer than the estimate a legitimate run may take.
