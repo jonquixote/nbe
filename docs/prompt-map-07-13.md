@@ -289,6 +289,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
+| **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 
@@ -317,6 +318,11 @@ The 07 prompt's §5.2 questions, answered before the code that implements them:
 `data.noop: true` and noted in the change stream; idempotent commands still
 dispatch normally (one stateVersion bump, one audit record, one directive),
 because acceptance accounting must not depend on the mutation's effect.
+**[SUPERSEDED — "one directive" is wrong: a noop forwards nothing. See the
+Step 5b records, entry a, and `5164383`.]** *Convention, recorded here: a
+superseded entry carries its marker at the point of error, not only a forward
+reference from the newer entry. A reader who stops at the stale sentence must
+learn it is stale from the sentence itself.*
 
 **Recorded clarification (fallback vs overlays; input to the next spec
 revision):** SPEC §7.14 (§6.9 in the prompt's numbering) is silent on whether
@@ -365,7 +371,12 @@ ramps, duration-honoured, with declared easing unread and no positional
 enter/exit; overlays composite on the View bus only; the snapshot's
 `animationState` is command-moment state, not a live clock (a shown overlay
 reports "enter" until further notice). (`payload.animation.easing`, when
-carried, is ignored — see the `on_overlay` comment pointing here.)
+carried, is ignored — see the `on_overlay` comment pointing here.) The
+override is **show-only end-to-end**: `on_overlay` honours `durationFrames` on a
+hide too, but `overlay.hide`'s schema is `strict({ overlayId })` and the handler
+forwards `payload: {}`, so an exit-time override is engine-reachable and
+wire-unreachable. Making one expressible is a §16.6 change for the next spec
+revision, not a code fix.
 
 Backlog (row I of the step-5c audit, 2026-09-10): the **debug** `nbe-preflight`
 binary does not merely run slowly on `valid_show_v0.3` — it **blocks**. A
@@ -379,7 +390,12 @@ Measuring that turned up a second thing, and it is worse. On the normative
 baseline machine (i7-9750H, 6-core 2.6 GHz — `docs/hardware-baseline.txt`), the
 **release** binary's runtime on that same fixture varies **33.6 / 39.6 / 42.4 /
 54.7 / 67.4 / 81.7 / 106.3 seconds** across seven back-to-back samples with
-nothing else running. `preflightBound` derives **67,500 ms** for it (basis
+nothing else running. **Those figures are sorted, not chronological** — the
+order observed was 81.7, 106.3, 39.6, 33.6, 54.7, 67.4, 42.4. This matters: the
+sorted list invites reading a monotonic ramp, which would point at thermal
+throttling or progressive degradation, and the step-6 prompt did read it that
+way. The real signal is unordered variance with the two slowest runs first, so
+warming is not the mechanism and the cause is still unidentified. `preflightBound` derives **67,500 ms** for it (basis
 `frames`). `runPreflight` passes that as `timeout` with `killSignal: "SIGKILL"`,
 so two of those seven samples would have been killed and returned
 `timedOut: true, report: null` — `show.load` failing on a valid package, by
