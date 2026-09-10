@@ -333,6 +333,69 @@ Which is why the sequencing matters: **land Option A first, then add the gate.**
 
 ---
 
+## 5. CORRECTION ENTRY — the redesign landed (work order PREFLIGHT-BOUND-2, 2026-09-10)
+
+Everything above is left as written. §4.3's finding — that the derivation is
+**dimensionally wrong**, modelling `frames × ms_per_frame` while the measured
+cost was dominated by `frames × w × h × 4` bytes of retention — is the reason
+this section exists, and it stays visible per Standards §2c rather than being
+edited into hindsight.
+
+**Option A landed.** `probe_asset` now retains only the one frame whose pixels a
+check reads and decodes the rest for their timestamps alone; `next_frame_meta`
+runs every validation and skips only the copy.
+
+Measured on the same machine, same fixture:
+
+| | before | after |
+|---|---:|---:|
+| `probe_asset` | 23,137–29,377 ms | **4,059–5,052 ms** |
+| wall | 23.2–31.2 s | **4.10–5.10 s** |
+| peak RSS | 4.43–4.69 GiB | **28.5–28.7 MB** |
+| user / sys | 14.5–18.4 / 7.6–9.4 s | **0.75–0.94 / 0.73–0.93 s** |
+| run-to-run spread | 8.0 s | **1.00 s** |
+
+**The constants were re-derived, and the old ones were not wrong — they were
+measurements of the defect.** 25 ms/frame release and 200 ms/frame debug
+described the retaining path accurately. Post-fix: release 4.51–5.61 ms/frame
+(12 runs), debug 4.04–15.0 ms/frame (11 runs). `MS_PER_FRAME_RELEASE` 25 → 8,
+`MS_PER_FRAME_DEBUG` 200 → 25.
+
+The reference fixture is now **floor-bound**: `max(60,000, 900×8×3 = 21,600,
+19,927)` = 60,000 ms, giving **11.9×** headroom against its worst run. Neither
+per-frame term reaches the floor for a package this small, which is the honest
+outcome — the floor's own rationale (spawn, schema validation, asset hashing) is
+what a 900-frame package actually spends its bound on.
+
+**§3's root cause is confirmed by the fix.** The debug binary no longer appears
+to hang: 4.9–13.5 s `exit 0`, peak RSS 32.9 MB, against `exit 124` after 180 s
+with RSS climbing past 3.2 GiB before. It was the swizzle and the retention, as
+§3 concluded — and *not* the wait that §3.2 corrected the record for claiming.
+
+**§4.5's CI recommendation was followed, and its precondition was measured
+rather than assumed.** A diagnostic step timed the streaming probe on the
+runner: `macos-14` is **arm64, 3 cpus** — Apple Silicon, not the Intel machine
+§0.3 makes normative — at **2,933–3,390 ms**, spread 457 ms, **17.7× under** the
+bound. That cleared the memo's own test ("5–9 s territory, not 0.6% margins"), so
+one fixture gate now runs through `runPreflight`, failing if the bound kills a
+valid package, if no verdict returns, or if a verdict arrives having used more
+than half its bound. The diagnostic step stays, so the margin remains visible if
+a runner change erodes it.
+
+**What §4.6 recommended and this work order did not do:** Option B
+(machine-calibrated bound) and Option C (stall detector) are untouched and
+remain queued in that order. Neither is urgent now — the fixture's margin went
+from 0.6% to 1,090%.
+
+**One new observation for the record.** The CI runner being arm64 while §0.3
+makes an Intel MacBook Pro normative means every constant in this repository
+measured "on CI" describes different hardware from the reference target. Nothing
+currently depends on that, but the s/MB and ms/frame families were all measured
+on the Intel machine, and a future contributor timing something on a runner will
+get a systematically different number. Worth a line in the deferral ledger.
+
+---
+
 ## Appendix — measurement hygiene
 
 - Every number above traces to a run pasted in this document or in the report accompanying it; no figure is scaled, averaged from memory, or carried from a prior session.
