@@ -1,12 +1,12 @@
 # Agent Prompt 09 — Recording Output (crates/nbe-engine)
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 9.2 (hardware encode), 9.3 (recording), 9.7 (multi-output unification), 16.14 (output commands), 16.1 (show.stop quiescence), 10.1 (recordSpaceMib telemetry), AC-6 (crash safety), AC-10 (WAN-loss survivability). Prerequisites: Agent Prompts 01–08 merged.**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — Sections 9.2 (hardware encode), 9.3 (recording), 9.7 (multi-output unification), 16.14 (output commands), 16.1 (show.stop quiescence), 10.1 (recordSpaceMib telemetry), AC-6 (crash safety), AC-10 (WAN-loss survivability). Prerequisites: Agent Prompts 01–08 merged.**
 
 You are a senior Rust engineer building the `nbe` broadcast engine. This prompt builds the recording output: the composited View plus the master audio bus, hardware-encoded and written crash-safe. Every show becomes a permanent record.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Sections 9.3 and 9.7 are your contract. AC-6 is the test you will be measured against.
+- `docs/spec.v0.4.md` — Sections 9.3 and 9.7 are your contract. AC-6 is the test you will be measured against.
 - `agents/prompts/05-video-decode.md` — the decode side of the IOSurface/Metal interop you now use for encode.
 - `VOCABULARY.md` — term ledger.
 

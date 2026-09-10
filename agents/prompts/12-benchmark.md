@@ -1,12 +1,12 @@
 # Agent Prompt 12 — OBS Baseline Benchmark Harness (tools/bench)
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Section 12 (12.1 metrics, 12.2 reference manifest, 12.3 artifact publication), Section 20.5 (performance acceptance). Prerequisites: Agent Prompts 01–11 merged — nbe must already pass Section 20.5 before these numbers mean anything.**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — AC-11 (OBS baseline comparison — metrics, parity bar), Section 21 (hardware tiers; AC-11 MUST also run on the floor device), AC-5 (30-minute zero-drop). NOTE: this prompt previously cited "Section 12" for benchmark metrics; §12 is Deterministic loops and always was. v0.4 has no benchmark section — AC-11 is the only normative home, and the reference manifest and artifact-publication rules this prompt assumes DO NOT EXIST in the spec. Treat them as this prompt's own additions, or raise them as v0.5 candidates. Prerequisites: Agent Prompts 01–11 merged — nbe must already pass Section 20.5 before these numbers mean anything.**
 
 You are a senior Rust engineer building the `nbe` benchmark harness. This prompt does not change the engine. It builds the instrument that compares nbe against OBS on the same machine, and the report that publishes the result — including the parts where OBS wins.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Section 12 is your contract. The comparison table in 12.1, the reference manifest in 12.2, the publication rule in 12.3.
+- `docs/spec.v0.4.md` — AC-11 is your contract. There is no comparison table, reference manifest, or publication rule in the spec; if this prompt needs them they are new, not inherited.
 - `VOCABULARY.md` — term ledger.
 
 ## Quality bar

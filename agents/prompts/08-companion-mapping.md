@@ -1,12 +1,12 @@
 # Agent Prompt 08 — Companion & Stream Deck Command Mapping
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — Sections 16 (command API), 5.3 (auth/roles), 10.7 (audit log), 19 (preflight, incl. the control-binding check), 21 (Companion misconfiguration risk), AC-12. Assumption 6: Companion is the Stream Deck path; no custom Stream Deck plugin is ever built. Prerequisites: Agent Prompts 01–07 merged.**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — Sections 16 (command API), 16.0 (command authorization matrix), 5.3 (WebSocket endpoint), 10.7 item 4 + 10.7.1 (audit log and record shape), 19 (preflight, incl. the control-binding check), 24 (Companion misconfiguration risk), AC-12. Assumption 6: Companion is the Stream Deck path; no custom Stream Deck plugin is ever built. Prerequisites: Agent Prompts 01–07 merged (07 shipped the overlay level; 07b is independent of this prompt).**
 
 You are a senior TypeScript engineer building the `nbe` broadcast engine. This prompt puts the show on the Stream Deck XL: Companion drives the hardware through the command bus, the deck's layout is generated from the manifest's control bindings, and every physical button is a first-class command-bus citizen.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Sections 16, 5.3, and 19's binding check are your contract. AC-12 is the test you will be measured against.
+- `docs/spec.v0.4.md` — Sections 16, 16.0, and 19's binding check are your contract. AC-12 is the test you will be measured against.
 - `VOCABULARY.md` — term ledger. A Binding is the manifest-level trigger→action mapping; an OS-level hotkey is not a Binding.
 - `agents/prompts/02-control-plane.md` — the command pipeline you are adding a door to.
 

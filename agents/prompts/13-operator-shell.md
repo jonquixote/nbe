@@ -1,12 +1,12 @@
 # Agent Prompt 13 — Swift Operator Shell (apps/nbe-macos)
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the operator surface (Section 11), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10). Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — the operator surface (Section 5.8 operator topology, 10.8 failure UI, AC-16 single-operator usability), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10.1). NOTE: this prompt previously cited "Section 11" for the operator surface; §11 is the master clock and always was. Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
 
 You are a senior macOS engineer building the `nbe` operator shell: a native Swift app that embeds the engine and gives a human hands on it. The shell has no brain. Every button is a Section 16 command; every indicator is Section 10 telemetry; every pixel of state comes from `show.getState`.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Sections 10, 11, and 16 are your contract.
+- `docs/spec.v0.4.md` — Sections 5.8, 10.1, 10.8, 16, and AC-16 are your contract.
 - `agents/prompts/02-command-surface.md` — the commands and fixtures you bind to.
 - `VOCABULARY.md` — term ledger. The UI speaks the vocabulary and nothing else.
 

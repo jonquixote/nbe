@@ -1,12 +1,12 @@
 # Agent Prompt 14 — Packaging & Release Pipeline
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the build/release requirements (Section 22) and distribution promises. Prerequisites: Agent Prompt 13 merged (there is an app to ship).**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — Section 26 (implementation handoff notes) and Section 21 (hardware tiers, for what must be supported). NOTE: this prompt previously cited "Section 22" for build/release requirements; §22 is Acceptance criteria and always was. **v0.4 has no build, release, packaging, notarization, or distribution section at all** — this prompt's contract does not exist in the spec. That gap is a v0.5 candidate; until it is filled, everything this prompt specifies is prompt-authored rather than spec-derived, and must say so. Prerequisites: Agent Prompt 13 merged (there is an app to ship).**
 
 You are a senior macOS release engineer building the `nbe` shipping pipeline: a tagged commit in, a signed, notarized, stapled app out, with checksums, that launches clean under Gatekeeper on a fresh Mac.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Section 22 is your contract.
+- `docs/spec.v0.4.md` — no section is your contract; see the note above. Section 26 is the closest thing and it is handoff notes, not requirements.
 - `agents/prompts/13-operator-shell.md` — the artifact being packaged.
 
 ## Step 0: Scope discipline
