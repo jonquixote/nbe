@@ -412,3 +412,36 @@ Backlog line (known debt, not fixed here): the `overlay_show` fixture's
 placeholder PNGs (`media/logo.png`, `media/fallback.png`) are stubs. The
 render-proof suite therefore uses solid graphic fills for pixel-exact
 asserts; `ticker`/`clock` glyph rasterization remains 07b's scope.
+
+## The queue after 07 (recorded 2026-09-10, step 6 close-out)
+
+### The prompt series as found
+
+`agents/prompts/`, everything after 07b, one line each:
+
+| Prompt | Subject | Lines |
+|---|---|---:|
+| `08-companion-mapping.md` | Companion & Stream Deck command mapping | 68 |
+| `09-recording.md` | Recording output (`crates/nbe-engine`) | 86 |
+| `10-streaming.md` | Streaming output (`crates/nbe-engine`) | 64 |
+| `11-watchdog.md` | Performance watchdog & fallback | 59 |
+| `12-benchmark.md` | OBS baseline benchmark harness (`tools/bench`) | 58 |
+| `13-operator-shell.md` | Swift operator shell (`apps/nbe-macos`) | 44 |
+| `14-packaging.md` | Packaging & release pipeline | 36 |
+| `15-contrib-outputs.md` | Contribution outputs (WHIP) | 39 |
+
+### The spec-version question, for the user to ratify
+
+**Every one of those eight prompts targets "SPEC v0.3.2 (`docs/spec.v0.3.md`)"** — not 08 alone. Meanwhile `docs/spec.v0.4.md` is in the tree on `main`, and the code already implements v0.4 sentences: §7.15 house-rate reconciliation, §12.11 resources, §5.9.4's `viewItemStartFrame` and wholesale `visibleOverlays` replacement, §10.1's `showState`, and the retirement of `sequenceRef`. A prompt executed against v0.3.2 would be measured against a document the engine has already moved past — and §16.4's `sequence.*` rows, which v0.4 deleted, are still live text in those headers.
+
+**Recommendation: retarget all eight to v0.4 as a single mechanical pass, before 08 executes, rather than one-by-one at execution time.** The reasoning is that the drift is uniform and the failure mode is silent: an agent reading v0.3.2 does not know it is holding a superseded document, and Standards §2c's logic applies to prompts as much as to records. Doing it eight times at eight different moments also invites eight slightly different readings of what v0.4 changed. **This is a recommendation only — the ratification is the user's.**
+
+### The preflight-bound finding's position
+
+Recorded in the deferral ledger above: **recommended before Prompt 08**, not 07b's scope, and it does not gate the 07 merge — the defect predates the branch and `main` carries it today. The step-5c auditor made the same recommendation independently. Both are on record; the sequence is the user's to ratify.
+
+### The dead research references
+
+The two documents the step-5 prompt cites — `docs/industry-gap-analysis-and-z-axis.md` and `docs/move-parity-and-virtual-set-roadmap.md` — are **absent from the repo**, confirmed again at this close-out by a tree-wide search. The only things that reference them are this file and the step-5 plan.
+
+**Marked dead-unless-authored.** The FTB-above-DSK fallback clarification that leans on them is already recorded above as **prompt-derived** rather than research-derived, which is the honest provenance and needs no change. Backlog: either author the two documents, or strike the citations from the step-5 record and the plan so no future reader chases a source that never existed. Until one of those happens, no argument should rest on them — a citation to an absent document is weaker than no citation, because it looks like evidence.
