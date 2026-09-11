@@ -733,9 +733,8 @@ impl RenderLoop {
         // A ticker's raster holds the item twice, separated by a gap, so the
         // scroll can wrap without a seam and without a repeating sampler. The
         // period is one copy plus the gap, which `ticker_window` slides by.
-        const TICKER_GAP: &str = "        ";
         let laid_out = if t.scroll {
-            format!("{content}{TICKER_GAP}{content}{TICKER_GAP}")
+            crate::text::ticker_layout(&content)
         } else {
             content
         };
@@ -772,7 +771,7 @@ impl RenderLoop {
                 tex: tex.clone(),
                 // Two copies went in, so one period is half the shaped width.
                 period_px: if t.scroll {
-                    (raster.text_width / 2).max(1)
+                    crate::text::ticker_period_px(raster.text_width)
                 } else {
                     raster.text_width.max(1)
                 },

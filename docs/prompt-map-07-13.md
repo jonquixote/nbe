@@ -184,6 +184,15 @@ counts, so it cannot distinguish them. Whoever picks this up should capture the 
 payloads on failure before theorising; a retry loop that only re-runs until green will
 discard the one artifact that answers the question.
 
+**Second sighting, 2026-09-11 (P7b two-key pass).** The same test failed again —
+on a different branch, against different code, during an unrelated mutation (a
+non-stable ticker sort, which cannot touch directive ordering). It passed 3/3 on
+the restored tree. That strengthens the half the original record left open: the
+flake is **pre-existing and independent of the change under review**, not
+something either branch introduced. Still unresolved is which failure it is —
+the redelivery-vs-extra-bump question below stands, and the payloads still need
+capturing before anyone theorises.
+
 **Disposition: Prompt 07, alongside R2 and R5.** Numbering continues the R-series filed in
 `docs/review-midpoint-report.md` §3.4–§3.8 and §11.2 (R1–R6); that report is a sealed CLEAN
 verdict and is not amended to hold this.
@@ -268,6 +277,28 @@ a. **Fonts are package-resident, and the engine cannot reach a host face.**
    the opposite since the founding scaffold and now records that the package
    model won.
 
+a2. **`font_asset_ids` is resolved and preflight-validated, and the renderer
+   does not consult it** (recorded 2026-09-11, two-key F1). `scene.rs` resolves
+   a template's fonts onto the text layer and preflight refuses a package whose
+   `fontAssetIds` do not resolve — but `text_texture` rasterizes against the
+   whole `FontBook`, and `TextRaster::rasterize` takes `families.first()`. Two
+   consequences, both measured: **per-template font selection does not exist**,
+   so a package declaring two faces with a template naming the second gets the
+   first; and **a template naming no font still draws**, in the package's first
+   declared face.
+
+   That fallback is defensible — it is package-internal, and assumption 11
+   forbids only *host* faces. What was not defensible was the test named
+   `a_template_naming_no_font_draws_no_text`, which asserted only that the
+   resolved list was empty while claiming a behaviour the code lacks. Renamed to
+   `a_template_naming_no_font_resolves_an_empty_font_list`, which is what it
+   proves.
+
+   **v0.5 agenda item:** the schema field and the renderer now disagree in the
+   tree. Either the renderer honours `fontAssetIds` per template, or the field
+   is documented as advisory-for-preflight. Picking neither is what produced
+   this entry.
+
 b. **Text is a `LayerSource`, not a pipeline.** Shaped text rasterizes to RGBA8
    and is consumed by the *existing* `draw_for`. There is no second draw path
    and no second walk — `drawn_elements` is still the one walk, and
@@ -283,10 +314,15 @@ c. **`layer_for` stays pure.** It *names* text the way it already names video;
 **Reductions, stated plainly.**
 
 d. **`ClockConfig.format: "locale"` is not implemented** and falls through to
-   `HH:mm:ss`. `timezone` and `locale` are read from the manifest and unused;
-   `wall` mode reads the host clock as UTC. Localized and zoned formatting is
-   real work with a real dependency, and pretending otherwise by aliasing it
-   silently would have been worse than saying so.
+   `HH:mm:ss`. ~~`timezone` and `locale` are read from the manifest and
+   unused~~ — **corrected 2026-09-11 (two-key F3): they are not read at all.**
+   `ClockSpec` carries `show_elapsed`, `format` and `blink_colon` and nothing
+   else; `clock_of` never touches `timezone` or `locale`. "Read and unused"
+   implied plumbing that exists and does not, which is a worse error than the
+   reduction it was describing. `wall` mode reads the host clock as UTC.
+   Localized and zoned formatting is real work with a real dependency, and
+   pretending otherwise by aliasing it silently would have been worse than
+   saying so.
 
 e. **§16.7 rule 1 — "breaking override items appear first" — is not
    implemented, because the payload cannot express it.** `ticker.override`'s
@@ -311,6 +347,22 @@ g. **Text sizing is proportional to the View, not to the element box.** The
    is not in this one.
 
 **Debts.**
+
+h2. **The doubled raster is not pixel-identical across the period** (recorded
+   2026-09-11). Writing the test F2 demanded turned this up: glyphs land at
+   sub-pixel offsets, so the second copy is phase-shifted a fraction of a pixel
+   from the first — for "BREAKING NEWS" only 147 of 485 columns match exactly. A
+   column-equality assertion therefore *fails on correct output*. What the design
+   does guarantee is that the two halves carry the same content, and
+   `the_ticker_raster_carries_the_item_twice_so_the_wrap_shows_no_jump` asserts
+   it as column-ink correlation, with the measured separation quoted in the test:
+   doubled 0.9538–0.9844, single copy −0.1254–0.2708.
+
+   Worth knowing for the same reason: `ticker_period_px` derives the period from
+   the doubled raster's own width, so removing the doubling makes the period
+   silently half an item rather than failing. That self-consistency is why the
+   original suite did not catch it, and why the new test asserts content rather
+   than geometry.
 
 h. **The ticker's raster holds the item twice.** That is how the wrap is
    seamless without a repeating sampler, and it doubles the texture for a long

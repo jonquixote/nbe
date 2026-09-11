@@ -308,6 +308,40 @@ pub fn shape_report(book: &mut FontBook, spec: &TextSpec, advanced: bool) -> Opt
     Some(r)
 }
 
+/// The gap between the two copies of a ticker item.
+pub const TICKER_GAP: &str = "        ";
+
+/// Lay a ticker item out for rasterization: the item twice, each followed by the
+/// gap.
+///
+/// **Why twice.** The band shows a window onto this raster and the window slides
+/// with the master frame. One copy, and a window near the end runs past it and
+/// the sampler clamps — a frozen smear at every wrap. Two copies mean any window
+/// of at most one period lies wholly inside the texture, so the wrap is seamless
+/// *and* the existing clamped sampler stays correct for every layer in the
+/// compositor. No repeating address mode is needed, which is why adding text did
+/// not change how anything else is sampled.
+///
+/// What this does **not** guarantee is pixel-identical repetition: glyphs land at
+/// sub-pixel offsets, so the second copy is phase-shifted a fraction of a pixel.
+/// `the_ticker_raster_carries_the_item_twice_so_the_wrap_shows_no_jump` asserts
+/// the guarantee that holds — the two halves carry the same content, measured as
+/// column-ink correlation.
+pub fn ticker_layout(content: &str) -> String {
+    format!("{content}{TICKER_GAP}{content}{TICKER_GAP}")
+}
+
+/// One scroll period, in pixels, from the width [`ticker_layout`]'s output shaped
+/// to.
+///
+/// Two copies went in, so one period is half of what came out. Note this derives
+/// the period from the doubled raster's own width: stop doubling and the period
+/// silently halves rather than erroring, which is exactly why the test above
+/// asserts content rather than geometry.
+pub fn ticker_period_px(shaped_width: u32) -> u32 {
+    (shaped_width / 2).max(1)
+}
+
 /// The ticker's scroll offset, in pixels, as a pure function of the master clock.
 ///
 /// SPEC §6.5: "scrolls by texture offset, driven by the master clock: scroll

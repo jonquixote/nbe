@@ -169,13 +169,19 @@ async fn a_second_of_scrolling_triggers_no_relayout_while_a_content_change_trigg
 }
 
 #[tokio::test]
-async fn the_clock_reshapes_once_a_second_not_once_a_frame() {
+async fn the_clock_reshapes_a_handful_of_times_a_second_not_once_a_frame() {
     let dir = tempfile::tempdir().unwrap();
     write_graphics_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
     show_overlay(&handler, "ol_clock").await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
+    // The bound below proves "not once a frame" firmly — 60 frames may produce at
+    // most 5 shapes — and "about once a second" only loosely, which is why the
+    // name says a handful rather than exactly one. With blinkColon on, the
+    // rendered string changes twice a second, so one-per-second was never the
+    // right number to claim.
+    //
     // A clock's content is a function of the master clock, so it is the hardest
     // case for "no per-frame relayout" — and it still must not shape per frame.
     // Two seconds at 30 fps with blinkColon on changes the string twice a
@@ -283,7 +289,7 @@ fn the_scroll_offset_is_unperturbed_by_a_take() {
 }
 
 #[tokio::test]
-async fn the_ticker_survives_a_cut_and_a_mix_untouched() {
+async fn a_cut_and_a_mix_do_not_reshape_the_ticker() {
     let dir = tempfile::tempdir().unwrap();
     write_graphics_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
@@ -365,10 +371,18 @@ fn a_ticker_element_resolves_to_a_text_layer_through_the_scene_walk() {
 }
 
 #[test]
-fn a_template_naming_no_font_draws_no_text() {
-    // The manifest can declare a template with no fontAssetIds. Preflight warns
-    // about a font that does not resolve; a template that names none is legal,
-    // and the engine's answer is an empty font list — never a host face.
+fn a_template_naming_no_font_resolves_an_empty_font_list() {
+    // What this proves is exactly its name: the RESOLVED list is empty.
+    //
+    // It is deliberately not named for what the element then draws, because the
+    // element draws anyway — `text_texture` rasterizes against the whole
+    // `FontBook` and `rasterize` takes `families.first()`, so a font-less
+    // template gets the package's first declared face. That fallback is
+    // package-internal and assumption 11 forbids only HOST fonts, so the
+    // behaviour is defensible; the earlier name for this test
+    // (`..._draws_no_text`) claimed a behaviour the code does not have, which
+    // was not. Per-template font selection does not exist — see the 07b records
+    // and the v0.5 agenda.
     let dir = tempfile::tempdir().unwrap();
     write_graphics_package(dir.path());
     let raw = std::fs::read_to_string(dir.path().join("manifest.json")).unwrap();
@@ -384,6 +398,103 @@ fn a_template_naming_no_font_draws_no_text() {
             "a template naming no face must offer none"
         ),
         other => panic!("expected text, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The doubled raster — the invariant that makes the wrap seamless.
+// ---------------------------------------------------------------------------
+
+/// Ink per column: how much the glyphs cover, as a profile across the raster.
+fn ink_profile(r: &TextRaster) -> Vec<u32> {
+    let (w, h) = (r.width as usize, r.height as usize);
+    (0..w)
+        .map(|x| (0..h).map(|y| u32::from(r.rgba[(y * w + x) * 4 + 3])).sum())
+        .collect()
+}
+
+/// Pearson correlation of two ink profiles.
+fn profile_correlation(a: &[u32], b: &[u32]) -> f64 {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let (a, b) = (&a[..n], &b[..n]);
+    let ma = a.iter().sum::<u32>() as f64 / n as f64;
+    let mb = b.iter().sum::<u32>() as f64 / n as f64;
+    let mut num = 0.0;
+    let mut da = 0.0;
+    let mut db = 0.0;
+    for i in 0..n {
+        let (x, y) = (a[i] as f64 - ma, b[i] as f64 - mb);
+        num += x * y;
+        da += x * x;
+        db += y * y;
+    }
+    if da <= 0.0 || db <= 0.0 {
+        return 0.0;
+    }
+    num / (da.sqrt() * db.sqrt())
+}
+
+#[test]
+fn the_ticker_raster_carries_the_item_twice_so_the_wrap_shows_no_jump() {
+    // The design claim: the raster holds the item twice, so a window of at most
+    // one period lies wholly inside the texture and the wrap needs no repeating
+    // sampler.
+    //
+    // **What is NOT the guarantee, measured rather than assumed:** the raster is
+    // not pixel-identical across the period. Glyphs land at sub-pixel offsets,
+    // so the second copy is phase-shifted a fraction of a pixel from the first —
+    // for "BREAKING NEWS" only 147 of 485 columns match exactly. A test
+    // asserting column equality fails on correct output, which is how this test
+    // found out.
+    //
+    // What IS the guarantee is that the two halves carry the same *content*, and
+    // column-ink correlation measures exactly that. Measured separation, three
+    // strings, this face: doubled 0.9538-0.9844, single copy -0.1254-0.2708.
+    // The 0.85 threshold sits in a gap wider than either cluster.
+    let mut book = FontBook::from_packaged(vec![font_bytes()]);
+
+    for content in ["BREAKING NEWS", "BREAKING NEWS — عاجل", "SHORT"] {
+        let laid_out = nbe_engine::text::ticker_layout(content);
+        let raster = TextRaster::rasterize(&mut book, &spec(&laid_out, true)).unwrap();
+        let period = nbe_engine::text::ticker_period_px(raster.text_width) as usize;
+        let w = raster.width as usize;
+
+        assert!(
+            period > 0 && 2 * period <= w + 1,
+            "period {period} must be half of width {w}"
+        );
+
+        let prof = ink_profile(&raster);
+        let first = &prof[..period.min(w)];
+        let second = &prof[period..(2 * period).min(w)];
+        let c = profile_correlation(first, second);
+        assert!(
+            c >= 0.85,
+            "the two halves must carry the same item ({content:?}): correlation {c:.4} < 0.85. \
+             A single copy scores near zero — that is the failure this catches."
+        );
+
+        // The seam, stated as what a sliding window actually reads. A window
+        // crossing the boundary sees the first copy's trailing gap and then the
+        // second copy's opening glyphs — and those opening glyphs must be the
+        // same content as the first copy's opening glyphs, or the wrap jumps.
+        //
+        // Deliberately NOT compared on the gap itself: the gap is eight spaces,
+        // so two windows inside it are both blank, have zero variance, and
+        // correlate to exactly 0.0 — a number that says nothing about the seam.
+        // The heads carry ink, so they can actually disagree.
+        let probe = period.min(96);
+        let head_of_first = &prof[..probe];
+        let head_of_second = &prof[period..period + probe];
+        let seam = profile_correlation(head_of_first, head_of_second);
+        assert!(
+            seam >= 0.85,
+            "the copy after the boundary must open with the same glyphs as the copy \
+             before it ({content:?}): seam correlation {seam:.4} < 0.85"
+        );
     }
 }
 
