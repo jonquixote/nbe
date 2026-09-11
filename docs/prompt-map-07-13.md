@@ -254,6 +254,83 @@ pass and gets one before execution — its scope decisions (packaged fonts, no
 per-frame relayout, RSS sanitized at the control plane) stand; its Step 0
 inventory predates the engine and does not.
 
+### Step 07b records — the graphics layer as built (recorded 2026-09-11)
+
+**Assumptions made real.**
+
+a. **Fonts are package-resident, and the engine cannot reach a host face.**
+   Ratified by the user; it is also what the code already did — preflight
+   resolves `templateId` against the package's own `templates` and
+   `fontAssetIds` against assets that package declares. `cosmic-text` is
+   compiled with `default-features = false` for this reason: its defaults pull
+   system font discovery, and `FontBook` is built from *bytes* with no
+   constructor that takes a directory. `templates/graphics/README.md` claimed
+   the opposite since the founding scaffold and now records that the package
+   model won.
+
+b. **Text is a `LayerSource`, not a pipeline.** Shaped text rasterizes to RGBA8
+   and is consumed by the *existing* `draw_for`. There is no second draw path
+   and no second walk — `drawn_elements` is still the one walk, and
+   `LayerSource::Text` answers "no" to the asset-blame question because a glyph
+   is not media.
+
+c. **`layer_for` stays pure.** It *names* text the way it already names video;
+   the render loop resolves content per frame. That is what lets a clock — whose
+   content is a function of the master clock — obey §6.5's no-per-frame-relayout
+   rule: the cache is keyed on the rendered string, which changes about twice a
+   second with `blinkColon` on, not thirty times.
+
+**Reductions, stated plainly.**
+
+d. **`ClockConfig.format: "locale"` is not implemented** and falls through to
+   `HH:mm:ss`. `timezone` and `locale` are read from the manifest and unused;
+   `wall` mode reads the host clock as UTC. Localized and zoned formatting is
+   real work with a real dependency, and pretending otherwise by aliasing it
+   silently would have been worse than saying so.
+
+e. **§16.7 rule 1 — "breaking override items appear first" — is not
+   implemented, because the payload cannot express it.** `ticker.override`'s
+   item schema is `{ text, language?, priority?, ttlSec? }`: there is no field
+   that marks an item as breaking. Rules 2, 3 and 4 are implemented and now
+   tested (`ticker.test.ts`, six cases, falsified by making the sort
+   non-stable). Rule 1 needs either a schema field or a ruling that "breaking"
+   means `priority: 100000` — a **v0.5 question**, not something to invent here.
+
+f. **One font, chosen on coverage.** AC-15 wants English, Spanish-accented and
+   Arabic from one packaged face. Measured: Noto Sans (2.0 MB) has no Arabic at
+   all; Noto Sans Arabic covers both but is a variable font; **Amiri** (431 KB,
+   OFL-1.1, static) covers all four test strings. Amiri is a classical Arabic
+   typeface rather than a news-desk sans — an **aesthetic debt**, recorded as
+   such. A show that wants a different face packages a different face; that is
+   the whole point of package-resident fonts.
+
+g. **Text sizing is proportional to the View, not to the element box.** The
+   raster is sized at 6% of target height with glyphs at 72% of that. A template
+   cannot yet specify a point size or a colour per field — `fields.color` tints
+   the whole element. Per-field typography is 07b's obvious next increment and
+   is not in this one.
+
+**Debts.**
+
+h. **The ticker's raster holds the item twice.** That is how the wrap is
+   seamless without a repeating sampler, and it doubles the texture for a long
+   item. A 200-character item at 1080p is a few MB, which is nothing against
+   §12.4's budgets — but it is a multiplier, and a package with many long ticker
+   items has not been measured.
+
+i. **No glyph atlas.** Each distinct rendered string is its own texture, cached
+   by content. For a ticker and a clock that is a handful of textures; for a
+   lower third edited live it is one per edit until the package reloads. An
+   atlas is the standard answer and is not needed yet — but "not needed yet" is
+   a measurement someone should repeat before 13's operator shell starts editing
+   fields at speed.
+
+j. **The uv window added to `LayerUniform` is used by exactly one caller.**
+   Everything else passes `(0, 0, 1, 1)`, which reproduces the previous
+   `out.uv = c` exactly — the 192-test suite including every golden frame is the
+   proof that nothing moved. It is a general mechanism with one user, which is
+   worth knowing before a second one arrives.
+
 ## 08 — Companion mapping (elevated to a normative requirement)
 
 Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an **Input Intent schema** — a mapping layer that is *data, not code* — from physical intents (Companion button, MIDI note, keyboard chord) to semantic §16 commands, with per-device profiles as user-editable documents. The §16 command surface with token auth and audit is already the device-independent core (`docs/portability.md`, known-good boundary 1), so 08 adds a layer above it and must not add a second command surface beside it. The proof of generality is normative: a keyboard-shortcut adapter ships in the same prompt and must work with **zero** changes to the core. The Input Intent schema is a wire-level contract and takes normative spec text at 08's moment. Target hardware: StreamDeck XL via Companion.
