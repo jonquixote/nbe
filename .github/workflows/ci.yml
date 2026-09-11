@@ -169,7 +169,62 @@ jobs:
           # A size floor catches truncation; executing it catches a binary that
           # is the right size and still will not run.
           "$bin" --version
+      # DIAGNOSTIC (work order PREFLIGHT-BOUND-2 §4). Times the streaming probe
+      # on the runner, because whether a fixture gate may exercise the bound path
+      # depends on the runner's spread, not on the dev machine's. Informational
+      # only: `continue-on-error` means it cannot fail the job.
+      - name: preflight timing on this runner (diagnostic, non-failing)
+        working-directory: .
+        continue-on-error: true
+        run: |
+          echo "runner: $(uname -m), $(sysctl -n hw.ncpu 2>/dev/null || nproc) cpus"
+          for i in 1 2 3 4 5; do
+            s=$(python3 -c 'import time;print(int(time.time()*1000))')
+            target/release/nbe-preflight --package-path tests/fixtures/valid_show_v0.3 >/dev/null 2>&1
+            e=$(python3 -c 'import time;print(int(time.time()*1000))')
+            echo "  run $i: $((e - s)) ms"
+          done
       - run: npm ci
+      # The bound is enforced in the control plane, not in the binary, so a gate
+      # that shells `nbe-preflight` directly proves the binary works and says
+      # nothing about `show.load`. That gap is how a bound that killed a valid
+      # package on this repository's own reference fixture survived four review
+      # passes and reached `main` (docs/preflight-bound-memo.md).
+      #
+      # This step closes it: the reference fixture goes through `runPreflight`,
+      # the path an operator's `show.load` takes, and the job fails if the bound
+      # kills it or the run yields no verdict.
+      #
+      # Added only once the runner's own numbers made it safe to gate. Measured
+      # on macos-14 (arm64, 3 cpus) by the diagnostic step above: 2,933-3,390 ms
+      # against a 60,000 ms floor-derived bound — 17.7x headroom, spread 457 ms.
+      # A gate whose margin is thin is a flake generator; this one is not, and
+      # the diagnostic step stays so the margin remains visible if a runner
+      # change erodes it.
+      - name: show.load's preflight path is bounded and returns a verdict
+        run: |
+          cat > /tmp/bound-gate.ts <<'TS'
+          import { runPreflight, preflightBound } from "./src/package.js";
+          const pkg = "../../tests/fixtures/valid_show_v0.3";
+          const bound = preflightBound(pkg);
+          const t0 = Date.now();
+          const r = await runPreflight(pkg);
+          const elapsed = Date.now() - t0;
+          console.log(`bound=${bound.ms}ms basis=${bound.basis} elapsed=${elapsed}ms timedOut=${r.timedOut} exit=${r.exitCode} report=${r.report ? "present" : "null"}`);
+          if (r.timedOut) { console.error("FAIL: the bound killed a valid package"); process.exit(1); }
+          if (r.report === null) { console.error("FAIL: no verdict returned"); process.exit(1); }
+          if (r.report.airReady !== true) { console.error("FAIL: reference fixture is not air-ready"); process.exit(1); }
+          // Fail at half the bound, not at the bound. A verdict that only
+          // just fits is a flake waiting to happen, and the point is to go
+          // red while there is still margin left to report — a check that
+          // fired only on the kill would have passed at the 0.6% margin
+          // that survived four review passes.
+          if (elapsed > bound.ms * 0.5) { console.error(`FAIL: ${elapsed}ms used more than half of the ${bound.ms}ms bound`); process.exit(1); }
+          console.log("OK: verdict returned with margin");
+          TS
+          cp /tmp/bound-gate.ts ./bound-gate.ts
+          node --import tsx ./bound-gate.ts
+          rm -f ./bound-gate.ts
       - run: npx tsc --noEmit
       - name: generated manifest types match the schema
         run: |

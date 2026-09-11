@@ -96,6 +96,18 @@ pub struct DecodedFrame {
     pub pts_seconds: f64,
 }
 
+/// A decoded frame's metadata, without its pixels.
+///
+/// Returned by [`DecodeSession::next_frame_meta`] for callers that need timing
+/// and geometry only. Carries no `rgba`, which is the point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameMeta {
+    pub index: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pts_seconds: f64,
+}
+
 /// What a decode pass learned about an asset. Preflight consumes this
 /// (SPEC §19.2); the engine uses the frame count and rate.
 #[derive(Debug, Clone, PartialEq)]
@@ -197,6 +209,35 @@ impl DecodeSession {
     /// stream. The index is assigned in decode order, which for these assets
     /// is presentation order.
     pub fn next_frame(&mut self) -> Result<Option<DecodedFrame>, DecodeError> {
+        self.next_inner(true)
+    }
+
+    /// Decode the next frame but return only its metadata, skipping the pixel
+    /// copy.
+    ///
+    /// For a caller that needs timing and geometry but not colour — preflight's
+    /// CFR test is the case this exists for — copying the pixels is the whole
+    /// cost. A 1080p frame is a 8.29 MB allocation plus 2,073,600 iterations of
+    /// the BGRA→RGBA swizzle; across a 900-frame asset that is 6.95 GiB retained
+    /// and 1.87 billion iterations, to compute a timestamp series.
+    ///
+    /// **Every validation `next_frame` performs still runs here.** The format
+    /// check, the dimension/overflow check, the lock, and the buffer-size check
+    /// are refusal paths: an asset that changes pixel format mid-stream, or hands
+    /// back a buffer too small for its own geometry, must fail identically
+    /// whether or not this caller wanted the bytes. Only the copy is skipped.
+    pub fn next_frame_meta(&mut self) -> Result<Option<FrameMeta>, DecodeError> {
+        Ok(self.next_inner(false)?.map(|f| FrameMeta {
+            index: f.index,
+            width: f.width,
+            height: f.height,
+            pts_seconds: f.pts_seconds,
+        }))
+    }
+
+    /// The one decode path. `want_pixels` decides only whether the final copy
+    /// runs; every check before it is unconditional.
+    fn next_inner(&mut self, want_pixels: bool) -> Result<Option<DecodedFrame>, DecodeError> {
         unsafe {
             if !self.started {
                 if !self.reader.startReading() {
@@ -300,22 +341,32 @@ impl DecodeSession {
                 });
             }
 
-            let mut rgba = vec![0u8; len];
-            let src = base as *const u8;
-            for row in 0..height as usize {
-                for col in 0..width as usize {
-                    // In range by the checks above: row < height, col < width,
-                    // stride >= width*4, and stride*(height-1)+width*4 fits
-                    // inside the buffer's data size.
-                    let s = src.add(row * stride + col * 4);
-                    let d = (row * width as usize + col) * 4;
-                    // BGRA (what we asked the reader for) → RGBA.
-                    rgba[d] = *s.add(2);
-                    rgba[d + 1] = *s.add(1);
-                    rgba[d + 2] = *s;
-                    rgba[d + 3] = *s.add(3);
+            // The checks above are what make this copy sound, and they have all
+            // run by now regardless of `want_pixels`. Only the copy itself is
+            // optional: a caller that never reads the bytes should not pay for
+            // them, and an empty `rgba` is the honest representation of "not
+            // requested" rather than a frame of black.
+            let rgba = if want_pixels {
+                let mut rgba = vec![0u8; len];
+                let src = base as *const u8;
+                for row in 0..height as usize {
+                    for col in 0..width as usize {
+                        // In range by the checks above: row < height, col < width,
+                        // stride >= width*4, and stride*(height-1)+width*4 fits
+                        // inside the buffer's data size.
+                        let s = src.add(row * stride + col * 4);
+                        let d = (row * width as usize + col) * 4;
+                        // BGRA (what we asked the reader for) → RGBA.
+                        rgba[d] = *s.add(2);
+                        rgba[d + 1] = *s.add(1);
+                        rgba[d + 2] = *s;
+                        rgba[d + 3] = *s.add(3);
+                    }
                 }
-            }
+                rgba
+            } else {
+                Vec::new()
+            };
             drop(_unlock);
 
             let index = self.next_index;
@@ -330,9 +381,22 @@ impl DecodeSession {
         }
     }
 
-    /// Decode every frame, returning them in presentation order. Used at load
-    /// time for short loops and by preflight; long assets stream instead
-    /// (SPEC §12.8).
+    /// Decode every frame, returning them in presentation order.
+    ///
+    /// **Nothing calls this today, and it is retained deliberately.** It is the
+    /// full-decode API: every frame, pixels included. Preflight used to be its
+    /// caller and no longer is — it retains one frame and takes the rest through
+    /// [`Self::next_frame_meta`] — and the engine never was one, streaming via
+    /// [`Self::next_frame`] against its own cache budget (`video.rs`). Long
+    /// assets stream rather than decode whole (SPEC §12.8).
+    ///
+    /// Kept because the work order that removed its last caller said not to
+    /// weaken its contract, and because "decode all of it" is the honest
+    /// primitive for a caller that genuinely wants every frame's pixels. A
+    /// future caller should reach for it knowingly, having read what it costs:
+    /// `frames × width × height × 4` bytes resident, which for a 900-frame
+    /// 1080p asset is 6.95 GiB. That arithmetic is why preflight stopped using
+    /// it (`docs/preflight-bound-memo.md`).
     pub fn decode_all(&mut self, limit: usize) -> Result<Vec<DecodedFrame>, DecodeError> {
         let mut out = Vec::new();
         while out.len() < limit {
@@ -348,28 +412,78 @@ impl DecodeSession {
 /// Probe an asset: resolution, frame count, CFR, measured rate, alpha.
 ///
 /// This is the decode-based half of preflight (SPEC §19, AC-3). It decodes
-/// every frame, which is acceptable for a preflight pass and never happens on
-/// air.
+/// every frame — every frame is still *decoded*, because the CFR test needs the
+/// whole timestamp series and a truncated series would let a VFR tail through —
+/// but it **retains** only the frames whose pixels a check actually reads.
+///
+/// Exactly one check reads pixels: `has_alpha`, on the first frame. So one frame
+/// is kept and the rest are decoded for their timestamps alone
+/// (`next_frame_meta`). Retaining them was the dominant cost of preflight:
+/// measured on the §0.3 reference target against `valid_show_v0.3` (1920x1080,
+/// 900 frames, an 85 KiB file), the retaining path held 6.95 GiB of RGBA, peaked
+/// at 3.5-4.7 GiB resident, and took 23-67 s of which roughly half was
+/// memory-pressure stall rather than work. See `docs/preflight-bound-memo.md`.
 pub fn probe_asset(path: &Path, limit: usize) -> Result<AssetProbe, DecodeError> {
     let mut session = DecodeSession::open(path)?;
     let nominal_frame_rate = session.nominal_frame_rate();
-    let frames = session.decode_all(limit)?;
-    if frames.is_empty() {
+
+    // The first frame is the only one whose pixels any check reads, so it is the
+    // only one kept.
+    let Some(first) = session.next_frame()? else {
         return Err(DecodeError::Failed {
             path: path.display().to_string(),
             reason: "no frames decoded".into(),
         });
+    };
+
+    // The retention guard, in bytes rather than frames.
+    //
+    // `limit` bounds the frame *count* and says nothing about the resource that
+    // actually runs out. At the caller's 100,000-frame cap the retaining path
+    // attempted 100,000 x 1920 x 1080 x 4 = 829 GB; the cap engaged and changed
+    // nothing that mattered. Streaming reduces retention to one frame, so the
+    // guard sizes that one frame: a plausible ceiling is 8K RGBA
+    // (7680 x 4320 x 4 = 132.7 MB), and anything past it is a geometry the
+    // engine could not composite anyway. `rgba_byte_len` has already rejected
+    // arithmetic overflow; this rejects the merely absurd, by name, before the
+    // allocation rather than after it.
+    const MAX_RETAINED_FRAME_BYTES: usize = 7680 * 4320 * 4;
+    if first.rgba.len() > MAX_RETAINED_FRAME_BYTES {
+        return Err(DecodeError::Failed {
+            path: path.display().to_string(),
+            reason: format!(
+                "frame is {} bytes ({}x{} RGBA), past the {} byte probe ceiling",
+                first.rgba.len(),
+                first.width,
+                first.height,
+                MAX_RETAINED_FRAME_BYTES
+            ),
+        });
     }
 
-    let first = &frames[0];
+    // Every remaining frame is decoded and validated, but not copied. The
+    // timestamp series has to be complete for the CFR test to mean anything.
+    let mut pts_series: Vec<f64> = vec![first.pts_seconds];
+    let mut frame_count: u64 = 1;
+    while (frame_count as usize) < limit {
+        match session.next_frame_meta()? {
+            Some(m) => {
+                pts_series.push(m.pts_seconds);
+                frame_count += 1;
+            }
+            None => break,
+        }
+    }
+
+    let first = &first;
     let width = first.width;
     let height = first.height;
 
     // CFR: every inter-frame delta equal within a tolerance well under half a
     // frame. A VFR source fails this (AC-3).
-    let mut deltas: Vec<f64> = frames
+    let mut deltas: Vec<f64> = pts_series
         .windows(2)
-        .map(|w| w[1].pts_seconds - w[0].pts_seconds)
+        .map(|w| w[1] - w[0])
         .filter(|d| *d > 0.0)
         .collect();
     let (cfr, measured_frame_rate) = if deltas.is_empty() {
@@ -392,7 +506,7 @@ pub fn probe_asset(path: &Path, limit: usize) -> Result<AssetProbe, DecodeError>
         width,
         height,
         nominal_frame_rate,
-        frame_count: frames.len() as u64,
+        frame_count,
         cfr,
         measured_frame_rate,
         has_alpha,
