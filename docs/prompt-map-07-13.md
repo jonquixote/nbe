@@ -289,6 +289,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
+| **The dress-rehearsal CI job is `continue-on-error`** | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. Not that PR's work. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
@@ -332,10 +333,15 @@ fallback slate composites **above** the overlay level — a fallback cut covers
 ticker, bug, banner, and clock — and on recovery the pre-fallback on-air set
 returns.
 
-The prompt's referenced research docs (`docs/industry-gap-analysis-and-z-axis.md`,
-`docs/move-parity-and-virtual-set-roadmap.md`) are **absent from the repo**; the
-clarification above is prompt-derived, not text-derived, and that provenance is
-deliberately recorded.
+**Provenance, updated 2026-09-10:** both referenced research docs are now **in
+the repo** — `docs/industry-gap-analysis-and-z-axis.md` and
+`docs/move-parity-and-virtual-set-roadmap.md`. The gap analysis §3.4 states the
+rule verbatim: "The fallback slate composites above the overlay level. A
+fallback cut MUST cover tickers, bugs, and banners." So the clarification above
+is **text-derived after all**, and the implementation matches its source rather
+than merely agreeing with a sentence quoted in a prompt. The earlier
+prompt-derived provenance is left visible above rather than rewritten, because
+it was true when written.
 
 Element renderers: this step is the composition level only. Overlay elements
 resolve through the same `layer_for` path as scene elements; `ticker`, `clock`,
@@ -432,7 +438,26 @@ asserts; `ticker`/`clock` glyph rasterization remains 07b's scope.
 
 ### The spec-version question, for the user to ratify
 
-**Every one of those eight prompts targets "SPEC v0.3.2 (`docs/spec.v0.3.md`)"** — not 08 alone. Meanwhile `docs/spec.v0.4.md` is in the tree on `main`, and the code already implements v0.4 sentences: §7.15 house-rate reconciliation, §12.11 resources, §5.9.4's `viewItemStartFrame` and wholesale `visibleOverlays` replacement, §10.1's `showState`, and the retirement of `sequenceRef`. A prompt executed against v0.3.2 would be measured against a document the engine has already moved past — and §16.4's `sequence.*` rows, which v0.4 deleted, are still live text in those headers.
+**Every one of those eight prompts targets "SPEC v0.3.2 (`docs/spec.v0.3.md`)"** — not 08 alone. Meanwhile `docs/spec.v0.4.md` is in the tree on `main`, and the code already implements v0.4 sentences: §7.15 house-rate reconciliation, §12.11 resources, §5.9.4's `viewItemStartFrame` and wholesale `visibleOverlays` replacement, §10.1's `showState`, and the retirement of `sequenceRef`. A prompt executed against v0.3.2 would be measured against a document the engine has already moved past.
+
+**Correction (2026-09-10):** the sentence that stood here also claimed §16.4's `sequence.*` rows were "still live text in those headers". That was wrong — no prompt from 08 to 15 references `sequenceRef` or `sequence.*` at all. The retarget pass grepped for them and found nothing.
+
+**What the pass actually found was worse.** The version string was the small half. Four prompts cite sections that do not mean what they say — and did not in v0.3 either, since v0.3 and v0.4 are identically numbered through these ranges:
+
+| Prompt | Cited | Actually is | Correct target |
+|---|---|---|---|
+| 11 watchdog | §9.6 "GPU oversubscription fallback" | §9.6 is WHIP auth / TURN / NDI / WHEP | §10.3 watchdog, §10.5 degradation ladder, §7.14 fallback slate |
+| 11 watchdog | §10.4 "structured logging" | §10.4 is the health endpoint | no standalone logging section; §10.7 item 4 is the audit log |
+| 11, 12 | §20.5 "performance acceptance" | §20 is the MVP scope hard ceiling and has no subsections | AC-5, AC-11 |
+| 12 benchmark | §12 "12.1 metrics, 12.2 reference manifest, 12.3 artifact publication" | §12 is Deterministic loops | AC-11 is the only home; **the reference manifest and publication rule do not exist in the spec** |
+| 13 operator shell | §11 "the operator surface" | §11 is the master clock | §5.8 operator topology, §10.8 failure UI, AC-16 |
+| 14 packaging | §22 "build/release requirements" | §22 is Acceptance criteria | **no build/release/packaging/notarization section exists in v0.4 at all** |
+| 08 companion | §5.3 "auth/roles" | §5.3 is the WebSocket endpoint | §16.0 command authorization matrix |
+| 08 companion | §21 "Companion misconfiguration risk" | §21 is Hardware tiers | §24 Risks and mitigations |
+
+**Traced to v0.1.** In v0.1, §20/§21/§22 were Non-goals / Risks / Open questions; in v0.4 those are §23/§24/§25. The tail sections shifted by three somewhere between v0.1 and v0.2, and these prompts were written against v0.1's numbering and never re-checked through four spec revisions. Two of them cite contracts that were never written: 12's benchmark metrics and 14's build/release requirements are prompt-authored, not spec-derived, and the retargeted headers now say so.
+
+Both are v0.5 candidates: a benchmark section and a build/release section.
 
 **Recommendation: retarget all eight to v0.4 as a single mechanical pass, before 08 executes, rather than one-by-one at execution time.** The reasoning is that the drift is uniform and the failure mode is silent: an agent reading v0.3.2 does not know it is holding a superseded document, and Standards §2c's logic applies to prompts as much as to records. Doing it eight times at eight different moments also invites eight slightly different readings of what v0.4 changed. **This is a recommendation only — the ratification is the user's.**
 
@@ -440,8 +465,17 @@ asserts; `ticker`/`clock` glyph rasterization remains 07b's scope.
 
 Recorded in the deferral ledger above: **recommended before Prompt 08**, not 07b's scope, and it does not gate the 07 merge — the defect predates the branch and `main` carries it today. The step-5c auditor made the same recommendation independently. Both are on record; the sequence is the user's to ratify.
 
-### The dead research references
+### The research references — CLOSED 2026-09-10
 
-The two documents the step-5 prompt cites — `docs/industry-gap-analysis-and-z-axis.md` and `docs/move-parity-and-virtual-set-roadmap.md` — are **absent from the repo**, confirmed again at this close-out by a tree-wide search. The only things that reference them are this file and the step-5 plan.
+Both documents the step-5 prompt cites are now in the tree at exactly the cited
+paths, alongside a third: `docs/industry-gap-analysis-and-z-axis.md` (197 lines),
+`docs/move-parity-and-virtual-set-roadmap.md` (208 lines), and
+`docs/news-broadcast-features-research.md` (184 lines). The dead-unless-authored
+marker is **discharged by authoring**, which was the better of the two options
+the backlog offered.
 
-**Marked dead-unless-authored.** The FTB-above-DSK fallback clarification that leans on them is already recorded above as **prompt-derived** rather than research-derived, which is the honest provenance and needs no change. Backlog: either author the two documents, or strike the citations from the step-5 record and the plan so no future reader chases a source that never existed. Until one of those happens, no argument should rest on them — a citation to an absent document is weaker than no citation, because it looks like evidence.
+One consequence worth stating: the FTB-above-DSK fallback clarification, recorded
+twice as prompt-derived because its source could not be read, turns out to be
+text-derived — gap analysis §3.4 states it as a normative recommendation in the
+same words the implementation follows. The implementation was right and the
+provenance note was conservative; both records now say so.

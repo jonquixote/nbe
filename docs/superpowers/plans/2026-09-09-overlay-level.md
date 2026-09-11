@@ -29,7 +29,7 @@
 - Audit `kind: "command"|"auth"|"preflight"` only (`audit.ts:20`). The `automation` kind exists in a comment, not the type — not used here.
 - No element tween / animation-state machinery exists in `nbe-engine/src` — this plan builds the composition-level minimum (start frame + durationFrames + easing → alpha). D1-D7 stay out.
 - Ticker/clock/breaking glyph rasterization is 07b scope. Overlay hosts `layer_for` as-is: `graphic → Solid`, `clip/videoLoop → Image/Video`; `ticker`/`clock`/`camera`/`guest`/`sceneRef`/`group`/`plugin` resolve via the same path and draw nothing until 07b. There is no `breaking` element kind; `breakingBanner` is a template kind — the banner enters through `graphic`.
-- Both research docs (`industry-gap-analysis-and-z-axis.md`, `move-parity-and-virtual-set-roadmap.md`) are absent from the repo; the §3.3 clarification is authored from the prompt's own FTB-above-DSK sentence and recorded as prompt-derived input to the next spec revision.
+- Both research docs (`industry-gap-analysis-and-z-axis.md`, `move-parity-and-virtual-set-roadmap.md`) were absent from the repo when this plan was written; the §3.3 clarification was authored from the prompt's own FTB-above-DSK sentence and recorded as prompt-derived. **Both landed in `docs/` on 2026-09-10, and gap analysis §3.4 states the rule verbatim — the clarification is text-derived after all.**
 
 ## Task 0 — Answers in writing (before code)
 

@@ -1,12 +1,12 @@
 # Agent Prompt 15 — Contribution Outputs (WHIP)
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the contribution-output direction deferred from Section 9.4, with the survivability guarantees of Sections 9.5 and 9.7 unchanged. Prerequisites: Agent Prompts 01–12 merged (shared-frame encode, reconnect, and watchdog all exist to copy from).**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — the contribution-output direction deferred from Section 9.4, with the survivability guarantees of Sections 9.5 and 9.7 unchanged. Prerequisites: Agent Prompts 01–12 merged (shared-frame encode, reconnect, and watchdog all exist to copy from).**
 
 You are a senior Rust engineer adding the WHIP contribution output to the `nbe` engine: the program feed, sent to a WebRTC ingestion endpoint, with the same hardware encode and the same never-touch-the-local-show discipline as the RTMP/SRT path.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Sections 9.4, 9.5, and 9.7 remain the contract; this extends them.
+- `docs/spec.v0.4.md` — Sections 9.4, 9.5, and 9.7 remain the contract; this extends them.
 - `agents/prompts/10-streaming.md` — the pattern you follow. If you find yourself inventing a second reconnect loop, stop and reuse the first one.
 
 ## Step 0: Scope discipline

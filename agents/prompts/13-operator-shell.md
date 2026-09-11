@@ -1,12 +1,12 @@
 # Agent Prompt 13 — Swift Operator Shell (apps/nbe-macos)
 
-**Targets: SPEC v0.3.2 (`docs/spec.v0.3.md`) — the operator surface (Section 11), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10). Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
+**Targets: SPEC v0.4 (`docs/spec.v0.4.md`) — the operator surface (Section 5.8 operator topology, 10.8 failure UI, AC-16 single-operator usability), the command surface it binds to (Section 16), and the telemetry it reflects (Section 10.1). NOTE: this prompt previously cited "Section 11" for the operator surface; §11 is the master clock and always was. Prerequisites: Agent Prompts 01–12 merged — the engine is the product; this is the window onto it.**
 
 You are a senior macOS engineer building the `nbe` operator shell: a native Swift app that embeds the engine and gives a human hands on it. The shell has no brain. Every button is a Section 16 command; every indicator is Section 10 telemetry; every pixel of state comes from `show.getState`.
 
 Read these first:
 
-- `docs/spec.v0.3.md` — Sections 10, 11, and 16 are your contract.
+- `docs/spec.v0.4.md` — Sections 5.8, 10.1, 10.8, 16, and AC-16 are your contract.
 - `agents/prompts/02-command-surface.md` — the commands and fixtures you bind to.
 - `VOCABULARY.md` — term ledger. The UI speaks the vocabulary and nothing else.
 
@@ -21,19 +21,19 @@ Allowed now: the native shell — program view, sequencer, audio meters, output/
 
 ## Step 2: The panels
 
-- Program view with live audio meters (10 Hz, per Section 15).
-- Sequencer: Sequences, Items, cue sheets, and the Marker list, driven entirely by `show.getState` and the Section 14 commands.
+- Program view with live audio meters. **The 10 Hz rate is this prompt's requirement, not the spec's:** §10.1 mandates telemetry "at least once per second", a floor rather than a target, and finding R2 records that a 33 ms window sampled at 1 Hz is unusable in an operator UI. Cite §10.1 for the contract and this prompt for the rate.
+- Sequencer: Sequences, Items, cue sheets, and the Marker list, driven entirely by `show.getState` and the **§16** commands.
 - Outputs and health: stream/record state, `recordSpaceMib`, watchdog tier, `droppedFramesTotal` — the operator sees degradation before the audience does.
 
 ## Step 3: Binding without drift
 
-- The shell's command bindings are generated from (or tested against) the Section 17 schema: if the engine adds or changes a command, the shell's binding breaks loudly at build or test time, never silently at showtime.
+- The shell's command bindings are generated from (or tested against) the **§16** command schema: if the engine adds or changes a command, the shell's binding breaks loudly at build or test time, never silently at showtime.
 - Keyboard map for the show-critical commands; everything reachable without a mouse.
 
 ## Step 4: Tests
 
 1. **Fixture-driven rendering**: the 15 golden command/telemetry fixtures from Prompt 02 render correctly in snapshot tests.
-2. **Schema parity**: shell bindings match the Section 17 schema; drift fails CI.
+2. **Schema parity**: shell bindings match the **§16** command schema; drift fails CI.
 3. **Smoke**: the app launches, attaches the engine, starts a show, and renders the program view on macos-14 CI.
 
 CI: add an `app` job on macos-14 building the Swift package; `cargo check/clippy/test` stay green.
