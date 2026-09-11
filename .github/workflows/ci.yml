@@ -214,8 +214,11 @@ jobs:
           if (r.timedOut) { console.error("FAIL: the bound killed a valid package"); process.exit(1); }
           if (r.report === null) { console.error("FAIL: no verdict returned"); process.exit(1); }
           if (r.report.airReady !== true) { console.error("FAIL: reference fixture is not air-ready"); process.exit(1); }
-          // A verdict that arrives at 90% of its bound is a flake waiting to
-          // happen; fail while there is still margin to report.
+          // Fail at half the bound, not at the bound. A verdict that only
+          // just fits is a flake waiting to happen, and the point is to go
+          // red while there is still margin left to report — a check that
+          // fired only on the kill would have passed at the 0.6% margin
+          // that survived four review passes.
           if (elapsed > bound.ms * 0.5) { console.error(`FAIL: ${elapsed}ms used more than half of the ${bound.ms}ms bound`); process.exit(1); }
           console.log("OK: verdict returned with margin");
           TS

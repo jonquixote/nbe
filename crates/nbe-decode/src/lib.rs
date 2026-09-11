@@ -381,9 +381,22 @@ impl DecodeSession {
         }
     }
 
-    /// Decode every frame, returning them in presentation order. Used at load
-    /// time for short loops and by preflight; long assets stream instead
-    /// (SPEC §12.8).
+    /// Decode every frame, returning them in presentation order.
+    ///
+    /// **Nothing calls this today, and it is retained deliberately.** It is the
+    /// full-decode API: every frame, pixels included. Preflight used to be its
+    /// caller and no longer is — it retains one frame and takes the rest through
+    /// [`Self::next_frame_meta`] — and the engine never was one, streaming via
+    /// [`Self::next_frame`] against its own cache budget (`video.rs`). Long
+    /// assets stream rather than decode whole (SPEC §12.8).
+    ///
+    /// Kept because the work order that removed its last caller said not to
+    /// weaken its contract, and because "decode all of it" is the honest
+    /// primitive for a caller that genuinely wants every frame's pixels. A
+    /// future caller should reach for it knowingly, having read what it costs:
+    /// `frames × width × height × 4` bytes resident, which for a 900-frame
+    /// 1080p asset is 6.95 GiB. That arithmetic is why preflight stopped using
+    /// it (`docs/preflight-bound-memo.md`).
     pub fn decode_all(&mut self, limit: usize) -> Result<Vec<DecodedFrame>, DecodeError> {
         let mut out = Vec::new();
         while out.len() < limit {

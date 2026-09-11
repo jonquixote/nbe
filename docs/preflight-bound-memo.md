@@ -347,13 +347,51 @@ runs every validation and skips only the copy.
 
 Measured on the same machine, same fixture:
 
-| | before | after |
+| | before | after (quiet) | after (loaded) |
+|---|---:|---:|---:|
+| `probe_asset` | 23,137–29,377 ms | 4,059–5,052 ms | **5,714–11,399 ms** |
+| wall | 23.2–31.2 s | 4.10–5.10 s | **5.78–11.53 s** |
+| peak RSS | 4.43–4.69 GiB | **28.5–28.7 MB** | **28.57–28.68 MB** |
+| user / sys | 14.5–18.4 / 7.6–9.4 s | 0.75–0.94 / 0.73–0.93 s | **1.00–1.16 / 0.97–1.17 s** |
+| run-to-run spread | 8.0 s | 1.00 s | **5.69 s** |
+
+**Two columns, because one was not enough — a correction to how this entry
+first reported itself (§2c: the original single-column table is what the third
+column amends, and the "quiet" figures are exactly the numbers it carried).**
+
+§0–§2 of this memo were careful to state disk and load conditions for every
+pre-fix figure, then this section reported a post-fix range with none. The
+two-key pass over PR #12 re-ran it on the same machine under ordinary
+contention — another process at ~200% CPU — and got 12 runs spanning
+5,714–11,399 ms where the quiet set spanned 4,059–5,052. **The ranges do not
+overlap.** The quiet column is a best case, not the margin.
+
+**The memory claim is the one that reproduced exactly**, and it is the
+load-bearing half: 28.57–28.68 MB against 28.5–28.7 MB, a 163× reduction
+confirmed to three significant figures. Retention was the defect; retention is
+gone, and no amount of machine load brings it back.
+
+**Where the residual variance actually lives: off-process.** Post-fix, CPU time
+holds at ~2.1 s across every run while wall swings 5.8–11.5 s — and with RSS at
+28 MB that cannot be this process's memory. Sampled during a run,
+`VTDecoderXPCService` was at **50.5% CPU** beside preflight's 39.5%. Decode
+happens in the VideoToolbox XPC service, so **its cost never appears in
+preflight's own CPU accounting**, and preflight's wall time is partly the
+latency of a decoder competing with everything else on the machine. That is not
+something the probe can reach: it is the irreducible term §1.2 priced at ~5.5 s
+on a quiet machine, plus contention.
+
+Headroom against the 60,000 ms floor-derived bound:
+
+| | worst run | headroom |
 |---|---:|---:|
-| `probe_asset` | 23,137–29,377 ms | **4,059–5,052 ms** |
-| wall | 23.2–31.2 s | **4.10–5.10 s** |
-| peak RSS | 4.43–4.69 GiB | **28.5–28.7 MB** |
-| user / sys | 14.5–18.4 / 7.6–9.4 s | **0.75–0.94 / 0.73–0.93 s** |
-| run-to-run spread | 8.0 s | **1.00 s** |
+| quiet (best case) | 5,052 ms | **11.9×** |
+| loaded, first seven | 6,327 ms | **9.5×** |
+| loaded, all twelve | 11,399 ms | **5.3×** |
+
+**Every value clears the ≥4× target**, so the re-derivation stands as ratified.
+Quote 5.3× when the question is whether the bound is safe, and 11.9× only when
+the question is how fast the probe can go.
 
 **The constants were re-derived, and the old ones were not wrong — they were
 measurements of the defect.** 25 ms/frame release and 200 ms/frame debug
@@ -381,6 +419,15 @@ one fixture gate now runs through `runPreflight`, failing if the bound kills a
 valid package, if no verdict returns, or if a verdict arrives having used more
 than half its bound. The diagnostic step stays, so the margin remains visible if
 a runner change erodes it.
+
+**The gate's own margin, and why its ordering is right.** The CI gate fails a
+verdict that uses more than half its bound — 30,000 ms. That sits **2.6× above
+the worst loaded run on this machine** (11,399 ms) against **6–10× on the
+runner** (2,933–5,112 ms measured). So if this machine's contention profile ever
+visits CI, **the gate trips before the bound does** — and that ordering is
+correct, deliberately: a gate that only fired on the kill would have passed at
+the 0.6% margin that survived four review passes. The gate is meant to go red
+while there is still margin left to report, not to agree with the bound.
 
 **What §4.6 recommended and this work order did not do:** Option B
 (machine-calibrated bound) and Option C (stall detector) are untouched and
