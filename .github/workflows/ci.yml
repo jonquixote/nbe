@@ -154,6 +154,12 @@ jobs:
       # rundown preflights in one minute or ten. `preflightBin()` prefers
       # `target/release` for the same reason.
       - run: cargo build -p nbe-preflight --release
+      # Step 1 runs the DEBUG preflight binary, which this job never built —
+      # so promotion turned a silently-skipped assertion into a hard failure:
+      # 'nbe-preflight must be built: .../target/debug/nbe-preflight'. The
+      # step was red on CI for as long as the job was advisory and nobody saw
+      # it, which is the argument for promotion in one line.
+      - run: cargo build -p nbe-preflight
         working-directory: .
       - name: the release binary is real, not a truncated write
         working-directory: .
