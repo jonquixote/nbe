@@ -334,6 +334,27 @@ test("[RI-1] step 2: show.load, and a render node acknowledges it", async () => 
     (t) => ((t["data"] as Record<string, unknown>)?.["engineConnected"] ?? false) === true,
     ENGINE_READY_MS,
   );
+
+  // And wait for the engine to have actually APPLIED the load, which is what the
+  // comment above has always claimed this step does.
+  //
+  // It did not, and that was finding R5 in its entirety. The engine applies
+  // directives in arrival order (§5.9) and `show.load` decodes every asset —
+  // 10.7 s for this package on the reference machine. `show.start` therefore sat
+  // queued behind it while the control plane had already recorded RUNNING, so
+  // `masterClockFrame` read 0 for ~5.8 s and step 3's window expired against
+  // decode time rather than against clock-start latency. Measured 2026-09-11:
+  // showState RUNNING at t=3005 ms, first non-zero frame at t=10014 ms, then
+  // exactly 30 frames a second thereafter — the clock was never the defect.
+  //
+  // Pressing START while the package is still loading is not something an
+  // operator does, and a rehearsal that does it is not playing the show.
+  const applied = await server.awaitApplied(version, LOAD_MS);
+  assert.ok(
+    applied,
+    `the engine must confirm it applied show.load (stateVersion ${version}) ` +
+      `within ${LOAD_MS} ms; §5.9.5 is the contract`,
+  );
 });
 
 test("[RI-1] the engine binary is actually running its audio driver", async () => {

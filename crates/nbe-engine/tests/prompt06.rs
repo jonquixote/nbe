@@ -1255,7 +1255,7 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
             break;
         }
     }
-    handle.abort();
+    handle.stop();
     assert!(
         drained,
         "the spawned driver must drain intents and publish peaks on its own"

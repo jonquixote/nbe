@@ -238,14 +238,87 @@ impl AudioDriver {
 ///
 /// The sink is the null sink: device glue is the recorded deferral in
 /// `agents/prompts/06-audio-graph.md`. Everything above the sink is real.
-pub fn spawn(state: SharedEngineState, house_rate: u32) -> tokio::task::JoinHandle<()> {
+/// A running audio thread, and the means to stop it.
+///
+/// A handle that could not stop the thread would leak one per caller — fine for
+/// the engine binary, which runs until the process ends, and not fine for
+/// anything else.
+pub struct AudioThread {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl AudioThread {
+    /// Signal the loop to finish its block and return, then join it.
+    pub fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.handle.join();
+    }
+}
+
+pub fn spawn(state: SharedEngineState, house_rate: u32) -> AudioThread {
     let block_frames = SAMPLE_RATE as usize / house_rate.max(1) as usize;
     let driver = AudioDriver::new(
         state.clone(),
         Box::new(NullSink::new(block_frames)),
         house_rate,
     );
-    tokio::spawn(run(driver, state))
+    // A DEDICATED OS THREAD, not a task on the shared runtime.
+    //
+    // This was `tokio::spawn`, which put the audio cadence on the same worker
+    // pool as the wgpu render loop and the directive handler. A block is 33 ms;
+    // when the render loop spun up at `show.start` the audio task's wakeup
+    // slipped past its deadline and §8.10 counted it — finding R4, an underrun
+    // on the happy path, reproduced at exactly the moment the clock started and
+    // never before it. Measured on the reference machine: underruns 0 through
+    // the entire load, then 2 in the tick the first video frames appeared.
+    //
+    // §8.10's table is explicit that a missed callback deadline IS an underrun,
+    // so the counter was right and the scheduling was wrong. Audio cadence is
+    // not cooperative work: it cannot yield to a frame and must not wait behind
+    // one. `cycle` is synchronous, so this loop needs no executor at all.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = std::thread::Builder::new()
+        .name("nbe-audio".into())
+        .spawn(move || run_blocking(driver, state, &flag))
+        .expect("the audio thread must start");
+    AudioThread { stop, handle }
+}
+
+/// The cadence loop, on its own thread.
+///
+/// Identical timing to [`run`], which the tests drive; the only difference is
+/// which scheduler decides when it wakes.
+pub fn run_blocking(
+    mut driver: AudioDriver,
+    state: SharedEngineState,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    let block = driver.block_duration();
+    let mut next = std::time::Instant::now();
+    let mut logged_first = false;
+    while !stop.load(Ordering::SeqCst) {
+        let now = std::time::Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        }
+        let master_frame = state.master_frame().unwrap_or(0);
+        driver.cycle(master_frame);
+        if !logged_first {
+            logged_first = true;
+            tracing::info!(
+                rendered_samples = driver.graph.rendered_samples(),
+                "audio driver cycling"
+            );
+        }
+        next += block;
+        let now = std::time::Instant::now();
+        if next < now {
+            driver.graph.note_underrun();
+            next = now + block;
+        }
+    }
 }
 
 /// Run the driver until the process ends.

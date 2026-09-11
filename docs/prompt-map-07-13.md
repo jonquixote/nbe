@@ -254,6 +254,83 @@ pass and gets one before execution — its scope decisions (packaged fonts, no
 per-frame relayout, RSS sanitized at the control plane) stand; its Step 0
 inventory predates the engine and does not.
 
+### Work order DRESS — R2/R4/R5 closed and the rehearsal promoted (recorded 2026-09-11)
+
+Reproduced first, three runs on the normative machine (i7-9750H, 6p/12l, 16 GiB):
+
+| Step | Finding | Rate | Nature |
+|---|---|---:|---|
+| #4 step 3 | R5 | **3/3** | Deterministic, not a flake |
+| #5 step 4 | consequence of R5 | 3/3 | No clock → no audio → no clip-bus rise |
+| #11 gate | R4 | **2/3** | Intermittent |
+| #7 step 6 | R2 | **0/3** | Did not fail once |
+
+Against the recorded 7-9 pass / 3-5 fail, the observed range was 9-10 / 2-3 —
+and R2's step never failed, because R2 had already been fixed.
+
+**R5 — closed. The clock was never the defect.** `MasterClock` is
+`floor(elapsed × rate)` derived on read, so a frozen 0 means `start()` had not
+been called. It had not: the engine applies directives in arrival order (§5.9)
+and `show.load` decodes every asset — 10.7 s for this package — so `show.start`
+sat queued behind it while the control plane had already recorded RUNNING.
+Measured: `showState` RUNNING at t=3005 ms, first non-zero `masterClockFrame` at
+t=10014 ms, then exactly +30/s. The rehearsal was pressing START while the
+package was still loading, which is not a thing an operator does.
+
+The fix is in the system, not the assertion: `waitForGrace` — the §5.9.5
+acknowledgement the server has always tracked for `show.stop`'s quiescence
+window — is now exposed as `ControlPlaneServer.awaitApplied`, and step 2 waits
+on it. Step 2's own comment had claimed it did this all along. Falsified:
+removing the wait returns steps 3 and 4 to failing, 10 pass / 2 fail.
+
+**R4 — closed. The counter was right and the scheduling was wrong.** Underruns
+appeared at exactly the tick the clock started and never during the load, which
+ruled out the decode contention the original finding suspected. §8.10's table is
+explicit that *a missed callback deadline IS an underrun*, so the count was
+honest — and `falling_behind_the_cadence_is_an_underrun` pins that branch. The
+defect was that `audio_driver::spawn` used `tokio::spawn`, putting a 33 ms audio
+cadence on the same worker pool as the wgpu render loop; at `show.start` the
+render loop spun up and audio missed its deadline. Audio now owns a dedicated OS
+thread, with an `AudioThread` handle carrying a stop flag — a thread with no way
+to stop is a leak, which the old `JoinHandle::abort` hid.
+
+**R2 — verified closed, fixed before this pass.** `publish` max-merges each
+block's peaks into a window and rolls on the telemetry boundary: peak-hold
+across the interval, with the decision written down at the site. So 0/3 is
+correct behaviour rather than luck. Falsified to prove the fix is load-bearing:
+reverting to publish-then-reset fails
+`a_transient_shorter_than_the_window_still_reaches_the_meter`, which is exactly
+R2's scenario.
+
+**The promotion rule, now general.** Three consecutive green runs on the
+normative machine before a non-blocking job's scar comes off. Measured here:
+12/12, 12/12, 12/12. `continue-on-error` removed, the job renamed from "dress
+rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)" to "dress
+rehearsal", the pass 7-9 band replaced by 12/12, and `|| true` replaced so a
+required gate does not swallow the runner's status. The artifact upload stays:
+`engine.log`, `telemetry.jsonl` and `timings.json` are why a failure is
+debuggable rather than merely red.
+
+**What the gate proves, and what it cannot.** The runner is `macos-14` — arm64.
+The normative machine is Intel with discrete AMD graphics (§0.3). A green run
+proves the parts compose and the protocol holds; it proves nothing about the
+frame budget or any timing threshold on reference hardware. **Never cite a CI
+duration as a performance result.**
+
+**Two observations found on the way, neither fixed here.**
+
+1. `renderNode.clockState` is not the render node's clock state. `server.ts`
+   derives it as `state.showState === "RUNNING" ? "RUNNING" : "STOPPED"` — the
+   control plane's own opinion, reported as an observation of the engine. That
+   is what made R5 read as a clock defect: the wire said the engine's clock was
+   RUNNING while it was stopped. Fixing it needs the engine to report its clock
+   state, which is a §10.1 wire addition — a spec change this work order does
+   not authorise. **v0.5 candidate.**
+2. `masterClockFrame` publishes `master_frame().unwrap_or(0)`, so a STOPPED
+   clock is indistinguishable on the wire from one that just started. Harmless
+   while `masterClockState` carries the distinction, and worth removing when
+   observation 1 is addressed.
+
 ## 08 — Companion mapping (elevated to a normative requirement)
 
 Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an **Input Intent schema** — a mapping layer that is *data, not code* — from physical intents (Companion button, MIDI note, keyboard chord) to semantic §16 commands, with per-device profiles as user-editable documents. The §16 command surface with token auth and audit is already the device-independent core (`docs/portability.md`, known-good boundary 1), so 08 adds a layer above it and must not add a second command surface beside it. The proof of generality is normative: a keyboard-shortcut adapter ships in the same prompt and must work with **zero** changes to the core. The Input Intent schema is a wire-level contract and takes normative spec text at 08's moment. Target hardware: StreamDeck XL via Companion.
@@ -289,7 +366,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
-| **The dress-rehearsal CI job is `continue-on-error`** | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. Not that PR's work. |
+| ~~**The dress-rehearsal CI job is `continue-on-error`**~~ **DISCHARGED 2026-09-11** | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Discharged by work order DRESS: R5, R4 and R2 closed, the job promoted to required, `continue-on-error` removed and the gate tightened from a pass 7-9 band to 12/12.** The original row is struck rather than deleted per §2c — it was true for a month and the reason it was true is the interesting part. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
