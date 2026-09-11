@@ -20,6 +20,12 @@ futures-util = "0.3"
 wgpu = "30.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Text shaping and rasterization for the graphics layer (07b). Default features
+# are OFF deliberately: they pull system font discovery, and §0.1 assumption 11
+# forbids a host-system fallback — every face must come from the show package.
+# `swash` is the rasterizer; `std` is the allocator. No fontconfig, no
+# fontdb source-loading of system directories.
+cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 
 [dev-dependencies]
 tempfile = "3"
