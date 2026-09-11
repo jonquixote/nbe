@@ -302,14 +302,51 @@ reverting to publish-then-reset fails
 `a_transient_shorter_than_the_window_still_reaches_the_meter`, which is exactly
 R2's scenario.
 
-**The promotion rule, now general.** Three consecutive green runs on the
-normative machine before a non-blocking job's scar comes off. Measured here:
-12/12, 12/12, 12/12. `continue-on-error` removed, the job renamed from "dress
-rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)" to "dress
-rehearsal", the pass 7-9 band replaced by 12/12, and `|| true` replaced so a
-required gate does not swallow the runner's status. The artifact upload stays:
-`engine.log`, `telemetry.jsonl` and `timings.json` are why a failure is
-debuggable rather than merely red.
+**The promotion was attempted, failed on CI, and was reverted — and that is the
+most useful thing this work order produced.**
+
+The criterion I was given and wrote down was "three consecutive green runs on
+the normative machine". I met it: 12/12, 12/12, 12/12, each fix falsified. I
+removed `continue-on-error`, dropped the scar from the job name, tightened the
+band to 12/12, and pushed. **CI went red**, twice:
+
+| | normative machine | macos-14 runner |
+|---|---:|---:|
+| `audioUnderrunsTotal` | **0** | **83**, then **120** |
+| `droppedFramesTotal` | 0 | 1 |
+| steps passing | 12/12 | 9-10 of 12 |
+
+The gate step asserts `droppedFramesTotal == 0` and `audioUnderrunsTotal == 0`.
+**Those are performance claims about reference hardware**, and the runner is
+3 arm64 cores. §8.10 counts a missed 33 ms callback deadline as an underrun, and
+a shared CI VM cannot hold that cadence beside wgpu — no code change in this
+work order makes it. Requiring the job would block every PR on a hardware fact,
+which is a worse version of the state promotion was meant to end.
+
+**The corrected rule, recorded as the rule:** three consecutive green runs on the
+normative machine **and** a green run on the runner that will gate. The first
+half is what I had written; it was not enough, and writing only half of it is how
+a job gets promoted into blocking every PR.
+
+What promotion did buy, permanently: **it exposed a step that had been failing on
+CI all along.** Step 1 spawns `target/debug/nbe-preflight` and the dress job
+built only the release binary, so `not ok 1` was in every advisory run —
+including `34596023038` — invisible behind `continue-on-error` and a band that
+tolerated five failures. That build step is now in the job. An advisory job was
+reporting a failure nobody could see, which is the argument for promotion in one
+line, and the argument for reading advisory logs in the meantime.
+
+The band therefore stays, with its reason changed: it used to tolerate R2, R4 and
+R5 being red by design; it now tolerates the runner's capacity, and the header
+says so. The artifact upload stays — `engine.log`, `telemetry.jsonl` and
+`timings.json` are why a failure is debuggable rather than merely red.
+
+**What would make promotion possible**, for whoever takes it next: split the gate
+so the composition claims (no fallback, profile real, every step reached) are
+asserted everywhere and the zero-drop/zero-underrun thresholds are asserted only
+where they mean something — on the normative machine, or on a self-hosted runner
+that is one. That is a change to what the gate claims, not a weakening of it, and
+it deserves its own work order rather than being smuggled into this one.
 
 **What the gate proves, and what it cannot.** The runner is `macos-14` — arm64.
 The normative machine is Intel with discrete AMD graphics (§0.3). A green run
@@ -366,7 +403,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
-| ~~**The dress-rehearsal CI job is `continue-on-error`**~~ **DISCHARGED 2026-09-11** | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Discharged by work order DRESS: R5, R4 and R2 closed, the job promoted to required, `continue-on-error` removed and the gate tightened from a pass 7-9 band to 12/12.** The original row is struck rather than deleted per §2c — it was true for a month and the reason it was true is the interesting part. |
+| **The dress-rehearsal CI job is `continue-on-error`** — still open, for a new reason | `.github/workflows/ci.yml:248`. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Work order DRESS closed R5, R4 and R2 (12/12 three times on the normative machine, each falsified) and attempted the promotion — which failed on CI and was reverted.** The row stays open because the reason changed rather than vanished: the gate asserts zero dropped frames and zero audio underruns, which are reference-hardware claims, and the macos-14 runner measured 83 then 120 underruns on 3 arm64 cores. Promotion now needs the gate split so composition claims run everywhere and threshold claims run where they mean something. See the DRESS entry under 07. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
