@@ -42,9 +42,11 @@ export const CompanionButtonSchema = z
   .strict();
 export type CompanionButton = z.infer<typeof CompanionButtonSchema>;
 
-/** Distinct adapter identity for the audit path: `companion/<profile>:<key>`. */
-export function companionIntentSource(profileId: string, key: string): string {
-  return `companion/${profileId}:${key}`;
+/** Distinct adapter identity for the audit path: `companion/<profile>:<intent>` —
+ * profile id + binding/intent id (spec §10.7.1 `intentSource` example), never
+ * the physical key: two bindings may share a key across pages/banks. */
+export function companionIntentSource(profileId: string, intentId: string): string {
+  return `companion/${profileId}:${intentId}`;
 }
 
 function specificity(e: InputIntent): number {
@@ -53,7 +55,12 @@ function specificity(e: InputIntent): number {
 
 /**
  * Find the profile entry a button actuates: CompanionKey entries whose
- * defined coordinates all match, most-specific wins, profile order breaks ties.
+ * defined coordinates all match. Omitted page/bank/key are wildcards on that
+ * axis; most-specific match wins, profile order breaks ties (deterministic,
+ * and pinned by test — overlapping triggers that tie identically are a
+ * preflight `duplicateBindingTrigger` error, so ties here are always won on
+ * specificity, never silently). Triggerless entries never match: they are
+ * API-only intents (preflight allows them, the deck skips them).
  */
 export function findCompanionEntry(profile: IntentProfile, button: CompanionButton): InputIntent | null {
   let best: InputIntent | null = null;
@@ -93,6 +100,10 @@ export interface FiredIntent {
  * Press a Companion button: resolve the intent, build the §5.4 envelope,
  * run it through `dispatch()`. No direct state mutation — the single bump
  * happens inside dispatch, exactly like a UI command.
+ *
+ * Audit note: this helper executes the pipeline but records no audit row —
+ * audit is the transport's job. Over WS, `server.ts` records the row
+ * (including `intentSource`); embedded callers own their audit trail.
  */
 export async function fireCompanionButton(
   deps: DispatchDeps,
@@ -115,7 +126,7 @@ export async function fireCompanionButton(
   });
   return {
     intent,
-    intentSource: companionIntentSource(opts.profile.profileId, opts.button.key),
+    intentSource: companionIntentSource(opts.profile.profileId, intent.intentId),
     envelope,
     resolved,
     result,
@@ -155,7 +166,10 @@ function cmpStr(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Built-in defaults: always present, always schema-valid payloads. */
+/** Built-in defaults: always present, always schema-valid payloads.
+ * Id-requiring entries carry placeholder ids (`A1`, `sfx-1`) and are labelled
+ * as such — the operator rebinds them to the loaded show. `view.take`,
+ * `breaking.*`, `record.*`, `stream.*` and `view.fallback` need no ids. */
 function defaultButtons(page: number): DeckButton[] {
   const b = (
     key: string,
@@ -165,13 +179,13 @@ function defaultButtons(page: number): DeckButton[] {
   ): DeckButton => ({ page, bank: 1, key, bindingId: null, label, command, payload });
   return [
     b("take", "TAKE", "view.take", {}),
-    b("cut", "CUT", "view.cut", { itemRef: "A1" }),
-    b("arm-next", "Arm next", "item.arm", { itemId: "A1" }),
-    b("next", "Next item", "preview.set", { itemRef: "A1" }),
+    b("cut", "CUT (placeholder A1)", "view.cut", { itemRef: "A1" }),
+    b("arm-next", "Arm next (placeholder A1)", "item.arm", { itemId: "A1" }),
+    b("next", "Next item (placeholder A1)", "preview.set", { itemRef: "A1" }),
     b("breaking-show", "Breaking show", "breaking.show", { headline: "Breaking" }),
     b("breaking-hide", "Breaking hide", "breaking.hide", {}),
-    b("sfx-1", "SFX 1", "soundboard.play", { assetId: "sfx-1" }),
-    b("sfx-2", "SFX 2", "soundboard.play", { assetId: "sfx-2" }),
+    b("sfx-1", "SFX 1 (placeholder)", "soundboard.play", { assetId: "sfx-1" }),
+    b("sfx-2", "SFX 2 (placeholder)", "soundboard.play", { assetId: "sfx-2" }),
     b("rec-start", "Record start", "record.start", {}),
     b("rec-stop", "Record stop", "record.stop", {}),
     b("stream-start", "Stream start", "stream.start", {}),
@@ -182,9 +196,13 @@ function defaultButtons(page: number): DeckButton[] {
 
 /**
  * Manifest bindings -> deck. Sorted-by-id stable: the same bindings always
- * produce byte-identical JSON. Bindings without a trigger auto-place on
- * page 1, bank 1, first free numeric key. Defaults live on page 0 unless the
- * manifest already uses it, then on maxPage + 1 — never overwriting keys.
+ * produce byte-identical JSON. Bindings without a trigger are skipped — they
+ * are API-only intents (preflight allows them) that no button can fire;
+ * emitting a dead button would lie to the operator. Bindings with a trigger
+ * auto-place missing axes on page 1 / bank 1 / first free numeric key.
+ * Defaults live on page 0 unless the manifest already uses it, then on
+ * maxPage + 1 — never overwriting keys, though on a large manifest that page
+ * may sit far from page 0 (documented tradeoff, not a bug: manifest wins).
  */
 export function generateDeck(bindings: ControlBinding[]): Deck {
   const sorted = [...bindings].sort((a, b) => cmpStr(a.id, b.id));
@@ -207,9 +225,10 @@ export function generateDeck(bindings: ControlBinding[]): Deck {
 
   for (const binding of sorted) {
     const t = binding.trigger;
-    const page = t?.page ?? 1;
-    const bank = t?.bank ?? 1;
-    let key = t?.key;
+    if (!t) continue; // API-only intent: no button can fire it, emit none.
+    const page = t.page ?? 1;
+    const bank = t.bank ?? 1;
+    let key = t.key;
     if (key === undefined) {
       do {
         autoKey += 1;

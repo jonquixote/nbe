@@ -41,7 +41,7 @@ Build the **Input Intent layer — data, not code**:
 1. **Input Intent schema:** maps physical intents (Companion button, MIDI note, keyboard chord) to semantic §16 commands. Wire-level contract; per-device profiles are user-editable documents.
 2. **Companion adapter (Stream Deck XL):** connects over **WebSocket as primary**, speaks the §5.4 envelope with token auth, translates button → §16 command. No HTTP door, no side channel, ever.
 3. **Keyboard adapter:** ships in the same prompt as the normative zero-change proof of generality — works with **zero changes to the core**.
-4. **Deck layout generated** from the manifest's `control.bindings` (`trigger` page/bank/key → pages/banks/buttons; `action` + `payload` → §16 command). Deterministic byte-for-byte; regenerate on manifest change. Default deck (TAKE, CUT, arm-next, next-item, breaking show/hide, soundboard pads, record/stream toggles, fallback) exists even with zero bindings.
+4. **Deck layout generated** from the manifest's `control.bindings` with triggers (`trigger` page/bank/key → pages/banks/buttons; `action` + `payload` → §16 command). Triggerless bindings are API-only intents: valid, but skipped by the generator since no button can fire them. Deterministic byte-for-byte; regenerate on manifest change. Default deck (TAKE, CUT, arm-next, next-item, breaking show/hide, soundboard pads, record/stream toggles, fallback) exists even with zero bindings; id-requiring defaults carry placeholder ids, labelled as such.
 5. **The §16 WS bus is the device-independent core** (portability boundary 1). The intent layer TRANSLATES; the bus executes. Any path letting a device act without producing a §16 command is a defect.
 6. Feedback flows through the existing push channel (`stateChange`); buttons reflect state, never poll.
 
@@ -55,11 +55,11 @@ Build the **Input Intent layer — data, not code**:
 
 > The following is drafted spec-first per the v0.4 discipline (normative language + changelog entry). It is **not law** until ratified in PR review. It ships in its own commit, marked unratified.
 
-**§6.6 add (item 26):** "Every `control.bindings[]` entry with a `trigger` maps one physical intent to one §16 command (`action` + `payload`). A binding whose `action` is not a registered §16 command, whose `payload` fails that command's §16 schema, or whose `trigger` lacks its kind's required fields fails preflight (`E_PREFLIGHT_FAILED`), naming the binding `id`."
+**§6.6 add (item 26):** "Every `control.bindings[]` entry with a `trigger` maps one physical intent to one §16 command (`action` + `payload`). A binding whose `action` is not a registered §16 command (deprecated Assumption 17 aliases resolve first), whose `payload` fails that command's §16 schema, whose trigger lacks a known kind or a non-empty key, or whose trigger identically shadows another binding's trigger fails preflight (`E_PREFLIGHT_FAILED`), naming the binding `id`. A missing trigger is allowed: the intent is API-only and the deck generator skips it."
 
 **§19.3 amend (row 9):** extend "Invalid hotkey action" to "Invalid input binding (unknown action, schema-invalid payload, or incomplete trigger — names the binding `id`)."
 
-**§10.7.1 add (field, additive):** `intentSource` — optional, `device profile id + trigger id` (e.g. `companion/xl-a:take-1`). Records which physical intent produced a command; identical state changes from different sources differ only in this field. Absent = software/direct command.
+**§10.7.1 add (field, additive):** `intentSource` — optional, `adapter/profile:intent` (e.g. `companion/xl-a:take-1`), format-enforced by the server. Records which physical intent produced a command; identical state changes from different sources differ only in this field. Absent = software/direct command.
 
 **Changelog entry:** "08-INPUT-INTENT [UNRATIFIED]: Input Intent mapping rule (§6.6/§19.3), `intentSource` audit field (§10.7.1). WS-only reaffirmed; no §16 surface change."
 

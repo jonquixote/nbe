@@ -11,7 +11,7 @@ import { join } from "node:path";
 import WebSocket from "ws";
 
 import { AuditLog, type AuditRecord } from "./audit.js";
-import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
+import { buildRegistry, type DispatchDeps } from "./dispatch.js";
 import {
   companionIntentSource,
   deckToJson,
@@ -21,7 +21,7 @@ import {
   generateDeck,
   type Deck,
 } from "./companion.js";
-import { intentToEnvelope, profileFromBindings, resolveIntent, TriggerKind } from "./intent.js";
+import { intentToEnvelope, profileFromBindings, resolveIntent } from "./intent.js";
 import { fireKeyboardChord, findKeyboardEntry, keyboardIntentSource } from "./keyboard.js";
 import type { ControlBinding } from "./generated/manifest-schema.js";
 import { MockRenderBridge } from "./render-bridge.js";
@@ -45,7 +45,7 @@ function makePackage(): string {
   writeFileSync(
     join(dir, "manifest.json"),
     JSON.stringify({
-      manifestVersion: "0.3",
+      manifestVersion: "0.4",
       network: { id: "nbe", name: "Test" },
       show: {
         id: "show-1",
@@ -126,9 +126,8 @@ beforeEach(async () => {
     auditRecords.push(full);
     return full;
   };
-  if (server) await server.close();
-  server = await createControlPlaneServer({
-    port: 0,
+  // afterEach owns server close; closing here too double-closes.
+  server = await createControlPlaneServer({    port: 0,
     auth: { tokens: { [TOKEN]: "admin" } },
     audit,
     state,
@@ -171,8 +170,8 @@ test("AC-12 WS: companion button view.take -> ok + bump + stateChange, no plugin
     const entry = findCompanionEntry(profile, button);
     assert.ok(entry, "button must resolve to an intent");
     const envelope = intentToEnvelope(resolveIntent(entry));
-    const intentSource = companionIntentSource("xl-a", "0");
-    assert.equal(intentSource, "companion/xl-a:0");
+    const intentSource = companionIntentSource("xl-a", "take-1");
+    assert.equal(intentSource, "companion/xl-a:take-1");
 
     const watch = waitForStateChange(ws, before + 1);
     const take = await send(ws, { ...envelope, intentSource });
@@ -226,8 +225,8 @@ test("keyboard same command is identical except intentSource", async () => {
   assert.deepEqual(firedC.envelope.payload, firedK.envelope.payload);
   assert.deepEqual(firedC.result.data, firedK.result.data);
   assert.notEqual(firedC.intentSource, firedK.intentSource);
-  assert.equal(firedC.intentSource, "companion/xl-a:5");
-  assert.equal(firedK.intentSource, keyboardIntentSource("kb-1", "ctrl+shift+f"));
+  assert.equal(firedC.intentSource, "companion/xl-a:fb-c");
+  assert.equal(firedK.intentSource, keyboardIntentSource("kb-1", "fb-k"));
   assert.ok(firedK.intentSource.startsWith("keyboard/"));
   // Neither adapter touches state directly: dispatch() did the single bump each.
   assert.equal(a.state.stateVersion, 1);
@@ -238,8 +237,19 @@ test("keyboard same command is identical except intentSource", async () => {
     /no intent for keyboard chord/,
   );
   assert.equal(b.state.stateVersion, 1);
-  void dispatch;
-  void TriggerKind;
+});
+
+test("matcher: most-specific wins, profile order breaks ties", () => {
+  const profile = profileFromBindings("xl-a", "companion", [
+    { id: "wide", trigger: { kind: "companionKey", key: "9" }, action: "view.fallback", payload: {} },
+    { id: "narrow", trigger: { kind: "companionKey", page: 1, bank: 1, key: "9" }, action: "view.take", payload: {} },
+  ]);
+  const hit = findCompanionEntry(profile, { page: 1, bank: 1, key: "9" });
+  assert.ok(hit);
+  assert.equal(hit.intentId, "narrow");
+  const loose = findCompanionEntry(profile, { page: 7, bank: 7, key: "9" });
+  assert.ok(loose);
+  assert.equal(loose.intentId, "wide");
 });
 
 test("deck generation is deterministic: byte-identical x2, covers every binding", () => {
@@ -256,7 +266,10 @@ test("deck generation is deterministic: byte-identical x2, covers every binding"
   for (const p of deck.pages) for (const b of p.banks) for (const btn of b.buttons) {
     if (btn.bindingId) ids.add(btn.bindingId);
   }
-  for (const b of bindings) assert.ok(ids.has(b.id), `binding must be covered: ${b.id}`);
+  for (const b of bindings) {
+    if (b.trigger) assert.ok(ids.has(b.id), `binding must be covered: ${b.id}`);
+    else assert.ok(!ids.has(b.id), `triggerless binding must emit no button: ${b.id}`);
+  }
 });
 
 test("default deck with empty bindings: TAKE + fallback, schema-valid, no collision", () => {
@@ -307,4 +320,49 @@ test("E_AUTH before state on bad token; token never logged", async () => {
     !JSON.stringify(auditRecords).includes(badToken),
     "raw token must never appear in the audit log",
   );
+});
+
+test("intentSource: invalid rejected, rejected-with-source audited, direct is null", async () => {
+  const ws = adminWs();
+  await connect(ws);
+  try {
+    const pkgPath = makePackage();
+    const loaded = await send(ws, { v: "0.3", id: randomUUID(), command: "show.load", payload: { packagePath: pkgPath } });
+    assert.equal(loaded.status, "ok");
+
+    // Free-form source is rejected before dispatch: spoofing gets E_BAD_PAYLOAD, no bump.
+    const before = state.stateVersion;
+    const bad = await send(ws, {
+      v: "0.3",
+      id: randomUUID(),
+      command: "view.fallback",
+      payload: {},
+      intentSource: "not a valid source!!",
+    });
+    assert.equal(bad.status, "error");
+    assert.equal((bad.error as { code: string }).code, "E_BAD_PAYLOAD");
+    assert.equal(state.stateVersion, before);
+
+    // A rejected command carrying a valid source still audits that source.
+    const badCmd = await send(ws, {
+      v: "0.3",
+      id: randomUUID(),
+      command: "bogus.cmd",
+      payload: {},
+      intentSource: "companion/xl-a:take-1",
+    });
+    assert.equal(badCmd.status, "error");
+    const rejRow = auditRecords.find((a) => a.requestId === badCmd.requestId);
+    assert.ok(rejRow, "rejection must be audited");
+    assert.equal(rejRow.intentSource, "companion/xl-a:take-1");
+
+    // A direct command audits a null source: absent means software/direct.
+    const direct = await send(ws, { v: "0.3", id: randomUUID(), command: "view.fallback", payload: {} });
+    assert.equal(direct.status, "ok");
+    const okRow = auditRecords.find((a) => a.requestId === direct.requestId);
+    assert.ok(okRow, "command must be audited");
+    assert.equal(okRow.intentSource, null);
+  } finally {
+    ws.close();
+  }
 });

@@ -126,7 +126,10 @@ export function resolveIntent(entry: BindingLike): ResolvedIntent {
 
 /** Mirror a manifest `ControlBinding` into this profile's intent space. */
 export function bindingToIntent(binding: ControlBinding, profileId: string): InputIntent {
-  return InputIntentSchema.parse({
+  const rawKind = binding.trigger?.kind as string | undefined;
+  if (rawKind !== undefined && !(TRIGGER_KIND_WIRE_VALUES as readonly string[]).includes(rawKind)) {
+    throw new CpError("E_BAD_PAYLOAD", `unknown trigger kind: ${rawKind}`);
+  }  return InputIntentSchema.parse({
     intentId: binding.id,
     profileId,
     action: binding.action,

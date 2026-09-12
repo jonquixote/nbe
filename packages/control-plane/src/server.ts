@@ -427,15 +427,21 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       }
 
       // Prompt 08 (D2, WS-only): an adapter (Companion, keyboard, ...) may
-      // attach `intentSource` — `device profile id + trigger id`, e.g.
+      // attach `intentSource` — `adapter/profile:intent`, e.g.
       // `companion/xl-a:take-1` — alongside the §5.4 envelope. It rides the
       // audit path only: stripped before envelope validation, never seen by
       // dispatch(), recorded on the command audit rows below. Absent =
       // software/direct command. Same transport, same auth, no second protocol.
+      // The format is enforced (not just length): audit identity must stay
+      // machine-readable, and a free-form client string is spoofable noise.
       let intentSource: string | null = null;
       if (typeof parsed === "object" && parsed !== null && "intentSource" in parsed) {
         const rawSource = (parsed as Record<string, unknown>).intentSource;
-        if (typeof rawSource !== "string" || rawSource.length < 1 || rawSource.length > 256) {
+        if (
+          typeof rawSource !== "string" ||
+          rawSource.length > 256 ||
+          !/^[A-Za-z][A-Za-z0-9_-]{0,31}\/[^\s/:]{1,64}:[^\s/:]{1,64}$/.test(rawSource)
+        ) {
           ws.send(
             JSON.stringify(errorResponse(randomUUID(), state.stateVersion, "E_BAD_PAYLOAD", "invalid intentSource")),
           );

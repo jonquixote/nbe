@@ -24,7 +24,7 @@ fn write(dir: &Path, bindings: serde_json::Value) {
     std::fs::create_dir_all(dir.join("media")).unwrap();
     std::fs::write(dir.join("media/slate.png"), "png").unwrap();
     let manifest = serde_json::json!({
-        "manifestVersion": "0.3",
+        "manifestVersion": "0.4",
         "network": { "id": "n", "name": "T" },
         "show": {
             "id": "s", "title": "T",
@@ -67,7 +67,13 @@ fn valid_bindings_pass() {
               "trigger": { "kind": "hotkey", "key": "t" } },
             { "id": "b-cut", "action": "view.cut", "payload": { "itemRef": "A1" },
               "trigger": { "kind": "companionKey", "page": 1, "bank": 1, "key": "1-1-1" } },
-            { "id": "b-overlay", "action": "overlay.show", "payload": { "overlayId": "bug" } }
+            { "id": "b-overlay", "action": "overlay.show", "payload": { "overlayId": "bug" } },
+            // Assumption 17 alias: resolves at runtime, so it passes preflight.
+            { "id": "b-alias", "action": "program.take", "payload": {},
+              "trigger": { "kind": "hotkey", "key": "p" } },
+            // Partial companionKey: omitted axes are matcher wildcards.
+            { "id": "b-wild", "action": "view.fallback", "payload": {},
+              "trigger": { "kind": "companionKey", "key": "wild" } }
         ]),
     );
     let (code, report) = run(tmp.path());
@@ -108,4 +114,42 @@ fn unknown_action_and_bad_trigger_fail() {
             && e.contains("E_PREFLIGHT_FAILED")),
         "errors: {errors:?}"
     );
+}
+
+#[test]
+fn trigger_and_payload_rules_fail_by_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        serde_json::json!([
+            { "id": "b-no-payload", "action": "view.cut",
+              "trigger": { "kind": "hotkey", "key": "x" } },
+            { "id": "b-bad-payload", "action": "view.cut", "payload": [],
+              "trigger": { "kind": "hotkey", "key": "y" } },
+            { "id": "b-empty-key", "action": "view.take", "payload": {},
+              "trigger": { "kind": "hotkey", "key": "" } },
+            { "id": "b-bad-kind", "action": "view.take", "payload": {},
+              "trigger": { "kind": "footPedal", "key": "z" } },
+            { "id": "b-dup-a", "action": "view.take", "payload": {},
+              "trigger": { "kind": "hotkey", "key": "same" } },
+            { "id": "b-dup-b", "action": "view.fallback", "payload": {},
+              "trigger": { "kind": "hotkey", "key": "same" } }
+        ]),
+    );
+    let (code, report) = run(tmp.path());
+    assert_eq!(code, 2);
+    assert_eq!(report["airReady"], false);
+    let errors = report_errors(&report);
+    for (id, needle) in [
+        ("b-no-payload", "missing required key \"itemRef\""),
+        ("b-bad-payload", "non-object payload"),
+        ("b-empty-key", "missing required field \"key\""),
+        ("b-bad-kind", "unknown trigger kind"),
+        ("b-dup-b", "duplicateBindingTrigger"),
+    ] {
+        assert!(
+            errors.iter().any(|e| e.contains(id) && e.contains(needle)),
+            "{id} / {needle}: {errors:?}"
+        );
+    }
 }
