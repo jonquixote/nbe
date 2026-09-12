@@ -96,6 +96,22 @@ jobs:
             echo "expected at least 13 prompt07_overlay tests to run"; exit 1
           fi
           echo "prompt07_overlay tests that ran: $ran"
+      - name: the 07b graphics suite actually ran
+        run: |
+          out=$(cargo test -p nbe-engine --test prompt07b_graphics 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          # Floor, not a count: adding tests must not need a CI edit, but
+          # deleting or skipping one must fail the job. Same shape as the
+          # prompt04 and prompt07_overlay gates, and for the same reason — a
+          # suite that silently runs zero tests is a green build that proves
+          # nothing.
+          if [ "$ran" -lt 14 ]; then
+            echo "expected at least 14 prompt07b_graphics tests to run, got $ran"; exit 1
+          fi
+          echo "prompt07b_graphics tests that ran: $ran"
       - name: overlay_show fixture passes (four overlay kinds)
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show

@@ -33,6 +33,11 @@
       "kind": "image",
       "source": "media/logo.png",
       "format": "png"
+    },
+    {
+      "id": "amiri",
+      "kind": "font",
+      "source": "media/Amiri-Regular.ttf"
     }
   ],
   "scenes": [
@@ -44,13 +49,90 @@
           "kind": "graphic",
           "z": 1,
           "templateId": "solid",
-          "fields": { "color": "#222222" }
+          "fields": {
+            "color": "#222222"
+          }
         }
       ]
     }
   ],
   "templates": [
-    { "id": "solid", "kind": "generic" }
+    {
+      "id": "solid",
+      "kind": "generic"
+    },
+    {
+      "id": "tpl_ticker",
+      "kind": "ticker",
+      "fontAssetIds": [
+        "amiri"
+      ],
+      "fields": [
+        {
+          "name": "text",
+          "label": "Item text",
+          "direction": "auto",
+          "maxLength": 240
+        }
+      ]
+    },
+    {
+      "id": "tpl_banner",
+      "kind": "breakingBanner",
+      "fontAssetIds": [
+        "amiri"
+      ],
+      "fields": [
+        {
+          "name": "headline",
+          "label": "Headline",
+          "direction": "auto",
+          "maxLength": 120
+        }
+      ]
+    },
+    {
+      "id": "tpl_lower_third",
+      "kind": "lowerThirdHeadline",
+      "fontAssetIds": [
+        "amiri"
+      ],
+      "fields": [
+        {
+          "name": "headline",
+          "label": "Headline",
+          "direction": "auto",
+          "maxLength": 120
+        },
+        {
+          "name": "subhead",
+          "label": "Subhead",
+          "direction": "auto",
+          "maxLength": 160
+        }
+      ]
+    },
+    {
+      "id": "tpl_name",
+      "kind": "lowerThirdName",
+      "fontAssetIds": [
+        "amiri"
+      ],
+      "fields": [
+        {
+          "name": "name",
+          "label": "Name",
+          "direction": "auto",
+          "maxLength": 80
+        },
+        {
+          "name": "role",
+          "label": "Role/location",
+          "direction": "auto",
+          "maxLength": 120
+        }
+      ]
+    }
   ],
   "overlays": [
     {
@@ -60,9 +142,17 @@
           "id": "ticker_band",
           "kind": "ticker",
           "z": 1,
-          "templateId": "solid",
-          "fields": { "color": "#ff0000" },
-          "transform": { "x": 0.0, "y": 0.9, "w": 1.0, "h": 0.1 }
+          "templateId": "tpl_ticker",
+          "fields": {
+            "color": "#ff0000",
+            "text": "BREAKING \u2014 Elecci\u00f3n \u00cd\u00f1igo \u2014 \u0639\u0627\u062c\u0644"
+          },
+          "transform": {
+            "x": 0.0,
+            "y": 0.9,
+            "w": 1.0,
+            "h": 0.1
+          }
         }
       ]
     },
@@ -74,7 +164,12 @@
           "kind": "clip",
           "z": 1,
           "assetId": "logo",
-          "transform": { "x": 0.85, "y": 0.02, "w": 0.13, "h": 0.16 }
+          "transform": {
+            "x": 0.85,
+            "y": 0.02,
+            "w": 0.13,
+            "h": 0.16
+          }
         }
       ]
     },
@@ -85,9 +180,17 @@
           "id": "banner_strip",
           "kind": "graphic",
           "z": 1,
-          "templateId": "solid",
-          "fields": { "color": "#0000ff" },
-          "transform": { "x": 0.0, "y": 0.0, "w": 1.0, "h": 0.08 }
+          "templateId": "tpl_banner",
+          "fields": {
+            "color": "#0000ff",
+            "headline": "BREAKING NEWS"
+          },
+          "transform": {
+            "x": 0.0,
+            "y": 0.0,
+            "w": 1.0,
+            "h": 0.08
+          }
         }
       ]
     },
@@ -96,11 +199,22 @@
       "elements": [
         {
           "id": "clock_pad",
-          "kind": "graphic",
+          "kind": "clock",
           "z": 1,
-          "templateId": "solid",
-          "fields": { "color": "#00ff00" },
-          "transform": { "x": 0.0, "y": 0.0, "w": 0.1, "h": 0.08 }
+          "fields": {
+            "color": "#00ff00"
+          },
+          "transform": {
+            "x": 0.0,
+            "y": 0.0,
+            "w": 0.1,
+            "h": 0.08
+          },
+          "clock": {
+            "mode": "showElapsed",
+            "format": "HH:mm:ss",
+            "blinkColon": true
+          }
         }
       ]
     }

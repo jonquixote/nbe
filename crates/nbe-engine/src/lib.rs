@@ -21,5 +21,6 @@ pub mod render;
 pub mod scene;
 pub mod state;
 pub mod telemetry;
+pub mod text;
 pub mod video;
 pub mod watchdog;

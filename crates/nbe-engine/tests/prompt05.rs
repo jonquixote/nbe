@@ -895,6 +895,8 @@ fn a_fault_only_blames_items_that_would_actually_show_the_asset() {
                     }
                     nbe_engine::scene::LayerSource::Image(a) => Some(a.clone()),
                     nbe_engine::scene::LayerSource::Solid(_) => None,
+                    // Text names no media asset (07b).
+                    nbe_engine::scene::LayerSource::Text(_) => None,
                 })
                 .collect();
             assert!(

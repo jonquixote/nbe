@@ -61,6 +61,54 @@ pub enum LayerSource {
         /// Whether the element loops (`videoLoop`) or plays once (`clip`).
         looping: bool,
     },
+    /// Shaped text, addressed by the element that declares it.
+    ///
+    /// Like [`LayerSource::Video`], this only *names* what to draw: the content
+    /// a clock shows is a function of the master clock and a ticker's scroll
+    /// offset is a function of the master frame, and both are resolved by the
+    /// render loop at draw time (§12.1's discipline, the same one
+    /// `overlay_alpha` follows). Resolution here stays pure — no shaping, no
+    /// I/O, nothing that could not run twice with the same answer.
+    Text(TextLayer),
+}
+
+/// What a text element draws, before the clock is consulted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextLayer {
+    pub element_id: String,
+    pub content: TextContent,
+    pub color: [f32; 4],
+    /// Font asset ids, resolved from the element's template (§6.5's
+    /// `fontAssetIds`). Empty means the package named no face, and the render
+    /// loop draws nothing rather than reaching for a system one.
+    pub font_asset_ids: Vec<String>,
+    /// A ticker scrolls; a lower third does not.
+    pub scroll: bool,
+    /// Pixels per master frame. §6.5: scroll position is a pure function of
+    /// `(masterFrame, speedPxPerFrame)`.
+    pub speed_px_per_frame: f32,
+}
+
+/// The two kinds of text content: one fixed until someone edits it, one a
+/// function of the clock.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextContent {
+    /// Fixed until a `graphic.update` changes it.
+    Static(String),
+    /// A clock face (§16.13). The string is derived per frame from the master
+    /// clock, but it only *changes* about once a second, which is what keeps
+    /// re-shaping off the frame path.
+    Clock(ClockSpec),
+}
+
+/// `ClockConfig` as the engine reads it (§16.13).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClockSpec {
+    /// `wall` reads the host clock; `showElapsed` reads the master clock and
+    /// never wall time (§11).
+    pub show_elapsed: bool,
+    pub format: String,
+    pub blink_colon: bool,
 }
 
 /// One composited element, already ordered and resolved.
@@ -109,6 +157,18 @@ pub struct PackageIndex {
     pub overlay_enter_frames: HashMap<String, u64>,
     /// overlay id → exit-animation duration in frames, same derivation.
     pub overlay_exit_frames: HashMap<String, u64>,
+    /// asset id → packaged font bytes, read at index time (§6.5, assumption 11).
+    pub fonts: HashMap<String, Vec<u8>>,
+    /// Font asset ids in declaration order, so the first declared face is the
+    /// one a template that names none falls back to.
+    pub font_order: Vec<String>,
+    /// template id → the packaged font asset ids it names (§6.5 `fontAssetIds`).
+    ///
+    /// Resolved at index time so `layer_for` stays pure. A template absent from
+    /// this map, or present with an empty list, names no face — and an element
+    /// using it draws no text, because assumption 11 forbids reaching for a
+    /// host-system font when the package supplied none.
+    pub template_fonts: HashMap<String, Vec<String>>,
     /// asset id → decoded image, for `image`-kind assets only.
     pub images: HashMap<String, DecodedImage>,
     /// asset id → kind, so video references can be skipped by scope, not error.
@@ -180,6 +240,17 @@ pub struct ElementSpec {
     pub enter_frames: Option<u64>,
     /// `exitAnimation.durationFrames`, same derivation.
     pub exit_frames: Option<u64>,
+    /// The template this element names, if any (§6.5).
+    pub template_id: Option<String>,
+    /// The element's text content, read from the fields its template declares.
+    /// `fields.text` for a ticker, `fields.headline` for a banner or lower
+    /// third, joined with `fields.subhead`/`fields.role` when present.
+    pub text: Option<String>,
+    /// `element.clock` (§16.13), present only on a `clock` element.
+    pub clock: Option<ClockSpec>,
+    /// Ticker scroll speed in pixels per master frame, from
+    /// `fields.speedPxPerFrame` when the package states one.
+    pub speed_px_per_frame: f32,
 }
 
 impl PackageIndex {
@@ -198,6 +269,27 @@ impl PackageIndex {
                 .and_then(|v| v.get("frameRate"))
                 .and_then(|v| v.as_u64())
                 .map(|r| r as u32),
+            template_fonts: manifest
+                .get("templates")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| {
+                            let id = t.get("id").and_then(|v| v.as_str())?.to_string();
+                            let fonts = t
+                                .get("fontAssetIds")
+                                .and_then(|f| f.as_array())
+                                .map(|f| {
+                                    f.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            Some((id, fonts))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             ..Default::default()
         };
 
@@ -231,6 +323,23 @@ impl PackageIndex {
             {
                 idx.declared_vram_budget_mib
                     .insert(id.to_string(), mib.min(u32::MAX as u64) as u32);
+            }
+            if kind == "font" {
+                // Packaged faces are read here, at the load boundary, for the
+                // same reason images are: §7.13 leaves no room to touch the
+                // filesystem while a frame is due. Declaration order is kept —
+                // the first face a package declares is the one text falls back
+                // to when a template names none.
+                match std::fs::read(package_root.join(src)) {
+                    Ok(bytes) => {
+                        idx.font_order.push(id.to_string());
+                        idx.fonts.insert(id.to_string(), bytes);
+                    }
+                    Err(e) => {
+                        tracing::warn!(asset = id, error = %e, "font asset unreadable; skipping")
+                    }
+                }
+                continue;
             }
             if kind != "image" {
                 continue; // video is decoded by `video.rs`, not here
@@ -445,6 +554,12 @@ impl PackageIndex {
                         LayerSource::Video { asset_id: a, .. } => a == asset_id,
                         // A solid shows no asset, whatever the element names.
                         LayerSource::Solid(_) => false,
+                        // Text shows no asset either. Its packaged font is an
+                        // asset the manifest declares, but a font is not a
+                        // source a decode fault can be blamed on — this walk
+                        // answers "which items show this media", and a glyph
+                        // is not media.
+                        LayerSource::Text(_) => false,
                     })
             })
             .cloned()
@@ -529,9 +644,36 @@ impl PackageIndex {
             .collect()
     }
 
+    /// Build a text layer, resolving the element's template to its packaged
+    /// fonts. A template that names no face yields an empty font list, and the
+    /// render loop draws nothing — never a host-system fallback (assumption 11).
+    fn text_layer(&self, e: &ElementSpec, content: TextContent, scroll: bool) -> LayerSource {
+        let fonts = e
+            .template_id
+            .as_deref()
+            .and_then(|t| self.template_fonts.get(t))
+            .cloned()
+            .unwrap_or_default();
+        LayerSource::Text(TextLayer {
+            element_id: e.id.clone(),
+            content,
+            color: e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            font_asset_ids: fonts,
+            scroll,
+            speed_px_per_frame: e.speed_px_per_frame,
+        })
+    }
+
     fn layer_for(&self, e: &ElementSpec) -> Option<Layer> {
         let source = match e.kind.as_str() {
+            // A graphic with text on it is text; a graphic without is the solid
+            // fill it always was. Both reach the same `draw_for`.
+            "graphic" if e.text.is_some() => {
+                self.text_layer(e, TextContent::Static(e.text.clone()?), false)
+            }
             "graphic" => LayerSource::Solid(e.color.unwrap_or(PLACEHOLDER_GRAPHIC)),
+            "ticker" => self.text_layer(e, TextContent::Static(e.text.clone()?), true),
+            "clock" => self.text_layer(e, TextContent::Clock(e.clock.clone()?), false),
             "clip" | "videoLoop" => {
                 let asset = e.asset_id.as_deref()?;
                 match self.asset_kind.get(asset).map(String::as_str) {
@@ -643,6 +785,60 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .get("exitAnimation")
             .and_then(|a| a.get("durationFrames"))
             .and_then(|v| v.as_u64()),
+        template_id: e
+            .get("templateId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        text: text_of(e.get("fields")),
+        clock: clock_of(e.get("clock")),
+        speed_px_per_frame: e
+            .get("fields")
+            .and_then(|f| f.get("speedPxPerFrame"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(DEFAULT_TICKER_SPEED_PX_PER_FRAME as f64) as f32,
+    })
+}
+
+/// Default ticker speed, in pixels per master frame.
+///
+/// 4 px/frame at the 30 fps house rate is 120 px/s — a 1920-wide item crosses
+/// in 16 s, which is the pace news tickers actually run at. The package may
+/// state its own via `fields.speedPxPerFrame`; this is only what an item that
+/// says nothing gets.
+pub const DEFAULT_TICKER_SPEED_PX_PER_FRAME: f32 = 4.0;
+
+/// The text an element draws, gathered from the fields §6.5's templates declare.
+///
+/// Field names follow the template classes: a ticker carries `text`, a banner
+/// and a lower third carry `headline` (plus `subhead`), a name strap carries
+/// `name` (plus `role`). Absent fields yield `None`, which draws nothing — an
+/// element whose text has not been filled in is empty, not a placeholder.
+fn text_of(fields: Option<&serde_json::Value>) -> Option<String> {
+    let f = fields?;
+    let get = |k: &str| f.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let primary = get("text")
+        .or_else(|| get("headline"))
+        .or_else(|| get("name"))?;
+    match get("subhead").or_else(|| get("role")) {
+        Some(secondary) => Some(format!("{primary}\n{secondary}")),
+        None => Some(primary.to_string()),
+    }
+}
+
+/// `element.clock` → [`ClockSpec`], with the schema's own defaults.
+fn clock_of(clock: Option<&serde_json::Value>) -> Option<ClockSpec> {
+    let c = clock?;
+    Some(ClockSpec {
+        show_elapsed: c.get("mode").and_then(|v| v.as_str()) == Some("showElapsed"),
+        format: c
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("HH:mm:ss")
+            .to_string(),
+        blink_colon: c
+            .get("blinkColon")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     })
 }
 
