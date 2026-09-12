@@ -26,7 +26,18 @@ pub const PREVIEW_H: u32 = 540;
 struct LayerUniform {
     color: [f32; 4],
     rect: [f32; 4],
+    /// Which part of the source texture to sample: `(offset_u, offset_v,
+    /// scale_u, scale_v)`.
+    ///
+    /// Every layer that is not a scrolling ticker passes `(0, 0, 1, 1)`, which
+    /// makes `uv = corner` exactly as before — so this addition cannot move a
+    /// pixel of anything that existed before it. Only the ticker sets it, to
+    /// slide a window across a raster wider than the band.
+    uv: [f32; 4],
 }
+
+/// The whole-texture window. Anything that is not scrolling uses this.
+const UV_FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// Uniform stride, aligned for per-draw offsets.
 const UNIFORM_STRIDE: u64 = 256;
@@ -98,6 +109,17 @@ pub struct RenderLoop {
     fallback_tex: wgpu::Texture,
     /// 1x1 white texture; solid layers are this modulated by a colour.
     white: wgpu::Texture,
+    /// The packaged faces, rebuilt at the load boundary. Behind a mutex because
+    /// shaping needs `&mut` and `draw_for` runs behind `&self`.
+    fonts: std::sync::Mutex<crate::text::FontBook>,
+    /// Rasterized text by content key. This is what makes §6.5's "shape once
+    /// per content change" true rather than aspirational: a hit costs a hash
+    /// lookup, and only a miss shapes.
+    text_cache: std::sync::Mutex<HashMap<String, TextTexture>>,
+    /// How many rasterizations have happened. A counter rather than a log line
+    /// because the texture-discipline test asserts on it: a second of scrolling
+    /// must add zero.
+    pub text_rasterizations: std::sync::atomic::AtomicU64,
     loaded_generation: u64,
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
@@ -166,6 +188,9 @@ impl RenderLoop {
             video_rings: HashMap::new(),
             fallback_tex,
             white,
+            fonts: std::sync::Mutex::new(crate::text::FontBook::from_packaged(Vec::new())),
+            text_cache: std::sync::Mutex::new(HashMap::new()),
+            text_rasterizations: std::sync::atomic::AtomicU64::new(0),
             loaded_generation: u64::MAX,
             house_rate,
             pipeline,
@@ -192,6 +217,22 @@ impl RenderLoop {
         }
         self.loaded_generation = generation;
         self.textures.clear();
+        // A new package means new faces and stale pixels. Both are rebuilt at
+        // this boundary and never during a frame.
+        {
+            let index = self.state.package.lock().unwrap();
+            let faces: Vec<Vec<u8>> = index
+                .as_ref()
+                .map(|i| {
+                    i.font_order
+                        .iter()
+                        .filter_map(|id| i.fonts.get(id).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            *self.fonts.lock().unwrap() = crate::text::FontBook::from_packaged(faces);
+        }
+        self.text_cache.lock().unwrap().clear();
 
         {
             let index = self.state.package.lock().unwrap();
@@ -428,6 +469,7 @@ impl RenderLoop {
                 LayerUniform {
                     color: [1.0, 1.0, 1.0, 1.0],
                     rect: crate::scene::FULL_RECT,
+                    uv: UV_FULL,
                 },
             ));
         } else {
@@ -523,6 +565,12 @@ impl RenderLoop {
     ) -> Option<(wgpu::Texture, LayerUniform)> {
         let (tex, mut color) = match &layer.source {
             LayerSource::Solid(c) => (self.white.clone(), *c),
+            // Text is drawn from a raster produced off the frame path. The
+            // colour is already baked into the raster's own pixels, so the
+            // layer's tint is white and the existing blend does the rest —
+            // which is what keeps text on the same `draw_for` every other
+            // element uses, rather than a second pipeline.
+            LayerSource::Text(t) => (self.text_texture(t, frame)?, [1.0, 1.0, 1.0, 1.0]),
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
             // SPEC §12.1: which frame shows is a pure function of the master
             // clock. The ring textures were uploaded at load; this is a lookup.
@@ -559,11 +607,18 @@ impl RenderLoop {
             }
         };
         color[3] *= layer.opacity * alpha;
+        // Only a scrolling ticker samples a window; everything else takes the
+        // whole texture, which is what the shader did before uv existed.
+        let uv = match &layer.source {
+            LayerSource::Text(t) if t.scroll => self.ticker_window(t, frame),
+            _ => UV_FULL,
+        };
         Some((
             tex,
             LayerUniform {
                 color,
                 rect: layer.rect,
+                uv,
             },
         ))
     }
@@ -643,6 +698,171 @@ fn overlay_alpha(rt: crate::state::OverlayRuntime, frame: u64) -> f32 {
                 (1.0 - elapsed as f32 / rt.duration_frames.max(1) as f32).max(0.0)
             }
         }
+    }
+}
+
+/// A rasterized text texture and what the compositor needs to sample it.
+struct TextTexture {
+    tex: wgpu::Texture,
+    /// The scroll period in pixels: one copy of the item plus its gap. The
+    /// raster holds two copies, so sliding by up to one period never samples
+    /// past the end.
+    period_px: u32,
+    /// The raster's own width, which for a ticker is about twice the period.
+    width: u32,
+}
+
+impl RenderLoop {
+    /// Resolve a text layer to a texture, shaping only when the content changed.
+    ///
+    /// The content of a clock is a function of the master clock, so this is
+    /// called every frame — but the *string* changes about once a second, and
+    /// the cache is keyed on the string. That is what keeps §6.5's no-per-frame-
+    /// relayout rule true for an element whose face is literally a clock.
+    fn text_texture(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<wgpu::Texture> {
+        let content = self.resolve_text(t, frame)?;
+        if content.is_empty() {
+            return None;
+        }
+        // The raster is sized in pixels against the View, not the element box:
+        // a band 10% of a 1080-line frame is 108 px tall, and text sized to the
+        // box is text that reads the same at any output resolution.
+        let target_h = self.targets.view.height().max(1);
+        let height_px = (target_h as f32 * 0.06).round().max(8.0) as u32;
+        let width_px = self.targets.view.width().max(1);
+        // A ticker's raster holds the item twice, separated by a gap, so the
+        // scroll can wrap without a seam and without a repeating sampler. The
+        // period is one copy plus the gap, which `ticker_window` slides by.
+        let laid_out = if t.scroll {
+            crate::text::ticker_layout(&content)
+        } else {
+            content
+        };
+        let spec = crate::text::TextSpec {
+            text: laid_out,
+            size_px: height_px as f32 * 0.72,
+            color: t.color,
+            width_px,
+            height_px,
+            grow_to_text: t.scroll,
+        };
+        let key = format!("{}|{}", t.element_id, spec.cache_key());
+
+        if let Some(hit) = self.text_cache.lock().unwrap().get(&key) {
+            return Some(hit.tex.clone());
+        }
+
+        // A miss: shape, rasterize, upload. Off the frame path by construction —
+        // reaching here means the content changed.
+        let raster = {
+            let mut book = self.fonts.lock().unwrap();
+            crate::text::TextRaster::rasterize(&mut book, &spec)?
+        };
+        self.text_rasterizations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tex = self
+            .gpu
+            .make_texture(raster.width, raster.height, &t.element_id);
+        self.gpu
+            .upload_rgba(&tex, raster.width, raster.height, &raster.rgba);
+        self.text_cache.lock().unwrap().insert(
+            key,
+            TextTexture {
+                tex: tex.clone(),
+                // Two copies went in, so one period is half the shaped width.
+                period_px: if t.scroll {
+                    crate::text::ticker_period_px(raster.text_width)
+                } else {
+                    raster.text_width.max(1)
+                },
+                width: raster.width,
+            },
+        );
+        Some(tex)
+    }
+
+    /// The string a text layer shows at this frame.
+    fn resolve_text(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<String> {
+        match &t.content {
+            crate::scene::TextContent::Static(s) => Some(s.clone()),
+            crate::scene::TextContent::Clock(c) => Some(self.clock_face(c, frame)),
+        }
+    }
+
+    /// Render a clock face (§16.13).
+    ///
+    /// `showElapsed` reads the **master clock** and never wall time — the whole
+    /// point of a show-elapsed clock is that it agrees with the frames going to
+    /// air, and a host clock that slews would disagree with them.
+    fn clock_face(&self, c: &crate::scene::ClockSpec, frame: u64) -> String {
+        clock_face_inner(c, frame, self.house_rate)
+    }
+
+    /// The ticker's sampling window for this frame, as a uv offset and scale.
+    ///
+    /// Returns `(offset_u, scale_u)`: the compositor samples `scale_u` of the
+    /// raster starting at `offset_u`, so a band showing 1920 px of a 6000 px
+    /// item samples a third of it, and the start slides with the master frame.
+    fn ticker_window(&self, t: &crate::scene::TextLayer, frame: u64) -> [f32; 4] {
+        let cache = self.text_cache.lock().unwrap();
+        let Some(entry) = cache
+            .iter()
+            .find(|(k, _)| k.starts_with(&format!("{}|", t.element_id)))
+            .map(|(_, v)| v)
+        else {
+            return UV_FULL;
+        };
+        if entry.width == 0 || entry.period_px == 0 {
+            return UV_FULL;
+        }
+        // The raster holds the item twice with a gap between, so a window of at
+        // most one period always lies inside it and the wrap has no seam. That
+        // is why this needs no texture-repeat mode: sampling never leaves the
+        // texture, so the existing clamped sampler stays correct for every
+        // layer including this one.
+        let band_px = self.targets.view.width().max(1) as f32;
+        let scale = (band_px / entry.width as f32).min(1.0);
+        let px = crate::text::ticker_offset_px(frame, t.speed_px_per_frame, entry.period_px);
+        [px / entry.width as f32, 0.0, scale, 1.0]
+    }
+}
+
+/// The clock-face derivation, exposed for tests.
+///
+/// A test that restates the formatting logic proves only that it can restate
+/// it. This is the same function the render loop calls, so an assertion here is
+/// an assertion about what goes to air.
+pub fn clock_face_for_test(c: &crate::scene::ClockSpec, frame: u64, house_rate: u32) -> String {
+    clock_face_inner(c, frame, house_rate)
+}
+
+/// The derivation itself, free of `self` so both callers share one copy.
+fn clock_face_inner(c: &crate::scene::ClockSpec, frame: u64, house_rate: u32) -> String {
+    let rate = house_rate.max(1) as u64;
+    let total_seconds = if c.show_elapsed {
+        frame / rate
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    };
+    let h = (total_seconds / 3600) % 24;
+    let m = (total_seconds / 60) % 60;
+    let sec = total_seconds % 60;
+    let colon = if c.blink_colon && frame % rate >= rate / 2 {
+        " "
+    } else {
+        ":"
+    };
+    match c.format.as_str() {
+        "HH:mm" => format!("{h:02}{colon}{m:02}"),
+        "hh:mm A" => {
+            let ampm = if h < 12 { "AM" } else { "PM" };
+            let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+            format!("{h12:02}{colon}{m:02} {ampm}")
+        }
+        _ => format!("{h:02}{colon}{m:02}{colon}{sec:02}"),
     }
 }
 
@@ -727,6 +947,7 @@ const SHADER: &str = r#"
 struct Params {
   color: vec4<f32>,
   rect: vec4<f32>,
+  uv: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -748,7 +969,9 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
   let y = p.rect.y + c.y * p.rect.w;
   var out: VsOut;
   out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-  out.uv = c;
+  // uv = (0,0,1,1) reproduces `out.uv = c` exactly, which is what every
+  // non-scrolling layer passes.
+  out.uv = c * p.uv.zw + p.uv.xy;
   return out;
 }
 

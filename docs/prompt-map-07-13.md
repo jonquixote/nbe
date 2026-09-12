@@ -184,6 +184,15 @@ counts, so it cannot distinguish them. Whoever picks this up should capture the 
 payloads on failure before theorising; a retry loop that only re-runs until green will
 discard the one artifact that answers the question.
 
+**Second sighting, 2026-09-11 (P7b two-key pass).** The same test failed again —
+on a different branch, against different code, during an unrelated mutation (a
+non-stable ticker sort, which cannot touch directive ordering). It passed 3/3 on
+the restored tree. That strengthens the half the original record left open: the
+flake is **pre-existing and independent of the change under review**, not
+something either branch introduced. Still unresolved is which failure it is —
+the redelivery-vs-extra-bump question below stands, and the payloads still need
+capturing before anyone theorises.
+
 **Disposition: Prompt 07, alongside R2 and R5.** Numbering continues the R-series filed in
 `docs/review-midpoint-report.md` §3.4–§3.8 and §11.2 (R1–R6); that report is a sealed CLEAN
 verdict and is not amended to hold this.
@@ -253,6 +262,126 @@ numbering: nothing downstream of 07 renumbers. 07b has **not** had its upgrade
 pass and gets one before execution — its scope decisions (packaged fonts, no
 per-frame relayout, RSS sanitized at the control plane) stand; its Step 0
 inventory predates the engine and does not.
+
+### Step 07b records — the graphics layer as built (recorded 2026-09-11)
+
+**Assumptions made real.**
+
+a. **Fonts are package-resident, and the engine cannot reach a host face.**
+   Ratified by the user; it is also what the code already did — preflight
+   resolves `templateId` against the package's own `templates` and
+   `fontAssetIds` against assets that package declares. `cosmic-text` is
+   compiled with `default-features = false` for this reason: its defaults pull
+   system font discovery, and `FontBook` is built from *bytes* with no
+   constructor that takes a directory. `templates/graphics/README.md` claimed
+   the opposite since the founding scaffold and now records that the package
+   model won.
+
+a2. **`font_asset_ids` is resolved and preflight-validated, and the renderer
+   does not consult it** (recorded 2026-09-11, two-key F1). `scene.rs` resolves
+   a template's fonts onto the text layer and preflight refuses a package whose
+   `fontAssetIds` do not resolve — but `text_texture` rasterizes against the
+   whole `FontBook`, and `TextRaster::rasterize` takes `families.first()`. Two
+   consequences, both measured: **per-template font selection does not exist**,
+   so a package declaring two faces with a template naming the second gets the
+   first; and **a template naming no font still draws**, in the package's first
+   declared face.
+
+   That fallback is defensible — it is package-internal, and assumption 11
+   forbids only *host* faces. What was not defensible was the test named
+   `a_template_naming_no_font_draws_no_text`, which asserted only that the
+   resolved list was empty while claiming a behaviour the code lacks. Renamed to
+   `a_template_naming_no_font_resolves_an_empty_font_list`, which is what it
+   proves.
+
+   **v0.5 agenda item:** the schema field and the renderer now disagree in the
+   tree. Either the renderer honours `fontAssetIds` per template, or the field
+   is documented as advisory-for-preflight. Picking neither is what produced
+   this entry.
+
+b. **Text is a `LayerSource`, not a pipeline.** Shaped text rasterizes to RGBA8
+   and is consumed by the *existing* `draw_for`. There is no second draw path
+   and no second walk — `drawn_elements` is still the one walk, and
+   `LayerSource::Text` answers "no" to the asset-blame question because a glyph
+   is not media.
+
+c. **`layer_for` stays pure.** It *names* text the way it already names video;
+   the render loop resolves content per frame. That is what lets a clock — whose
+   content is a function of the master clock — obey §6.5's no-per-frame-relayout
+   rule: the cache is keyed on the rendered string, which changes about twice a
+   second with `blinkColon` on, not thirty times.
+
+**Reductions, stated plainly.**
+
+d. **`ClockConfig.format: "locale"` is not implemented** and falls through to
+   `HH:mm:ss`. ~~`timezone` and `locale` are read from the manifest and
+   unused~~ — **corrected 2026-09-11 (two-key F3): they are not read at all.**
+   `ClockSpec` carries `show_elapsed`, `format` and `blink_colon` and nothing
+   else; `clock_of` never touches `timezone` or `locale`. "Read and unused"
+   implied plumbing that exists and does not, which is a worse error than the
+   reduction it was describing. `wall` mode reads the host clock as UTC.
+   Localized and zoned formatting is real work with a real dependency, and
+   pretending otherwise by aliasing it silently would have been worse than
+   saying so.
+
+e. **§16.7 rule 1 — "breaking override items appear first" — is not
+   implemented, because the payload cannot express it.** `ticker.override`'s
+   item schema is `{ text, language?, priority?, ttlSec? }`: there is no field
+   that marks an item as breaking. Rules 2, 3 and 4 are implemented and now
+   tested (`ticker.test.ts`, six cases, falsified by making the sort
+   non-stable). Rule 1 needs either a schema field or a ruling that "breaking"
+   means `priority: 100000` — a **v0.5 question**, not something to invent here.
+
+f. **One font, chosen on coverage.** AC-15 wants English, Spanish-accented and
+   Arabic from one packaged face. Measured: Noto Sans (2.0 MB) has no Arabic at
+   all; Noto Sans Arabic covers both but is a variable font; **Amiri** (431 KB,
+   OFL-1.1, static) covers all four test strings. Amiri is a classical Arabic
+   typeface rather than a news-desk sans — an **aesthetic debt**, recorded as
+   such. A show that wants a different face packages a different face; that is
+   the whole point of package-resident fonts.
+
+g. **Text sizing is proportional to the View, not to the element box.** The
+   raster is sized at 6% of target height with glyphs at 72% of that. A template
+   cannot yet specify a point size or a colour per field — `fields.color` tints
+   the whole element. Per-field typography is 07b's obvious next increment and
+   is not in this one.
+
+**Debts.**
+
+h2. **The doubled raster is not pixel-identical across the period** (recorded
+   2026-09-11). Writing the test F2 demanded turned this up: glyphs land at
+   sub-pixel offsets, so the second copy is phase-shifted a fraction of a pixel
+   from the first — for "BREAKING NEWS" only 147 of 485 columns match exactly. A
+   column-equality assertion therefore *fails on correct output*. What the design
+   does guarantee is that the two halves carry the same content, and
+   `the_ticker_raster_carries_the_item_twice_so_the_wrap_shows_no_jump` asserts
+   it as column-ink correlation, with the measured separation quoted in the test:
+   doubled 0.9538–0.9844, single copy −0.1254–0.2708.
+
+   Worth knowing for the same reason: `ticker_period_px` derives the period from
+   the doubled raster's own width, so removing the doubling makes the period
+   silently half an item rather than failing. That self-consistency is why the
+   original suite did not catch it, and why the new test asserts content rather
+   than geometry.
+
+h. **The ticker's raster holds the item twice.** That is how the wrap is
+   seamless without a repeating sampler, and it doubles the texture for a long
+   item. A 200-character item at 1080p is a few MB, which is nothing against
+   §12.4's budgets — but it is a multiplier, and a package with many long ticker
+   items has not been measured.
+
+i. **No glyph atlas.** Each distinct rendered string is its own texture, cached
+   by content. For a ticker and a clock that is a handful of textures; for a
+   lower third edited live it is one per edit until the package reloads. An
+   atlas is the standard answer and is not needed yet — but "not needed yet" is
+   a measurement someone should repeat before 13's operator shell starts editing
+   fields at speed.
+
+j. **The uv window added to `LayerUniform` is used by exactly one caller.**
+   Everything else passes `(0, 0, 1, 1)`, which reproduces the previous
+   `out.uv = c` exactly — the 192-test suite including every golden frame is the
+   proof that nothing moved. It is a general mechanism with one user, which is
+   worth knowing before a second one arrives.
 
 ## 08 — Companion mapping (elevated to a normative requirement)
 
