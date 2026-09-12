@@ -245,8 +245,13 @@ fn required_payload_keys(action: &str) -> &'static [&'static str] {
         "ticker.setSource" => &["source"],
         "soundboard.play" => &["assetId"],
         "audio.bus.set" | "audio.duck" => &["bus"],
-        "guest.mute" | "guest.connect" | "guest.disconnect" | "guest.setLayout"
-        | "guest.placeholder" | "guest.configureReturn" | "guest.getTurn" => &["guestId"],
+        "guest.mute"
+        | "guest.connect"
+        | "guest.disconnect"
+        | "guest.setLayout"
+        | "guest.placeholder"
+        | "guest.configureReturn"
+        | "guest.getTurn" => &["guestId"],
         "automation.enable" | "automation.disable" => &["ruleId"],
         "snapshot.save" | "snapshot.recall" | "marker.add" => &["name"],
         "plugin.reload" => &["pluginId"],
@@ -722,10 +727,7 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         let mut seen_triggers = HashSet::new();
         for binding in bindings {
             let id = binding.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let action = binding
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let action = binding.get("action").and_then(|v| v.as_str()).unwrap_or("");
             let canonical = canonical_action(action);
             if canonical.is_none() {
                 had_errors = true;
@@ -767,14 +769,8 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                     .get("key")
                     .and_then(|v| v.as_str())
                     .filter(|k| !k.is_empty());
-                let known_kind = [
-                    "companionKey",
-                    "hotkey",
-                    "midi",
-                    "webButton",
-                    "osc",
-                ]
-                .contains(&kind);
+                let known_kind =
+                    ["companionKey", "hotkey", "midi", "webButton", "osc"].contains(&kind);
                 let missing_field: Option<&str> = match kind {
                     "companionKey" | "hotkey" | "midi" | "webButton" | "osc" => {
                         if key.is_none() {
