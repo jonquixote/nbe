@@ -92,7 +92,7 @@ fn unknown_action_and_bad_trigger_fail() {
     let errors = report_errors(&report);
     assert!(
         errors.iter().any(|e| e.contains("b-bogus")
-            && e.contains("invalidBinding")
+            && e.contains("names unknown action")
             && e.contains("E_PREFLIGHT_FAILED")),
         "errors: {errors:?}"
     );
