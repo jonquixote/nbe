@@ -163,6 +163,81 @@ struct Args {
     house_rate: Option<u32>,
 }
 
+/// Registered §16 commands: the keys of `CommandPayloadSchemas` in
+/// `packages/control-plane/src/protocol.ts`. A control binding's `action`
+/// must name one of these; anything else cannot execute and fails preflight
+/// (Prompt 08 work item 5). Keep in sync with protocol.ts when §16 grows.
+const REGISTERED_COMMANDS: &[&str] = &[
+    "show.load",
+    "show.preflight",
+    "show.start",
+    "show.stop",
+    "show.unload",
+    "preview.set",
+    "view.take",
+    "view.cut",
+    "view.fallback",
+    "scene.arm",
+    "scene.apply",
+    "item.arm",
+    "item.unarm",
+    "item.stop",
+    "item.reset",
+    "element.toggle",
+    "element.set",
+    "graphic.show",
+    "graphic.hide",
+    "graphic.update",
+    "breaking.show",
+    "breaking.hide",
+    "overlay.show",
+    "overlay.hide",
+    "ticker.setSource",
+    "ticker.override",
+    "ticker.clearOverride",
+    "ticker.refreshRss",
+    "soundboard.play",
+    "soundboard.stop",
+    "soundboard.stopAll",
+    "audio.bus.set",
+    "audio.duck",
+    "guest.mute",
+    "guest.connect",
+    "guest.disconnect",
+    "guest.setLayout",
+    "guest.placeholder",
+    "guest.configureReturn",
+    "guest.getTurn",
+    "automation.enable",
+    "automation.disable",
+    "automation.hold",
+    "snapshot.save",
+    "snapshot.recall",
+    "marker.add",
+    "plugin.reload",
+    "clock.configure",
+    "record.start",
+    "record.stop",
+    "stream.start",
+    "stream.stop",
+    "system.status",
+    "system.telemetry.subscribe",
+    "system.telemetry.unsubscribe",
+];
+
+/// Minimal required payload keys per action family. `view.take` takes none
+/// (every field is optional); anything not listed here is accepted as long
+/// as it is an object — full payload validation belongs to the §16 schema,
+/// not preflight.
+fn required_payload_keys(action: &str) -> &'static [&'static str] {
+    match action {
+        "view.cut" => &["itemRef"],
+        "item.arm" | "item.unarm" | "item.stop" | "item.reset" => &["itemId"],
+        "overlay.show" | "overlay.hide" => &["overlayId"],
+        _ => &[],
+    }
+}
+
 fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport, bool)> {
     let mut report = PreflightReport::default();
     let manifest_path = package_path.join("manifest.json");
@@ -583,6 +658,86 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                             "overlaySceneRef: overlay \"{id}\" references undeclared sceneRef \"{sid}\""
                         ));
                     }
+                }
+            }
+        }
+    }
+
+    // Prompt 08 work item 5 (companion mapping): control.bindings reference
+    // the registered §16 command list, and a present trigger must carry its
+    // kind-required fields. A missing trigger is allowed (triggerless
+    // intent). Like the overlay block above, this is a reference check, not
+    // a shape check: the schema already constrains binding shape.
+    if let Some(bindings) = manifest_json
+        .get("control")
+        .and_then(|c| c.get("bindings"))
+        .and_then(|b| b.as_array())
+    {
+        for binding in bindings {
+            let id = binding.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let action = binding
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !REGISTERED_COMMANDS.contains(&action) {
+                had_errors = true;
+                report.push_error(format!(
+                    "invalidBinding: binding \"{id}\" names unknown action \"{action}\" (E_PREFLIGHT_FAILED)"
+                ));
+            }
+            match binding.get("payload") {
+                None => {}
+                Some(p) if !p.is_object() => {
+                    had_errors = true;
+                    report.push_error(format!(
+                        "invalidBinding: binding \"{id}\" action \"{action}\" has non-object payload (E_PREFLIGHT_FAILED)"
+                    ));
+                }
+                Some(p) => {
+                    for key in required_payload_keys(action) {
+                        if p.get(key).is_none() {
+                            had_errors = true;
+                            report.push_error(format!(
+                                "invalidBinding: binding \"{id}\" action \"{action}\" payload is missing required key \"{key}\" (E_PREFLIGHT_FAILED)"
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(trigger) = binding.get("trigger") {
+                let kind = trigger.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let missing_field: Option<&str> = match kind {
+                    "companionKey" => {
+                        if trigger.get("page").is_none() {
+                            Some("page")
+                        } else if trigger.get("bank").is_none() {
+                            Some("bank")
+                        } else if trigger.get("key").and_then(|v| v.as_str()).is_none() {
+                            Some("key")
+                        } else {
+                            None
+                        }
+                    }
+                    "hotkey" | "midi" | "webButton" | "osc" => {
+                        if trigger.get("key").and_then(|v| v.as_str()).is_none() {
+                            Some("key")
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "invalidBindingTrigger: binding \"{id}\" has unknown trigger kind \"{kind}\" (E_PREFLIGHT_FAILED)"
+                        ));
+                        None
+                    }
+                };
+                if let Some(field) = missing_field {
+                    had_errors = true;
+                    report.push_error(format!(
+                        "invalidBindingTrigger: binding \"{id}\" trigger kind \"{kind}\" is missing required field \"{field}\" (E_PREFLIGHT_FAILED)"
+                    ));
                 }
             }
         }

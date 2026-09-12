@@ -35,6 +35,13 @@ export interface AuditRecord {
   errorCode?: ErrorCode | null;
   stateVersionBefore?: number;
   stateVersionAfter?: number;
+  /**
+   * Prompt 08 (§10.7.1, additive): which physical intent produced a command —
+   * `device profile id + trigger id` (e.g. `companion/xl-a:take-1`).
+   * Identical state changes from different sources differ only here.
+   * Absent = software/direct command. Never a token (see server.ts auth path).
+   */
+  intentSource?: string | null;
   /** Why a handshake failed. Belongs here, never in the reply to the peer. */
   reason?: string | null;
 }
