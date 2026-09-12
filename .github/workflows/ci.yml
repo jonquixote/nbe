@@ -270,51 +270,70 @@ jobs:
           if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi
 
   # ---------------------------------------------------------------------------
-  # The dress rehearsal ([RI-1]) — NON-BLOCKING, AND CURRENTLY RED ON PURPOSE.
+  # The dress rehearsal ([RI-1]) — ADVISORY, and no longer red on purpose.
   #
-  # This job plays a real show: a real control plane, the engine binary as a
-  # separate process, the real WebSocket protocol, a real 1920x1080/30 package
-  # with H.264+AAC media. It is the only gate that proves the parts compose,
-  # and the only one that proves the engine binary starts its audio driver
-  # (see docs/review-midpoint-report.md §3.10 — three Rust gates for that claim
-  # were written and all three were defeated, because text a process prints is
-  # free to forge).
+  # A real control plane, the engine binary as a separate process, the real
+  # WebSocket protocol, and a real 1920x1080/30 package with H.264+AAC media. It
+  # is the only gate that proves the parts compose, and the only one that proves
+  # the engine binary starts its audio driver (docs/review-midpoint-report.md
+  # §3.10 — three Rust gates for that claim were written and all three were
+  # defeated, because text a process prints is free to forge).
   #
-  # It is `continue-on-error` because three of its twelve steps fail today, and
-  # those failures are REAL FINDINGS this review recorded rather than bugs
-  # introduced here:
+  # PROMOTION ATTEMPTED AND REVERTED, 2026-09-11. The three findings that kept
+  # this job red are CLOSED — 12/12 three times consecutively on the normative
+  # machine, each fix falsified. The job is still advisory for a different
+  # reason, and the distinction matters:
   #
-  # MEASURED over six consecutive runs (load average 13-37), not asserted:
+  #   The gate step asserts `droppedFramesTotal == 0` and
+  #   `audioUnderrunsTotal == 0`. Those are performance claims about REFERENCE
+  #   hardware (§0.3: Intel, discrete AMD). This runner is macos-14 — 3 arm64
+  #   cores — and measured 83 then 120 underruns plus a dropped frame, where the
+  #   normative machine measures 0. §8.10 counts a missed 33 ms callback deadline
+  #   as an underrun, and a shared CI VM cannot hold that cadence beside wgpu. No
+  #   code change in this work order makes it.
   #
-  #   always red (3):
-  #     step 3  masterClockFrame does not advance within 2 ticks of
-  #             show.start (finding R5)
-  #     step 4  busPeakDbfs.clip rises, but after step 4's window closes —
-  #             the audio is present and the timing is wrong (R5 again)
-  #     gate    audioUnderrunsTotal reaches 1 on the happy path (finding R4)
-  #   intermittent:
-  #     step 6  4 of 6 runs. Bus meters are a 33 ms window sampled at 1 Hz,
-  #             so a 0.4 s soundboard stab is a coin toss (finding R2)
-  #     step 10 1 of 6 runs, under load. show.stop's ack inside the 2000 ms
-  #             grace window is timing-sensitive when the box is busy
+  # So requiring this job would block every PR on a hardware fact, which is a
+  # worse version of the state promotion was meant to end. The corrected rule is
+  # recorded in docs/prompt-map-07-13.md: three consecutive green runs on the
+  # normative machine AND green on the runner that will gate it. The first half
+  # was met; the second is not, and cannot be while the gate carries
+  # reference-hardware thresholds.
   #
-  #   observed range: pass 7-9, fail 3-5
+  # The findings, for the record:
   #
-  # This comment has been wrong twice: it said three steps fail (measured
-  # four), then four (measured a 7-9 range). Both claims came from two-run
-  # samples of an intermittent test, which is exactly the error §11 of the
-  # report criticises. The bounds below are the measured range, and they are
-  # what keep this comment honest rather than the other way round.
+  #   R5  the clock did not advance within 2 ticks of show.start. The clock was
+  #       never the defect: the engine applies directives in arrival order and
+  #       show.load decodes every asset (10.7 s here), so show.start sat queued
+  #       while the control plane had already recorded RUNNING. Step 2 now waits
+  #       for §5.9.5 confirmation — the thing its own comment always claimed it
+  #       waited for.
+  #   R4  an underrun on the happy path. The audio cadence ran as a tokio task on
+  #       the same worker pool as the wgpu render loop; at show.start the render
+  #       loop spun up and audio missed its 33 ms deadline. §8.10 says a missed
+  #       callback deadline IS an underrun, so the counter was right and the
+  #       scheduling was wrong. Audio now owns a dedicated OS thread.
+  #   R2  bus meters were a 33 ms sample taken once a second. Already fixed
+  #       before this pass by peak-hold across the telemetry interval; verified
+  #       here, and guarded by
+  #       `a_transient_shorter_than_the_window_still_reaches_the_meter`.
   #
-  # Both are dispositioned to Prompt 07. PROMOTING THIS JOB TO REQUIRED IS
-  # PROMPT 07'S FIRST TASK, once R2 and R5 close and show.load stops taking
-  # 46 seconds (report §12.3). Until then it stays visible and red: a required
-  # job that is red on merge day teaches people to ignore a gate, and a gate
-  # nobody looks at is worse than no gate at all.
+  # The promotion rule, corrected by this attempt: three consecutive green runs
+  # on the normative machine (docs/hardware-baseline.txt) AND a green run on the
+  # runner that will gate. Measured here: 12/12, 12/12, 12/12 on the normative
+  # machine; 9-10 of 12 on the runner. The first half of that rule is what I had
+  # written down, and it was not enough.
   #
-  # Do not silence this job. Fix the findings, then make it required.
+  # WHAT THIS GATE PROVES AND WHAT IT CANNOT. The runner is macos-14, which is
+  # arm64; the normative reference machine is Intel with discrete AMD graphics
+  # (§0.3). A green run here proves the parts compose and the protocol holds. It
+  # does NOT prove the frame budget or any timing threshold on the reference
+  # hardware — those numbers only mean something measured on Intel. Never cite a
+  # CI duration as a performance result.
+  #
+  # The artifact upload stays: engine.log, telemetry.jsonl and timings.json are
+  # why a failure here is debuggable rather than merely red.
   dress-rehearsal:
-    name: dress rehearsal (non-blocking — R2/R5, promoted to required by Prompt 07)
+    name: dress rehearsal
     runs-on: macos-14
     continue-on-error: true
     env:
@@ -352,6 +371,13 @@ jobs:
       # what makes step 3 flaky.
       - run: cargo build -p nbe-engine
       - run: cargo build -p nbe-preflight --release
+      # Step 1 spawns the DEBUG preflight binary, which this job never built.
+      # The step was therefore red on CI for as long as the job was advisory —
+      # hidden by continue-on-error and a band that tolerated five failures —
+      # and promotion turned it into 'nbe-preflight must be built'. Verified
+      # against advisory run 34596023038: 'not ok 1' is there too. That is the
+      # argument for promoting an advisory job, in one line.
+      - run: cargo build -p nbe-preflight
       - name: the release binary is real, not a truncated write
         working-directory: .
         run: |
@@ -372,7 +398,11 @@ jobs:
         working-directory: packages/control-plane
         run: |
           set -o pipefail
-          npm run test:rehearsal 2>&1 | tee /tmp/dress.log || true
+          # `|| true` was right while the job was advisory. A required gate must
+          # not swallow the runner's status silently, but the summary below must
+          # still be reached on failure — so the exit is noted and the explicit
+          # checks below decide.
+          npm run test:rehearsal 2>&1 | tee /tmp/dress.log || echo 'rehearsal exited non-zero'
           echo "::group::Dress rehearsal summary"
           grep -E "^# (tests|pass|fail) |^not ok " /tmp/dress.log || true
           echo "::endgroup::"
@@ -391,15 +421,21 @@ jobs:
             echo "the rehearsal must run all 12 steps, ran ${ran:-0}"
             exit 1
           fi
-          # The measured range is pass 7-9 / fail 3-5 over six runs. Outside
-          # it, something broke that is not one of the documented findings —
-          # a real regression even though this job is non-blocking.
-          if [ "${passed:-0}" -lt 7 ]; then
-            echo "expected at least 7 passing steps, got ${passed:-0}"
+          # The band stays, and the reason has CHANGED. It used to tolerate R2,
+          # R4 and R5 being red by design. Those are closed — 12/12 three times
+          # consecutively on the normative machine. It now tolerates the runner:
+          # macos-14 gives 3 arm64 cores, and the gate step asserts
+          # droppedFramesTotal == 0 and audioUnderrunsTotal == 0, which are
+          # performance claims about REFERENCE hardware. Measured on this runner:
+          # 83 and 120 underruns in two runs, and a dropped frame, where the
+          # normative machine gives 0. No code change makes a shared CI VM hold a
+          # 33 ms audio cadence next to wgpu.
+          if [ "${passed:-0}" -lt 9 ]; then
+            echo "expected at least 9 passing steps, got ${passed:-0}"
             exit 1
           fi
-          if [ "${failed:-99}" -gt 5 ]; then
-            echo "expected at most 5 failing steps (R2/R4/R5), got ${failed:-99}"
+          if [ "${failed:-99}" -gt 3 ]; then
+            echo "expected at most 3 failing steps (the hardware-bound gate assertions), got ${failed:-99}"
             exit 1
           fi
       - name: failure artifacts

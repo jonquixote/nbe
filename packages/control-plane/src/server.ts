@@ -126,6 +126,19 @@ export interface ControlPlaneServer {
   port: number;
   bridge: RenderBridge;
   wsBridge: WsRenderBridge;
+  /**
+   * Resolve once a render node reports having applied `version` or later
+   * (SPEC §5.9.5), or `false` on timeout / no node attached.
+   *
+   * The server has always tracked this — `show.stop`'s quiescence window is
+   * built on it — but only `show.stop` could ask. Exposing it lets any caller
+   * distinguish "the control plane accepted a command" from "the engine did
+   * it", which are different facts and were being conflated: the dress
+   * rehearsal pressed `show.start` while the engine was still ten seconds into
+   * decoding the package, and then measured the clock against a window that had
+   * already expired. See the R5 note in `dress-rehearsal.test.ts`.
+   */
+  awaitApplied(version: number, ms: number): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -523,6 +536,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     port: (http.address() as { port: number }).port,
     bridge,
     wsBridge,
+    awaitApplied: (version: number, ms: number) => waitForGrace(ms, version),
     async close() {
       for (const s of clients.values()) {
         s.closed = true;

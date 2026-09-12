@@ -1246,7 +1246,19 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
 
     let handle = nbe_engine::audio_driver::spawn(state.clone(), HOUSE_RATE);
     let mut drained = false;
-    for _ in 0..200 {
+    // 600 x 10 ms = 6 s. The assertion is liveness — "the driver runs without
+    // anyone pumping it" — and the budget is not part of the claim: a driver
+    // that never runs fails at any budget.
+    //
+    // It was 2 s, which was ~2x the ~1 s this takes locally (peaks only publish
+    // on the meter-window boundary, and DEFAULT_METER_WINDOW_MS is 1000). That
+    // margin vanished when `spawn` moved the driver onto a dedicated OS thread:
+    // on the macos-14 runner — 3 arm64 cores, with cargo running suites in
+    // parallel — a fresh thread is not scheduled as promptly as a task on the
+    // test's own runtime was, and this went red on CI while passing 8/8 here.
+    // The thread does run there: the same CI run's dress rehearsal recorded
+    // 83-120 underruns, which only a cycling driver can produce.
+    for _ in 0..600 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         if state.audio_commands.lock().unwrap().is_empty()
             && !state.bus_peaks.lock().unwrap().is_empty()
@@ -1255,7 +1267,7 @@ async fn the_spawned_driver_runs_without_anyone_pumping_it() {
             break;
         }
     }
-    handle.abort();
+    handle.stop();
     assert!(
         drained,
         "the spawned driver must drain intents and publish peaks on its own"
