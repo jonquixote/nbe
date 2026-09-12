@@ -123,13 +123,31 @@ export function resolveIntent(entry: BindingLike): ResolvedIntent {
   }
   return { command: resolved.command, payload: parsed.data as Record<string, unknown> };
 }
+/**
+ * Emission-side intentSource safety: the server accepts only
+ * `adapter/profile:intent` with no whitespace, `/` or `:` inside profile and
+ * intent segments. Validate at profile build so an adapter can never emit an
+ * un-sendable source — fail here with CpError, not at the socket.
+ */
+export function assertSourceSafe(profileId: string, intentId: string): void {
+  for (const [name, v] of [
+    ["profileId", profileId],
+    ["intentId", intentId],
+  ] as const) {
+    if (!/^[^\s/:]{1,64}$/.test(v)) {
+      throw new CpError("E_BAD_PAYLOAD", `invalid ${name} for intentSource: ${v}`);
+    }
+  }
+}
 
 /** Mirror a manifest `ControlBinding` into this profile's intent space. */
 export function bindingToIntent(binding: ControlBinding, profileId: string): InputIntent {
   const rawKind = binding.trigger?.kind as string | undefined;
   if (rawKind !== undefined && !(TRIGGER_KIND_WIRE_VALUES as readonly string[]).includes(rawKind)) {
     throw new CpError("E_BAD_PAYLOAD", `unknown trigger kind: ${rawKind}`);
-  }  return InputIntentSchema.parse({
+  }
+  assertSourceSafe(profileId, binding.id);
+  return InputIntentSchema.parse({
     intentId: binding.id,
     profileId,
     action: binding.action,

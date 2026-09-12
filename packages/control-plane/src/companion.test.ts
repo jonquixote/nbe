@@ -252,6 +252,27 @@ test("matcher: most-specific wins, profile order breaks ties", () => {
   assert.equal(loose.intentId, "wide");
 });
 
+test("matcher: identical specificity resolves to first profile entry", () => {
+  const profile = profileFromBindings("xl-a", "companion", [
+    { id: "first", trigger: { kind: "companionKey", page: 1, bank: 1, key: "9" }, action: "view.take", payload: {} },
+    { id: "second", trigger: { kind: "companionKey", page: 1, bank: 1, key: "9" }, action: "view.fallback", payload: {} },
+  ]);
+  const hit = findCompanionEntry(profile, { page: 1, bank: 1, key: "9" });
+  assert.ok(hit);
+  assert.equal(hit.intentId, "first");
+});
+
+test("keyboard matching is case- and whitespace-insensitive", () => {
+  const profile = profileFromBindings("kb-1", "keyboard", [
+    { id: "fb-k", trigger: { kind: "hotkey", key: "ctrl+shift+f" }, action: "view.fallback", payload: {} },
+  ]);
+  for (const variant of ["CTRL+SHIFT+F", "  ctrl+shift+f  ", "Ctrl+Shift+F"]) {
+    const hit = findKeyboardEntry(profile, variant);
+    assert.ok(hit, `variant must resolve: ${variant}`);
+    assert.equal(hit.intentId, "fb-k");
+  }
+});
+
 test("deck generation is deterministic: byte-identical x2, covers every binding", () => {
   const bindings: ControlBinding[] = [
     { id: "z-last", trigger: { kind: "companionKey", page: 2, bank: 1, key: "3" }, action: "view.fallback", payload: {} },

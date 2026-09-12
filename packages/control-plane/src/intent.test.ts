@@ -130,6 +130,22 @@ test("bindingToIntent rejects unknown trigger kind with CpError, not ZodError", 
   }
 });
 
+test("bindingToIntent rejects source-unsafe ids with CpError", () => {
+  for (const [profileId, id] of [
+    ["xl/a", "take-1"],
+    ["xl-a", "take:1"],
+    ["xl-a", "take 1"],
+  ] as Array<[string, string]>) {
+    try {
+      bindingToIntent({ id, action: "view.take", payload: {} }, profileId);
+      assert.fail(`unsafe id must throw: ${profileId}/${id}`);
+    } catch (e) {
+      assert.ok(e instanceof CpError, "must be a CpError");
+      assert.equal(e.code, "E_BAD_PAYLOAD");
+    }
+  }
+});
+
 test("REGISTERED_COMMANDS mirror gate: Rust preflight list tracks §16 keys", () => {
   // Single source of truth is CommandPayloadSchemas; the Rust list in
   // crates/nbe-preflight/src/main.rs is a manual mirror. This test fails on

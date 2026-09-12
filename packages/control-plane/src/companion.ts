@@ -4,7 +4,7 @@
 //! through the existing `dispatch()` with the caller's role (token auth
 //! happens at the WS upgrade in `server.ts` — there is no second auth path).
 //! It NEVER mutates state directly. Identity travels as
-//! `companion/<profile>:<key>` on the audit path only (see `server.ts`).
+//! `companion/<profile>:<intent>` on the audit path only (see `server.ts`).
 //!
 //! Deck layout is generated from the manifest's `control.bindings`
 //! (trigger page/bank/key -> pages/banks/buttons; action + payload -> §16
