@@ -1,6 +1,7 @@
 //! Server (addendum 02a §1.1/1.3, §2.5-2.8): ONE node HTTP server owns the
-//! WebSocket upgrade, `GET /nbe/v0.3/status`, and (Prompt 08) the future
-//! Companion HTTP endpoint. No second transport.
+//! WebSocket upgrade and `GET /nbe/v0.3/status`. Prompt 08 is WS-only:
+//! Companion speaks the §5.4/§16 WS bus; the HTTP listener is §10.4's health
+//! endpoint, full stop. No second transport.
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
@@ -425,6 +426,33 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         return;
       }
 
+      // Prompt 08 (D2, WS-only): an adapter (Companion, keyboard, ...) may
+      // attach `intentSource` — `adapter/profile:intent`, e.g.
+      // `companion/xl-a:take-1` — alongside the §5.4 envelope. It rides the
+      // audit path only: stripped before envelope validation, never seen by
+      // dispatch(), recorded on the command audit rows below. Absent =
+      // software/direct command. Same transport, same auth, no second protocol.
+      // The format is enforced (not just length): audit identity must stay
+      // machine-readable, and a free-form client string is spoofable noise.
+      let intentSource: string | null = null;
+      if (typeof parsed === "object" && parsed !== null && "intentSource" in parsed) {
+        const rawSource = (parsed as Record<string, unknown>).intentSource;
+        if (
+          typeof rawSource !== "string" ||
+          rawSource.length > 256 ||
+          !/^[A-Za-z][A-Za-z0-9_-]{0,31}\/[^\s/:]{1,64}:[^\s/:]{1,64}$/.test(rawSource)
+        ) {
+          ws.send(
+            JSON.stringify(errorResponse(randomUUID(), state.stateVersion, "E_BAD_PAYLOAD", "invalid intentSource")),
+          );
+          return;
+        }
+        intentSource = rawSource;
+        const { intentSource: _dropped, ...rest } = parsed as Record<string, unknown>;
+        void _dropped;
+        parsed = rest;
+      }
+
       // Engine frames (render-role only)
       const engine = EngineFrameSchema.safeParse(parsed);
       if (engine.success) {
@@ -488,6 +516,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           requestId: envelope.id,
           command: alias?.command ?? envelope.command,
           rawCommand: alias?.deprecated ? envelope.command : null,
+          intentSource,
           stateVersionBefore: before,
           stateVersionAfter: out.stateVersion,
         });
@@ -512,6 +541,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           requestId: envelope.id,
           command: envelope.command,
           errorCode: e.code,
+          intentSource,
           stateVersionBefore: before,
           stateVersionAfter: state.stateVersion,
         });

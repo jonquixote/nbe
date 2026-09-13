@@ -163,6 +163,123 @@ struct Args {
     house_rate: Option<u32>,
 }
 
+/// Registered §16 commands: the keys of `CommandPayloadSchemas` in
+/// `packages/control-plane/src/protocol.ts`. A control binding's `action`
+/// must name one of these; anything else cannot execute and fails preflight
+/// (Prompt 08 work item 5). Keep in sync with protocol.ts when §16 grows.
+const REGISTERED_COMMANDS: &[&str] = &[
+    "show.load",
+    "show.preflight",
+    "show.start",
+    "show.stop",
+    "show.unload",
+    "preview.set",
+    "view.take",
+    "view.cut",
+    "view.fallback",
+    "scene.arm",
+    "scene.apply",
+    "item.arm",
+    "item.unarm",
+    "item.stop",
+    "item.reset",
+    "element.toggle",
+    "element.set",
+    "graphic.show",
+    "graphic.hide",
+    "graphic.update",
+    "breaking.show",
+    "breaking.hide",
+    "overlay.show",
+    "overlay.hide",
+    "ticker.setSource",
+    "ticker.override",
+    "ticker.clearOverride",
+    "ticker.refreshRss",
+    "soundboard.play",
+    "soundboard.stop",
+    "soundboard.stopAll",
+    "audio.bus.set",
+    "audio.duck",
+    "guest.mute",
+    "guest.connect",
+    "guest.disconnect",
+    "guest.setLayout",
+    "guest.placeholder",
+    "guest.configureReturn",
+    "guest.getTurn",
+    "automation.enable",
+    "automation.disable",
+    "automation.hold",
+    "snapshot.save",
+    "snapshot.recall",
+    "marker.add",
+    "plugin.reload",
+    "clock.configure",
+    "record.start",
+    "record.stop",
+    "stream.start",
+    "stream.stop",
+    "system.status",
+    "system.telemetry.subscribe",
+    "system.telemetry.unsubscribe",
+];
+
+/// Minimal required payload keys per action family. `view.take` takes none
+/// (every field is optional); anything not listed here is accepted as long
+/// as it is an object — full payload validation belongs to the §16 schema,
+/// not preflight. Absent payload counts as `{}`: a command whose keys are
+/// required fails with no payload just as with an empty one.
+fn required_payload_keys(action: &str) -> &'static [&'static str] {
+    match action {
+        "show.load" => &["packagePath"],
+        "preview.set" => &["itemRef"],
+        "view.cut" => &["itemRef"],
+        "scene.arm" | "scene.apply" => &["sceneId"],
+        "item.arm" | "item.unarm" | "item.stop" | "item.reset" => &["itemId"],
+        "element.toggle" | "element.set" => &["elementId"],
+        "graphic.show" => &["templateId"],
+        "graphic.update" => &["elementId"],
+        "breaking.show" => &["headline"],
+        "overlay.show" | "overlay.hide" => &["overlayId"],
+        "ticker.setSource" => &["source"],
+        "soundboard.play" => &["assetId"],
+        "audio.bus.set" | "audio.duck" => &["bus"],
+        "guest.mute"
+        | "guest.connect"
+        | "guest.disconnect"
+        | "guest.setLayout"
+        | "guest.placeholder"
+        | "guest.configureReturn"
+        | "guest.getTurn" => &["guestId"],
+        "automation.enable" | "automation.disable" => &["ruleId"],
+        "snapshot.save" | "snapshot.recall" | "marker.add" => &["name"],
+        "plugin.reload" => &["pluginId"],
+        "clock.configure" => &["elementId"],
+        _ => &[],
+    }
+}
+
+/// Assumption 17 runtime parity: `resolveCommand` accepts `program.*` and
+/// `layer.*` deprecated aliases, so preflight must too — a binding the bus
+/// would execute must not fail preflight. Returns the canonical action.
+fn canonical_action(action: &str) -> Option<&'static str> {
+    if let Some(hit) = REGISTERED_COMMANDS.iter().find(|c| **c == action) {
+        return Some(hit);
+    }
+    for (from, to) in [("program.", "view."), ("layer.", "element.")] {
+        if let Some(rest) = action.strip_prefix(from) {
+            if let Some(hit) = REGISTERED_COMMANDS
+                .iter()
+                .find(|c| **c == format!("{to}{rest}"))
+            {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
 fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport, bool)> {
     let mut report = PreflightReport::default();
     let manifest_path = package_path.join("manifest.json");
@@ -581,6 +698,114 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                         had_errors = true;
                         report.push_error(format!(
                             "overlaySceneRef: overlay \"{id}\" references undeclared sceneRef \"{sid}\""
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Prompt 08 work item 5 (companion mapping): control.bindings reference
+    // the registered §16 command list, and a present trigger must carry its
+    // kind-required fields. A missing trigger is allowed (triggerless
+    // intent). Like the overlay block above, this is a reference check, not
+    // a shape check: the schema already constrains binding shape.
+    if let Some(bindings) = manifest_json
+        .get("control")
+        .and_then(|c| c.get("bindings"))
+        .and_then(|b| b.as_array())
+    {
+        // Trigger rule (Prompt 08, WS-only): every present trigger names a
+        // known kind and a non-empty key — the key is what a button, chord,
+        // or note matches on. `companionKey` page/bank stay optional: an
+        // omitted axis is a wildcard the matcher honours
+        // (most-specific-wins, profile order breaks ties — documented on
+        // `findCompanionEntry`, pinned by the control-plane suite). A missing
+        // trigger is allowed: the intent is API-only and the deck generator
+        // skips it (it cannot be button-fired). Identical triggers on two
+        // bindings shadow silently, so duplicates fail by name.
+        let mut seen_triggers = HashSet::new();
+        for binding in bindings {
+            let id = binding.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let action = binding.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let canonical = canonical_action(action);
+            if canonical.is_none() {
+                had_errors = true;
+                report.push_error(format!(
+                    "invalidBinding: binding \"{id}\" names unknown action \"{action}\" (E_PREFLIGHT_FAILED)"
+                ));
+            }
+            // Absent payload counts as `{}`: required keys are required.
+            match binding.get("payload") {
+                None => {
+                    for key in required_payload_keys(canonical.unwrap_or(action)) {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "invalidBinding: binding \"{id}\" action \"{action}\" payload is missing required key \"{key}\" (E_PREFLIGHT_FAILED)"
+                        ));
+                    }
+                }
+                Some(p) if !p.is_object() => {
+                    had_errors = true;
+                    report.push_error(format!(
+                        "invalidBinding: binding \"{id}\" action \"{action}\" has non-object payload (E_PREFLIGHT_FAILED)"
+                    ));
+                }
+                Some(p) => {
+                    for key in required_payload_keys(canonical.unwrap_or(action)) {
+                        if p.get(key).is_none() {
+                            had_errors = true;
+                            report.push_error(format!(
+                                "invalidBinding: binding \"{id}\" action \"{action}\" payload is missing required key \"{key}\" (E_PREFLIGHT_FAILED)"
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(trigger) = binding.get("trigger") {
+                let kind = trigger.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                // Empty string is not a key: `Some("")` must not pass.
+                let key = trigger
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .filter(|k| !k.is_empty());
+                let known_kind =
+                    ["companionKey", "hotkey", "midi", "webButton", "osc"].contains(&kind);
+                let missing_field: Option<&str> = match kind {
+                    "companionKey" | "hotkey" | "midi" | "webButton" | "osc" => {
+                        if key.is_none() {
+                            Some("key")
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "invalidBindingTrigger: binding \"{id}\" has unknown trigger kind \"{kind}\" (E_PREFLIGHT_FAILED)"
+                        ));
+                        None
+                    }
+                };
+                if let Some(field) = missing_field {
+                    had_errors = true;
+                    report.push_error(format!(
+                        "invalidBindingTrigger: binding \"{id}\" trigger kind \"{kind}\" is missing required field \"{field}\" (E_PREFLIGHT_FAILED)"
+                    ));
+                } else if known_kind {
+                    let page = trigger.get("page").and_then(|v| v.as_u64());
+                    let bank = trigger.get("bank").and_then(|v| v.as_u64());
+                    let sig = format!(
+                        "{}|{}|{}|{}",
+                        kind,
+                        page.map_or(String::from("-"), |p| p.to_string()),
+                        bank.map_or(String::from("-"), |b| b.to_string()),
+                        key.unwrap_or("-")
+                    );
+                    if !seen_triggers.insert(sig) {
+                        had_errors = true;
+                        report.push_error(format!(
+                            "duplicateBindingTrigger: binding \"{id}\" trigger shadows another binding's identical trigger (E_PREFLIGHT_FAILED)"
                         ));
                     }
                 }
