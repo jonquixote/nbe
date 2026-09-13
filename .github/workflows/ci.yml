@@ -112,6 +112,22 @@ jobs:
             echo "expected at least 14 prompt07b_graphics tests to run, got $ran"; exit 1
           fi
           echo "prompt07b_graphics tests that ran: $ran"
+      - name: the bindings suite actually ran
+        # Prompt 08's preflight binding checks (unknown action, bad payload,
+        # incomplete trigger). Floor, not a count, same shape as the
+        # prompt04/prompt07_overlay/prompt07b_graphics gates: a silently
+        # skipped bindings test fails the job, so the binding rules cannot
+        # go unexercised while the gate stays green.
+        run: |
+          out=$(cargo test -p nbe-preflight --test bindings 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          if [ "$ran" -lt 3 ]; then
+            echo "expected at least 3 bindings tests to run, got $ran"; exit 1
+          fi
+          echo "bindings tests that ran: $ran"
       - name: overlay_show fixture passes (four overlay kinds)
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
