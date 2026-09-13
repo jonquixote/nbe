@@ -43,7 +43,7 @@ Read from the tree, not from a report.
 |---|---|---|
 | **The frame seam** | `render.rs:627` `readback_view()`, `:672` `readback_preview()`, `gpu.rs:117` `readback_rgba()` | **Present, and it is a CPU readback.** This is the *only* way a composited frame leaves the GPU today. See Step 0b — it is also the thing §0.1 assumption 24 says outputs must not do. |
 | **The composited View** | `render.rs` `render_frame()` → `targets.view` | **Present.** One composite per frame already; §9.7's "one composite, one GPU frame" is half-satisfied — what does not exist is a second consumer. |
-| **Master audio bus** | `audio.rs:63` `BusId::Master`, `:78` `feeds_master()`, `:525` `render()` | **Present.** Allocation-free `render()` on a dedicated OS thread (work order DRESS). §9.3 requires master audio in the file; the mix exists, the tap does not. |
+| **Master audio bus** | `audio.rs:63` `BusId::Master`, `:78` `feeds_master()`, `:530` `render()` | **Present.** Allocation-free `render()` on a dedicated OS thread (work order DRESS). §9.3 requires master audio in the file; the mix exists, the tap does not. |
 | **Command surface** | `dispatch.ts:140-141` `record.start`/`record.stop`, `:135` `marker.add`; handlers `commands/output.ts:8,19` and `commands/state.ts:91` | **Present — and hollow.** `record.start` checks `showState`, flips `state.recordState = "recording"`, forwards a directive. That is all it does. |
 | **Engine-side record handling** | — | **Does not exist.** `directive.rs` has no `record.*` arm. The forwarded directive lands nowhere. |
 | **`show.stop` internal stop** | `commands/show.ts:136` emits `{ command: "record.stop" }` | **Present.** §16.1's quiescence path already sends it; nothing acts on it. |
