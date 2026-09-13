@@ -34,4 +34,4 @@ Six phases, gates exact:
 
 **Decision needed (resolved):** HTTP second surface vs WS-only Assumption 6, and
 the origin spec write (patch v0.4 or v0.5 before code). Ruled WS-only by the
-user; origin is drafted as Input Intent spec text, unratified pending PR review.
+user; origin is drafted as Input Intent spec text — ratified 2026-09-12 and landed in `docs/spec.v0.4.md` as v0.4.1.

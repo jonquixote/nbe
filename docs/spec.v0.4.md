@@ -16,6 +16,15 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
+v0.4.1 ratifies the Input Intent contract drafted spec-first by Prompt 08. The mapping rule and its failure mode were implemented and proven before ratification (PR #15); this entry makes them law.
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | **Input Intent mapping rule.** `control.bindings[]` had a preflight check for a missing command (§6.6 item 20) and no rule for what a binding *is*: one physical intent, one Section 16 command, with the payload keys that command's schema requires. Bindings could also shadow one another silently. | 6.6 (item 30, new), 19.3 (row 9 amended) |
+| 2 | **`intentSource` audit field.** Two identical state changes — one from a Stream Deck button, one typed into the UI — were indistinguishable after the fact. The field is additive and optional; absent means a direct command. | 10.7.1 |
+
+WS-only is reaffirmed rather than changed: Companion speaks the Section 16 WebSocket bus (Assumption 6), and **no Section 16 command surface is extended** — identity rides the audit and feedback paths, never the command envelope. `schemas/manifest.v0.4.json` is unchanged by v0.4.1.
+
 v0.3.1 applied four patches (WASM memory ceiling, sub-scene audio routing, unresolved open questions in Section 27, Appendix A structural reference).
 
 v0.3.2 is a clarification release: it writes down contracts that were already required but left implicit, and that implementers were therefore inventing. No behaviour that v0.3.1 defined has changed. New and amended material:
@@ -756,6 +765,7 @@ It MUST validate:
 27. **No contradictory Items** (Section 17.5): no Item carries a field belonging to a `kind` other than its own.
 28. **Package resource demand** (Section 12.11): `vramDemandMib` and `audioDemandMib` computed and reported.
 29. **No loop period beyond Section 12.4's absolute cap.**
+30. **Input binding integrity** (new in v0.4.1): every `control.bindings[]` entry with a `trigger` maps one physical intent to one Section 16 command (`action` + `payload`). A binding whose `action` is not a registered Section 16 command (deprecated Assumption 17 aliases resolve first), whose `payload` is missing a key required by that command's Section 16 schema, whose trigger lacks a known kind or a non-empty key, or whose trigger identically shadows another binding's trigger fails preflight (`E_PREFLIGHT_FAILED`), naming the binding `id`. *[Narrowed 2026-09-13 from "fails that command's Section 16 schema": preflight is a fast structural check over required keys; full schema validation happens at dispatch on the bus.]* A missing trigger is allowed: the intent is API-only and the deck generator skips it.
 
 Preflight MUST fail on seeded:
 
@@ -1820,6 +1830,7 @@ This is a worker-network broadcast system; assume hostile attention.
 | `rawCommand` | when aliased | The deprecated name as sent (Assumption 17). |
 | `errorCode` | rejected records | The Section 16 code. |
 | `stateVersionBefore` / `stateVersionAfter` | command records | The version either side of the attempt. |
+| `intentSource` | no | `adapter/profile:intent` (e.g. `companion/xl-a:take-1`), format-enforced by the server. Records which physical intent produced a command; two identical state changes from different sources differ only in this field. Absent means a software/direct command. New in v0.4.1. |
 | `reason` | rejected auth | Why the handshake failed — this detail belongs here, never in the response to the peer (Section 5.3). |
 
 Every attempt is recorded, not every success: **rejected commands, role denials, and failed handshakes MUST be written**. An audit log that contains only permitted actions cannot answer the question it exists for. Automation actions are recorded with `kind: "automation"` (AC-25 §4).
@@ -3070,7 +3081,7 @@ The preflight test suite MUST include:
 6. Broken SHA-256.
 7. Missing fallback asset.
 8. Out-of-range loudness.
-9. Invalid hotkey action.
+9. Invalid input binding (unknown action, payload missing a required key, or incomplete trigger — names the binding `id`). *(Amended in v0.4.1; was "Invalid hotkey action". Narrowed 2026-09-13 from "schema-invalid payload" to match the required-keys check preflight enforces.)*
 10. Missing template field.
 11. 29.97 fps asset without pulldown metadata.
 12. **A contradictory Item** — e.g. `{"kind": "slate", "sceneRef": …}` (Section 17.5). Without this row a checklist implementer lawfully passes a package the renderer and the audio path resolve differently.

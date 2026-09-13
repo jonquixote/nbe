@@ -48,12 +48,14 @@ Build the **Input Intent layer — data, not code**:
 ## 2. Decision records
 
 - **D1 WS-only, RATIFIED by user.** Companion speaks WebSocket per Assumption 6 (:66, :113). The audit/exec-plan P1 HTTP-door phase is **rejected**; its parity-test content survives translated to WS tests with distinct adapter identity. The `server.ts:1-3` "(Prompt 08) future Companion HTTP endpoint" comment is superseded — the HTTP listener is §10.4's health endpoint, full stop.
-- **D2 Origin/identity: spec-first, UNRATIFIED.** The Input Intent spec text below MAY define a device/profile identity field for audit + feedback, drafted spec-first and marked for user ratification. The §16 command surface itself is **not extended** — identity rides the audit/feedback path, never the command envelope.
+- **D2 Origin/identity: spec-first, RATIFIED by user 2026-09-12.** The Input Intent spec text below defines a device/profile identity field for audit + feedback, drafted spec-first and marked for user ratification. The §16 command surface itself is **not extended** — identity rides the audit/feedback path, never the command envelope.
 - **D3 AC-12 correction (HTTP module → WS bus): marked mechanical spec-prompt alignment, own commit.** Corrects old-body :55 to spec :3295 wording. No normative spec-file change (spec already says WS).
 
-## 3. Normative spec text — Input Intent contract [UNRATIFIED, pending PR review]
+## 3. Normative spec text — Input Intent contract [RATIFIED, landed in SPEC v0.4.1]
 
-> The following is drafted spec-first per the v0.4 discipline (normative language + changelog entry). It is **not law** until ratified in PR review. It ships in its own commit, marked unratified.
+> Drafted spec-first per the v0.4 discipline (normative language + changelog entry), and **now law**: ratified by the user and landed in `docs/spec.v0.4.md` as patch release v0.4.1. The spec file is the normative copy; what follows is the draft it was ratified from, kept for provenance.
+>
+> **One correction on landing.** The draft said "§6.6 add (item 26)". Item 26 is "Plugin sandbox validation (Section 14)" — §6.6's check list already ran to 29, so the rule landed as **item 30**. The number was wrong in the draft and is corrected here rather than silently in the spec, because a reader comparing the two would otherwise find a rule that is not where the draft says it is.
 
 **§6.6 add (item 26):** "Every `control.bindings[]` entry with a `trigger` maps one physical intent to one §16 command (`action` + `payload`). A binding whose `action` is not a registered §16 command (deprecated Assumption 17 aliases resolve first), whose `payload` fails that command's §16 schema, whose trigger lacks a known kind or a non-empty key, or whose trigger identically shadows another binding's trigger fails preflight (`E_PREFLIGHT_FAILED`), naming the binding `id`. A missing trigger is allowed: the intent is API-only and the deck generator skips it."
 
@@ -61,7 +63,7 @@ Build the **Input Intent layer — data, not code**:
 
 **§10.7.1 add (field, additive):** `intentSource` — optional, `adapter/profile:intent` (e.g. `companion/xl-a:take-1`), format-enforced by the server. Records which physical intent produced a command; identical state changes from different sources differ only in this field. Absent = software/direct command.
 
-**Changelog entry:** "08-INPUT-INTENT [UNRATIFIED]: Input Intent mapping rule (§6.6/§19.3), `intentSource` audit field (§10.7.1). WS-only reaffirmed; no §16 surface change."
+**Changelog entry (landed as SPEC v0.4.1):** Input Intent mapping rule (§6.6 item 30, §19.3 row 9), `intentSource` audit field (§10.7.1). WS-only reaffirmed; no §16 surface change; schema unchanged.
 
 ## Step 0: Scope discipline
 
@@ -97,4 +99,4 @@ CI: `control-plane` job runs adapter + generator + audit tests; `rust` job runs 
 
 ## Reporting obligations (Done means)
 
-Upgraded doc committed first alone (rule 6); spec text own commit marked unratified; battery verbatim with complete pastes; falsification signatures; records entries quoted; dress-rehearsal green on normative machine if touched. Push authorized; open PR; do NOT merge — two-key pass follows.
+Upgraded doc committed first alone (rule 6); spec text own commit (marked unratified at the time, ratified as v0.4.1 on 2026-09-12); battery verbatim with complete pastes; falsification signatures; records entries quoted; dress-rehearsal green on normative machine if touched. Push authorized; open PR; do NOT merge — two-key pass follows.
