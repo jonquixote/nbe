@@ -65,7 +65,11 @@ fn forced_software_seam_refuses_with_no_hardware_encoder() {
     // The refusal path must be testable even where hardware IS present:
     // forcing the software leg refuses exactly as a machine with no
     // hardware encoder would — E_NO_HARDWARE_ENCODER, never CPU fallback.
-    let err = EncodeSession::open_with_options(320, 240, 30, 1_000_000, true)
+    // 640x360 deliberately: hardware accepts this size, so only the
+    // force_software seam itself can produce the refusal below. (At 320x240
+    // the test passed for the wrong reason — the HW size floor refuses first
+    // and masks a deleted seam.)
+    let err = EncodeSession::open_with_options(640, 360, 30, 1_000_000, true)
         .expect_err("forced software must refuse: hardware encoders only");
     assert!(
         err.to_string().contains("E_NO_HARDWARE_ENCODER"),
