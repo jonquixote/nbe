@@ -197,6 +197,13 @@ capturing before anyone theorises.
 `docs/review-midpoint-report.md` §3.4–§3.8 and §11.2 (R1–R6); that report is a sealed CLEAN
 verdict and is not amended to hold this.
 
+**Third sighting, 2026-09-13 (P9 groundwork, PR #17 run `34745014794`).** The same test
+failed with the same signature (`expected 3 directives, got 4`) on a docs+CI-only
+branch whose code was identical to green main, passed 6/6 locally in the same
+tree, and passed on CI rerun. This is R7's test, not a new entry: same name, same
+signature, same load-sensitive family, now 3 sightings across unrelated changes.
+The redelivery-vs-extra-bump question still stands — payloads still uncaught.
+
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
 The bound `nbe-preflight` runs under is derived from two measured constant
@@ -506,6 +513,12 @@ Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an 
 ## 09 — Recording
 
 **Owns `marker.add` → recording chapter (§16.11)**, assigned by `[RI-5]` — 09's current doc does not mention it, and its upgrade pass must. Inherits two dormant deferrals that its own benchmark is the trigger for: zero-copy IOSurface→Metal (re-defer *with numbers*, not with prose) and the display surface. §0.1 assumption 14 fixes fragmented MP4 as the crash-safe default. 09 should also carry `[RI-8]`'s pinned residency policy into its own resource accounting: **unload-at-next-load**, so a stop→start recovery does not pay the 46 s reload measured in the report §3.2.
+
+### P9 Step 0b — frame-path fork decided (recorded 2026-09-14, normative machine)
+
+Full table in `docs/09-measurements.md` (complete pastes, 300 frames/phase, 1080p30, Radeon Pro 555X). Decision: **(A) CPU readback first cut; zero-copy deferred with numbers.** Render+readback p95 19.3 ms / max 24.5 ms vs 33.333 ms budget, 0/300 over budget; GPU-copy proxy p95 4.5 ms. Reload cost re-measured: release preflight on dress_show 0.8–1.7 s (the stale 46 s was debug-under-contention; DRESS's 10.7 s was show.load decode, a different cost — cited correctly here). Answer changes if: dress-content composite + readback p95 crosses ~28 ms; encoder+mux+audio load trips drops; 4K target (≈48 ms readback alone); long-run p99 exceeds budget.
+
+**Spec-correction candidate (visible, not quiet):** landing path (A) while §0.1 assumption 24 forbids CPU readback needs a scoped correction — a recording-first-cut allowance or a v0.5 rewording — recorded here rather than violated silently. Telemetry caveat on record: the tap sits outside `render_frame`'s deadline today, so `dropped_frames_total` is blind to it until 09 accounts the tap inside the deadline or separately.
 
 ## 10 — Streaming
 
