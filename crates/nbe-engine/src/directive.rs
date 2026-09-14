@@ -120,6 +120,10 @@ impl DirectiveHandler {
     }
 
     fn on_show_load(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // [RI-8] release-then-rebuild, FIRST: a load→load with no stop in
+        // between must not stack the previous show's sessions onto the cap.
+        // Outstanding leases go stale (epoch bump) and their Drop is a no-op.
+        self.state.sessions.release_all();
         // No cross-show pollution: a newly loaded show never inherits the
         // previous show's markers.
         crate::record::markers::clear();
@@ -146,6 +150,25 @@ impl DirectiveHandler {
         // Record what the show asked for; the cap is applied at publish time
         // (SPEC §10.1.1), so the order of probe and load does not matter.
         self.state.set_requested_quality(index.requested_quality);
+
+        // The telemetry pump measures `recordSpaceMib` against this target.
+        // `show.outputs.record.directory`, resolved against the package root
+        // when relative; `None` when the package declares no record target.
+        let record_dir = manifest
+            .get("show")
+            .and_then(|s| s.get("outputs"))
+            .and_then(|o| o.get("record"))
+            .and_then(|r| r.get("directory"))
+            .and_then(|v| v.as_str())
+            .map(|d| {
+                let p = std::path::Path::new(d);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    root.join(p)
+                }
+            });
+        *self.state.record_dir.lock().unwrap() = record_dir;
 
         // Prompt 05: decode the package's video assets here, at load time.
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
@@ -291,8 +314,13 @@ impl DirectiveHandler {
     /// show.stop arrives with the quiesce stop directives already emitted by
     /// the control plane (SPEC §5.9.5). The engine applies them; the ack is
     /// emitted by `apply` on the way out, once output stopping is real.
+    ///
+    /// [RI-8] unload-at-next-load: release decode sessions but retain package
+    /// residency (video rings, image textures, audio assets) until the next
+    /// show.load replaces it.
     fn on_show_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
         self.state.clock.lock().unwrap().stop();
+        self.state.sessions.release_all();
         // Outputs are stubs in this prompt; the protocol shape is the point.
         Ok(())
     }

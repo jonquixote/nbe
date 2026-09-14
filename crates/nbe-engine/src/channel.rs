@@ -4,8 +4,8 @@
 //! never let channel I/O sit on the same task as the master clock or telemetry.
 
 use crate::directive::DirectiveHandler;
-use crate::state::{SharedEngineState, SharedOutgoing};
-use crate::telemetry::build_tick;
+use crate::state::{EngineState, SharedEngineState, SharedOutgoing};
+use crate::telemetry::build_tick_for_dir;
 use futures_util::{SinkExt, StreamExt};
 use nbe_protocol::DirectiveFrame;
 use std::time::Duration;
@@ -99,6 +99,16 @@ impl ConnectionGate {
     }
 }
 
+/// Telemetry tick for the outbound pump: wires the loaded package's record
+/// directory (engine state, set at `show.load` from `show.outputs.record`)
+/// into [`build_tick_for_dir`] — `None` only when no package (or no record
+/// target) is loaded. Render path/deadline untouched: this runs on the
+/// channel task's cadence, never on the frame path.
+pub fn pump_tick(state: &EngineState) -> nbe_protocol::EngineFrame {
+    let dir = state.record_dir.lock().unwrap().clone();
+    build_tick_for_dir(state, dir.as_deref())
+}
+
 /// The engine-side channel master. Owns the connection and the four tasks
 /// that share it.
 pub struct RenderChannel {
@@ -156,7 +166,7 @@ impl RenderChannel {
                     }
                 }
                 if tokio::time::Instant::now() >= next_tick {
-                    let tick = build_tick(&pump_state);
+                    let tick = pump_tick(&pump_state);
                     if let Ok(s) = serde_json::to_string(&tick) {
                         let _ = out_tx.send(s).await;
                     }
@@ -346,6 +356,27 @@ mod tests {
         assert_eq!(
             g.classify(&mk("show.stop", 3, 11), 10),
             GateDecision::SeqGap
+        );
+    }
+
+    fn tick_space(frame: &nbe_protocol::EngineFrame) -> f64 {
+        match frame {
+            nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } => fields.record_space_mib,
+            other => panic!("expected engineTelemetry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pump_tick_wires_the_loaded_record_dir() {
+        let state = EngineState::new(30);
+        // No package loaded: no record target, field present and zero.
+        assert_eq!(tick_space(&pump_tick(&state)), 0.0);
+        // A loaded package's record target: the pump measures the real volume.
+        let dir = tempfile::tempdir().expect("tempdir must succeed");
+        *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
+        assert!(
+            tick_space(&pump_tick(&state)) > 0.0,
+            "wired pump state must report measured space"
         );
     }
 }

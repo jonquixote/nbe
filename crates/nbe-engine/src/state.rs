@@ -102,6 +102,11 @@ pub struct EngineState {
     /// encoder exists yet, so `record.start` never enters Recording. The
     /// `Idle <-> Recording` transitions exist for WU2 to flip.
     pub record_state: Mutex<RecordState>,
+    /// The loaded package's record target (`show.outputs.record.directory`,
+    /// resolved against the package root). The channel telemetry pump reads
+    /// this to measure `recordSpaceMib`; `None` when no package is loaded or
+    /// the package declares no record target.
+    pub record_dir: Mutex<Option<std::path::PathBuf>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -144,6 +149,7 @@ impl EngineState {
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
             overlays: Mutex::new(std::collections::BTreeMap::new()),
             record_state: Mutex::new(RecordState::Idle),
+            record_dir: Mutex::new(None),
             degradation_rung: AtomicU64::new(0),
         }
     }
