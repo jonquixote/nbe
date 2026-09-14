@@ -833,6 +833,11 @@ impl RecordingWriter {
         self.try_emit(true)?;
         self.patch_durations()?;
         self.file.flush().map_err(disk)?;
+        // WU5 [RI-5]: the always-sidecar. fMP4 carries chapters poorly, so
+        // chapters ride `<stem>.markers.json` beside the recording for every
+        // container. This is the single place files finalize — a sidecar
+        // write failure is E_DISK like any other finalize failure.
+        super::markers::write_sidecar(&self.path, &super::markers::list())?;
         Ok(self.path.clone())
     }
 

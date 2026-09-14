@@ -24,6 +24,7 @@
 
 pub mod aac;
 pub mod audio_tap;
+pub mod markers;
 pub mod writer;
 
 pub use audio_tap::{AudioTap, DEFAULT_CAPACITY_SAMPLES};

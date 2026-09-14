@@ -104,6 +104,7 @@ impl DirectiveHandler {
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             "record.start" => self.on_record_start(d)?,
             "record.stop" => self.on_record_stop(d)?,
+            "marker.add" => self.on_marker_add(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -119,6 +120,9 @@ impl DirectiveHandler {
     }
 
     fn on_show_load(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // No cross-show pollution: a newly loaded show never inherits the
+        // previous show's markers.
+        crate::record::markers::clear();
         let path = d
             .payload
             .get("packagePath")
@@ -403,6 +407,10 @@ impl DirectiveHandler {
                 "record.start requires a running show".into(),
             ));
         }
+        // Fresh marker list per recording: a new take never inherits the
+        // previous take's chapters (cleared even though this work unit has
+        // no encoder path and returns NoHardwareEncoder below).
+        crate::record::markers::clear();
         Err(DirectiveError::NoHardwareEncoder(
             "record.start requires a hardware encoder".into(),
         ))
@@ -420,6 +428,42 @@ impl DirectiveHandler {
             ));
         }
         *record = RecordState::Idle;
+        Ok(())
+    }
+
+    /// `marker.add` (SPEC §16.11, `[RI-5]`): requires an active recording —
+    /// while Idle the marker would be recorded nowhere, so accept-but-ignore
+    /// is silent loss and is refused with `E_FORBIDDEN_STATE` instead. While
+    /// Recording the marker lands in the process-wide
+    /// [`crate::record::markers`] store with the master frame; the sidecar
+    /// writer snapshots it at finish.
+    /// Frame rule: `master_frame() + 1` — the marker takes effect on the NEXT
+    /// frame boundary, the same discipline as a take (`on_take`) and an
+    /// overlay (`on_overlay`), never mid-frame.
+    /// Timecode rule: the verbatim `timecode` string is kept as given; `frame`
+    /// is the authority for ordering/chapters.
+    fn on_marker_add(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if *self.state.record_state.lock().unwrap() != RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "marker.add requires an active recording".into(),
+            ));
+        }
+        let name = d
+            .payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| DirectiveError::Invalid("marker.add missing name".into()))?;
+        let timecode = d
+            .payload
+            .get("timecode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        crate::record::markers::add(crate::record::markers::Marker {
+            name: name.to_string(),
+            frame: self.state.master_frame().map(|f| f + 1).unwrap_or(0),
+            timecode,
+        });
         Ok(())
     }
 
