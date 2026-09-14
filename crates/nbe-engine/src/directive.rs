@@ -2,7 +2,7 @@
 //! to the engine's clock/state, verify fallback residency at show.load, and
 //! acknowledge independently of the command path.
 
-use crate::state::{FallbackSlate, SharedEngineState, SharedOutgoing};
+use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing};
 use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -25,6 +25,10 @@ pub enum DirectiveError {
     Io(#[from] std::io::Error),
     #[error("invalid directive: {0}")]
     Invalid(String),
+    #[error("E_FORBIDDEN_STATE: {0}")]
+    ForbiddenState(String),
+    #[error("E_NO_HARDWARE_ENCODER: {0}")]
+    NoHardwareEncoder(String),
 }
 
 /// Tracks the currently playing timed item so a superseding take cancels its
@@ -98,6 +102,8 @@ impl DirectiveHandler {
             "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
+            "record.start" => self.on_record_start(d)?,
+            "record.stop" => self.on_record_stop(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -384,6 +390,36 @@ impl DirectiveHandler {
     fn on_audio(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let mut pending = self.state.audio_commands.lock().unwrap();
         pending.push(crate::audio_control::AudioCommand::from_directive(d)?);
+        Ok(())
+    }
+
+    /// Output commands, WU1 (SPEC §16.14). No encoder exists yet (that is
+    /// WU2), so `record.start` is always refused: `E_FORBIDDEN_STATE` when
+    /// the show is not RUNNING, `E_NO_HARDWARE_ENCODER` once it is. Either
+    /// way the state machine stays Idle.
+    fn on_record_start(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if !self.state.is_running() {
+            return Err(DirectiveError::ForbiddenState(
+                "record.start requires a running show".into(),
+            ));
+        }
+        Err(DirectiveError::NoHardwareEncoder(
+            "record.start requires a hardware encoder".into(),
+        ))
+    }
+
+    /// `record.stop` requires an active recording, else `E_FORBIDDEN_STATE`.
+    /// The `Recording -> Idle` flip exists so WU2 — the first work unit able
+    /// to enter Recording — has a stop path; WU1 reaches it only when a test
+    /// arms the state directly.
+    fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let mut record = self.state.record_state.lock().unwrap();
+        if *record != RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "record.stop requires an active recording".into(),
+            ));
+        }
+        *record = RecordState::Idle;
         Ok(())
     }
 

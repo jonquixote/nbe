@@ -98,6 +98,10 @@ pub struct EngineState {
     /// after the command lands, the same boundary discipline AC-17 imposes on a
     /// take — never a transition frame.
     pub overlays: Mutex<std::collections::BTreeMap<String, OverlayRuntime>>,
+    /// Engine recording state (SPEC §16.14). WU1 owns the skeleton only: no
+    /// encoder exists yet, so `record.start` never enters Recording. The
+    /// `Idle <-> Recording` transitions exist for WU2 to flip.
+    pub record_state: Mutex<RecordState>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -139,6 +143,7 @@ impl EngineState {
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
             overlays: Mutex::new(std::collections::BTreeMap::new()),
+            record_state: Mutex::new(RecordState::Idle),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -336,4 +341,14 @@ pub enum OverlayPhase {
     Steady,
     /// animating out (opacity 1 → 0); the overlay drops when it completes.
     Exit,
+}
+
+/// Engine recording state (SPEC §16.14): `Idle → Recording → (stop) Idle`.
+/// WU1 never enters `Recording` (no encoder exists yet — that is WU2); the
+/// transitions exist so WU2 can flip them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordState {
+    #[default]
+    Idle,
+    Recording,
 }
