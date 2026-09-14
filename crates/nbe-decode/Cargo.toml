@@ -9,10 +9,12 @@ description = "Hardware video decode (VideoToolbox via AVFoundation), shared by 
 thiserror.workspace = true
 tracing.workspace = true
 objc2 = "0.6.4"
+objc2-core-foundation = { version = "0.3.2", features = ["CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError", "NSObject", "NSEnumerator"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVMediaFormat", "AVAudioSettings", "objc2-core-media"] }
 objc2-core-media = { version = "0.3.2", features = ["CMSampleBuffer", "CMTime", "CMFormatDescription", "CMBase", "CMBlockBuffer", "objc2-core-video"] }
 objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn", "CVPixelFormatDescription"] }
+objc2-video-toolbox = "0.3.2"
 
 [lints]
 workspace = true

@@ -16,6 +16,11 @@
 // CoreMedia, and CoreVideo is `unsafe` by construction, and hardware decode is
 // not reachable from Rust without it. The unsafety is confined here — the
 // types this module hands out (`DecodedFrame`, `AssetProbe`) are plain data.
+// Hardware encode (`encode`) lives under the same exception: every
+// VideoToolbox session call is `unsafe` by construction.
+
+/// Hardware H.264 encode (Prompt 09 WU2, SPEC §9.2).
+pub mod encode;
 
 use objc2::rc::Retained;
 use objc2::AnyThread;
