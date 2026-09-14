@@ -22,6 +22,14 @@
 /// Hardware H.264 encode (Prompt 09 WU2, SPEC §9.2).
 pub mod encode;
 
+/// AAC-LC audio encode for recording (Prompt 09 WU34, SPEC §9.3).
+///
+/// Same exception as `encode`: AudioToolbox is `unsafe` by construction, so
+/// the converter lives here and hands out plain data (`AacFrame`) plus one
+/// owned encoder handle. See the module docs for why this is not in
+/// `nbe-engine` (that crate denies `unsafe_code`).
+pub mod aac;
+
 use objc2::rc::Retained;
 use objc2::AnyThread;
 use objc2_av_foundation::{

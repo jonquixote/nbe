@@ -20,6 +20,7 @@ pub mod gpu;
 /// SPEC §12.5's budget decision lives in `nbe-core` so preflight and the
 /// engine cannot disagree about it. Re-exported here for callers.
 pub use nbe_core::loop_cache;
+pub mod record;
 pub mod render;
 pub mod scene;
 pub mod state;

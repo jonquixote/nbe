@@ -26,7 +26,12 @@
 //!   is one second of frames, so the first second always carries a keyframe;
 //! - a unit is a keyframe when its sample carries no `NotSync` attachment;
 //! - input is tightly packed RGBA and is swizzled to BGRA on the way into the
-//!   session pool's pixel buffers.
+//!   session pool's pixel buffers;
+//! - parameter sets are NOT in-band: VideoToolbox emits slices only (SEI +
+//!   IDR for a keyframe), and SPS/PPS live in the sample's format description
+//!   (`CMVideoFormatDescription`). The output callback captures them from the
+//!   first keyframe for the recording writer's `avcC` box; see
+//!   [`EncodeSession::parameter_sets`].
 //!
 //! Floor: 640x360 is the smallest geometry the hardware encoder opens (see
 //! [`is_available`]); narrower widths are refused by the hardware, which
@@ -39,6 +44,7 @@ use std::sync::{Arc, Mutex};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
     kCMSampleAttachmentKey_NotSync, kCMTimeInvalid, kCMVideoCodecType_H264, CMSampleBuffer, CMTime,
+    CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
 };
 use objc2_core_video::{
     kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA, kCVReturnSuccess, CVPixelBuffer,
@@ -117,6 +123,10 @@ struct CallbackState {
     /// First callback-side failure, if any. Surfaced by `finish` only when
     /// no units arrived at all.
     first_error: Mutex<Option<String>>,
+    /// SPS + PPS captured from the first keyframe's format description
+    /// (VideoToolbox emits no parameter sets in-band). `None` until a
+    /// keyframe with a readable description arrives.
+    param_sets: Mutex<Option<(Vec<u8>, Vec<u8>)>>,
 }
 
 fn record_callback_error(state: &CallbackState, detail: String) {
@@ -164,6 +174,63 @@ fn sample_is_keyframe(sample: &CMSampleBuffer) -> bool {
     }
 }
 
+/// Capture SPS + PPS from a keyframe sample's format description, once.
+///
+/// VideoToolbox emits no parameter sets in-band, so the recording writer's
+/// `avcC` has no other source. Index 0 is the SPS, index 1 the PPS (verified
+/// by NAL type below, not trusted by position). The returned pointers borrow
+/// the format description, so the bytes are copied out immediately. A sample
+/// whose description is unreadable is skipped silently: recording without
+/// parameter sets is refused later, loudly, at the writer — never here with
+/// half a header.
+fn capture_parameter_sets(state: &CallbackState, sample: &CMSampleBuffer) {
+    if state
+        .param_sets
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+    {
+        return;
+    }
+    let sets: Option<(Vec<u8>, Vec<u8>)> = unsafe {
+        let desc = sample.format_description();
+        let desc = match desc {
+            Some(d) => d,
+            None => return,
+        };
+        let read_set = |index: usize, want_type: u8| -> Option<Vec<u8>> {
+            let mut ptr: *const u8 = std::ptr::null();
+            let mut size: usize = 0;
+            let mut count: usize = 0;
+            let mut nalu_len: std::ffi::c_int = 0;
+            let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                &desc,
+                index,
+                &mut ptr,
+                &mut size,
+                &mut count,
+                &mut nalu_len,
+            );
+            if status != 0 || ptr.is_null() || size == 0 || size > 1 << 20 {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(ptr, size).to_vec();
+            if bytes.first().map(|b| b & 0x1F) != Some(want_type) {
+                return None;
+            }
+            Some(bytes)
+        };
+        let sps = read_set(0, 7);
+        let pps = read_set(1, 8);
+        match (sps, pps) {
+            (Some(s), Some(p)) => Some((s, p)),
+            _ => None,
+        }
+    };
+    if let Some(sets) = sets {
+        *state.param_sets.lock().unwrap_or_else(|e| e.into_inner()) = Some(sets);
+    }
+}
 /// The `VTCompressionOutputCallback` given to `VTCompressionSessionCreate`.
 ///
 /// `refcon` is a borrowed `Arc<CallbackState>` (kept alive by the owning
@@ -200,6 +267,15 @@ unsafe extern "C-unwind" fn encode_output_callback(
             0.0
         };
         let is_keyframe = sample_is_keyframe(sample);
+
+        // Parameter sets are not in-band (the payload above is slices
+        // only), so capture them from the first keyframe's format
+        // description for the recording writer's `avcC`. Once captured, or
+        // on a non-keyframe, this is a single mutex check — the steady
+        // state costs nothing.
+        if is_keyframe {
+            capture_parameter_sets(state, sample);
+        }
 
         let Some(block) = sample.data_buffer() else {
             record_callback_error(state, "compressed sample carried no data buffer".into());
@@ -477,6 +553,20 @@ impl EncodeSession {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(units)
+    }
+
+    /// SPS + PPS captured from the first keyframe's format description, if
+    /// one has arrived. The recording writer needs these for the file's
+    /// `avcC` box (VideoToolbox emits no parameter sets in-band — see the
+    /// module docs). `None` means no keyframe has been observed yet, or its
+    /// description was unreadable; recording without them is refused loudly
+    /// at the writer.
+    pub fn parameter_sets(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        self.state
+            .param_sets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// True when a hardware H.264 encoder answers: opens 640x360 and drops

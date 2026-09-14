@@ -292,6 +292,12 @@ pub struct AudioGraph {
     /// Scratch buffers, allocated once so `render` allocates nothing.
     scratch: Vec<f32>,
     guest_scratch: BTreeMap<String, Vec<f32>>,
+    /// Master-bus record tap (WU34): `None` until `set_record_tap`. When
+    /// present, `render` pushes a copy of the post-master mix into it via the
+    /// tap's non-blocking `push` (single `try_lock`, shed-on-contention, no
+    /// file I/O, no allocation on the audio thread). No deadline change: the
+    /// steady-state cost is one bounded memcpy.
+    record_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
 }
 
 impl AudioGraph {
@@ -313,7 +319,20 @@ impl AudioGraph {
             pending_swaps: Vec::with_capacity(8),
             scratch: vec![0.0; 8192],
             guest_scratch: BTreeMap::new(),
+            record_tap: None,
         }
+    }
+
+    /// Attach the master-bus record tap (WU34). Called on the control thread,
+    /// never the audio thread; `render` only clones the `Arc` contents by
+    /// reference and pushes through the tap's non-blocking path.
+    pub fn set_record_tap(&mut self, tap: std::sync::Arc<crate::record::AudioTap>) {
+        self.record_tap = Some(tap);
+    }
+
+    /// Detach the record tap.
+    pub fn clear_record_tap(&mut self) {
+        self.record_tap = None;
     }
 
     pub fn house_frame_rate(&self) -> u32 {
@@ -548,6 +567,7 @@ impl AudioGraph {
             guest_scratch,
             house_frame_rate,
             rendered_samples,
+            record_tap,
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
@@ -641,6 +661,14 @@ impl AudioGraph {
                 master.observe(v);
                 out[idx] = v;
             }
+        }
+
+        // Master-bus record tap (WU34): post-render copy into the ring. The
+        // tap's `push` is non-blocking (single `try_lock`, shed on
+        // contention, preallocated ring, no file I/O), so the render-loop
+        // deadline does not change.
+        if let Some(tap) = record_tap {
+            tap.push(out);
         }
 
         *rendered_samples += frames as u64;
