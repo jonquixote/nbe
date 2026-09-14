@@ -2,6 +2,7 @@
 //! to the engine's clock/state, verify fallback residency at show.load, and
 //! acknowledge independently of the command path.
 
+use crate::render::{VIEW_H, VIEW_W};
 use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing};
 use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent};
 use std::sync::atomic::Ordering;
@@ -113,7 +114,9 @@ impl DirectiveHandler {
         // Ack every applied directive (SPEC 5.9.3: appliedStateVersion is the
         // engine's most recent applied stateVersion — the honest signal for
         // /status and the show.stop grace window). One emission point, called
-        // exactly once per applied directive.
+        // exactly once per applied directive. WU8 ordering note: record.stop
+        // finalizes its file INSIDE its handler above, so this ack is only
+        // observable after the file + sidecar are complete.
         self.state.set_last_applied(d.state_version);
         self.ack(d.state_version);
         Ok(())
@@ -315,10 +318,25 @@ impl DirectiveHandler {
     /// the control plane (SPEC §5.9.5). The engine applies them; the ack is
     /// emitted by `apply` on the way out, once output stopping is real.
     ///
+    /// WU8 quiescence: a still-`Recording` session finalizes HERE, so
+    /// `show.stop` alone — with or without a preceding internal `record.stop`
+    /// — leaves a playable file. A finish failure is logged, never fatal to
+    /// the stop itself.
+    ///
     /// [RI-8] unload-at-next-load: release decode sessions but retain package
     /// residency (video rings, image textures, audio assets) until the next
     /// show.load replaces it.
     fn on_show_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if *self.state.record_state.lock().unwrap() == RecordState::Recording {
+            let session = self.state.record_session.lock().unwrap().take();
+            if let Some(s) = session {
+                match s.finish() {
+                    Ok(path) => info!(path = %path.display(), "show.stop: recording quiesced"),
+                    Err(e) => tracing::warn!(err = %e, "show.stop: recording finalize failed"),
+                }
+            }
+            *self.state.record_state.lock().unwrap() = RecordState::Idle;
+        }
         self.state.clock.lock().unwrap().stop();
         self.state.sessions.release_all();
         // Outputs are stubs in this prompt; the protocol shape is the point.
@@ -425,38 +443,87 @@ impl DirectiveHandler {
         Ok(())
     }
 
-    /// Output commands, WU1 (SPEC §16.14). No encoder exists yet (that is
-    /// WU2), so `record.start` is always refused: `E_FORBIDDEN_STATE` when
-    /// the show is not RUNNING, `E_NO_HARDWARE_ENCODER` once it is. Either
-    /// way the state machine stays Idle.
-    fn on_record_start(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    /// Output commands, WU8 unified (SPEC §16.14): `record.start` validates
+    /// preconditions, reserves the output path in a metadata-only
+    /// [`RecordSession`](crate::record::RecordSession) (EMPTY parameter sets),
+    /// and flips to `Recording`. No encoder is touched here — the handler
+    /// stays non-blocking; the loop feed owns the ONE live encoder at
+    /// `VIEW_W/H` and captures the real SPS/PPS from its first keyframe.
+    /// Refusals: `E_FORBIDDEN_STATE` when the show is not RUNNING or a
+    /// recording is already active (the refused second start preserves the
+    /// live session but still resets chapters for the next take — WU5);
+    /// `Invalid` when no record directory is configured or the path cannot be
+    /// reserved (`E_DISK` inside). Encoder absence (forced or genuine) is NOT
+    /// a start refusal: it degrades to skipped record frames in the loop and
+    /// a loud finish, never a blocked handler.
+    fn on_record_start(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         if !self.state.is_running() {
             return Err(DirectiveError::ForbiddenState(
                 "record.start requires a running show".into(),
             ));
         }
         // Fresh marker list per recording: a new take never inherits the
-        // previous take's chapters (cleared even though this work unit has
-        // no encoder path and returns NoHardwareEncoder below).
+        // previous take's chapters (WU5, preserved). Resets on every start
+        // attempt while the show runs — including a refused second start —
+        // and only there (never while stopped).
         crate::record::markers::clear();
-        Err(DirectiveError::NoHardwareEncoder(
-            "record.start requires a hardware encoder".into(),
-        ))
+        // Defined behavior: a second start while Recording is refused — the
+        // live session is preserved.
+        if *self.state.record_state.lock().unwrap() == RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "record.start while already recording".into(),
+            ));
+        }
+        let dir = self.state.record_dir.lock().unwrap().clone();
+        let Some(dir) = dir else {
+            return Err(DirectiveError::Invalid(
+                "record.start: no record directory (show.outputs.record.directory not configured)"
+                    .into(),
+            ));
+        };
+        let show = payload_str(&d.payload, "show", "show");
+        let episode = payload_str(&d.payload, "episode", "episode");
+        let start_timestamp = payload_str(&d.payload, "startTimestamp", &default_timestamp());
+        let fps = payload_u32(&d.payload, "fps", 30);
+        // Single geometry: the session records at View geometry because the
+        // loop feed's ONE live encoder opens at VIEW_W/H. Payload width/height
+        // are deliberately not read — a second geometry here is the defect.
+        let session = crate::record::RecordSession::open(
+            &dir,
+            &show,
+            &episode,
+            &start_timestamp,
+            VIEW_W,
+            VIEW_H,
+            fps,
+        )
+        .map_err(finish_err)?;
+        *self.state.record_session.lock().unwrap() = Some(session);
+        *self.state.record_state.lock().unwrap() = RecordState::Recording;
+        Ok(())
     }
 
-    /// `record.stop` requires an active recording, else `E_FORBIDDEN_STATE`.
-    /// The `Recording -> Idle` flip exists so WU2 — the first work unit able
-    /// to enter Recording — has a stop path; WU1 reaches it only when a test
-    /// arms the state directly.
+    /// `record.stop` finishes the session synchronously — the file + sidecar
+    /// are complete before `apply()` emits the ack — then returns the state
+    /// machine to Idle. Requires an active recording (`E_FORBIDDEN_STATE`
+    /// while Idle). A session-less `Recording` (the test seam) flips with
+    /// nothing to finish. A failed finish still ends the recording (no session
+    /// remains to continue with) but withholds the ack: `apply()` only acks
+    /// on `Ok`.
     fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        let mut record = self.state.record_state.lock().unwrap();
-        if *record != RecordState::Recording {
+        if *self.state.record_state.lock().unwrap() != RecordState::Recording {
             return Err(DirectiveError::ForbiddenState(
                 "record.stop requires an active recording".into(),
             ));
         }
-        *record = RecordState::Idle;
-        Ok(())
+        // Taken, not borrowed: finish runs without holding any state lock.
+        let session = self.state.record_session.lock().unwrap().take();
+        let result = match session {
+            Some(s) => s.finish().map(|_| ()).map_err(finish_err),
+            None => Ok(()),
+        };
+        *self.state.record_state.lock().unwrap() = RecordState::Idle;
+        result
     }
 
     /// `marker.add` (SPEC §16.11, `[RI-5]`): requires an active recording —
@@ -735,4 +802,44 @@ fn duration_frames(d: &DirectiveFrame) -> Option<u32> {
         .get("durationFrames")
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
+}
+
+/// `record.start` payload string field with a default (SPEC §16.14's payload
+/// is just `{ outputId?: string }`; show/episode/timestamp ride here so the
+/// filename needs no package read on the directive path).
+fn payload_str(payload: &serde_json::Value, key: &str, default: &str) -> String {
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn payload_u32(payload: &serde_json::Value, key: &str, default: u32) -> u32 {
+    payload
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(default)
+}
+
+/// Filename timestamp when the directive carries none: unique per second, and
+/// sanitizer-safe (the writer keeps `[A-Za-z0-9._-]`).
+fn default_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("session-{secs}")
+}
+
+/// Writer/file failures underneath record stop/start keep their stable tokens
+/// (`E_DISK`, `E_AAC_UNAVAILABLE`, `E_RECORD_INPUT`) inside the message; disk
+/// refusal additionally surfaces as the `Io` variant.
+fn finish_err(e: crate::record::RecordError) -> DirectiveError {
+    match e {
+        crate::record::RecordError::Disk(msg) => DirectiveError::Io(std::io::Error::other(msg)),
+        other => DirectiveError::Invalid(other.to_string()),
+    }
 }

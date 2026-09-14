@@ -24,10 +24,14 @@
 
 pub mod aac;
 pub mod audio_tap;
+pub mod feed;
 pub mod markers;
+pub mod session;
 pub mod writer;
 
 pub use audio_tap::{AudioTap, DEFAULT_CAPACITY_SAMPLES};
+pub use feed::{feed_record_frame, FeedOutcome};
+pub use session::{encoder_available, set_force_no_encoder, RecordSession, SessionError};
 pub use writer::{
     write_recording, RecordingWriter, AUDIO_TIMESCALE, AUDIO_TRACK_ID, VIDEO_TIMESCALE,
     VIDEO_TRACK_ID,

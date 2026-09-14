@@ -98,10 +98,22 @@ pub struct EngineState {
     /// after the command lands, the same boundary discipline AC-17 imposes on a
     /// take — never a transition frame.
     pub overlays: Mutex<std::collections::BTreeMap<String, OverlayRuntime>>,
-    /// Engine recording state (SPEC §16.14). WU1 owns the skeleton only: no
-    /// encoder exists yet, so `record.start` never enters Recording. The
-    /// `Idle <-> Recording` transitions exist for WU2 to flip.
+    /// Engine recording state (SPEC §16.14). WU8 flips `Idle -> Recording` on
+    /// `record.start` once the [`RecordSession`](crate::record::RecordSession)
+    /// opens, and back on `record.stop` / `show.stop` quiescence after the
+    /// session finishes.
     pub record_state: Mutex<RecordState>,
+    /// The open recording, if any. `Some` exactly while `record_state` is
+    /// `Recording` via the directive path (tests may arm the pair directly,
+    /// the WU2 seam). `record.stop` takes + finishes it synchronously before
+    /// the ack; `show.stop` quiesces it the same way.
+    pub record_session: Mutex<Option<crate::record::RecordSession>>,
+    /// Accumulated record-feed cost in milliseconds (loop-updated, off the
+    /// render budget by construction; observable to tests, no wire/telemetry
+    /// change).
+    pub record_tap_ms: Mutex<f64>,
+    /// Record frames skipped over budget (loop-updated, observable to tests).
+    pub skipped_record_frames: AtomicU64,
     /// The loaded package's record target (`show.outputs.record.directory`,
     /// resolved against the package root). The channel telemetry pump reads
     /// this to measure `recordSpaceMib`; `None` when no package is loaded or
@@ -149,6 +161,9 @@ impl EngineState {
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
             overlays: Mutex::new(std::collections::BTreeMap::new()),
             record_state: Mutex::new(RecordState::Idle),
+            record_session: Mutex::new(None),
+            record_tap_ms: Mutex::new(0.0),
+            skipped_record_frames: AtomicU64::new(0),
             record_dir: Mutex::new(None),
             degradation_rung: AtomicU64::new(0),
         }
@@ -350,8 +365,8 @@ pub enum OverlayPhase {
 }
 
 /// Engine recording state (SPEC §16.14): `Idle → Recording → (stop) Idle`.
-/// WU1 never enters `Recording` (no encoder exists yet — that is WU2); the
-/// transitions exist so WU2 can flip them.
+/// WU8 enters `Recording` on `record.start` (encoder available + record target
+/// configured); `record.stop` and `show.stop` quiescence return it to `Idle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecordState {
     #[default]

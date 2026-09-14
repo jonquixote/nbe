@@ -5,8 +5,11 @@
 
 use nbe_engine::audio_driver;
 use nbe_engine::channel::{self, EngineConfig};
+use nbe_engine::encode::EncodeSession;
+use nbe_engine::record::{feed_record_frame, AudioTap};
 use nbe_engine::render::RenderLoop;
-use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
+use nbe_engine::state::{EngineState, RecordState, SharedEngineState, SharedOutgoing};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -50,10 +53,33 @@ async fn main() -> anyhow::Result<()> {
     // the operator always has a picture (the fallback slate).
     let mut render = RenderLoop::new(state.clone()).await?;
     let render_state = state.clone();
-    tokio::spawn(async move {
+    // The render/record loop below holds the hardware encoder across
+    // frames, and that handle is !Send (a raw VideoToolbox session pointer)
+    // — so the loop runs as a thread-local task on a LocalSet instead of
+    // `tokio::spawn` (whose `Send` bound forbids it). No new threads: the
+    // set is driven on this thread, and the render budget/deadline path is
+    // untouched by the choice of spawner.
+    let render_loops = tokio::task::LocalSet::new();
+    render_loops.spawn_local(async move {
         let frame_budget = Duration::from_secs_f64(1.0 / house_rate as f64);
         let mut next_boundary = Instant::now();
         let mut stopped_frame: u64 = 0;
+        // WU-tap record feed (additive only): the encoder, tap, and counters
+        // below never enter the render budget — `render_frame` keeps its own
+        // deadline check UNCHANGED, and the feed runs after it, accumulating
+        // into the engine-state `record_tap_ms` counter. Over budget the
+        // record frame is SKIPPED before the readback (record degrades, View
+        // never). The feed owns the ONE live encoder (opened at VIEW_W/H on
+        // the first fed frame); the session stays metadata-only until the
+        // feed captures the real SPS/PPS from the first keyframe.
+        //
+        // Audio note: the tap here drains whatever the record-start wiring
+        // attached via `AudioGraph::set_record_tap` (live-graph attach needs
+        // state/audio-driver/directive changes, a later unit); the video leg
+        // is live from this work unit.
+        let mut record_encoder: Option<EncodeSession> = None;
+        let mut record_tap: Option<std::sync::Arc<AudioTap>> = None;
+        let mut record_setup_failed = false;
         loop {
             let now = Instant::now();
             if next_boundary > now {
@@ -70,7 +96,65 @@ async fn main() -> anyhow::Result<()> {
                     (stopped_frame, None)
                 }
             };
+            let render_started = Instant::now();
             let _ = render.render_frame(frame, deadline);
+            let render_elapsed = render_started.elapsed();
+            // WU-tap: feed one record frame after the deadline check above.
+            // Budget honesty: the pre-check runs BEFORE the readback — an
+            // over-budget frame skips (and counts) with no readback await, no
+            // encode, no pushes.
+            let recording = *render_state.record_state.lock().unwrap() == RecordState::Recording;
+            if recording {
+                let over_budget = deadline.map(|b| render_elapsed >= b).unwrap_or(false);
+                if over_budget {
+                    render_state
+                        .skipped_record_frames
+                        .fetch_add(1, Ordering::SeqCst);
+                } else if !record_setup_failed {
+                    if record_tap.is_none() {
+                        record_tap = Some(std::sync::Arc::new(AudioTap::new()));
+                    }
+                    // Timed readback (the only await): its cost belongs to the
+                    // record counter, never the render budget — the feed folds
+                    // it into `outcome.feed_ms`.
+                    let readback_started = Instant::now();
+                    let rgba = render.readback_view().await;
+                    let readback_elapsed = readback_started.elapsed();
+                    if let Some(tap) = record_tap.clone() {
+                        if let Some(session) = render_state.record_session.lock().unwrap().as_mut()
+                        {
+                            let outcome = feed_record_frame(
+                                &rgba,
+                                &mut record_encoder,
+                                session,
+                                &tap,
+                                render_elapsed,
+                                deadline,
+                                readback_elapsed,
+                            );
+                            if outcome.setup_failed {
+                                record_setup_failed = true;
+                            }
+                            *render_state.record_tap_ms.lock().unwrap() += outcome.feed_ms;
+                            if outcome.skipped {
+                                render_state
+                                    .skipped_record_frames
+                                    .fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+                tracing::debug!(
+                    record_tap_ms = *render_state.record_tap_ms.lock().unwrap(),
+                    skipped_record_frames =
+                        render_state.skipped_record_frames.load(Ordering::SeqCst),
+                    "record feed tick"
+                );
+            } else {
+                record_encoder = None;
+                record_tap = None;
+                record_setup_failed = false;
+            }
             next_boundary += frame_budget;
             // If we fell far behind, resynchronize rather than spiral.
             let now = Instant::now();
@@ -80,6 +164,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    channel::run_forever(cfg, state, outgoing).await;
+    render_loops
+        .run_until(channel::run_forever(cfg, state, outgoing))
+        .await;
     Ok(())
 }
