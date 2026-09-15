@@ -100,7 +100,7 @@ fn unwritable_target_reports_e_disk_without_panic() {
             "variant must be RecordError::Disk, got: {err:?}"
         );
         assert!(err.to_string().contains("E_DISK"));
-    } // end privileged-runner guard: case 2 below runs only where bits bind
+    } // end privileged-runner guard: case 2 above runs only where bits bind
 
     // Telemetry degrades to 0.0 on an unwritable target — never panics.
     let v = nbe_engine::telemetry::record_space_mib_for(Some(&blocker));
