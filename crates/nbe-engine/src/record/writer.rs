@@ -64,6 +64,19 @@ const FRAGMENT_TICKS: u64 = VIDEO_TIMESCALE as u64;
 /// Pre-IDR buffer cap: ~20 s at 30 fps. A stream with no IDR in that span is
 /// broken input, not a slow start.
 const MAX_PRE_IDR_UNITS: usize = 600;
+/// Bound on video samples buffered between fragment windows (~6 s at 30 fps).
+/// Windows normally complete every second, so this only engages when emission
+/// stalls (e.g. audio has not caught up): excess sheds oldest-first and counts,
+/// mirroring [`super::AudioTap`]'s drop-oldest-counted policy. Shed content is
+/// lost but the timeline stays continuous (the next emit's `tfdt` base only
+/// counts emitted ticks), exactly like a shed record frame upstream.
+pub const MAX_BUFFERED_VIDEO_FRAMES: usize = 180;
+/// Bound on AAC packets buffered between windows (~6 s: 46 packets/s).
+/// Same drop-oldest-counted shed as video above.
+pub const MAX_BUFFERED_AUDIO_PACKETS: usize = 280;
+/// Backstop on buffered AAC payload bytes (packets vary in size; the packet
+/// cap is the primary bound).
+pub const MAX_BUFFERED_AUDIO_BYTES: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Box helpers
@@ -552,6 +565,10 @@ pub struct RecordingWriter {
     audio_packet_lens: Vec<usize>,
     video_ticks_emitted: u64,
     audio_packets_emitted: u64,
+    /// Buffered-but-unshed samples dropped under the window caps above
+    /// (drop-oldest, counted — telemetry, never errors).
+    dropped_video: u64,
+    dropped_audio_packets: u64,
     /// Priming packets still to drop at mux time (counts down from
     /// [`AAC_PRIMING_TRIM_PACKETS`]). Dropped packets never reach the
     /// fragment timeline, so the first retained packet starts at audio time
@@ -592,6 +609,8 @@ impl RecordingWriter {
             audio_packet_lens: Vec::new(),
             video_ticks_emitted: 0,
             audio_packets_emitted: 0,
+            dropped_video: 0,
+            dropped_audio_packets: 0,
             priming_to_skip: AAC_PRIMING_TRIM_PACKETS,
             seq: 1,
         })
@@ -599,6 +618,26 @@ impl RecordingWriter {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Buffered-but-unemitted video samples currently held between windows.
+    pub fn buffered_video_len(&self) -> usize {
+        self.video.len()
+    }
+
+    /// Buffered-but-unemitted AAC packets currently held between windows.
+    pub fn buffered_audio_packets(&self) -> usize {
+        self.audio_packet_lens.len()
+    }
+
+    /// Window-cap sheds so far: video samples dropped oldest-first.
+    pub fn dropped_video(&self) -> u64 {
+        self.dropped_video
+    }
+
+    /// Window-cap sheds so far: AAC packets dropped oldest-first.
+    pub fn dropped_audio_packets(&self) -> u64 {
+        self.dropped_audio_packets
     }
 
     /// Install the stream's real parameter sets (WU-pipe: captured by the
@@ -666,7 +705,9 @@ impl RecordingWriter {
             duration_ticks: None,
             keyframe: unit.is_keyframe,
         });
-        self.try_emit(false)
+        self.try_emit(false)?;
+        self.enforce_buffer_caps();
+        Ok(())
     }
 
     pub fn push_audio(&mut self, pcm_f32: &[f32]) -> Result<(), RecordError> {
@@ -683,7 +724,9 @@ impl RecordingWriter {
             .encode_interleaved_f32(pcm_f32)
             .map_err(|e| RecordError::Aac(e.to_string()))?;
         self.ingest_aac_frames(frames);
-        self.try_emit(false)
+        self.try_emit(false)?;
+        self.enforce_buffer_caps();
+        Ok(())
     }
 
     /// Store AAC packets after the mux-time priming trim: the first
@@ -698,6 +741,27 @@ impl RecordingWriter {
             }
             self.audio_packet_lens.push(f.data.len());
             self.audio_data.extend_from_slice(&f.data);
+        }
+    }
+
+    /// Shed buffered windows down to the caps (drop-oldest, counted). Runs
+    /// after every streaming push, so steady-state emission (which drains
+    /// below the caps) never sheds and only a stalled window does.
+    fn enforce_buffer_caps(&mut self) {
+        if self.video.len() > MAX_BUFFERED_VIDEO_FRAMES {
+            let excess = self.video.len() - MAX_BUFFERED_VIDEO_FRAMES;
+            self.video.drain(..excess);
+            self.dropped_video += excess as u64;
+        }
+        while self.audio_packet_lens.len() > MAX_BUFFERED_AUDIO_PACKETS
+            || self.audio_data.len() > MAX_BUFFERED_AUDIO_BYTES
+        {
+            let Some(len) = self.audio_packet_lens.first().copied() else {
+                break;
+            };
+            self.audio_packet_lens.remove(0);
+            self.audio_data.drain(..len.min(self.audio_data.len()));
+            self.dropped_audio_packets += 1;
         }
     }
 

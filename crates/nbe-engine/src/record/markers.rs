@@ -62,6 +62,15 @@ pub struct Marker {
     pub timecode: Option<String>,
 }
 
+/// Maximum markers retained per take. The store is process-wide and a take
+/// with unbounded chapters would grow it without limit; past the cap the
+/// oldest marker sheds (arrival order is preserved for the rest). The finish
+/// path snapshots via [`list`], so the always-sidecar serializes at most this
+/// many entries. 512 chapters is orders of magnitude past any real take's
+/// chapter list — the cap only engages on a runaway control plane, never in
+/// steady state.
+pub const MAX_MARKERS: usize = 512;
+
 /// Markers recorded during the current take. Process-wide because
 /// `EngineState` (untouchable in this work unit) has no marker field to hang
 /// them on; the directive path pushes here while Recording and the finish
@@ -69,9 +78,14 @@ pub struct Marker {
 /// [`clear`].
 static STORE: Mutex<Vec<Marker>> = Mutex::new(Vec::new());
 
-/// Record one marker in the process-wide store.
+/// Record one marker in the process-wide store, shedding the oldest past
+/// [`MAX_MARKERS`].
 pub fn add(marker: Marker) {
-    STORE.lock().unwrap().push(marker);
+    let mut guard = STORE.lock().unwrap();
+    if guard.len() >= MAX_MARKERS {
+        guard.remove(0);
+    }
+    guard.push(marker);
 }
 
 /// Snapshot the stored markers, in arrival order.

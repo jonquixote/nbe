@@ -40,10 +40,12 @@ use crate::record::{AudioTap, RecordError, RecordParams, RecordingWriter};
 /// throughput.
 pub const RECORD_CHANNEL_BOUND: usize = 2;
 
-/// Graceful output shutdown wait (SPEC §16.1 step 3: up to 2 seconds), shared
-/// by `record.stop` and the `show.stop` graceful path. Past it the take is
-/// force-abandoned: file kept as-is, warning logged, error surfaces.
-pub const RECORD_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Graceful output shutdown wait (SPEC §16.1 step 3 allows up to 2 seconds;
+/// this waits 1500 ms, leaving headroom for the ack pump + WS flush inside
+/// that window), shared by `record.stop` and the `show.stop` graceful path.
+/// Past it the take is force-abandoned: file kept as-is, warning logged, error
+/// surfaces.
+pub const RECORD_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Encoder bitrate for the thread-owned session (content path only).
 const RECORD_BITRATE: u32 = 8_000_000;
@@ -115,7 +117,9 @@ fn run_thread(args: ThreadArgs) {
 /// Bounded wait for the thread's terminal report. `Timeout` maps to the force
 /// path (file kept as-is, warning + error upstream); `Disconnected` means the
 /// thread is gone without reporting (panic or crash-shape exit after our
-/// senders dropped) — also an error, never a silent ack.
+/// senders dropped) — the take's outcome is likewise unknown, so it maps to
+/// the same [`SessionError::Timeout`] force path (file kept as-is), never to
+/// a different token. Both are errors, never a silent ack.
 pub fn await_done(
     rx: &Receiver<SessionResult>,
     timeout: Duration,
@@ -126,9 +130,9 @@ pub fn await_done(
             "record thread did not finish within {} ms; file kept as-is",
             timeout.as_millis()
         ))),
-        Err(RecvTimeoutError::Disconnected) => Err(SessionError::Record(RecordError::Input(
+        Err(RecvTimeoutError::Disconnected) => Err(SessionError::Timeout(
             "record thread gone without reporting; file kept as-is".into(),
-        ))),
+        )),
     }
 }
 
@@ -413,13 +417,19 @@ mod tests {
     }
 
     #[test]
-    fn await_done_maps_gone_thread_to_error_never_silence() {
+    fn await_done_maps_gone_thread_to_timeout_never_silence() {
         let (tx, rx) = std::sync::mpsc::channel::<SessionResult>();
         drop(tx);
+        // A dead thread reports nothing, so the outcome is unknown — the same
+        // force path as an expired wait (file kept as-is), not Input.
         let err = await_done(&rx, Duration::from_secs(5)).unwrap_err();
         assert!(
-            !matches!(err, SessionError::Timeout(_)),
-            "a gone thread reports immediately, never via timeout"
+            matches!(err, SessionError::Timeout(_)),
+            "a gone thread must surface as SessionError::Timeout, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("E_RECORD_TIMEOUT"),
+            "gone-thread error must carry the timeout token, got: {err}"
         );
         assert!(
             err.to_string().contains("kept as-is"),

@@ -35,6 +35,11 @@ pub enum DirectiveError {
     /// predate the threaded take). File kept as-is, take force-abandoned.
     #[error("E_RECORD_TIMEOUT: {0}")]
     Timeout(String),
+    /// The requested geometry exceeds what the record path can sustain
+    /// (`E_UNSUPPORTED`, engine-local — the spec has no resolution ceiling for
+    /// recording). See [`check_record_resolution`].
+    #[error("E_UNSUPPORTED: {0}")]
+    Unsupported(String),
     #[error("E_DISK: {0}")]
     Disk(String),
 }
@@ -328,7 +333,8 @@ impl DirectiveHandler {
     /// WU-pipe quiescence (§16.1 table — `quiesceOutputs` defaults true,
     /// `force` defaults false):
     /// * `(true, false)` with a live take: graceful internal `record.stop`
-    ///   (bounded 2 s wait). Finish errors propagate — the show still stops
+    ///   (bounded 1.5 s wait — headroom inside the §16.1 2 s window for the
+    ///   ack pump + WS flush). Finish errors propagate — the show still stops
     ///   but the ack is withheld, never a silent ack.
     /// * `(_, true)`: immediate stop — the take is ABANDONED (file kept
     ///   as-is, no finish, no sidecar), a warning is logged, the show stops.
@@ -393,7 +399,7 @@ impl DirectiveHandler {
                     }
                     if let Err(e) = result {
                         // The show still stops, but the ack is withheld: the
-                        // 2 s window saw no graceful shutdown.
+                        // 1.5 s window saw no graceful shutdown.
                         self.state.clock.lock().unwrap().stop();
                         self.state.sessions.release_all();
                         return Err(e);
@@ -531,8 +537,13 @@ impl DirectiveHandler {
     /// recording is already active (the refused second start preserves the
     /// live pipeline but still resets chapters for the next take);
     /// `Invalid` when no record directory is configured or the path cannot be
-    /// reserved (`E_DISK` inside); `E_NO_HARDWARE_ENCODER` when the probe
-    /// fails (forced or genuine).
+    /// reserved (`E_DISK` inside); `E_DISK` early when the target is
+    /// unwritable/full (admission probe, before the take owns anything);
+    /// `E_UNSUPPORTED` when the record geometry exceeds 1920x1080 (see
+    /// [`check_record_resolution`]); `E_NO_HARDWARE_ENCODER` when the probe
+    /// fails (forced or genuine). A successful start reserves the path, spawns
+    /// the thread, zeroes `record_tap_ms` + `skipped_record_frames`, and flips
+    /// to Recording.
     fn on_record_start(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         if !self.state.is_running() {
             return Err(DirectiveError::ForbiddenState(
@@ -558,6 +569,12 @@ impl DirectiveHandler {
                     .into(),
             ));
         };
+        // Resolution ceiling: the loop records what is on air (VIEW_W/H).
+        check_record_resolution(VIEW_W, VIEW_H)?;
+        // Admission: refuse early on an unwritable/full target (E_DISK here,
+        // not mid-take). The session open would refuse a missing path on its
+        // own, but only this probe measures free space before the take owns it.
+        crate::record::available_space_mib(&dir).map_err(finish_err)?;
         // SPEC §16.14 precondition, wired (no dead variant): probe, no stream.
         if !crate::record::session::encoder_available() {
             return Err(DirectiveError::NoHardwareEncoder(
@@ -589,6 +606,11 @@ impl DirectiveHandler {
             self.state.skipped_record_frames.clone(),
         )
         .map_err(finish_err)?;
+        // Fresh counters per take: the loop accumulates into these for the
+        // take's lifetime, so a new take starts from zero (set before the
+        // state flip, while the loop still sees Idle).
+        *self.state.record_tap_ms.lock().unwrap() = 0.0;
+        self.state.skipped_record_frames.store(0, Ordering::SeqCst);
         *self.state.record_tap.lock().unwrap() = Some(tap);
         *self.state.record_session.lock().unwrap() = Some(session);
         *self.state.record_state.lock().unwrap() = RecordState::Recording;
@@ -599,11 +621,32 @@ impl DirectiveHandler {
     /// record thread — the file + sidecar are complete before `apply()` emits
     /// the ack — then returns the state machine to Idle. Requires an active
     /// recording (`E_FORBIDDEN_STATE` while Idle). A session-less `Recording`
-    /// (the test seam) flips with nothing to finish. A failed finish still
-    /// ends the recording (no pipeline remains to continue with) but withholds
-    /// the ack: `apply()` only acks on `Ok`. A timed-out wait takes the force
-    /// path (file kept as-is, warning logged) and likewise withholds the ack.
+    /// (the test seam) flips with nothing to finish and preserves the marker
+    /// store: only the session owner (the thread's finish/abandon paths and
+    /// the successful-stop path below) clears markers, so a second stop that
+    /// finds no session cannot empty the take's chapters. A failed finish
+    /// still ends the recording (no pipeline remains to continue with) but
+    /// withholds the ack: `apply()` only acks on `Ok`. A timed-out wait takes
+    /// the force path (file kept as-is, warning logged) and likewise withholds
+    /// the ack.
+    ///
+    /// Concurrency note: the state check and the session take hold the session
+    /// guard continuously (one acquisition), so two concurrent stops cannot
+    /// both take the session — the loser finds `None` and clears nothing. Two
+    /// separate mutexes (`record_state`, `record_session`) cannot be acquired
+    /// atomically, so the residual is documented, not eliminated: a stop that
+    /// observes `Recording` while a start is still publishing may take `None`
+    /// and flip to Idle just as the start publishes its session, orphaning it
+    /// (its thread still exits via the frames-gone path; the file stays
+    /// as-is). In practice the loop never issues concurrent record stops (one
+    /// directive stream) and starts/stops are sequential. What IS
+    /// deterministic — a session-less stop preserves markers — is pinned by
+    /// test; the rest is documented here.
     fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // Hold the session guard across the state check + take: one
+        // acquisition, so a concurrent stop cannot interleave between them.
+        // The guard is dropped before the blocking wait below.
+        let mut session_guard = self.state.record_session.lock().unwrap();
         if *self.state.record_state.lock().unwrap() != RecordState::Recording {
             return Err(DirectiveError::ForbiddenState(
                 "record.stop requires an active recording".into(),
@@ -613,22 +656,28 @@ impl DirectiveHandler {
         // drain, and no new live mix enters the take after this point.
         *self.state.record_tap.lock().unwrap() = None;
         // Taken, not borrowed: the wait runs without holding any state lock.
-        let mut session = self.state.record_session.lock().unwrap().take();
+        let mut session = session_guard.take();
+        drop(session_guard);
+        // Ownership decides clearing: only the session owner clears markers.
+        let owned = session.is_some();
         let result = match session.as_mut() {
             Some(s) => s
                 .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
                 .map(|_| ())
                 .map_err(session_err),
-            None => {
-                crate::record::markers::clear();
-                Ok(())
-            }
+            // No session to own the take: flip to Idle, clear nothing. Only
+            // the session owner clears markers (thread finish/abandon paths,
+            // successful stop below); the next start/load clears anyway.
+            None => Ok(()),
         };
         *self.state.record_state.lock().unwrap() = RecordState::Idle;
         match &result {
-            Ok(()) => {
+            Ok(()) if owned => {
                 crate::record::markers::clear();
                 info!("record.stop: take finished");
+            }
+            Ok(()) => {
+                info!("record.stop: session-less stop; markers preserved");
             }
             Err(DirectiveError::Timeout(_)) => {
                 // The detached take's late finish owns its marker snapshot —
@@ -969,14 +1018,44 @@ fn record_show_name(state: &SharedEngineState) -> String {
     }
 }
 
-/// Filename timestamp when the directive carries none: unique per second, and
-/// sanitizer-safe (the writer keeps `[A-Za-z0-9._-]`).
+/// Ceiling for the record path: 1920x1080. Refusing above it is deliberate —
+/// the loop records what is on air via a View readback, and readback-alone
+/// costs ≈48 ms at 4K, which exceeds any 30/60 fps frame budget before a
+/// single sample is encoded. Recording above the ceiling would therefore shed
+/// every frame by construction (the budget pre-check skips) while pretending
+/// to record. Refused with engine-local `E_UNSUPPORTED`, loudly, before any
+/// pipeline is reserved. (Step-0b answer-changer #3 made this law.)
+pub const MAX_RECORD_WIDTH: u32 = 1920;
+/// See [`MAX_RECORD_WIDTH`].
+pub const MAX_RECORD_HEIGHT: u32 = 1080;
+
+/// Enforce the record resolution ceiling ([`MAX_RECORD_WIDTH`]x[`MAX_RECORD_HEIGHT`]).
+/// The View is exactly at-cap today, so this is a backstop against a future
+/// geometry bump silently turning every take into shed frames — tested
+/// directly, since the live path cannot currently exceed the ceiling.
+pub fn check_record_resolution(width: u32, height: u32) -> Result<(), DirectiveError> {
+    if width > MAX_RECORD_WIDTH || height > MAX_RECORD_HEIGHT {
+        return Err(DirectiveError::Unsupported(format!(
+            "record geometry {width}x{height} exceeds the {MAX_RECORD_WIDTH}x{MAX_RECORD_HEIGHT} ceiling; \
+             4K readback-alone (~48ms) exceeds any 30/60fps budget"
+        )));
+    }
+    Ok(())
+}
+
+/// Filename timestamp when the directive carries none: millisecond granularity
+/// plus a per-process counter suffix, sanitizer-safe (the writer keeps
+/// `[A-Za-z0-9._-]`). Second granularity truncated stop→restart takes in the
+/// same second onto one filename (`File::create` truncates); this guarantees
+/// distinct files for rapid takes.
 fn default_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("session-{secs}")
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("session-{millis}-{n}")
 }
 
 /// Writer/file failures underneath record stop/start keep their stable tokens

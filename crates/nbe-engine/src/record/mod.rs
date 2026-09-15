@@ -121,12 +121,15 @@ pub struct RecordParams {
 /// the same refusal the recording itself would hit.
 ///
 /// Cost control: successes are cached per directory for [`SPACE_CACHE_TTL`],
-/// so the 1 Hz telemetry tick does not fork `df` every second; the probe
-/// still runs on every call (one file create+remove, no fork). The `df`
-/// `Available` column is located by header index, not by a fixed ordinal, so
-/// macOS (`Available`) and GNU (`Available` or `Avail`) headers both parse.
-/// Telemetry degrades any refusal to `0.0` via
-/// [`crate::telemetry::record_space_mib_for`].
+/// so the 1 Hz telemetry tick does not fork `df` every second; failures of
+/// the `df` fork itself are cached for [`SPACE_CACHE_NEG_TTL`] (a sick disk
+/// must not cost a fork per tick either); the probe still runs on every call
+/// (one file create+remove, no fork). The `df` `Available` column is located
+/// by header index, not by a fixed ordinal, so macOS (`Available`) and GNU
+/// (`Available` or `Avail`) headers both parse. Both caches are bounded to
+/// [`SPACE_CACHE_MAX_ENTRIES`] entries (oldest evicted), so a control plane
+/// cycling directories cannot grow them without limit. Telemetry degrades any
+/// refusal to `0.0` via [`crate::telemetry::record_space_mib_for`].
 pub fn available_space_mib(dir: &Path) -> Result<f64, RecordError> {
     let meta = std::fs::metadata(dir)
         .map_err(|e| RecordError::Disk(format!("record target unreadable: {e}")))?;
@@ -140,9 +143,21 @@ pub fn available_space_mib(dir: &Path) -> Result<f64, RecordError> {
     if let Some(cached) = space_cache_get(dir) {
         return Ok(cached);
     }
-    let mib = df_available_mib(dir)?;
-    space_cache_put(dir, mib);
-    Ok(mib)
+    if let Some(err) = space_neg_cache_get(dir) {
+        return Err(RecordError::Disk(err));
+    }
+    match df_available_mib(dir) {
+        Ok(mib) => {
+            space_cache_put(dir, mib);
+            Ok(mib)
+        }
+        Err(e) => {
+            // Cache the fork failure itself (backoff): the message is the
+            // refusal a tick would otherwise re-fork to rediscover.
+            space_neg_cache_put(dir, e.to_string());
+            Err(e)
+        }
+    }
 }
 
 /// TTL for the [`available_space_mib`] success cache: long enough that the
@@ -150,9 +165,36 @@ pub fn available_space_mib(dir: &Path) -> Result<f64, RecordError> {
 /// that a filling disk shows up while it still matters.
 const SPACE_CACHE_TTL: Duration = Duration::from_secs(5);
 
+/// TTL for the `df`-failure backoff: a sick disk reports its cached refusal
+/// instead of paying a fork per tick. Same order as the success TTL so a
+/// recovered disk shows up just as fast.
+const SPACE_CACHE_NEG_TTL: Duration = Duration::from_secs(5);
+
+/// Bound on each space-cache map: oldest entry evicted past it.
+const SPACE_CACHE_MAX_ENTRIES: usize = 64;
+
 fn space_cache() -> &'static Mutex<HashMap<PathBuf, (Instant, f64)>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, f64)>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn space_neg_cache() -> &'static Mutex<HashMap<PathBuf, (Instant, String)>> {
+    static NEG_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, String)>>> = OnceLock::new();
+    NEG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Evict the oldest entry when a cache map would grow past its bound.
+fn evict_oldest<K: Clone + Eq + std::hash::Hash, V>(map: &mut HashMap<K, (Instant, V)>) {
+    if map.len() < SPACE_CACHE_MAX_ENTRIES {
+        return;
+    }
+    let oldest = map
+        .iter()
+        .min_by_key(|(_, (at, _))| *at)
+        .map(|(k, _)| k.clone());
+    if let Some(k) = oldest {
+        map.remove(&k);
+    }
 }
 
 fn space_cache_get(dir: &Path) -> Option<f64> {
@@ -165,7 +207,22 @@ fn space_cache_get(dir: &Path) -> Option<f64> {
 
 fn space_cache_put(dir: &Path, mib: f64) {
     let mut guard = space_cache().lock().unwrap_or_else(|e| e.into_inner());
+    evict_oldest(&mut guard);
     guard.insert(dir.to_path_buf(), (Instant::now(), mib));
+}
+
+fn space_neg_cache_get(dir: &Path) -> Option<String> {
+    let guard = space_neg_cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get(dir)
+        .filter(|(at, _)| at.elapsed() < SPACE_CACHE_NEG_TTL)
+        .map(|(_, msg)| msg.clone())
+}
+
+fn space_neg_cache_put(dir: &Path, msg: String) {
+    let mut guard = space_neg_cache().lock().unwrap_or_else(|e| e.into_inner());
+    evict_oldest(&mut guard);
+    guard.insert(dir.to_path_buf(), (Instant::now(), msg));
 }
 
 /// Create-and-remove a zero-byte probe file: the only honest writability
@@ -301,5 +358,77 @@ mod tests {
             RecordError::Input("x".into()).kind_token(),
             "E_RECORD_INPUT"
         );
+    }
+
+    #[test]
+    fn space_caches_evict_oldest_past_the_bound() {
+        // Direct cache-behavior pin: filling past the bound keeps the maps at
+        // the bound and drops the oldest entry (no unbounded growth when the
+        // control plane cycles directories).
+        {
+            let mut guard = space_cache().lock().unwrap_or_else(|e| e.into_inner());
+            guard.clear();
+            for n in 0..(SPACE_CACHE_MAX_ENTRIES + 10) {
+                evict_oldest(&mut guard);
+                guard.insert(
+                    PathBuf::from(format!("/tmp/nbe-cache-{n}")),
+                    (Instant::now(), 1.0),
+                );
+            }
+            assert_eq!(guard.len(), SPACE_CACHE_MAX_ENTRIES);
+            assert!(
+                guard.get(&PathBuf::from("/tmp/nbe-cache-0")).is_none(),
+                "oldest entry must evict first"
+            );
+            guard.clear();
+        }
+        {
+            let mut guard = space_neg_cache().lock().unwrap_or_else(|e| e.into_inner());
+            guard.clear();
+            for n in 0..(SPACE_CACHE_MAX_ENTRIES + 10) {
+                evict_oldest(&mut guard);
+                guard.insert(
+                    PathBuf::from(format!("/tmp/nbe-neg-{n}")),
+                    (Instant::now(), "sick".into()),
+                );
+            }
+            assert_eq!(guard.len(), SPACE_CACHE_MAX_ENTRIES);
+            assert!(
+                guard.get(&PathBuf::from("/tmp/nbe-neg-0")).is_none(),
+                "oldest negative entry must evict first"
+            );
+            guard.clear();
+        }
+    }
+
+    #[test]
+    fn negative_cache_backs_off_within_ttl_and_expires_after() {
+        // A cached df failure serves the refusal without a new fork while
+        // fresh, and stops serving once stale (recovery is observable).
+        let dir = PathBuf::from("/tmp/nbe-neg-backoff-probe");
+        space_neg_cache_put(&dir, "sick disk".into());
+        assert_eq!(
+            space_neg_cache_get(&dir).as_deref(),
+            Some("sick disk"),
+            "fresh failure must back off"
+        );
+        {
+            let mut guard = space_neg_cache().lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(
+                dir.clone(),
+                (
+                    Instant::now() - SPACE_CACHE_NEG_TTL - Duration::from_secs(1),
+                    "sick disk".into(),
+                ),
+            );
+        }
+        assert!(
+            space_neg_cache_get(&dir).is_none(),
+            "stale failure must expire so a recovered disk is re-probed"
+        );
+        space_neg_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
