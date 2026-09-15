@@ -30,6 +30,8 @@ pub enum DirectiveError {
     ForbiddenState(String),
     #[error("E_NO_HARDWARE_ENCODER: {0}")]
     NoHardwareEncoder(String),
+    #[error("E_DISK: {0}")]
+    Disk(String),
 }
 
 /// Tracks the currently playing timed item so a superseding take cancels its
@@ -835,11 +837,12 @@ fn default_timestamp() -> String {
 }
 
 /// Writer/file failures underneath record stop/start keep their stable tokens
-/// (`E_DISK`, `E_AAC_UNAVAILABLE`, `E_RECORD_INPUT`) inside the message; disk
-/// refusal additionally surfaces as the `Io` variant.
+/// (`E_DISK`, `E_AAC_UNAVAILABLE`, `E_RECORD_INPUT`) — including `E_DISK`,
+/// which has its own variant so the token survives instead of dissolving
+/// into a bare io error.
 fn finish_err(e: crate::record::RecordError) -> DirectiveError {
     match e {
-        crate::record::RecordError::Disk(msg) => DirectiveError::Io(std::io::Error::other(msg)),
+        crate::record::RecordError::Disk(msg) => DirectiveError::Disk(msg),
         other => DirectiveError::Invalid(other.to_string()),
     }
 }

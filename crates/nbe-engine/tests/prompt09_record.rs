@@ -177,3 +177,41 @@ async fn record_stop_ends_an_active_recording() {
         "stop must return the state machine to Idle"
     );
 }
+
+#[tokio::test]
+async fn record_start_into_unwritable_target_reports_e_disk() {
+    // The E_DISK token must survive from RecordError::Disk through the
+    // directive boundary (it once dissolved into a bare io error here).
+    let (state, handler) = harness();
+    handler
+        .apply(&directive(
+            "show.start",
+            1,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    let blocker = std::env::temp_dir().join("p09-edisk-blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    *state.record_dir.lock().unwrap() = Some(blocker.clone());
+    let err = handler
+        .apply(&directive(
+            "record.start",
+            2,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .expect_err("record into a file path must fail");
+    std::fs::remove_file(&blocker).ok();
+    assert!(
+        err.to_string().contains("E_DISK"),
+        "expected E_DISK token, got: {err}"
+    );
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        RecordState::Idle,
+        "refused start must leave the state machine Idle"
+    );
+}
