@@ -1,11 +1,13 @@
 //! Prompt 09 WU1 (SPEC §16.14): engine `record.start` / `record.stop`
 //! precondition validation + `RecordState` skeleton.
 //!
-//! WU1 scope: no encoder exists yet (that is WU2), so EVERY `record.start`
-//! is refused — `E_FORBIDDEN_STATE` when the show is not RUNNING,
-//! `E_NO_HARDWARE_ENCODER` when it is. `record.stop` requires an active
-//! recording and is refused with `E_FORBIDDEN_STATE` while Idle. The
-//! `Idle <-> Recording` transitions exist so WU2 can flip them.
+//! Design as built (not as first sketched): `record.start` never touches the
+//! encoder — it validates preconditions, reserves the output path, and flips
+//! to Recording. Encoder absence degrades at feed/finish time (skipped frames,
+//! loud finish), it does not refuse the start. So this file pins the refusal
+//! paths that remain — `E_FORBIDDEN_STATE` when the show is not RUNNING —
+//! plus the start-opens/stop-empty-loud contract. `record.stop` requires an
+//! active recording and is refused with `E_FORBIDDEN_STATE` while Idle.
 
 use std::sync::Arc;
 
@@ -41,11 +43,6 @@ fn is_forbidden(err: &DirectiveError) -> bool {
         && err.to_string().contains("E_FORBIDDEN_STATE")
 }
 
-fn is_no_encoder(err: &DirectiveError) -> bool {
-    matches!(err, DirectiveError::NoHardwareEncoder(_))
-        && err.to_string().contains("E_NO_HARDWARE_ENCODER")
-}
-
 #[test]
 fn record_state_defaults_to_idle() {
     assert_eq!(
@@ -78,7 +75,7 @@ async fn record_start_without_running_show_is_forbidden_and_state_unchanged() {
 }
 
 #[tokio::test]
-async fn record_start_on_running_show_reports_no_encoder_and_stays_idle() {
+async fn record_start_on_running_show_opens_and_empty_stop_is_loud() {
     let (state, handler) = harness();
     handler
         .apply(&directive(
@@ -91,7 +88,10 @@ async fn record_start_on_running_show_reports_no_encoder_and_stays_idle() {
         .unwrap();
     assert!(state.is_running(), "show.start must run the clock");
 
-    let err = handler
+    // Start opens without touching the encoder: dir configured, preconditions
+    // met → Ok + Recording + reserved session (path exists as reservation).
+    *state.record_dir.lock().unwrap() = Some(std::env::temp_dir());
+    handler
         .apply(&directive(
             "record.start",
             2,
@@ -99,16 +99,36 @@ async fn record_start_on_running_show_reports_no_encoder_and_stays_idle() {
             serde_json::json!({}),
         ))
         .await
-        .expect_err("WU1 has no encoder: every record.start must fail");
-
+        .unwrap_or_else(|e| panic!("start with dir set must open, got: {e}"));
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        RecordState::Recording,
+        "open start must flip to Recording"
+    );
     assert!(
-        is_no_encoder(&err),
-        "expected E_NO_HARDWARE_ENCODER, got: {err}"
+        state.record_session.lock().unwrap().is_some(),
+        "open start must reserve a session"
+    );
+
+    // Stop with no fed frames: loud E_RECORD_INPUT (no video units), state
+    // back to Idle, ack withheld (apply returns Err).
+    let err = handler
+        .apply(&directive(
+            "record.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .expect_err("empty session finish must be loud");
+    assert!(
+        err.to_string().contains("E_RECORD_INPUT"),
+        "expected E_RECORD_INPUT, got: {err}"
     );
     assert_eq!(
         *state.record_state.lock().unwrap(),
         RecordState::Idle,
-        "refused start must leave the state machine Idle"
+        "failed finish still ends the recording"
     );
 }
 
