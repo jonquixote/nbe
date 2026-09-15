@@ -128,6 +128,25 @@ jobs:
             echo "expected at least 3 bindings tests to run, got $ran"; exit 1
           fi
           echo "bindings tests that ran: $ran"
+      - name: the 09 record suites actually ran
+        # Prompt 09's recording suites (arms, encoder, writer, markers,
+        # residency, telemetry, feed, thread, session). Floor per suite, not
+        # a count, same shape as the prompt04/07_overlay/07b_graphics/
+        # bindings gates: a silently skipped suite fails the job, so the
+        # recording contract cannot go unexercised while the gate stays green.
+        run: |
+          for t in "prompt09_record:6" "prompt09_record_file:8" "prompt09_session:12" "prompt09_markers:8" "prompt09_telemetry:4" "prompt09_thread:3" "prompt09_feed:5" "prompt09_encode:2" "prompt09_residency:3"; do
+            target="${t%%:*}"; floor="${t##*:}"
+            out=$(cargo test -p nbe-engine --test "$target" 2>&1)
+            echo "$out"
+            line=$(echo "$out" | grep "test result: ok")
+            ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+            case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+            if [ "$ran" -lt "$floor" ]; then
+              echo "expected at least $floor $target tests to run, got $ran"; exit 1
+            fi
+            echo "$target tests that ran: $ran"
+          done
       - name: overlay_show fixture passes (four overlay kinds)
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
@@ -410,6 +429,11 @@ jobs:
           "$bin" --version
       - run: npm ci
         working-directory: packages/control-plane
+      # ffprobe verifies the rehearsal's record step (bytes that parse, not a
+      # returned ok). Pinned by PATH lookup in the test with fallbacks for
+      # both Homebrew prefixes; installed here so the CI branch asserts
+      # structure instead of skipping.
+      - run: brew install ffmpeg
       - name: play the show
         working-directory: packages/control-plane
         run: |
