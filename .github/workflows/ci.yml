@@ -135,7 +135,7 @@ jobs:
         # bindings gates: a silently skipped suite fails the job, so the
         # recording contract cannot go unexercised while the gate stays green.
         run: |
-          for t in "prompt09_record:6" "prompt09_record_file:8" "prompt09_session:12" "prompt09_markers:8" "prompt09_telemetry:4" "prompt09_thread:3" "prompt09_feed:5" "prompt09_encode:2" "prompt09_residency:3"; do
+          for t in "prompt09_record:6" "prompt09_record_file:8" "prompt09_session:12" "prompt09_markers:8" "prompt09_telemetry:4" "prompt09_thread:3" "prompt09_feed:5" "prompt09_encode:2" "prompt09_residency:3" "prompt09_review:9"; do
             target="${t%%:*}"; floor="${t##*:}"
             out=$(cargo test -p nbe-engine --test "$target" 2>&1)
             echo "$out"
