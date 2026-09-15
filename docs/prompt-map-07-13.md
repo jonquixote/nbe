@@ -520,6 +520,12 @@ Full table in `docs/09-measurements.md` (complete pastes, 300 frames/phase, 1080
 
 **Spec-correction candidate (visible, not quiet):** landing path (A) while §0.1 assumption 24 forbids CPU readback needs a scoped correction — a recording-first-cut allowance or a v0.5 rewording — recorded here rather than violated silently. Telemetry caveat on record: the tap sits outside `render_frame`'s deadline today, so `dropped_frames_total` is blind to it until 09 accounts the tap inside the deadline or separately.
 
+### Disk pressure episode (recorded 2026-09-14, P9 parked mid-flight)
+
+Arc: 1.1 Gi → 5.8 Gi → ~200 MB free with `target/` at 32 GB on the normative machine, discovered while 09's Fix-A agent was mid-flight. Cause decomposition: incremental compilation cache churning under the commit-mutate-restore falsification discipline (each mutation rebuilds; nothing ever prunes). `cargo clean` removed 23.4 GiB across 152,682 files; free went 593 Mi → 19 Gi.
+
+Durable fix (one commit, at a boundary — no battery straddled it): workspace `[profile.dev]` gains `incremental = false` + `debug = "line-tables-only"` (function names stay in backtraces; full `debug = 0` held as escalation). Full rebuild after: 4m06s. Re-measured `MS_PER_FRAME_DEBUG`: 6 runs, 3.51–6.09 s → worst 6.77 ms/frame → constant 25 → 10, derivation comment updated (the old 13.5 s cold figure dated from the memory-pressured tree; codegen unchanged). Governance: `./scripts/clean-stale.sh` (cargo-sweep -t 14 or incremental fallback) as weekly habit in README; standards §4 sets the 40 GB target/ ceiling and the prune-after-battery duty. 09 resumes at Fix-A review with headroom for its media and rehearsal artifacts.
+
 ## 10 — Streaming
 
 Inherits the guest-link JWT / `jti` revocation work (§10.7 #1) assigned by `[RI-5]`, and the TURN credential vending shape (§5.1 #11, §9.6.2) whose response has a schema but no derivation rule. WHEP preview (AC-20) is explicitly **post-v1** and not 10's scope — it waits for a WebRTC stack to exist. The mix-minus guarantee 06 built structurally (§8.6, `render_guest_return` has no path reading a guest's own bus) is 10's to preserve when real guests replace test tones.

@@ -35,3 +35,13 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Disk governance on the normative machine (2026-09-14): incremental caching
+# churns under this project's commit-mutate-restore falsification discipline
+# (target/ hit 32 GB with ~600 MB free). incremental=false drops the
+# step-to-step cache; debug="line-tables-only" keeps function names in
+# backtraces while dropping most symbol mass. Full debug=0 stays available
+# as a later escalation if this isn't enough.
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
