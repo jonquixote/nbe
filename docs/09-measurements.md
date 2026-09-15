@@ -187,3 +187,47 @@ while the loop is late.
 
 No encoder, writer, or zero-copy code was implemented. No `src/` changes;
 scratch harness deleted; nothing committed.
+
+## Appendix A — dress-content composite, release profile (2026-09-15, fork condition #1)
+
+Scratch harness `crates/nbe-engine/tests/scratch_p9_dress_measure.rs`
+(deleted after; pattern from `prompt07_overlay.rs:450 render_engine()`):
+dress_show loaded, show started, A1 (real video + AAC rings) taken on air at
+1920x1080, `cargo test --release`, 30 warmup frames excluded, 300 measured.
+Complete output:
+
+```
+dress render_frame ms: n=300 mean=0.217 min=0.164 p50=0.205 p95=0.318 max=0.449
+dress readback_view ms: n=300 mean=12.893 min=8.206 p50=13.606 p95=19.023 max=23.705
+dress render+readback ms: n=300 mean=13.110 min=8.382 p50=13.819 p95=19.221 max=23.907
+test result: ok. 1 passed
+```
+
+dress_show declares no overlays, so no ticker ran here; the ticker path needs
+no per-frame layout (glyphs rasterize once, scroll is a texture offset —
+measured under 07b), and readback cost is resolution-bound, hence
+content-independent. Composite with real rings costs 0.2 ms in release
+against readback's ~13 ms: content moves the total by under 2 ms.
+
+## Appendix B — record-span pressure on the normative machine (fork condition #2)
+
+Step 11 now snapshots the wire-visible counters into `timings.json`
+(`recordSpan`) and asserts no View-drop delta across the span where budgets
+mean something (skipped on CI). `record_tap_ms` / `skipped_record_frames`
+live in `EngineState` only — NOT on the §10.1 tick — so record-path pressure
+is invisible to operators today (recorded finding; v0.5 candidate).
+
+Three consecutive rehearsal runs, 2026-09-15, normative machine:
+
+```
+run 1: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0}
+run 2: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0}
+run 3: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0}
+```
+
+## Fork status, stated
+
+CONFIRMED as measured. Release composite+record p95 19.2 ms / max 23.9 ms
+against the ~28 ms criterion with zero View drops across three recorded
+takes: the readback first cut stands on its own numbers, and zero-copy stays
+deferred with the four trip-wires from the decision table above still armed.

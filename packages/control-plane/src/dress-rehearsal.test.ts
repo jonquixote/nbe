@@ -285,7 +285,7 @@ after(async () => {
     writeFileSync(join(dir, "show-states.json"), JSON.stringify(showStates, null, 2));
     writeFileSync(
       join(dir, "timings.json"),
-      JSON.stringify({ timings, clockMovedAtMs, clipAudibleAtMs }, null, 2),
+      JSON.stringify({ timings, clockMovedAtMs, clipAudibleAtMs, recordSpan }, null, 2),
     );
   } catch {
     // Artifacts are diagnostics, never a reason to fail the gate.
@@ -610,6 +610,8 @@ let recordFile: string | null = null;
 /** Wall clock at `record.start` applied (content begins) and at `marker.add`. */
 let recordWallStartMs = 0;
 let markerWallOffsetSecs = 0;
+/** Record-path pressure across the step-11 span (fork condition #2). */
+let recordSpan: Record<string, unknown> | null = null;
 
 /**
  * Resolve ffprobe via PATH lookup first, then the two Homebrew prefixes.
@@ -751,6 +753,16 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     return;
   }
   recordWallStartMs = Date.now();
+  // Record-path pressure snapshot (fork condition #2): the wire-visible
+  // counters at span start. record_tap_ms / skipped_record_frames live in
+  // EngineState only — NOT on the §10.1 tick — so operators cannot see
+  // record-path pressure today (recorded finding, v0.5 candidate); the tick
+  // carries drops + underruns, which is what lands in timings.json.
+  const spanStart = {
+    droppedFramesTotal: droppedNow(),
+    audioUnderrunsTotal:
+      ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
+  };
 
   await sleep((RECORD_SECS * 1000) / 2);
   await ok("marker.add", { name: "midtake", timecode: "00:00:02:00" });
@@ -769,6 +781,22 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
 
   const file = soleRecording(recordDir);
   recordFile = file;
+  // Span end: no View drop may occur while recording on the normative
+  // machine (CI-gated: the 3-core runner drops by design, so this asserts
+  // only where frame budgets mean something).
+  const spanEnd = {
+    droppedFramesTotal: droppedNow(),
+    audioUnderrunsTotal:
+      ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
+  };
+  recordSpan = { ...spanStart, endDroppedFramesTotal: spanEnd.droppedFramesTotal, endAudioUnderrunsTotal: spanEnd.audioUnderrunsTotal };
+  if (process.env["CI"] === undefined || process.env["CI"] === "") {
+    assert.equal(
+      spanEnd.droppedFramesTotal,
+      spanStart.droppedFramesTotal,
+      `no View drops while recording on the normative machine: ${spanStart.droppedFramesTotal} -> ${spanEnd.droppedFramesTotal}`,
+    );
+  }
   const size = statSync(file).size;
   // MEASURED 2026-09-15 on the Intel local machine: 39-41 KB for the 4 s
   // take. Video is sparse by design there (the feed.rs ladder sheds record
