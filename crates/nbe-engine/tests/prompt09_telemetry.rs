@@ -85,13 +85,22 @@ fn unwritable_target_reports_e_disk_without_panic() {
     }
     std::fs::set_permissions(ro.path(), perms).unwrap();
 
-    let err = nbe_engine::record::available_space_mib(ro.path())
-        .expect_err("read-only dir must refuse with E_DISK");
-    assert!(
-        matches!(err, nbe_engine::record::RecordError::Disk(_)),
-        "variant must be RecordError::Disk, got: {err:?}"
-    );
-    assert!(err.to_string().contains("E_DISK"));
+    // Self-calibrating privilege guard: a privileged runner (root/CI-as-root)
+    // writes through read-only bits, so the refusal below cannot fire there.
+    // Detect it directly instead of sniffing uids: if a probe write succeeds,
+    // this case is vacuous on this machine — skip it loudly, keep case 1.
+    if std::fs::write(ro.path().join(".privilege-probe"), b"x").is_ok() {
+        std::fs::remove_file(ro.path().join(".privilege-probe")).ok();
+        eprintln!("SKIP read-only-dir case: runner writes through permission bits (privileged)");
+    } else {
+        let err = nbe_engine::record::available_space_mib(ro.path())
+            .expect_err("read-only dir must refuse with E_DISK");
+        assert!(
+            matches!(err, nbe_engine::record::RecordError::Disk(_)),
+            "variant must be RecordError::Disk, got: {err:?}"
+        );
+        assert!(err.to_string().contains("E_DISK"));
+    } // end privileged-runner guard: case 2 below runs only where bits bind
 
     // Telemetry degrades to 0.0 on an unwritable target — never panics.
     let v = nbe_engine::telemetry::record_space_mib_for(Some(&blocker));
