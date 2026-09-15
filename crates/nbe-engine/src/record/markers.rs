@@ -14,6 +14,28 @@
 //! recording, for every container, and the Matroska in-container chapter
 //! muxing is a later concern. [`chapters`] is the seam that muxer will read:
 //! the frame-ordered chapter list. Nothing here claims an MP4 carries chapters.
+//!
+//! ## Explicit deferral: per-container select + Matroska chapters
+//!
+//! SPEC §9.3 allows Matroska as an alternative container and §9.3 SHOULD wants
+//! markers as chapters where the container supports them. Both are DEFERRED:
+//!
+//! * Per-container select: `record.start` carries no container field (SPEC
+//!   §16.14 payload is `{ outputId? }`), and no manifest field selects one
+//!   either — every take is fragmented MP4. An `outputId → container` mapping
+//!   would be invented schema, and schema is out of scope for this unit.
+//! * Matroska chapters: no EBML mux exists beside the hand-rolled fMP4 boxes,
+//!   and bolting one on would double the mux surface (seek-heads, tracks,
+//!   cues, chapter atoms) without a second conformance oracle in the suite.
+//!
+//! What changes the answer (trigger): a manifest-declared container select
+//! (control-plane schema + engine plumbing for it) or a take that must carry
+//! chapters in-container for a downstream that will not read the sidecar.
+//! Then: implement the EBML mux beside `writer.rs` (same fragment discipline:
+//! header upfront, per-second clusters flushed immediately, no finalization
+//! required), read [`chapters`] at cluster boundaries, and keep the
+//! always-sidecar anyway (it is the container-independent chapter record the
+//! suite asserts).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

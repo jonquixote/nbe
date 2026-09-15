@@ -601,6 +601,21 @@ impl RecordingWriter {
         &self.path
     }
 
+    /// Install the stream's real parameter sets (WU-pipe: captured by the
+    /// record thread from the live encoder's first keyframe, or supplied by
+    /// the test seam). Must precede the first IDR push — the header writes on
+    /// that push using these sets — and is refused after the header exists.
+    pub fn set_parameter_sets(&mut self, sps: Vec<u8>, pps: Vec<u8>) -> Result<(), RecordError> {
+        if self.header_written {
+            return Err(RecordError::Input(
+                "parameter sets arrived after the header was written".into(),
+            ));
+        }
+        self.params.sps = sps;
+        self.params.pps = pps;
+        Ok(())
+    }
+
     pub fn push_video(&mut self, unit: &EncodedUnit) -> Result<(), RecordError> {
         if !self.header_written {
             if !unit.is_keyframe {

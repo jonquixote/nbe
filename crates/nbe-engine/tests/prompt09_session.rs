@@ -1,28 +1,34 @@
-//! Prompt 09 WU8 (SPEC §16.14, §5.9.5): record session glue — `record.start`
-//! opens a session, `record.stop` finishes it synchronously before the ack,
-//! `show.stop` quiesces a recording show to a playable file.
+//! Prompt 09 WU-pipe (SPEC §16.14, §5.9.5): record pipeline glue —
+//! `record.start` opens the dedicated record thread, `record.stop` finishes it
+//! synchronously before the ack, `show.stop` quiesces per its payload.
 //!
-//! TDD: written BEFORE the session glue (RED first). `nbe_engine::record::session`
-//! does not exist yet — this file must fail to compile until `session.rs` lands,
-//! proving the tests exercise new code (same discipline as `prompt09_record_file.rs`).
+//! TDD: rewritten BEFORE the pipeline lands (RED first). The retired premise
+//! below is the WU8 one-shot shape (session buffers + `finish` over buffers +
+//! start refusing `E_NO_HARDWARE_ENCODER` only via a throwaway encode): the
+//! pipeline instead refuses start on a failed encoder PROBE (SPEC §16.14
+//! precondition, no stream opened), feeds frames over a bounded channel to the
+//! thread, and finishes there.
 //!
 //! Coverage maps to the work-unit DoD:
 //! 1. `record.start` on a RUNNING show with encoder available → `Recording`,
-//!    session present, writer in the record directory. Preconditions intact:
-//!    not-running → `E_FORBIDDEN_STATE`; forced-unavailable (seam) → `E_NO_HARDWARE_ENCODER`.
+//!    session + shared tap present, output path reserved. Preconditions intact:
+//!    not-running → `E_FORBIDDEN_STATE`; failed probe (seam-forced or genuine)
+//!    → `E_NO_HARDWARE_ENCODER`.
 //! 2. `record.stop` finishes synchronously (file + sidecar complete) and only
-//!    then does the ack flow (`last_applied` + `AppliedStateVersion`).
-//!    Quiescence: `show.stop` on a recording show leaves a playable file and
-//!    an honest `appliedStateVersion`.
-//! 3. Second `record.start` while `Recording` → `E_FORBIDDEN_STATE`, session
-//!    preserved, chapters reset for the next take (WU5, documented behavior).
+//!    then does the ack flow (`last_applied` + `AppliedStateVersion`). A failed
+//!    finish surfaces (no ack) with the file kept as-is. Quiescence:
+//!    `show.stop` graceful / immediate (`force`) / refused (`quiesceOutputs`
+//!    false without force) per the §16.1 table.
+//! 3. Second `record.start` while `Recording` → `E_FORBIDDEN_STATE`, pipeline
+//!    preserved, chapters reset for the next take.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use nbe_engine::directive::{DirectiveError, DirectiveHandler};
 use nbe_engine::record::session as session_glue;
-use nbe_engine::render::{VIEW_H, VIEW_W};
+use nbe_engine::record::{handoff_record_frame, should_skip_record_frame};
 use nbe_engine::state::{EngineState, OutgoingQueue, RecordState};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
 
@@ -55,15 +61,11 @@ fn is_forbidden(err: &DirectiveError) -> bool {
         && err.to_string().contains("E_FORBIDDEN_STATE")
 }
 
+/// SPEC §16.14 payload: `{ outputId? }` ONLY. Naming/geometry/rate come from
+/// the loaded package + engine — legacy `show`/`episode`/`width`/`height`/
+/// `fps`/`startTimestamp` fields are retired (see `on_record_start` docs).
 fn start_payload() -> serde_json::Value {
-    serde_json::json!({
-        "show": "demoshow",
-        "episode": "ep01",
-        "startTimestamp": "20260914T120000Z",
-        "width": 640,
-        "height": 360,
-        "fps": 30,
-    })
+    serde_json::json!({ "outputId": "ep01" })
 }
 
 fn acked(outgoing: &OutgoingQueue, sv: u64) -> bool {
@@ -193,52 +195,76 @@ fn ffprobe_streams(ffprobe: &Path, file: &Path) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("ffprobe JSON must parse")
 }
 
-/// Feed one second of real frames plus its tone into the open session. Frames
-/// come from a test-local hardware session at VIEW geometry — the session's
-/// own geometry, since `record.start` reserves the path at VIEW_W/H for the
-/// loop feed's ONE live encoder — and the encoder's real parameter sets are
-/// captured into the session exactly as the loop feed does (the retired
-/// premise: a throwaway black-frame capture at a second geometry pre-filled
-/// the sets). The encoder tail (finish re-reports the prefix; skip it)
-/// follows.
-fn feed_one_second(state: &Arc<EngineState>) {
-    let mut enc = nbe_engine::encode::EncodeSession::open(VIEW_W, VIEW_H, 30, 8_000_000)
-        .expect("EncodeSession::open must succeed where hardware exists");
-    // One base frame, cloned per feed: content repeats while PTS advances per
-    // frame index — valid stream content at a ninth of the build cost.
-    let base = synthetic_rgba(VIEW_W, VIEW_H, 0);
-    let mut seen = 0usize;
-    let mut guard = state.record_session.lock().unwrap();
-    let session = guard.as_mut().expect("session must be present");
-    for _ in 0..30 {
-        let fresh = enc.encode_rgba(&base).expect("feeding RGBA must succeed");
-        seen += fresh.len();
-        for u in &fresh {
-            session.push_video(u).expect("push_video must succeed");
-        }
+/// Start a recording through the directive path; returns the reserved output
+/// path. The record dir is a leaked tempdir (the file outlives the stop).
+async fn start_recording(state: &Arc<EngineState>, handler: &DirectiveHandler, sv: u64) -> PathBuf {
+    handler
+        .apply(&directive(
+            "show.start",
+            sv,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().expect("tempdir must succeed");
+    let dir = Box::leak(Box::new(dir));
+    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
+    handler
+        .apply(&directive(
+            "record.start",
+            sv + 1,
+            serde_json::json!({}),
+            start_payload(),
+        ))
+        .await
+        .expect("record.start on a RUNNING show with encoder must open the pipeline");
+    state
+        .record_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("session must be present")
+        .output_path()
+        .to_path_buf()
+}
+
+/// Feed `n` full-View frames through the REAL loop feed fns (pre-check +
+/// handoff), pushing `tone_s` of tone into the shared tap first.
+fn feed_take(state: &Arc<EngineState>, n: u32, tone_s: u32) {
+    use nbe_engine::render::{VIEW_H, VIEW_W};
+    let tap = state
+        .record_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("session must be present")
+        .tap();
+    tap.push(&tone_secs(tone_s));
+    let budget = Duration::from_secs_f64(1.0 / 30.0);
+    for frame in 0..n {
+        assert!(!should_skip_record_frame(
+            Duration::from_millis(2),
+            Some(budget)
+        ));
+        let started = Instant::now();
+        let rgba = synthetic_rgba(VIEW_W, VIEW_H, frame);
+        let readback_elapsed = started.elapsed();
+        let tx = state
+            .record_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("session must be present")
+            .frame_sender();
+        let outcome = handoff_record_frame(rgba, &tx, readback_elapsed);
+        assert!(outcome.sent, "a live thread must accept handoffs");
+        *state.record_tap_ms.lock().unwrap() += outcome.feed_ms;
     }
-    // Unification capture: the live encoder's first keyframe exposes the real
-    // sets; the session (EMPTY at start) takes them here, as the loop feed
-    // does via `set_parameter_sets`.
-    let (sps, pps) = enc
-        .parameter_sets()
-        .expect("a fed keyframe must expose parameter sets");
-    session.set_parameter_sets(sps, pps);
-    let all = enc
-        .finish()
-        .expect("encoder finish must complete the stream");
-    for u in all.iter().skip(seen) {
-        session
-            .push_video(u)
-            .expect("pushing the encoder tail must succeed");
-    }
-    session
-        .push_audio(&tone_secs(1))
-        .expect("push_audio must succeed");
 }
 
 #[tokio::test]
-async fn record_start_on_running_show_opens_recording_session() {
+async fn record_start_on_running_show_opens_pipeline() {
     let _serial = SERIAL.lock().await;
     hw_or_fail();
     if !aac_or_skip() {
@@ -246,27 +272,7 @@ async fn record_start_on_running_show_opens_recording_session() {
     }
     nbe_engine::record::markers::clear();
     let (state, handler, outgoing) = harness();
-    handler
-        .apply(&directive(
-            "show.start",
-            1,
-            serde_json::json!({}),
-            serde_json::json!({}),
-        ))
-        .await
-        .unwrap();
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
-    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
-
-    handler
-        .apply(&directive(
-            "record.start",
-            2,
-            serde_json::json!({}),
-            start_payload(),
-        ))
-        .await
-        .expect("record.start on a RUNNING show with encoder must open a session");
+    let video_path = start_recording(&state, &handler, 1).await;
 
     assert_eq!(*state.record_state.lock().unwrap(), RecordState::Recording);
     assert!(
@@ -274,21 +280,27 @@ async fn record_start_on_running_show_opens_recording_session() {
         "a record session must be present after start"
     );
     assert!(
-        state
-            .record_session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("session present")
-            .parameter_sets()
-            .is_none(),
-        "unification: the session starts metadata-only, sets EMPTY until the loop feed captures them"
+        state.record_tap.lock().unwrap().is_some(),
+        "start must publish the shared tap for the audio driver"
+    );
+    // No package loaded: show falls back, episode comes from `outputId`,
+    // timestamp is generated — the shape, not the values, is the contract.
+    let name = video_path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        name.starts_with("show_ep01_") && name.ends_with(".mp4"),
+        "filename derives show/episode/timestamp, got {name}"
     );
     assert_eq!(state.last_applied(), 2);
     assert!(
         acked(&outgoing, 2),
-        "start must be acked after the session opened"
+        "start must be acked after the pipeline opened"
     );
+    // Leave no thread behind (no stop issued in this test).
+    if let Some(mut s) = state.record_session.lock().unwrap().take() {
+        s.abandon();
+    }
+    *state.record_state.lock().unwrap() = RecordState::Idle;
+    *state.record_tap.lock().unwrap() = None;
     nbe_engine::record::markers::clear();
 }
 
@@ -314,12 +326,11 @@ async fn record_start_without_running_show_is_forbidden_and_stores_nothing() {
 }
 
 #[tokio::test]
-async fn record_start_with_forced_no_encoder_still_opens_session() {
-    // Unification-retired premise: the handler touches NO encoder (the
-    // throwaway black-frame capture is deleted), so forced-unavailable no
-    // longer refuses at start. The refusal is deferred: the loop feed skips
-    // video frames and `finish` without captured sets is E_RECORD_INPUT.
-    // Start therefore succeeds with a metadata-only session (EMPTY sets).
+async fn record_start_with_failed_encoder_probe_is_refused() {
+    // SPEC §16.14 precondition, wired (no dead variant): the start path probes
+    // for a hardware encoder WITHOUT opening a stream. Forced-unavailable
+    // behaves exactly like missing hardware: refused, loudly, with no session
+    // and no ack.
     let _serial = SERIAL.lock().await;
     let _force = ForceNoEncoderGuard::set();
     let (state, handler, outgoing) = harness();
@@ -335,7 +346,7 @@ async fn record_start_with_forced_no_encoder_still_opens_session() {
     let dir = tempfile::tempdir().expect("tempdir must succeed");
     *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
 
-    handler
+    let err = handler
         .apply(&directive(
             "record.start",
             2,
@@ -343,29 +354,24 @@ async fn record_start_with_forced_no_encoder_still_opens_session() {
             start_payload(),
         ))
         .await
-        .expect("start touches no encoder, so forced-unavailable must not refuse it");
+        .expect_err("start with no encoder must be refused");
 
-    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Recording);
     assert!(
-        state
-            .record_session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("session present")
-            .parameter_sets()
-            .is_none(),
-        "no encoder was touched, so no sets could be captured"
+        err.to_string().contains("E_NO_HARDWARE_ENCODER"),
+        "expected E_NO_HARDWARE_ENCODER, got: {err}"
     );
-    assert!(acked(&outgoing, 2));
-    // Leave no session behind (no stop issued in this test).
-    state.record_session.lock().unwrap().take();
-    *state.record_state.lock().unwrap() = RecordState::Idle;
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+    assert!(state.record_session.lock().unwrap().is_none());
+    assert!(
+        state.record_tap.lock().unwrap().is_none(),
+        "refused start publishes no tap"
+    );
+    assert!(!acked(&outgoing, 2), "refused start must not ack");
     nbe_engine::record::markers::clear();
 }
 
 #[tokio::test]
-async fn second_record_start_while_recording_is_forbidden_and_preserves_session() {
+async fn second_record_start_while_recording_is_forbidden_and_preserves_pipeline() {
     let _serial = SERIAL.lock().await;
     hw_or_fail();
     if !aac_or_skip() {
@@ -373,28 +379,7 @@ async fn second_record_start_while_recording_is_forbidden_and_preserves_session(
     }
     nbe_engine::record::markers::clear();
     let (state, handler, _) = harness();
-    handler
-        .apply(&directive(
-            "show.start",
-            1,
-            serde_json::json!({}),
-            serde_json::json!({}),
-        ))
-        .await
-        .unwrap();
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
-    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
-    handler
-        .apply(&directive(
-            "record.start",
-            2,
-            serde_json::json!({}),
-            start_payload(),
-        ))
-        .await
-        .unwrap();
-    // A chapter of the ONGOING recording: the refused second start resets the
-    // chapter list for the next take (WU5) while preserving the live session.
+    let video_path = start_recording(&state, &handler, 1).await;
     handler
         .apply(&directive(
             "marker.add",
@@ -422,19 +407,29 @@ async fn second_record_start_while_recording_is_forbidden_and_preserves_session(
         RecordState::Recording,
         "refused second start must leave the recording running"
     );
-    assert!(
-        state.record_session.lock().unwrap().is_some(),
-        "refused second start must not replace the session"
+    assert_eq!(
+        state
+            .record_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("pipeline preserved")
+            .output_path(),
+        video_path.as_path(),
+        "refused second start must not replace the pipeline"
     );
     assert!(
         nbe_engine::record::markers::list().is_empty(),
-        "refused second start resets chapters for the next take (WU5)"
+        "refused second start resets chapters for the next take"
     );
-    // Leave the store clean for the binary's other tests.
-    nbe_engine::record::markers::clear();
-    // Leave no session behind either (no stop issued in this test).
-    state.record_session.lock().unwrap().take();
+    // The preserved pipeline still takes frames after the refusal.
+    feed_take(&state, 5, 1);
+    if let Some(mut s) = state.record_session.lock().unwrap().take() {
+        s.abandon();
+    }
     *state.record_state.lock().unwrap() = RecordState::Idle;
+    *state.record_tap.lock().unwrap() = None;
+    nbe_engine::record::markers::clear();
 }
 
 #[tokio::test]
@@ -446,26 +441,7 @@ async fn record_stop_finishes_file_synchronously_then_acks() {
     }
     nbe_engine::record::markers::clear();
     let (state, handler, outgoing) = harness();
-    handler
-        .apply(&directive(
-            "show.start",
-            1,
-            serde_json::json!({}),
-            serde_json::json!({}),
-        ))
-        .await
-        .unwrap();
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
-    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
-    handler
-        .apply(&directive(
-            "record.start",
-            2,
-            serde_json::json!({}),
-            start_payload(),
-        ))
-        .await
-        .unwrap();
+    let video_path = start_recording(&state, &handler, 1).await;
     handler
         .apply(&directive(
             "marker.add",
@@ -475,23 +451,7 @@ async fn record_stop_finishes_file_synchronously_then_acks() {
         ))
         .await
         .unwrap();
-    feed_one_second(&state);
-    let video_path = state
-        .record_session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|s| s.output_path().to_path_buf())
-        .expect("session must be present");
-    assert_eq!(
-        video_path.parent().unwrap(),
-        dir.path(),
-        "output reserved in the record directory"
-    );
-    assert_eq!(
-        video_path.file_name().unwrap().to_str().unwrap(),
-        "demoshow_ep01_20260914T120000Z.mp4"
-    );
+    feed_take(&state, 40, 2);
 
     handler
         .apply(&directive(
@@ -509,6 +469,10 @@ async fn record_stop_finishes_file_synchronously_then_acks() {
     assert!(acked(&outgoing, 4), "stop must be acked after finish ran");
     assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
     assert!(state.record_session.lock().unwrap().is_none());
+    assert!(
+        state.record_tap.lock().unwrap().is_none(),
+        "stop detaches the tap from the driver"
+    );
     if let Some(ffprobe) = ffprobe_or_skip() {
         let v = ffprobe_streams(&ffprobe, &video_path);
         let streams = v["streams"].as_array().expect("streams array");
@@ -525,22 +489,63 @@ async fn record_stop_finishes_file_synchronously_then_acks() {
     let entries = parsed["markers"].as_array().expect("markers array");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["name"], "chapter-1");
-    nbe_engine::record::markers::clear();
+    assert!(
+        nbe_engine::record::markers::list().is_empty(),
+        "graceful stop clears the marker store for the next take"
+    );
 }
 
-fn synthetic_params(dir: &Path) -> nbe_engine::record::RecordParams {
-    nbe_engine::record::RecordParams {
-        directory: dir.to_path_buf(),
-        show: "demoshow".into(),
-        episode: "ep01".into(),
-        start_timestamp: "20260914T120000Z".into(),
-        width: 640,
-        height: 360,
-        fps: 30,
-        // Writer-valid dummy sets (cf. prompt09_markers.rs): NAL types 7/8.
-        sps: vec![0x67, 0x64, 0x00, 0x1E, 0xAA],
-        pps: vec![0x68, 0x11, 0x22],
+#[tokio::test]
+async fn record_stop_failure_withholds_ack_and_keeps_file() {
+    // The old defect was `show.stop` swallowing finish errors yet acking. At
+    // pipeline level: sabotage the sidecar (a directory where the file should
+    // be) so finish fails E_DISK AFTER fragments flushed — the stop surfaces
+    // the error (no ack) and the file stays as-is (still parseable: fragments
+    // were flushed mid-take, no finalization required).
+    let _serial = SERIAL.lock().await;
+    hw_or_fail();
+    if !aac_or_skip() {
+        return;
     }
+    let Some(ffprobe) = ffprobe_or_skip() else {
+        return;
+    };
+    nbe_engine::record::markers::clear();
+    let (state, handler, outgoing) = harness();
+    let video_path = start_recording(&state, &handler, 1).await;
+    feed_take(&state, 40, 2);
+    std::fs::create_dir(nbe_engine::record::markers::sidecar_path(&video_path))
+        .expect("sidecar sabotage must succeed");
+
+    let err = handler
+        .apply(&directive(
+            "record.stop",
+            4,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .expect_err("a failed finish must surface, never ack");
+
+    assert!(
+        err.to_string().contains("E_DISK"),
+        "expected E_DISK, got: {err}"
+    );
+    assert_ne!(
+        state.last_applied(),
+        4,
+        "failed stop must not advance applied"
+    );
+    assert!(!acked(&outgoing, 4), "failed stop must not ack");
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+    assert!(state.record_session.lock().unwrap().is_none());
+    // File kept as-is: prior fragments parse without any finalization.
+    let v = ffprobe_streams(&ffprobe, &video_path);
+    let streams = v["streams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2, "kept file retains both streams");
+    // Sabotage cleanup for the leaked tempdir's siblings (file assertions done).
+    std::fs::remove_dir(nbe_engine::record::markers::sidecar_path(&video_path)).ok();
+    nbe_engine::record::markers::clear();
 }
 
 fn fake_unit(pts_seconds: f64, keyframe: bool) -> nbe_engine::encode::EncodedUnit {
@@ -557,7 +562,7 @@ fn fake_unit(pts_seconds: f64, keyframe: bool) -> nbe_engine::encode::EncodedUni
 
 #[tokio::test]
 async fn record_stop_with_synthetic_units_finalizes_file_and_sidecar() {
-    // No hardware video needed: synthetic units through the writer path prove
+    // No hardware video needed: synthetic units through the REAL thread prove
     // the stop-finish glue (open → feed → finish → ack) hermetically.
     let _serial = SERIAL.lock().await;
     if !aac_or_skip() {
@@ -575,29 +580,39 @@ async fn record_stop_with_synthetic_units_finalizes_file_and_sidecar() {
         .await
         .unwrap();
     let dir = tempfile::tempdir().expect("tempdir must succeed");
-    let params = synthetic_params(dir.path());
-    let session = session_glue::RecordSession::open_synthetic(&params)
-        .expect("synthetic open must succeed where AAC exists");
-    let video_path = session.output_path().to_path_buf();
-    assert_eq!(
-        video_path.parent().unwrap(),
+    let tap = Arc::new(nbe_engine::record::AudioTap::new());
+    tap.push(&tone_secs(1));
+    let session = session_glue::RecordSession::open_with_sets(
         dir.path(),
-        "output reserved in the record directory"
-    );
+        "demoshow",
+        "ep01",
+        "20260914T120000Z",
+        640,
+        360,
+        30,
+        tap.clone(),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        (vec![0x67, 0x64, 0x00, 0x1E, 0xAA], vec![0x68, 0x11, 0x22]),
+    )
+    .expect("test-seam open must succeed where AAC exists");
+    let video_path = session.output_path().to_path_buf();
+    *state.record_tap.lock().unwrap() = Some(tap);
     *state.record_session.lock().unwrap() = Some(session);
     *state.record_state.lock().unwrap() = RecordState::Recording;
 
-    {
-        let mut guard = state.record_session.lock().unwrap();
-        let session = guard.as_mut().unwrap();
-        for n in 0..45 {
-            session
-                .push_video(&fake_unit(n as f64 / 30.0, n == 0))
-                .expect("push_video must succeed");
-        }
-        session
-            .push_audio(&tone_secs(1))
-            .expect("push_audio must succeed");
+    let tx = state
+        .record_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .frame_sender();
+    for n in 0..45 {
+        tx.send(nbe_engine::record::thread::RecordMsg::Unit(fake_unit(
+            n as f64 / 30.0,
+            n == 0,
+        )))
+        .expect("channel must accept units");
     }
 
     handler
@@ -623,9 +638,8 @@ async fn record_stop_with_synthetic_units_finalizes_file_and_sidecar() {
 
 #[tokio::test]
 async fn show_stop_on_recording_show_leaves_playable_file() {
-    // Quiescence: the control plane emits record.stop internally on show.stop,
-    // and the engine finalizes a still-Recording session itself — either order
-    // leaves a playable file and an honest appliedStateVersion.
+    // Quiescence: `show.stop` alone finalizes a still-Recording take (graceful
+    // path: internal `record.stop`, bounded wait) and acks the STOP.
     let _serial = SERIAL.lock().await;
     hw_or_fail();
     if !aac_or_skip() {
@@ -633,34 +647,8 @@ async fn show_stop_on_recording_show_leaves_playable_file() {
     }
     nbe_engine::record::markers::clear();
     let (state, handler, outgoing) = harness();
-    handler
-        .apply(&directive(
-            "show.start",
-            1,
-            serde_json::json!({}),
-            serde_json::json!({}),
-        ))
-        .await
-        .unwrap();
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
-    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
-    handler
-        .apply(&directive(
-            "record.start",
-            2,
-            serde_json::json!({}),
-            start_payload(),
-        ))
-        .await
-        .unwrap();
-    feed_one_second(&state);
-    let video_path = state
-        .record_session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|s| s.output_path().to_path_buf())
-        .expect("session must be present");
+    let video_path = start_recording(&state, &handler, 1).await;
+    feed_take(&state, 40, 2);
 
     // No record.stop: show.stop alone must quiesce the recording.
     handler
@@ -690,5 +678,205 @@ async fn show_stop_on_recording_show_leaves_playable_file() {
     } else {
         assert_moov_present(&video_path);
     }
+    nbe_engine::record::markers::clear();
+}
+
+#[tokio::test]
+async fn show_stop_force_abandons_take_immediately() {
+    // §16.1 table (`quiesceOutputs=true, force=true`): immediate stop, warning
+    // logged — the file is kept as-is with no finish, the show still stops,
+    // and the stop acks (force was requested).
+    let _serial = SERIAL.lock().await;
+    hw_or_fail();
+    if !aac_or_skip() {
+        return;
+    }
+    nbe_engine::record::markers::clear();
+    let (state, handler, outgoing) = harness();
+    let video_path = start_recording(&state, &handler, 1).await;
+    feed_take(&state, 40, 2);
+
+    handler
+        .apply(&directive(
+            "show.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({"quiesceOutputs": true, "force": true}),
+        ))
+        .await
+        .expect("forced show.stop must stop immediately");
+
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+    assert!(state.record_session.lock().unwrap().is_none());
+    assert!(
+        !state.is_running(),
+        "forced stop still stops the show clock"
+    );
+    assert!(acked(&outgoing, 3));
+    // Fragments flushed mid-take survive the abandon (or the file never
+    // materialized if the thread never processed a frame — either is "as-is").
+    if video_path.is_file() {
+        let top = top_level_boxes(&std::fs::read(&video_path).unwrap());
+        assert_eq!(top.first().map(String::as_str), Some("ftyp"));
+    }
+    nbe_engine::record::markers::clear();
+}
+
+#[tokio::test]
+async fn show_stop_with_quiesce_outputs_false_is_refused_while_recording() {
+    // §16.1 table (`quiesceOutputs=false, force=false`): fail with
+    // `E_FORBIDDEN_STATE` — the take is NOT finalized, the show keeps running.
+    let _serial = SERIAL.lock().await;
+    hw_or_fail();
+    if !aac_or_skip() {
+        return;
+    }
+    nbe_engine::record::markers::clear();
+    let (state, handler, outgoing) = harness();
+    start_recording(&state, &handler, 1).await;
+
+    let err = handler
+        .apply(&directive(
+            "show.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({"quiesceOutputs": false}),
+        ))
+        .await
+        .expect_err("show.stop must not quiesce when told not to");
+
+    assert!(is_forbidden(&err), "expected E_FORBIDDEN_STATE, got: {err}");
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        RecordState::Recording,
+        "refused quiesce must leave the take running"
+    );
+    assert!(
+        state.record_session.lock().unwrap().is_some(),
+        "refused quiesce must not consume the pipeline"
+    );
+    assert!(state.is_running(), "refused stop keeps the show clock");
+    assert!(!acked(&outgoing, 3), "refused stop must not ack");
+    // Cleanup: the take is still live.
+    if let Some(mut s) = state.record_session.lock().unwrap().take() {
+        s.abandon();
+    }
+    *state.record_state.lock().unwrap() = RecordState::Idle;
+    *state.record_tap.lock().unwrap() = None;
+    nbe_engine::record::markers::clear();
+}
+
+#[tokio::test]
+async fn show_stop_with_quiesce_outputs_false_and_force_stops_immediately() {
+    // §16.1 table (`quiesceOutputs=false, force=true`): immediate stop — the
+    // take is abandoned, the show stops, the stop acks.
+    let _serial = SERIAL.lock().await;
+    hw_or_fail();
+    if !aac_or_skip() {
+        return;
+    }
+    nbe_engine::record::markers::clear();
+    let (state, handler, outgoing) = harness();
+    start_recording(&state, &handler, 1).await;
+
+    handler
+        .apply(&directive(
+            "show.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({"quiesceOutputs": false, "force": true}),
+        ))
+        .await
+        .expect("forced stop without quiesce must stop immediately");
+
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+    assert!(!state.is_running());
+    assert!(acked(&outgoing, 3));
+    nbe_engine::record::markers::clear();
+}
+
+#[tokio::test]
+async fn record_start_derives_show_name_from_loaded_package() {
+    // Honest derivation: the show component comes from the loaded package's
+    // manifest (`show.title`), never from directive payload fields.
+    let _serial = SERIAL.lock().await;
+    hw_or_fail();
+    if !aac_or_skip() {
+        return;
+    }
+    nbe_engine::record::markers::clear();
+    let (state, handler, _) = harness();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("media")).unwrap();
+    std::fs::write(dir.path().join("media/fallback.png"), b"not-a-png").unwrap();
+    std::fs::write(
+        dir.path().join("manifest.json"),
+        serde_json::json!({
+            "manifestVersion": "0.3",
+            "network": { "id": "nbe", "name": "T" },
+            "show": {
+                "id": "s", "title": "Dress Rehearsal",
+                "video": {"width":1920,"height":1080,"frameRate":30,"colorSpace":"rec709"},
+                "audio": {"sampleRate":48000,"loudnessTargetLufs":-16,"truePeakDbtp":-1.5},
+                "fallbackAssetId": "fallback"
+            },
+            "assets": [{"id":"fallback","kind":"image","source":"media/fallback.png"}],
+            "scenes": [{"id":"SCN_A1","elements":[]}],
+            "rundown": {"id":"R","items":[{"id":"A1","kind":"sceneRef","sceneRef":"SCN_A1"}]},
+            "control": {"bindings":[]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    handler
+        .apply(&directive(
+            "show.load",
+            1,
+            serde_json::json!({}),
+            serde_json::json!({ "packagePath": dir.path().to_string_lossy() }),
+        ))
+        .await
+        .expect("show.load must succeed");
+    handler
+        .apply(&directive(
+            "show.start",
+            2,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    let recdir = tempfile::tempdir().unwrap();
+    *state.record_dir.lock().unwrap() = Some(recdir.path().to_path_buf());
+    handler
+        .apply(&directive(
+            "record.start",
+            3,
+            serde_json::json!({}),
+            start_payload(),
+        ))
+        .await
+        .expect("record.start must open");
+    let name = state
+        .record_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .output_path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        name.starts_with("Dress_Rehearsal_ep01_"),
+        "show component derives from the package manifest, got {name}"
+    );
+    if let Some(mut s) = state.record_session.lock().unwrap().take() {
+        s.abandon();
+    }
+    *state.record_state.lock().unwrap() = RecordState::Idle;
+    *state.record_tap.lock().unwrap() = None;
     nbe_engine::record::markers::clear();
 }

@@ -1,13 +1,14 @@
 //! Prompt 09 WU1 (SPEC §16.14): engine `record.start` / `record.stop`
 //! precondition validation + `RecordState` skeleton.
 //!
-//! Design as built (not as first sketched): `record.start` never touches the
-//! encoder — it validates preconditions, reserves the output path, and flips
-//! to Recording. Encoder absence degrades at feed/finish time (skipped frames,
-//! loud finish), it does not refuse the start. So this file pins the refusal
-//! paths that remain — `E_FORBIDDEN_STATE` when the show is not RUNNING —
-//! plus the start-opens/stop-empty-loud contract. `record.stop` requires an
-//! active recording and is refused with `E_FORBIDDEN_STATE` while Idle.
+//! Design as built (WU-pipe): `record.start` validates preconditions (RUNNING
+//! show, record target, hardware probe — SPEC §16.14), reserves the output
+//! path, spawns the dedicated record thread, and flips to Recording. The
+//! payload is `{ outputId?: string }` ONLY: show/geometry/rate derive from the
+//! loaded package + engine (see `on_record_start` docs). Encoder absence
+//! refuses the start with `E_NO_HARDWARE_ENCODER`. `record.stop` requires an
+//! active recording and is refused with `E_FORBIDDEN_STATE` while Idle; an
+//! empty take fails loudly at finish (`E_RECORD_INPUT`).
 
 use std::sync::Arc;
 
@@ -43,6 +44,13 @@ fn is_forbidden(err: &DirectiveError) -> bool {
         && err.to_string().contains("E_FORBIDDEN_STATE")
 }
 
+fn hw_or_fail() {
+    assert!(
+        nbe_engine::encode::is_available(),
+        "LOUD FAILURE: no hardware H.264 encoder (SPEC §9.2); recording has no CPU fallback"
+    );
+}
+
 #[test]
 fn record_state_defaults_to_idle() {
     assert_eq!(
@@ -76,6 +84,7 @@ async fn record_start_without_running_show_is_forbidden_and_state_unchanged() {
 
 #[tokio::test]
 async fn record_start_on_running_show_opens_and_empty_stop_is_loud() {
+    hw_or_fail();
     let (state, handler) = harness();
     handler
         .apply(&directive(
@@ -88,15 +97,14 @@ async fn record_start_on_running_show_opens_and_empty_stop_is_loud() {
         .unwrap();
     assert!(state.is_running(), "show.start must run the clock");
 
-    // Start opens without touching the encoder: dir configured, preconditions
-    // met → Ok + Recording + reserved session (path exists as reservation).
+    // Start opens: dir configured, probe passes → Ok + Recording + pipeline.
     *state.record_dir.lock().unwrap() = Some(std::env::temp_dir());
     handler
         .apply(&directive(
             "record.start",
             2,
             serde_json::json!({}),
-            serde_json::json!({}),
+            serde_json::json!({"outputId": "ep01"}),
         ))
         .await
         .unwrap_or_else(|e| panic!("start with dir set must open, got: {e}"));
@@ -156,8 +164,8 @@ async fn record_stop_while_idle_is_forbidden() {
 
 #[tokio::test]
 async fn record_stop_ends_an_active_recording() {
-    // The transition exists for WU2 (the only path that can enter
-    // Recording): stop flips Recording -> Idle.
+    // The transition exists for the session-less seam (tests arming Recording
+    // directly): stop flips Recording -> Idle with nothing to finish.
     let (state, handler) = harness();
     *state.record_state.lock().unwrap() = RecordState::Recording;
 
@@ -182,6 +190,8 @@ async fn record_stop_ends_an_active_recording() {
 async fn record_start_into_unwritable_target_reports_e_disk() {
     // The E_DISK token must survive from RecordError::Disk through the
     // directive boundary (it once dissolved into a bare io error here).
+    // The directory check precedes the encoder probe, so no hardware is
+    // needed to reach it.
     let (state, handler) = harness();
     handler
         .apply(&directive(
