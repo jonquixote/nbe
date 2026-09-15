@@ -729,10 +729,27 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   );
 
   const recReply = await ok("record.start", { outputId: "rehearsal" });
-  assert.ok(
-    await server.awaitApplied((recReply["stateVersion"] ?? 0) as number, COMMAND_MS),
-    "the engine must apply record.start (§5.9.5: the ack is honest only after the effect)",
+  // Capability gate: a machine without a hardware H.264 encoder (headless CI
+  // runners have no GPU) refuses record.start engine-side with
+  // E_NO_HARDWARE_ENCODER — but the control plane already acked ok (dispatch
+  // does not wait for engine application), so no ack ever arrives and the
+  // wait below times out identically for refusal and for a wedged pipeline.
+  // Distinguish via the engine's own log (captured in engineLog): a refusal
+  // logs the E_NO_HARDWARE_ENCODER token; an absent token with no ack means
+  // the pipeline is wedged → fail, never skip.
+  const recApplied = await server.awaitApplied(
+    (recReply["stateVersion"] ?? 0) as number,
+    COMMAND_MS,
   );
+  if (!recApplied) {
+    const refused = engineLog.some((line) => line.includes("E_NO_HARDWARE_ENCODER"));
+    assert.ok(
+      refused,
+      `record.start produced no engine ack and no encoder refusal in the engine log — pipeline wedged, not a missing encoder (last log lines: ${JSON.stringify(engineLog.slice(-3))})`,
+    );
+    console.log("SKIP record steps: engine refused record.start (no hardware H.264 encoder on this machine)");
+    return;
+  }
   recordWallStartMs = Date.now();
 
   await sleep((RECORD_SECS * 1000) / 2);
@@ -822,7 +839,10 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
 test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async () => {
   const ffprobe = ffprobeOrSkip();
   if (ffprobe === null) return;
-  assert.ok(recordFile !== null, "step 11 must have recorded a take first");
+  if (recordFile === null) {
+    console.log("SKIP sync step: step 11 skipped (no recording — capability gate)");
+    return;
+  }
   const file = recordFile as string;
 
   // AC-13 bound, borrowed — with the nuance on the record. AC-13 is the
@@ -869,6 +889,10 @@ test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async (
 test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable", async () => {
   const ffprobe = ffprobeOrSkip();
   if (ffprobe === null) return;
+  if (recordFile === null) {
+    console.log("SKIP kill step: step 11 skipped (no recording — capability gate)");
+    return;
+  }
   // The show is still RUNNING from step 11 (no show.stop since): open a
   // second take under a distinct episode name so its file is unambiguous.
   // No re-take first: A1 is still the on-air item (an exhausted clip holds
