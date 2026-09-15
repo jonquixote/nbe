@@ -245,6 +245,10 @@ fn abandon_keeps_flushed_fragments_without_finish_or_sidecar() {
 #[test]
 fn stop_with_no_frames_is_loud_and_leaves_no_file() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !nbe_engine::encode::is_available() {
+        eprintln!("SKIP: no hardware H.264 encoder on this machine (SPEC §9.2); recording has no CPU fallback");
+        return;
+    }
     if !aac_or_skip() {
         return;
     }
