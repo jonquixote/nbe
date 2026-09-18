@@ -147,7 +147,7 @@ impl AudioDriver {
     /// `state.record_tap`; the graph lives here, so the attach happens here.
     /// Pointer-compared once per cycle: steady state is one `Arc` clone, no
     /// lock held across the render, no deadline change (the tap's `push` is
-    /// non-blocking by contract — single `try_lock`, shed on contention).
+    /// lock-free by contract — atomic publish, no contention shed).
     fn sync_record_tap(&mut self) {
         let wanted = self.state.record_tap.lock().unwrap().clone();
         let changed = match (&self.attached_tap, &wanted) {

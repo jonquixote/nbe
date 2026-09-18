@@ -4,30 +4,47 @@
 //! on it is forbidden. The tap is the boundary: the audio callback copies mix
 //! PCM here and returns, and the record thread drains the ring at its own pace
 //! into the writer. Nothing in this file touches the filesystem, spawns work,
-//! or waits on anything the writer owns.
+//! locks, or waits on anything the writer owns.
 //!
 //! Drop policy (the whole contract, stated once):
 //! - The ring is bounded (`capacity` samples, fixed at construction).
-//! - `push` never blocks the caller: it uses `try_lock` exactly once. If the
-//!   record thread holds the lock mid-drain, the incoming buffer is counted
-//!   as dropped and `push` returns — a 5 ms gap in a recording beats a missed
-//!   audio deadline on air.
+//! - `push` never blocks the caller: it performs no locking, no allocation,
+//!   and no I/O — only atomic loads/stores plus a bounded memcpy into
+//!   pre-reserved storage. A 5 ms gap in a recording beats a missed audio
+//!   deadline on air, but with this design there is no gap at all in steady
+//!   state: producer and consumer never contend on a lock.
 //! - Otherwise the copy lands, and any excess over capacity evicts the OLDEST
 //!   samples first (a late writer loses the past, never the present).
 //! - Every dropped sample is counted in `dropped()` (lock-free `AtomicU64`);
 //!   drops are telemetry, never errors.
+//!
+//! Concurrency contract (SPSC): exactly ONE producer (the audio thread calls
+//! `push`) and ONE consumer (the record thread calls `drain`/`clear`/`len`).
+//! `dropped()` may be read from any thread. `head` is producer-owned (the
+//! consumer only loads it); `tail` is advanced by the consumer on drain and
+//! by the producer on overflow-eviction via CAS, so a stall-then-burst never
+//! tears. Multi-producer use is memory-safe (all shared state is atomic, all
+//! indices are bounds-checked) but outside the contract: concurrent `push`
+//! calls may overwrite each other's slots.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// 5 s of stereo 48 kHz mix: the record thread drains far faster than this
 /// fills, so the bound only engages on writer stalls, not in steady state.
 pub const DEFAULT_CAPACITY_SAMPLES: usize = 48_000 * 2 * 5;
 
 pub struct AudioTap {
-    inner: Mutex<VecDeque<f32>>,
+    /// Preallocated sample slots as raw `f32` bits. Sized once at
+    /// construction; neither path allocates after that.
+    buf: Box<[AtomicU32]>,
     capacity: usize,
+    /// Monotonic producer write counter. Only `push` stores it; the consumer
+    /// loads it. Slot index is `head % capacity`.
+    head: AtomicUsize,
+    /// Monotonic read counter. Advanced by the consumer (`drain`/`clear`) and
+    /// by the producer when evicting the oldest on overflow (CAS in both
+    /// directions, so neither tears the other's advance).
+    tail: AtomicUsize,
     dropped: AtomicU64,
 }
 
@@ -37,73 +54,146 @@ impl AudioTap {
     }
 
     pub fn with_capacity(capacity_samples: usize) -> Self {
+        let capacity = capacity_samples.max(1);
+        // Safe construction without MaybeUninit: one bulk fill at birth,
+        // never reallocated afterwards.
+        let mut buf = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            buf.push(AtomicU32::new(0.0f32.to_bits()));
+        }
         Self {
-            inner: Mutex::new(VecDeque::with_capacity(capacity_samples.max(1))),
-            capacity: capacity_samples.max(1),
+            buf: buf.into_boxed_slice(),
+            capacity,
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
             dropped: AtomicU64::new(0),
         }
     }
 
-    /// Copy mix PCM into the ring. Real-time safe by construction: one
-    /// `try_lock`, a bounded memcpy into pre-reserved storage, no I/O, no
-    /// allocation in the steady state, no waiting.
+    /// Samples the ring holds: `capacity` fixed at construction.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Copy mix PCM into the ring. Real-time safe by construction: no locks,
+    /// no allocation, no I/O. Only atomic index traffic plus the bounded copy
+    /// into pre-reserved storage.
     ///
-    /// Allocation note (audio-thread contract): the ring buffer is reserved
-    /// once at construction (`VecDeque::with_capacity`). This method never
-    /// lets `len` exceed `capacity` — overfill is evicted BEFORE the copy,
-    /// and an input larger than the whole ring keeps only its tail — so the
-    /// `extend` under the lock never grows the buffer and performs no
-    /// vec-alloc in the steady state. The only work under the lock is the
-    /// bounded copy plus bookkeeping; contention sheds via a single
-    /// `try_lock` (counted, never waited on).
+    /// Ordering: the `tail` load is `Acquire` (observe the consumer's frees);
+    /// the sample stores are `Relaxed` but sequenced before the `head`
+    /// `Release` publish, which the consumer reads with `Acquire` — so every
+    /// drained sample is fully written. `dropped` is `Relaxed` telemetry, as
+    /// before.
     pub fn push(&self, samples: &[f32]) {
         if samples.is_empty() {
             return;
         }
-        let mut guard = match self.inner.try_lock() {
-            Ok(g) => g,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                // The record thread is draining: shed load, count it, return.
-                self.dropped
-                    .fetch_add(samples.len() as u64, Ordering::Relaxed);
-                return;
+        // Producer-owned: no other thread stores `head`, so one load at entry
+        // plus one publish at exit brackets the whole block.
+        let mut head = self.head.load(Ordering::Relaxed);
+        for &s in samples {
+            // Make room: while full, evict the oldest (advance `tail`, count
+            // it). The CAS retries only if the consumer advanced `tail`
+            // concurrently — forward progress either way.
+            loop {
+                let tail = self.tail.load(Ordering::Acquire);
+                if head.wrapping_sub(tail) < self.capacity {
+                    break;
+                }
+                if self
+                    .tail
+                    .compare_exchange_weak(
+                        tail,
+                        tail.wrapping_add(1),
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
             }
-            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-        };
-        // Evict BEFORE copying so `len` never exceeds `capacity`: the
-        // pre-reserved buffer never grows, hence no allocation under lock.
-        if samples.len() >= self.capacity {
-            let keep = &samples[samples.len() - self.capacity..];
-            let dropped = (guard.len() + samples.len() - self.capacity) as u64;
-            guard.clear();
-            guard.extend(keep.iter().copied());
-            self.dropped.fetch_add(dropped, Ordering::Relaxed);
-            return;
+            self.buf[head % self.capacity].store(s.to_bits(), Ordering::Relaxed);
+            head = head.wrapping_add(1);
         }
-        if guard.len() + samples.len() > self.capacity {
-            let excess = guard.len() + samples.len() - self.capacity;
-            guard.drain(..excess);
-            self.dropped.fetch_add(excess as u64, Ordering::Relaxed);
-        }
-        guard.extend(samples.iter().copied());
+        self.head.store(head, Ordering::Release);
     }
 
     /// Take everything buffered. Called on the record thread, never the audio
     /// thread — the allocation this performs is why.
+    ///
+    /// The `tail` CAS retries only if the producer evicted concurrently (a
+    /// seconds-stalled consumer racing fresh input); the snapshot is then
+    /// retaken, so no sample is returned twice or skipped silently — an
+    /// evicted sample is counted in `dropped()`, never duplicated out.
     pub fn drain(&self) -> Vec<f32> {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        guard.drain(..).collect()
+        loop {
+            let tail = self.tail.load(Ordering::Acquire);
+            let head = self.head.load(Ordering::Acquire);
+            let n = head.wrapping_sub(tail).min(self.capacity);
+            if n == 0 {
+                return Vec::new();
+            }
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                let bits = self.buf[tail.wrapping_add(i) % self.capacity].load(Ordering::Relaxed);
+                out.push(f32::from_bits(bits));
+            }
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(n),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return out;
+            }
+        }
+    }
+
+    /// Discard everything buffered, counting it as dropped. Consumer-side
+    /// (record thread), like `drain` but without the copy.
+    pub fn clear(&self) {
+        loop {
+            let tail = self.tail.load(Ordering::Acquire);
+            let head = self.head.load(Ordering::Acquire);
+            let n = head.wrapping_sub(tail).min(self.capacity);
+            if n == 0 {
+                return;
+            }
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(n),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                self.dropped.fetch_add(n as u64, Ordering::Relaxed);
+                return;
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().map(|g| g.len()).unwrap_or(0)
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+        head.wrapping_sub(tail).min(self.capacity)
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Samples dropped so far: overfill evictions plus contention sheds.
+    /// Samples dropped so far: overfill evictions (plus `clear()` discards).
+    /// With no lock left to collide on, contention sheds are gone by
+    /// construction — overflow from a seconds-stalled consumer still counts.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }

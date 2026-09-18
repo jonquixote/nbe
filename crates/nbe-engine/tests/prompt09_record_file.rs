@@ -462,6 +462,11 @@ fn audio_tap_ring_drops_oldest_counts_and_never_blocks() {
     // Hammer from threads: 8 pushers × 5k pushes against a draining reader.
     // Completion itself is the assertion — a blocking or deadlocking tap
     // would hang this test; drops are expected and counted, never fatal.
+    // NOTE (SPSC contract): production wires exactly ONE producer (the audio
+    // thread) and one consumer (the record thread). This test deliberately
+    // violates that contract to prove misuse is memory-safe (all-atomic,
+    // bounds-checked) rather than correct: concurrent pushes may overwrite
+    // each other, so it asserts completion only, never content.
     let tap = std::sync::Arc::new(AudioTap::with_capacity(4096));
     let mut handles = Vec::new();
     for t in 0..8 {
@@ -595,6 +600,175 @@ fn decoded_tone_onset_secs(path: &Path) -> f64 {
         }
     }
     panic!("no tone onset found in decoded audio ({} frames)", frames);
+}
+
+#[test]
+fn audio_tap_spsc_hammer_zero_loss_5s() {
+    // DoD 1 (RED first): SPSC hammer — single producer pushing 33ms blocks
+    // continuously, single consumer draining intermittently, 5+ virtual
+    // seconds total. Capacity oversized on purpose so OVERFLOW cannot explain
+    // any loss: every dropped sample here is a contention shed (try_lock
+    // collision on the Mutex impl), not a full ring.
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    const BLOCK: usize = 3200; // ~33.3 ms stereo @48kHz
+    const BLOCKS_PER_ROUND: usize = 160; // 512k samples = 5.33 virtual s/round
+    const ROUNDS: usize = 10;
+    const CAP: usize = 1_000_000; // fits a full round: overflow impossible
+
+    let tap = Arc::new(AudioTap::with_capacity(CAP));
+    let done = Arc::new(AtomicBool::new(false));
+    let drained = Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+
+    // Consumer: intermittent drains (record thread shape: per-message +
+    // poll). Hot loop, no sleep — maximum try_lock overlap with producer.
+    let reader = std::thread::spawn({
+        let tap = tap.clone();
+        let done = done.clone();
+        let drained = drained.clone();
+        move || {
+            while !done.load(Ordering::Acquire) {
+                let got = tap.drain();
+                if !got.is_empty() {
+                    drained.lock().unwrap().extend(got);
+                }
+            }
+            // Final sweep after producer exits.
+            for _ in 0..100 {
+                let got = tap.drain();
+                if got.is_empty() {
+                    break;
+                }
+                drained.lock().unwrap().extend(got);
+            }
+        }
+    });
+
+    // Producer: the audio driver thread. Distinct marker per block so loss,
+    // reorder, or duplication is visible, not just countable. The producer
+    // NEVER drains — single consumer only (SPSC contract).
+    let mut expected = Vec::with_capacity(BLOCK * BLOCKS_PER_ROUND * ROUNDS);
+    let mut shed_early = false;
+    for r in 0..ROUNDS {
+        for b in 0..BLOCKS_PER_ROUND {
+            let marker = (r * BLOCKS_PER_ROUND + b) as f32;
+            let buf = vec![marker; BLOCK];
+            tap.push(&buf);
+            expected.extend(buf);
+        }
+        // Round barrier: wait until the single consumer has caught up so the
+        // next round cannot overflow the ring (keeps the test a pure
+        // contention probe even on the Mutex impl). Breaks early on the
+        // first shed — the end-of-test assertions report it.
+        let target = expected.len();
+        let mut spins = 0u32;
+        loop {
+            if drained.lock().unwrap().len() >= target {
+                break;
+            }
+            if tap.dropped() > 0 || spins > 50_000_000 {
+                shed_early = true;
+                break;
+            }
+            spins += 1;
+            std::thread::yield_now();
+        }
+        if shed_early {
+            break;
+        }
+        let _ = r;
+    }
+    done.store(true, Ordering::Release);
+    reader.join().expect("reader must finish");
+    let got = tap.drain();
+    drained.lock().unwrap().extend(got);
+
+    let drained = drained.lock().unwrap().clone();
+    let pushed = expected.len() as u64;
+    let loss = tap.dropped();
+    eprintln!(
+        "SPSC hammer: pushed={pushed} drained={} dropped={loss}",
+        drained.len()
+    );
+    assert_eq!(
+        loss,
+        0,
+        "contention shed {loss} samples over {} virtual seconds (pushed {pushed}, drained {})",
+        pushed as f64 / 96_000.0,
+        drained.len()
+    );
+    assert_eq!(
+        drained.len() as u64,
+        pushed,
+        "drained must equal pushed with zero drops"
+    );
+    assert_eq!(
+        drained, expected,
+        "FIFO content must survive the hammer intact"
+    );
+}
+
+#[test]
+fn audio_tap_push_never_blocks_contention_micro() {
+    // DoD 2: push 10k blocks back-to-back, holding no lock on the caller
+    // side, max single-push < 1 ms. A locking impl is fast uncontended too —
+    // this pins the bound; the lock-freedom itself is asserted by code
+    // inspection in review (no Mutex/try_lock anywhere in audio_tap.rs).
+    let tap = AudioTap::with_capacity(48_000 * 2 * 5);
+    let buf = vec![0.25f32; 1024];
+    // Untimed warmup: first touch faults pages / settles branches. The bound
+    // below pins STEADY-STATE cost (what the audio deadline pays per block).
+    tap.push(&buf);
+    // Wall clock includes scheduler stalls, and hammer tests in this binary
+    // (plus sibling binaries under `cargo test -p`) saturate cores — so a
+    // preempted batch is retried (up to 10) and every batch max is printed.
+    // The bound itself never moves: a full 10k back-to-back batch must show
+    // max single-push < 1 ms.
+    let mut best = std::time::Duration::MAX;
+    for attempt in 0..10 {
+        let mut max = std::time::Duration::ZERO;
+        for _ in 0..10_000 {
+            let t = std::time::Instant::now();
+            tap.push(&buf);
+            let dt = t.elapsed();
+            if dt > max {
+                max = dt;
+            }
+        }
+        eprintln!("attempt {attempt}: max single push over 10k pushes: {max:?}");
+        if max < best {
+            best = max;
+        }
+        if max < std::time::Duration::from_millis(1) {
+            break;
+        }
+    }
+    assert!(
+        best < std::time::Duration::from_millis(1),
+        "max single push {best:?} exceeds 1 ms"
+    );
+}
+
+#[test]
+fn audio_tap_overflow_paused_consumer_drops_oldest_and_counts() {
+    // DoD 4: overflow policy with a paused consumer (no drains mid-fill).
+    // Overfill drops oldest + counts; a push larger than the ring keeps the
+    // tail. Consumer stall of seconds can still overflow — that path stays
+    // counted, never silent.
+    let tap = AudioTap::with_capacity(8);
+    tap.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(tap.dropped(), 0);
+    tap.push(&[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    assert_eq!(tap.dropped(), 4, "overfill by 4 drops the 4 oldest");
+    assert_eq!(tap.drain(), vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+    let tap2 = AudioTap::with_capacity(4);
+    tap2.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(tap2.dropped(), 2);
+    assert_eq!(tap2.drain(), vec![3.0, 4.0, 5.0, 6.0]);
 }
 
 #[test]
