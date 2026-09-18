@@ -589,6 +589,50 @@ Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an 
 
 **Two-key adjudications (PR #15, recorded 2026-09-12):** non-TAKE defaults unpinned → OUT (nice-to-have; presence proven); deck consumer wiring → OUT (next prompt's scope; the generation contract holds alone). Note that the rest of the PR body's gap list was closed during the fix rounds.
 
+## TRANSITIONS coverage audit (recorded 2026-09-18, read-only)
+
+Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines × engine × golden × falsification. Known state going in: cut and mix proven; overlay persistence across a 15-frame mix proven (07).
+
+(Line numbers below are as-audited; Step 1 added the underlay — `Transition.underlay`, `FrozenLayer`, freeze/collapse in `on_take`, underlay branch in `scene_for` — so engine sites moved. The audit's claims stand; only the coordinates aged.)
+
+| Kind/param | Spec citation | Engine? | Golden test? | Falsified? | Gap |
+|---|---|---|---|---|---|
+| cut | §7.9 zero-duration tween; `view.take` default | Yes — `TransitionKind::Cut` (`scene.rs:881-885`); non-`mix` maps to Cut (`directive.rs:430-433`); progress always 1.0 (`scene.rs:910-911`) | Yes — `take_changes_the_view_within_two_frames` (`prompt04.rs:161-212`) | Yes, pixels before/after boundary | — |
+| mix | §7.9 opacity tween; §7.9.1 first frame by +1, complete by duration+1 | Yes, linear whole-frame alpha only (`render.rs:417-434`, applied `render.rs:609`) | Yes — `mix_interpolates_across_its_duration_and_never_mid_frame` (`prompt04.rs:214-255`) | Blend+completion yes; first-frame-by-+1 partial (jumps to start+5) | GAP-11 |
+| wipe / sting / dve | §7.9 mask tween / alpha+audio cut point / single-element transform; wire admits all six (§16.2) | No — all map to Cut (`directive.rs:430-433`); post-MVP cover exists (§7.9 requires only cut+mix for v1) but wire-accepted kinds render as cut silently | No test sends any of the three | No | GAP-1 |
+| move | §7.9 shared-element transforms; AC-23 identity/frame-exact/easing | No — no interpolation (`scene.rs:667-701`); maps to Cut | No | No | GAP-2, GAP-12 |
+| durationFrames default 15/0 | §7.9 15 frames; schema defaults | Yes (`directive.rs:434-442`) | Partial — explicit values only, default path never taken | Partial | GAP-6 |
+| duration zero / one / max (600/120) | Schema min 0, max 600/120 | Zero collapses to cut (`scene.rs:910-911`); one works by construction; NO clamp anywhere (`scene.rs:888-901`) — a 10000-frame mix is accepted | No | No | GAP-6 |
+| easing linear | §7.9 six families; schema defaults `easeInOut` | Yes trivially (progress = elapsed/duration) | Yes, via mix test | Yes | — |
+| easing ×5 others | Same citations | No — easing never read engine-wide (overlay path explicitly ignores, `directive.rs:757-760`) | No | No | GAP-3 |
+| per-element duration/delay/stagger/path | §7.9 | No — only whole-transition `duration_frames` (`scene.rs:888-901`) | No | No | GAP-4 |
+| preset + elementOverrides | §16.2 preset rule; `TransitionPreset` schema | No — engine reads neither; named preset silently plain cut/mix | No | No | GAP-5 |
+| back-to-back takes | Spec silent (§17.3 no mid-transition row) | Works by construction (`render.rs:435-440`) | No two-take test | No | GAP-7 |
+| cut landing mid-mix | Spec silent | Defined: instant new `view_item` (`scene.rs:910-911` + `render.rs:435-440`); audio ramp-only | No | No | GAP-8 |
+| mix landing mid-mix | Spec silent | **[SUPERSEDED by Step 1 — see resolutions note below.]** Was: struct overwritten, blend discarded. Is: freeze-at-take underlay starts the new mix from the displayed blend | Step-1 suite | Falsified | GAP-9 |
+| audio crossfade §8.7.5 | Mix crossfades over same duration | Yes, wired (`directive.rs:480-488`; `audio_control.rs:111-141`); curve linear (spec-legal; "equal-power" comment FIXED to linear in Step 3) | Mapping pinned (`prompt06.rs:1407-1427`); no take→master e2e | Partial | GAP-10 |
+| audio cut ramp §8.7.6 | Cut + ≥5 ms ramp | Yes (`directive.rs:472-488`; 5 ms floor `audio.rs:25,104-106`); §8.7.7 unwired | Partial, same prompt06 tests | Partial | GAP-10 |
+| AC-17 latency | ≤2 frames; mix first frame by next frame | Yes, next-boundary discipline (`directive.rs:443`) | Cut proven (`prompt04.rs:161-212`); mix first-frame unbisected | Partial | GAP-11 |
+| AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | GAP-12 |
+| §17.2 TRANSITIONING | Scene-state publication + §17.3 events | No engine counterpart; resync silently clears in-flight transition (`directive.rs:863-865`) | No | No | GAP-7 |
+
+GAP findings (spec-cited, Step 3 routes each): **GAP-1** wipe/sting/dve degrade to cut silently (v0.5); **GAP-2** move unimplemented, AC-23 unmet (v0.5); **GAP-3** easing families unapplied (v0.5); **GAP-4** per-element timing absent (v0.5); **GAP-5** preset/overrides ignored (v0.5); **GAP-6** duration edges unpinned + uncapped — Step 3 adds goldens for default/zero/one, clamp decision recorded (max accepted today); **GAP-7** back-to-back + TRANSITIONING unreported — Step 3 adds two-take golden; publication is v0.5; **GAP-8** cut-mid-mix abrupt — Step 3 adds golden pinning current behavior; **GAP-9** mix-mid-mix pop — Step 1's row (discover/define/test/falsify); **GAP-10** audio curve comment false + §8.7.7/bed unwired + no e2e — comment fix in Step 3, rest v0.5; **GAP-11** mix first-frame + e2e legs — Step 3 bisects start+1; **GAP-12** AC-24 as-written unproven — v0.5 (needs move).
+
+### TRANSITIONS v0.5 findings (recorded Step 3 — deferred, not dropped)
+
+- **GAP-1** — wipe/sting/dve render as cut with no signal (§7.9 mask tween / alpha+audio cut point / single-element transform; §16.2 admits all six).
+- **GAP-2** — move has no interpolation and AC-23 (identity/frame-exact/easing) is unmet (§7.9 shared-element transforms).
+- **GAP-3** — the five non-linear easing families are never read engine-wide (§7.9 six families; schema defaults `easeInOut`).
+- **GAP-4** — per-element duration/delay/stagger/path absent; only whole-transition `duration_frames` exists (§7.9).
+- **GAP-5** — preset + elementOverrides ignored; named presets render as plain cut/mix (§16.2 preset rule).
+- **GAP-7 (publication)** — §17.2 TRANSITIONING scene-state publication + §17.3 events have no engine counterpart (§17.2/§17.3).
+- **GAP-10 (remainder)** — §8.7.7 unwired, bed-as-clip unwired, no take→master e2e click test (§8.7.7; §8.7.5/§8.7.6 mapping only is pinned).
+- **GAP-12** — AC-24 as-written (ticker survives complex MOVE untouched) unproven; needs move (§7.9; AC-24).
+
+### TRANSITIONS resolutions (recorded post-Step-3)
+
+Step-0 rows above stay as-audited per §2c; what changed since: **GAP-9 closed** — mix-mid-mix no longer discards the blend (freeze-at-take underlay; continuity falsified); **GAP-6/GAP-8/GAP-11 closed** — duration/default/zero/one/max goldens, cut-mid-mix pin, start+1 bisection; **GAP-10 comment leg closed** (linear-per-code). Underlay chains capped at 8 layers (drop-oldest-nonbase, human rates never reach it). Stop/resync clear in-flight transitions. Remainder stays v0.5 as routed.
+
 ## 09 — Recording
 
 **Owns `marker.add` → recording chapter (§16.11)**, assigned by `[RI-5]` — 09's current doc does not mention it, and its upgrade pass must. Inherits two dormant deferrals that its own benchmark is the trigger for: zero-copy IOSurface→Metal (re-defer *with numbers*, not with prose) and the display surface. §0.1 assumption 14 fixes fragmented MP4 as the crash-safe default. 09 should also carry `[RI-8]`'s pinned residency policy into its own resource accounting: **unload-at-next-load**, so a stop→start recovery does not pay the 46 s reload measured in the report §3.2.

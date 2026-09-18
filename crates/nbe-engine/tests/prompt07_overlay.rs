@@ -496,6 +496,7 @@ fn set_mix(state: &Arc<EngineState>, start: u64, duration: u64) {
         kind: TransitionKind::Mix,
         duration_frames: duration,
         start_frame: start,
+        underlay: None,
     });
     *state.view_item.lock().unwrap() = Some("A2".into());
 }

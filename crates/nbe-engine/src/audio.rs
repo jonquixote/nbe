@@ -292,9 +292,9 @@ pub struct AudioGraph {
     /// Scratch buffers, allocated once so `render` allocates nothing.
     scratch: Vec<f32>,
     guest_scratch: BTreeMap<String, Vec<f32>>,
-    /// Master-bus record tap (WU34): `None` until `set_record_tap`. When
+    /// Master-bus record tap (WU34, SPSC rewrite): `None` until `set_record_tap`. When
     /// present, `render` pushes a copy of the post-master mix into it via the
-    /// tap's non-blocking `push` (single `try_lock`, shed-on-contention, no
+    /// tap's lock-free `push` (atomic head publish, preallocated ring, no
     /// file I/O, no allocation on the audio thread). No deadline change: the
     /// steady-state cost is one bounded memcpy.
     record_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
@@ -663,10 +663,11 @@ impl AudioGraph {
             }
         }
 
-        // Master-bus record tap (WU34): post-render copy into the ring. The
-        // tap's `push` is non-blocking (single `try_lock`, shed on
-        // contention, preallocated ring, no file I/O), so the render-loop
-        // deadline does not change.
+        // Master-bus record tap (WU34, SPSC rewrite): post-render copy into
+        // the lock-free ring. The tap's `push` is non-blocking (atomic
+        // head publish, preallocated ring, no file I/O, no locks at all —
+        // the old try_lock shed whole blocks under contention), so the
+        // render-loop deadline does not change.
         if let Some(tap) = record_tap {
             tap.push(out);
         }

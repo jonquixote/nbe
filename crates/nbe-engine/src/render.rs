@@ -417,7 +417,21 @@ impl RenderLoop {
             Some(t) if t.kind == TransitionKind::Mix && !t.is_complete(frame) => {
                 let alpha = t.progress(frame);
                 let mut out = Vec::new();
-                if let Some(from) = t.from_item.as_deref() {
+                if let Some(u) = t.underlay.as_ref() {
+                    // Mid-mix interrupt: the frozen layers composite beneath
+                    // the new to_item at its fresh α, so frame S_new shows
+                    // exactly what frame S_new−1 showed plus C@0. Flat by
+                    // construction (see `scene::Underlay`): emit bottom-up,
+                    // each layer with its own t0 (§12.1) — the same clocks an
+                    // ordinary mix reads.
+                    for f in &u.layers {
+                        out.push(BusScene {
+                            scene: index.resolve(Some(&f.item)),
+                            alpha: f.alpha,
+                            t0: f.t0,
+                        });
+                    }
+                } else if let Some(from) = t.from_item.as_deref() {
                     // The outgoing scene keeps reading from its own start.
                     out.push(BusScene {
                         scene: index.resolve(Some(from)),

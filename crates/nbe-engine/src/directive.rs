@@ -399,9 +399,13 @@ impl DirectiveHandler {
                     }
                     if let Err(e) = result {
                         // The show still stops, but the ack is withheld: the
-                        // 1.5 s window saw no graceful shutdown.
+                        // 1.5 s window saw no graceful shutdown. The transition
+                        // clears on every exit from this arm, not just the Ok
+                        // path — a failed finalize must not leave stale t0s
+                        // for the next start either.
                         self.state.clock.lock().unwrap().stop();
                         self.state.sessions.release_all();
+                        *self.state.transition.lock().unwrap() = None;
                         return Err(e);
                     }
                 }
@@ -412,6 +416,10 @@ impl DirectiveHandler {
         }
         self.state.clock.lock().unwrap().stop();
         self.state.sessions.release_all();
+        // A stopped show holds no transition: the clock restarts from zero on
+        // the next start, so in-flight t0s would resume stale. Start-without-
+        // load re-arms from a clean slate; load replaces state wholesale.
+        *self.state.transition.lock().unwrap() = None;
         // Outputs are stubs in this prompt; the protocol shape is the point.
         Ok(())
     }
@@ -441,6 +449,100 @@ impl DirectiveHandler {
                     0
                 });
             let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+            // Step 1 mid-mix rule. UNRATIFIED spec-correction candidate: a
+            // PROPOSED NEW ROW for §17.3 (draft, NOT in the spec file — §17.3
+            // today has no mid-transition row at all: every row starts from a
+            // steady item state (READY/ARMED/LIVE/PLAYING/...) and no row
+            // covers a take landing while a `mix` is still in flight on the
+            // same bus. That absence is the point of the proposal):
+            //
+            //   "A take whose transition is `mix`, landing while a `mix` is
+            //    still in flight on the same bus, starts from the currently
+            //    displayed blended state: the interrupted transition's two
+            //    layers (from@1.0, to@α_frozen, α frozen at the last blended
+            //    frame) composite beneath the new to_item at its fresh α,
+            //    and the underlay is dropped when the new transition
+            //    completes. A take whose transition is `cut` keeps instant
+            //    semantics mid-mix (a cut is supposed to snap). Boundary
+            //    discipline is unchanged on every path: start_frame =
+            //    master+1, never mid-frame."
+            //
+            // Mechanism choice: freeze-at-take (this site) + composite in
+            // `scene_for`'s mix branch, rather than flattening pixels. The
+            // underlay keeps item refs with their own t0s, so video timelines
+            // (§12.1) and the completed-mix drop read the same clocks as any
+            // ordinary mix; freezing pixels would have forked a second,
+            // unclocked picture path. Chained interrupts EXTEND the flat
+            // underlay by one frozen layer instead of nesting: the visible
+            // frame IS the flattened top blend, and the nested Transition
+            // shells beneath it carry nothing the render path can reach (see
+            // `scene::Underlay`), so they are dropped, not wrapped.
+            let frozen_frame = start_frame.saturating_sub(1);
+            let previous_transition = self.state.transition.lock().unwrap().clone();
+            let underlay = match kind {
+                crate::scene::TransitionKind::Mix => match &previous_transition {
+                    Some(old)
+                        if old.kind == crate::scene::TransitionKind::Mix
+                            && !old.is_complete(frozen_frame) =>
+                    {
+                        // Collapse: reuse the already-frozen layers verbatim
+                        // (they ARE the displayed composite's base), then
+                        // append the outgoing transition's to_item at its
+                        // frozen α. When the old transition has no underlay
+                        // its from_item is the genuine base; when it HAS one
+                        // its from_item is stale (see the construction note
+                        // below) and the frozen layers already cover it.
+                        let mut layers = match &old.underlay {
+                            Some(u) => u.layers.clone(),
+                            None => old
+                                .from_item
+                                .as_deref()
+                                .map(|from| crate::scene::FrozenLayer {
+                                    item: from.to_string(),
+                                    alpha: 1.0,
+                                    t0: old.from_start_frame,
+                                })
+                                .into_iter()
+                                .collect(),
+                        };
+                        // Back-to-back take (old progress still 0.0): pushing the
+                        // to_item would carry a dead zero-alpha layer for the
+                        // whole new mix, so skip it. If nothing remains (no
+                        // from_item either — the interrupted transition had
+                        // rendered nothing yet), there is no underlay at all
+                        // and the new mix starts clean, exactly as a fresh
+                        // take would.
+                        let frozen = old.progress(frozen_frame);
+                        if frozen > 0.0 {
+                            layers.push(crate::scene::FrozenLayer {
+                                item: old.to_item.clone(),
+                                alpha: frozen,
+                                t0: old.start_frame,
+                            });
+                        }
+                        // Bound: every chained interrupt appends exactly one
+                        // layer, so adversarial take rates grow the composite
+                        // linearly (and squeeze the shared MAX_LAYERS draw
+                        // budget overlays rely on). Past the cap, drop the
+                        // oldest NON-base layer — the base (index 0) is the
+                        // continuity anchor and is never the one to go. The
+                        // cap sits far above human rates (WS dispatch admits
+                        // ~5 takes/s; a 20-frame mix spans <1 s), so it fires
+                        // only as insurance, and the drop is logged loudly.
+                        const MAX_UNDERLAY_LAYERS: usize = 8;
+                        while layers.len() > MAX_UNDERLAY_LAYERS {
+                            layers.remove(1);
+                            tracing::warn!(
+                                "underlay layer cap hit; dropping oldest non-base frozen layer"
+                            );
+                        }
+                        (!layers.is_empty()).then_some(crate::scene::Underlay { layers })
+                    }
+                    _ => None,
+                },
+                // A cut landing mid-mix snaps: overwrite, no underlay (GAP-8).
+                crate::scene::TransitionKind::Cut => None,
+            };
             // SPEC §12.1: the incoming item's timeline starts at the frame it
             // goes on air, and the outgoing item keeps reading from its own
             // start for the length of a mix.
@@ -449,12 +551,20 @@ impl DirectiveHandler {
                 .view_item_start_frame
                 .load(std::sync::atomic::Ordering::SeqCst);
             *self.state.transition.lock().unwrap() = Some(crate::scene::Transition {
+                // STALE-UNDER-UNDERLAY (harmless by construction): while the
+                // new transition carries an `underlay`, `scene_for` composites
+                // the frozen layers and never reads this — it names the old
+                // to_item, not the displayed blend — and after the transition
+                // completes the whole struct is ignored until the next take
+                // overwrites it. Recorded for the plain (no-underlay) mix
+                // path, which does read it.
                 from_item: previous,
                 from_start_frame: previous_start,
                 to_item: r.to_string(),
                 kind,
                 duration_frames: transition_frames,
                 start_frame,
+                underlay,
             });
             *self.state.view_item.lock().unwrap() = Some(r.to_string());
             self.state
@@ -487,6 +597,13 @@ impl DirectiveHandler {
                 0
             };
             self.state.audio_commands.lock().unwrap().push(
+                // Audio mid-mix honesty: a take REPLACES the clip-bus source —
+                // it restarts through silence via `swap_source_through_silence`
+                // — rather than crossfading out of the current video blend.
+                // So a mid-mix take queues a FRESH TakeItem for the new item
+                // at the new t0 (below), never a continuation of the
+                // in-flight one; the graph drops the old source first and the
+                // new item's audio starts clean.
                 crate::audio_control::AudioCommand::TakeItem {
                     item_ref: r.to_string(),
                     // Resolved from the map built at load. `None` is a
@@ -860,10 +977,12 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(t0, std::sync::atomic::Ordering::SeqCst);
-            // A resync supersedes any transition the engine was mid-way
-            // through: the snapshot is the state, not a waypoint toward it.
-            *self.state.transition.lock().unwrap() = None;
         }
+        // A resync supersedes any transition the engine was mid-way through:
+        // the snapshot is the state, not a waypoint toward it. Unconditional —
+        // an absent viewItem key means an empty bus, which holds no transition
+        // either (and the old key-gated placement stranded one there).
+        *self.state.transition.lock().unwrap() = None;
         if snapshot.get("previewItem").is_some() {
             let preview = snapshot
                 .get("previewItem")

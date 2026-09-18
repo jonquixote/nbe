@@ -898,6 +898,55 @@ pub struct Transition {
     /// begins mid-frame: the control plane's directive lands, and the next
     /// boundary is where it takes effect.
     pub start_frame: u64,
+    /// Frozen mid-mix underlay (Step 1): when a MIX take lands while another
+    /// mix is still in flight, the interrupted blend is frozen here instead
+    /// of discarded — the old transition's layers (base plus to_item at its
+    /// frozen α; a zero-α to_item is skipped, and an empty result means no
+    /// underlay at all) composite beneath the new to_item at its fresh α,
+    /// so the new transition starts from the displayed state. Dropped (reads
+    /// as absent) the frame the new transition completes. `None` on every
+    /// other path: a cut landing mid-mix snaps (no underlay — a cut is
+    /// supposed to jump), and a take after a completed mix is ordinary.
+    ///
+    /// The underlay is FLAT (depth 1 by construction): chained mid-mix
+    /// interrupts extend `layers`, never nest. See [`Underlay`].
+    pub underlay: Option<Underlay>,
+}
+
+/// The frozen remains of interrupted mixes: the displayed composite as it
+/// stood at the interrupting take's `start_frame − 1` — the last blended
+/// frame the audience saw — as a flat bottom-up layer list.
+///
+/// WHY FLAT (collapse rule): the render path reads exactly three things from
+/// a frozen level — its item ref, its frozen alpha, and its `t0` (§12.1
+/// clock). The interrupted `Transition` shells around them (progress,
+/// duration, kind, start_frame) are never consulted again after the freeze,
+/// so nesting whole `Transition`s retains dead metadata at O(depth) clone
+/// cost per take — O(n²) over a chain — plus an O(depth) re-walk every frame.
+/// A chained interrupt therefore appends ONE [`FrozenLayer`] (the outgoing
+/// transition's to_item at its frozen α) onto the already-frozen layers
+/// instead of wrapping the old transition: the visible frame IS this
+/// flattened top blend, and nothing beneath it is reachable by any path.
+#[derive(Debug, Clone)]
+pub struct Underlay {
+    /// Bottom-up frozen layers. Index 0 is the base as-frozen (alpha 1.0 when
+    /// the interrupted transition had a from_item; a chained interrupt clones
+    /// the old underlay verbatim, so layers[0] carries whatever alpha it froze
+    /// with — always the displayed composite's own base, never a guess). Each further entry is one interrupted
+    /// transition's to_item at its frozen alpha. One entry per chained
+    /// interrupt — small (item ref + two numbers), and dropped whole when
+    /// the new transition completes.
+    pub layers: Vec<FrozenLayer>,
+}
+
+/// One frozen level of the displayed composite: WHAT (item ref), HOW OPAQUE
+/// (alpha frozen at the interrupting take's `start_frame − 1`), and WHEN (the
+/// item's own `t0`, so video timelines keep reading their own clocks).
+#[derive(Debug, Clone)]
+pub struct FrozenLayer {
+    pub item: String,
+    pub alpha: f32,
+    pub t0: u64,
 }
 
 impl Transition {
