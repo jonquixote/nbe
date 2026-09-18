@@ -93,8 +93,8 @@ jobs:
           line=$(echo "$out" | grep "test result: ok")
           ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
-          if [ "$ran" -lt 18 ]; then
-            echo "expected at least 18 prompt04_midmix tests to run, got $ran"; exit 1
+          if [ "$ran" -lt 20 ]; then
+            echo "expected at least 20 prompt04_midmix tests to run, got $ran"; exit 1
           fi
           echo "prompt04_midmix tests that ran: $ran"
       - name: overlay golden-frame tests actually ran (Prompt 07 step 5)

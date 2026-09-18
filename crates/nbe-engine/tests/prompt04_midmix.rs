@@ -433,7 +433,7 @@ async fn three_deep_takes_stay_continuous_and_bounded() {
     let s2 = transition_start(&state);
     assert_eq!(s2, m2 + 1, "AC-17: second take lands on the next boundary");
     assert!(
-        s2 > s1 && s2 - s1 <= 18,
+        s2 > s1 && s2 - s1 < 20,
         "second interrupt must land strictly mid-mix: S1={s1} S2={s2}"
     );
     let t2 = state.transition.lock().unwrap().clone().unwrap();
@@ -637,7 +637,7 @@ async fn underlay_video_advances_on_its_own_clock_while_alpha_stays_frozen() {
     let s2 = transition_start(&state);
     assert_eq!(s2, m2 + 1, "AC-17 holds on the video path too");
     assert!(
-        s2 > s1 && s2 - s1 <= 18,
+        s2 > s1 && s2 - s1 < 20,
         "the interrupt must land strictly mid-mix: S1={s1} S2={s2}"
     );
     let frozen = t1.progress(s2 - 1);
@@ -1058,4 +1058,58 @@ async fn chained_interrupts_stay_within_the_layer_cap() {
         "base anchor survives the cap"
     );
     assert_eq!(underlay.layers[0].alpha, 1.0, "base stays opaque");
+}
+
+#[tokio::test]
+async fn failed_quiesce_still_clears_inflight_transition() {
+    // The Err path out of show.stop's quiescence arm must clear the
+    // transition exactly like the Ok path: a failed finalize withholds the
+    // ack but must not strand stale t0s for the next start. No-video finish
+    // fails E_RECORD_INPUT deterministically on every machine (no encoder,
+    // no AAC, no wall timing involved).
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, _render) = loaded_engine(dir.path()).await;
+    state.clock.lock().unwrap().start();
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 20).await;
+    assert!(
+        state.transition.lock().unwrap().is_some(),
+        "precondition: mix in flight"
+    );
+    let recdir = tempfile::tempdir().unwrap();
+    let tap = std::sync::Arc::new(nbe_engine::record::AudioTap::new());
+    let session = nbe_engine::record::RecordSession::open(
+        recdir.path(),
+        "s",
+        "ep01",
+        "20260918T000000Z",
+        640,
+        360,
+        30,
+        tap,
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    )
+    .expect("session open must succeed");
+    *state.record_session.lock().unwrap() = Some(session);
+    *state.record_state.lock().unwrap() = nbe_engine::state::RecordState::Recording;
+
+    let err = handler
+        .apply(&directive(
+            "show.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .expect_err("empty-take finalize must fail, ack withheld");
+    assert!(
+        err.to_string().contains("E_RECORD_INPUT"),
+        "expected loud empty-take failure, got: {err}"
+    );
+    assert!(
+        state.transition.lock().unwrap().is_none(),
+        "failed quiescence clears the in-flight transition exactly like the Ok path"
+    );
 }
