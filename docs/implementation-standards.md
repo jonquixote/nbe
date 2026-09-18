@@ -148,7 +148,13 @@ Every prompt MUST also state, in its constraints:
   clean exit code**; the consumer then failed `exit 127` and the failure read as
   a defect in the code under test rather than in the build. Verify the artifact
   at build time, not at probe time — a probe that fails for a build reason costs
-  a whole debugging session pointed at the wrong file.
+   a whole debugging session pointed at the wrong file.
+
+ - **Target hygiene is the agent's duty on this machine.** Incremental build
+   state is pruned after any falsification battery (`./scripts/clean-stale.sh`),
+   and a build that leaves `target/` above **40 GB** is reported, not tolerated
+   (the 32 GB reading at ~600 MB free on 2026-09-14 is the counterexample; the
+   ceiling leaves headroom for 09's media and rehearsal artifacts).
 
 ## 4a. Blocked work items
 

@@ -13,10 +13,14 @@ pub mod clock;
 /// without pulling in wgpu. Re-exported here so engine paths read the same.
 pub use nbe_decode as decode;
 pub mod directive;
+/// Hardware H.264 encode lives in `nbe-decode` (the `unsafe` crate); the
+/// session surface is re-exported through `encode` (WU2).
+pub mod encode;
 pub mod gpu;
 /// SPEC §12.5's budget decision lives in `nbe-core` so preflight and the
 /// engine cannot disagree about it. Re-exported here for callers.
 pub use nbe_core::loop_cache;
+pub mod record;
 pub mod render;
 pub mod scene;
 pub mod state;

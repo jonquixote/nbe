@@ -465,15 +465,19 @@ test("the preflight bound is derived from the package and the binary that will r
     // The 8x ratio was mostly the swizzle, which debug could not optimise and
     // which now runs once instead of once per frame. Measured post-fix at
     // 4.04-15.0 ms/frame (the top of that range is a cold first run).
+    // Re-measured 2026-09-14 against the line-tables-only debug binary on the
+    // same machine: 6 runs at 3.90-6.77 ms/frame (the old 13.5 s cold figure
+    // dated from a memory-pressured tree; codegen unchanged). Worst 6.77
+    // rounds up to 10.
     process.env.NBE_PREFLIGHT_BIN = join("/somewhere", "target", "debug", "nbe-preflight");
     const dbg = preflightBound(pkg(4600));
-    assert.equal(dbg.msPerFrame, 25, "a debug binary is measured at 15.0 ms/frame worst case, rounded up");
-    assert.equal(dbg.ms, 4600 * 25 * 3);
+    assert.equal(dbg.msPerFrame, 10, "a debug binary is measured at 6.77 ms/frame worst case, rounded up");
+    assert.equal(dbg.ms, 4600 * 10 * 3);
     // The bound must clear what the work actually costs, by a margin. 4600
-    // frames at the worst measured debug rate is ~69 s; the >=4x target of the
-    // re-derivation puts the floor for this assertion at 276 s.
+    // frames at the worst measured debug rate is ~31 s; the >=4x target of the
+    // re-derivation puts the floor for this assertion at 124 s.
     assert.ok(
-      dbg.ms >= 4600 * 15 * 4,
+      dbg.ms >= 4600 * 6.77 * 4,
       `the bound must stay >=4x the measured debug cost of this package (got ${dbg.ms} ms)`,
     );
 

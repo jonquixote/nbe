@@ -2,7 +2,8 @@
 //! to the engine's clock/state, verify fallback residency at show.load, and
 //! acknowledge independently of the command path.
 
-use crate::state::{FallbackSlate, SharedEngineState, SharedOutgoing};
+use crate::render::{VIEW_H, VIEW_W};
+use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing};
 use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,22 @@ pub enum DirectiveError {
     Io(#[from] std::io::Error),
     #[error("invalid directive: {0}")]
     Invalid(String),
+    #[error("E_FORBIDDEN_STATE: {0}")]
+    ForbiddenState(String),
+    #[error("E_NO_HARDWARE_ENCODER: {0}")]
+    NoHardwareEncoder(String),
+    /// The record thread did not finish within the bounded wait
+    /// (`E_RECORD_TIMEOUT`, engine-local — the spec's stop failure modes
+    /// predate the threaded take). File kept as-is, take force-abandoned.
+    #[error("E_RECORD_TIMEOUT: {0}")]
+    Timeout(String),
+    /// The requested geometry exceeds what the record path can sustain
+    /// (`E_UNSUPPORTED`, engine-local — the spec has no resolution ceiling for
+    /// recording). See [`check_record_resolution`].
+    #[error("E_UNSUPPORTED: {0}")]
+    Unsupported(String),
+    #[error("E_DISK: {0}")]
+    Disk(String),
 }
 
 /// Tracks the currently playing timed item so a superseding take cancels its
@@ -98,6 +115,9 @@ impl DirectiveHandler {
             "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
+            "record.start" => self.on_record_start(d)?,
+            "record.stop" => self.on_record_stop(d)?,
+            "marker.add" => self.on_marker_add(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -106,13 +126,22 @@ impl DirectiveHandler {
         // Ack every applied directive (SPEC 5.9.3: appliedStateVersion is the
         // engine's most recent applied stateVersion — the honest signal for
         // /status and the show.stop grace window). One emission point, called
-        // exactly once per applied directive.
+        // exactly once per applied directive. WU8 ordering note: record.stop
+        // finalizes its file INSIDE its handler above, so this ack is only
+        // observable after the file + sidecar are complete.
         self.state.set_last_applied(d.state_version);
         self.ack(d.state_version);
         Ok(())
     }
 
     fn on_show_load(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // [RI-8] release-then-rebuild, FIRST: a load→load with no stop in
+        // between must not stack the previous show's sessions onto the cap.
+        // Outstanding leases go stale (epoch bump) and their Drop is a no-op.
+        self.state.sessions.release_all();
+        // No cross-show pollution: a newly loaded show never inherits the
+        // previous show's markers.
+        crate::record::markers::clear();
         let path = d
             .payload
             .get("packagePath")
@@ -136,6 +165,25 @@ impl DirectiveHandler {
         // Record what the show asked for; the cap is applied at publish time
         // (SPEC §10.1.1), so the order of probe and load does not matter.
         self.state.set_requested_quality(index.requested_quality);
+
+        // The telemetry pump measures `recordSpaceMib` against this target.
+        // `show.outputs.record.directory`, resolved against the package root
+        // when relative; `None` when the package declares no record target.
+        let record_dir = manifest
+            .get("show")
+            .and_then(|s| s.get("outputs"))
+            .and_then(|o| o.get("record"))
+            .and_then(|r| r.get("directory"))
+            .and_then(|v| v.as_str())
+            .map(|d| {
+                let p = std::path::Path::new(d);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    root.join(p)
+                }
+            });
+        *self.state.record_dir.lock().unwrap() = record_dir;
 
         // Prompt 05: decode the package's video assets here, at load time.
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
@@ -281,8 +329,89 @@ impl DirectiveHandler {
     /// show.stop arrives with the quiesce stop directives already emitted by
     /// the control plane (SPEC §5.9.5). The engine applies them; the ack is
     /// emitted by `apply` on the way out, once output stopping is real.
-    fn on_show_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    ///
+    /// WU-pipe quiescence (§16.1 table — `quiesceOutputs` defaults true,
+    /// `force` defaults false):
+    /// * `(true, false)` with a live take: graceful internal `record.stop`
+    ///   (bounded 1.5 s wait — headroom inside the §16.1 2 s window for the
+    ///   ack pump + WS flush). Finish errors propagate — the show still stops
+    ///   but the ack is withheld, never a silent ack.
+    /// * `(_, true)`: immediate stop — the take is ABANDONED (file kept
+    ///   as-is, no finish, no sidecar), a warning is logged, the show stops.
+    /// * `(false, false)` with a live take: refused `E_FORBIDDEN_STATE` —
+    ///   told not to quiesce and not forced, so nothing is finalized and the
+    ///   show keeps running.
+    /// * A `Recording` state with no session (the test seam) carries no
+    ///   outputs and stops the show directly.
+    ///
+    /// [RI-8] unload-at-next-load: release decode sessions but retain package
+    /// residency (video rings, image textures, audio assets) until the next
+    /// show.load replaces it.
+    fn on_show_stop(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if *self.state.record_state.lock().unwrap() == RecordState::Recording
+            && self.state.record_session.lock().unwrap().is_some()
+        {
+            let quiesce = payload_bool(&d.payload, "quiesceOutputs", true);
+            let force = payload_bool(&d.payload, "force", false);
+            match (quiesce, force) {
+                (false, false) => {
+                    return Err(DirectiveError::ForbiddenState(
+                        "show.stop: quiesceOutputs=false with active outputs and no force".into(),
+                    ));
+                }
+                (_, true) => {
+                    *self.state.record_tap.lock().unwrap() = None;
+                    if let Some(mut s) = self.state.record_session.lock().unwrap().take() {
+                        s.abandon();
+                    }
+                    crate::record::markers::clear();
+                    tracing::warn!("show.stop: force stop, recording abandoned as-is (no finish)");
+                    *self.state.record_state.lock().unwrap() = RecordState::Idle;
+                }
+                (true, false) => {
+                    *self.state.record_tap.lock().unwrap() = None;
+                    let mut session = self.state.record_session.lock().unwrap().take();
+                    let result = match session.as_mut() {
+                        Some(s) => s
+                            .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
+                            .map(|_| ())
+                            .map_err(session_err),
+                        None => {
+                            crate::record::markers::clear();
+                            Ok(())
+                        }
+                    };
+                    *self.state.record_state.lock().unwrap() = RecordState::Idle;
+                    match &result {
+                        Ok(()) => {
+                            crate::record::markers::clear();
+                            info!("show.stop: recording quiesced");
+                        }
+                        Err(DirectiveError::Timeout(_)) => {
+                            tracing::warn!(
+                                "show.stop: graceful record shutdown timed out; take force-abandoned, file kept as-is"
+                            );
+                        }
+                        Err(e) => {
+                            crate::record::markers::clear();
+                            tracing::warn!(err = %e, "show.stop: recording finalize failed");
+                        }
+                    }
+                    if let Err(e) = result {
+                        // The show still stops, but the ack is withheld: the
+                        // 1.5 s window saw no graceful shutdown.
+                        self.state.clock.lock().unwrap().stop();
+                        self.state.sessions.release_all();
+                        return Err(e);
+                    }
+                }
+            }
+        } else if *self.state.record_state.lock().unwrap() == RecordState::Recording {
+            // Session-less Recording (the test seam): no outputs to quiesce.
+            *self.state.record_state.lock().unwrap() = RecordState::Idle;
+        }
         self.state.clock.lock().unwrap().stop();
+        self.state.sessions.release_all();
         // Outputs are stubs in this prompt; the protocol shape is the point.
         Ok(())
     }
@@ -384,6 +513,221 @@ impl DirectiveHandler {
     fn on_audio(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let mut pending = self.state.audio_commands.lock().unwrap();
         pending.push(crate::audio_control::AudioCommand::from_directive(d)?);
+        Ok(())
+    }
+
+    /// Output commands, WU-pipe unified (SPEC §16.14): `record.start` carries
+    /// `{ outputId? }` ONLY. Show, episode, geometry, and rate derive from the
+    /// loaded package + engine — the retired `show`/`episode`/`width`/
+    /// `height`/`fps`/`startTimestamp` payload fields are NOT read (extra
+    /// fields are ignored, never rejected, so an older control plane keeps
+    /// working while its naming fields stop mattering). `outputId` selects
+    /// the (single) configured record target and names the episode filename
+    /// component; the show component reads the package manifest
+    /// (`show.title`, else `show.id`); geometry is the View (`VIEW_W/H` — the
+    /// loop's ONE encoder records what is on air); rate is the house rate;
+    /// the timestamp is generated.
+    ///
+    /// The start path PROBES for a hardware encoder without opening a stream
+    /// (SPEC precondition); the recording encoder opens later, on the record
+    /// thread. The handler stays non-blocking: session open only reserves the
+    /// path and spawns the thread.
+    ///
+    /// Refusals: `E_FORBIDDEN_STATE` when the show is not RUNNING or a
+    /// recording is already active (the refused second start preserves the
+    /// live pipeline but still resets chapters for the next take);
+    /// `Invalid` when no record directory is configured or the path cannot be
+    /// reserved (`E_DISK` inside); `E_DISK` early when the target is
+    /// unwritable/full (admission probe, before the take owns anything);
+    /// `E_UNSUPPORTED` when the record geometry exceeds 1920x1080 (see
+    /// [`check_record_resolution`]); `E_NO_HARDWARE_ENCODER` when the probe
+    /// fails (forced or genuine). A successful start reserves the path, spawns
+    /// the thread, zeroes `record_tap_ms` + `skipped_record_frames`, and flips
+    /// to Recording.
+    fn on_record_start(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if !self.state.is_running() {
+            return Err(DirectiveError::ForbiddenState(
+                "record.start requires a running show".into(),
+            ));
+        }
+        // Fresh marker list per recording: a new take never inherits the
+        // previous take's chapters. Resets on every start attempt while the
+        // show runs — including a refused second start — and only there
+        // (never while stopped).
+        crate::record::markers::clear();
+        // Defined behavior: a second start while Recording is refused — the
+        // live pipeline is preserved.
+        if *self.state.record_state.lock().unwrap() == RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "record.start while already recording".into(),
+            ));
+        }
+        let dir = self.state.record_dir.lock().unwrap().clone();
+        let Some(dir) = dir else {
+            return Err(DirectiveError::Invalid(
+                "record.start: no record directory (show.outputs.record.directory not configured)"
+                    .into(),
+            ));
+        };
+        // Resolution ceiling: the loop records what is on air (VIEW_W/H).
+        check_record_resolution(VIEW_W, VIEW_H)?;
+        // Admission: refuse early on an unwritable/full target (E_DISK here,
+        // not mid-take). The session open would refuse a missing path on its
+        // own, but only this probe measures free space before the take owns it.
+        crate::record::available_space_mib(&dir).map_err(finish_err)?;
+        // SPEC §16.14 precondition, wired (no dead variant): probe, no stream.
+        if !crate::record::session::encoder_available() {
+            return Err(DirectiveError::NoHardwareEncoder(
+                "record.start: no hardware H.264 encoder available".into(),
+            ));
+        }
+        let episode = d
+            .payload
+            .get("outputId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("episode")
+            .to_string();
+        let show = record_show_name(&self.state);
+        let fps = self.state.house_rate();
+        let start_timestamp = default_timestamp();
+        // The shared tap: published here, attached to the live graph by the
+        // audio driver, drained by the record thread.
+        let tap = Arc::new(crate::record::AudioTap::new());
+        let session = crate::record::RecordSession::open(
+            &dir,
+            &show,
+            &episode,
+            &start_timestamp,
+            VIEW_W,
+            VIEW_H,
+            fps,
+            tap.clone(),
+            self.state.skipped_record_frames.clone(),
+        )
+        .map_err(finish_err)?;
+        // Fresh counters per take: the loop accumulates into these for the
+        // take's lifetime, so a new take starts from zero (set before the
+        // state flip, while the loop still sees Idle).
+        *self.state.record_tap_ms.lock().unwrap() = 0.0;
+        self.state.skipped_record_frames.store(0, Ordering::SeqCst);
+        *self.state.record_tap.lock().unwrap() = Some(tap);
+        *self.state.record_session.lock().unwrap() = Some(session);
+        *self.state.record_state.lock().unwrap() = RecordState::Recording;
+        Ok(())
+    }
+
+    /// `record.stop` ends the take gracefully: signal + bounded wait for the
+    /// record thread — the file + sidecar are complete before `apply()` emits
+    /// the ack — then returns the state machine to Idle. Requires an active
+    /// recording (`E_FORBIDDEN_STATE` while Idle). A session-less `Recording`
+    /// (the test seam) flips with nothing to finish and preserves the marker
+    /// store: only the session owner (the thread's finish/abandon paths and
+    /// the successful-stop path below) clears markers, so a second stop that
+    /// finds no session cannot empty the take's chapters. A failed finish
+    /// still ends the recording (no pipeline remains to continue with) but
+    /// withholds the ack: `apply()` only acks on `Ok`. A timed-out wait takes
+    /// the force path (file kept as-is, warning logged) and likewise withholds
+    /// the ack.
+    ///
+    /// Concurrency note: the state check and the session take hold the session
+    /// guard continuously (one acquisition), so two concurrent stops cannot
+    /// both take the session — the loser finds `None` and clears nothing. Two
+    /// separate mutexes (`record_state`, `record_session`) cannot be acquired
+    /// atomically, so the residual is documented, not eliminated: a stop that
+    /// observes `Recording` while a start is still publishing may take `None`
+    /// and flip to Idle just as the start publishes its session, orphaning it
+    /// (its thread still exits via the frames-gone path; the file stays
+    /// as-is). In practice the loop never issues concurrent record stops (one
+    /// directive stream) and starts/stops are sequential. What IS
+    /// deterministic — a session-less stop preserves markers — is pinned by
+    /// test; the rest is documented here.
+    fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // Hold the session guard across the state check + take: one
+        // acquisition, so a concurrent stop cannot interleave between them.
+        // The guard is dropped before the blocking wait below.
+        let mut session_guard = self.state.record_session.lock().unwrap();
+        if *self.state.record_state.lock().unwrap() != RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "record.stop requires an active recording".into(),
+            ));
+        }
+        // Detach the driver first: the thread keeps its own Arc for the tail
+        // drain, and no new live mix enters the take after this point.
+        *self.state.record_tap.lock().unwrap() = None;
+        // Taken, not borrowed: the wait runs without holding any state lock.
+        let mut session = session_guard.take();
+        drop(session_guard);
+        // Ownership decides clearing: only the session owner clears markers.
+        let owned = session.is_some();
+        let result = match session.as_mut() {
+            Some(s) => s
+                .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
+                .map(|_| ())
+                .map_err(session_err),
+            // No session to own the take: flip to Idle, clear nothing. Only
+            // the session owner clears markers (thread finish/abandon paths,
+            // successful stop below); the next start/load clears anyway.
+            None => Ok(()),
+        };
+        *self.state.record_state.lock().unwrap() = RecordState::Idle;
+        match &result {
+            Ok(()) if owned => {
+                crate::record::markers::clear();
+                info!("record.stop: take finished");
+            }
+            Ok(()) => {
+                info!("record.stop: session-less stop; markers preserved");
+            }
+            Err(DirectiveError::Timeout(_)) => {
+                // The detached take's late finish owns its marker snapshot —
+                // clearing here would empty its sidecar — so only the next
+                // start/load clears.
+                tracing::warn!(
+                    "record.stop: graceful shutdown timed out; take force-abandoned, file kept as-is"
+                );
+            }
+            Err(e) => {
+                crate::record::markers::clear();
+                tracing::warn!(err = %e, "record.stop: take finalize failed");
+            }
+        }
+        result
+    }
+
+    /// `marker.add` (SPEC §16.11, `[RI-5]`): requires an active recording —
+    /// while Idle the marker would be recorded nowhere, so accept-but-ignore
+    /// is silent loss and is refused with `E_FORBIDDEN_STATE` instead. While
+    /// Recording the marker lands in the process-wide
+    /// [`crate::record::markers`] store with the master frame; the sidecar
+    /// writer snapshots it at finish.
+    /// Frame rule: `master_frame() + 1` — the marker takes effect on the NEXT
+    /// frame boundary, the same discipline as a take (`on_take`) and an
+    /// overlay (`on_overlay`), never mid-frame.
+    /// Timecode rule: the verbatim `timecode` string is kept as given; `frame`
+    /// is the authority for ordering/chapters.
+    fn on_marker_add(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        if *self.state.record_state.lock().unwrap() != RecordState::Recording {
+            return Err(DirectiveError::ForbiddenState(
+                "marker.add requires an active recording".into(),
+            ));
+        }
+        let name = d
+            .payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| DirectiveError::Invalid("marker.add missing name".into()))?;
+        let timecode = d
+            .payload
+            .get("timecode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        crate::record::markers::add(crate::record::markers::Marker {
+            name: name.to_string(),
+            frame: self.state.master_frame().map(|f| f + 1).unwrap_or(0),
+            timecode,
+        });
         Ok(())
     }
 
@@ -627,4 +971,113 @@ fn duration_frames(d: &DirectiveFrame) -> Option<u32> {
         .get("durationFrames")
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
+}
+
+/// `show.stop` payload flag with a SPEC default (both default when absent:
+/// `quiesceOutputs: true`, `force: false`).
+fn payload_bool(payload: &serde_json::Value, key: &str, default: bool) -> bool {
+    payload
+        .get(key)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(default)
+}
+
+/// Derive the show filename component from the loaded package (SPEC: the
+/// `record.start` directive carries no naming — `{ outputId? }` only).
+/// Reads `<packagePath>/manifest.json` `show.title` (else `show.id`); any
+/// failure (no package, unreadable manifest) falls back to `"show"` with a
+/// warning — naming must never refuse a take. Read at start time (not cached
+/// at load) so `show.load` stays untouched by recording concerns.
+fn record_show_name(state: &SharedEngineState) -> String {
+    let path = state.package_path.lock().unwrap().clone();
+    let Some(path) = path else {
+        return "show".into();
+    };
+    let manifest_path = std::path::Path::new(&path).join("manifest.json");
+    let name = std::fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|m| {
+            m.get("show").and_then(|s| {
+                s.get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| s.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            })
+        })
+        .filter(|s| !s.is_empty());
+    match name {
+        Some(n) => n,
+        None => {
+            tracing::warn!(
+                path = %manifest_path.display(),
+                "record.start: show name unreadable, falling back to \"show\""
+            );
+            "show".into()
+        }
+    }
+}
+
+/// Ceiling for the record path: 1920x1080. Refusing above it is deliberate —
+/// the loop records what is on air via a View readback, and readback-alone
+/// costs ≈48 ms at 4K, which exceeds any 30/60 fps frame budget before a
+/// single sample is encoded. Recording above the ceiling would therefore shed
+/// every frame by construction (the budget pre-check skips) while pretending
+/// to record. Refused with engine-local `E_UNSUPPORTED`, loudly, before any
+/// pipeline is reserved. (Step-0b answer-changer #3 made this law.)
+pub const MAX_RECORD_WIDTH: u32 = 1920;
+/// See [`MAX_RECORD_WIDTH`].
+pub const MAX_RECORD_HEIGHT: u32 = 1080;
+
+/// Enforce the record resolution ceiling ([`MAX_RECORD_WIDTH`]x[`MAX_RECORD_HEIGHT`]).
+/// The View is exactly at-cap today, so this is a backstop against a future
+/// geometry bump silently turning every take into shed frames — tested
+/// directly, since the live path cannot currently exceed the ceiling.
+pub fn check_record_resolution(width: u32, height: u32) -> Result<(), DirectiveError> {
+    if width > MAX_RECORD_WIDTH || height > MAX_RECORD_HEIGHT {
+        return Err(DirectiveError::Unsupported(format!(
+            "record geometry {width}x{height} exceeds the {MAX_RECORD_WIDTH}x{MAX_RECORD_HEIGHT} ceiling; \
+             4K readback-alone (~48ms) exceeds any 30/60fps budget"
+        )));
+    }
+    Ok(())
+}
+
+/// Filename timestamp when the directive carries none: millisecond granularity
+/// plus a per-process counter suffix, sanitizer-safe (the writer keeps
+/// `[A-Za-z0-9._-]`). Second granularity truncated stop→restart takes in the
+/// same second onto one filename (`File::create` truncates); this guarantees
+/// distinct files for rapid takes.
+fn default_timestamp() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("session-{millis}-{n}")
+}
+
+/// Writer/file failures underneath record stop/start keep their stable tokens
+/// (`E_DISK`, `E_AAC_UNAVAILABLE`, `E_RECORD_INPUT`) — including `E_DISK`,
+/// which has its own variant so the token survives instead of dissolving
+/// into a bare io error.
+fn finish_err(e: crate::record::RecordError) -> DirectiveError {
+    match e {
+        crate::record::RecordError::Disk(msg) => DirectiveError::Disk(msg),
+        other => DirectiveError::Invalid(other.to_string()),
+    }
+}
+
+/// Thread-take failures map the same way, plus the pipeline's own shapes:
+/// no encoder (SPEC precondition, wired — no dead variant) and the bounded-
+/// wait timeout (engine-local token, file kept, error surfaces).
+fn session_err(e: crate::record::session::SessionError) -> DirectiveError {
+    match e {
+        crate::record::session::SessionError::NoEncoder(msg) => {
+            DirectiveError::NoHardwareEncoder(msg)
+        }
+        crate::record::session::SessionError::Timeout(msg) => DirectiveError::Timeout(msg),
+        crate::record::session::SessionError::Record(r) => finish_err(r),
+    }
 }

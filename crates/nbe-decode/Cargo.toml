@@ -9,10 +9,21 @@ description = "Hardware video decode (VideoToolbox via AVFoundation), shared by 
 thiserror.workspace = true
 tracing.workspace = true
 objc2 = "0.6.4"
+objc2-core-foundation = { version = "0.3.2", features = ["CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError", "NSObject", "NSEnumerator"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVMediaFormat", "AVAudioSettings", "objc2-core-media"] }
 objc2-core-media = { version = "0.3.2", features = ["CMSampleBuffer", "CMTime", "CMFormatDescription", "CMBase", "CMBlockBuffer", "objc2-core-video"] }
 objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn", "CVPixelFormatDescription"] }
+objc2-video-toolbox = "0.3.2"
+# AAC-LC encode for recording (WU34): AudioConverter PCM→AAC plus the
+# compression magic cookie (AudioSpecificConfig for esds). Justification for
+# the new dep: the engine crate denies `unsafe_code`, so AudioToolbox FFI can
+# only live in this crate; a CPU AAC fallback would violate the no-silent-
+# substitution rule, and hand-rolling an AAC encoder is not a work unit.
+# `default-features = false` keeps the surface to AudioConverter + the
+# CoreAudio base types it is declared against.
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["AudioConverter", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["CoreAudioBaseTypes"] }
 
 [lints]
 workspace = true

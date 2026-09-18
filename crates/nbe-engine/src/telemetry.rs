@@ -5,22 +5,34 @@
 
 use crate::state::EngineState;
 use nbe_protocol::{EngineFrame, EngineTelemetry};
+use std::path::Path;
 
-/// Build one engine-owned telemetry frame from the current state. The shape
-/// must be complete even when values are stubs — a consumer should never see
-/// a missing field (§5.9.1 + §10.1.1).
-pub fn build_tick(state: &EngineState) -> EngineFrame {
+/// Free space on the record target's volume, in MiB (SPEC §10.1).
+///
+/// Computed on the telemetry tick (or lazily by the caller holding the record
+/// directory) — never in the frame path, so the render loop keeps its
+/// deadline behavior unchanged. Unwritable/missing targets degrade to `0.0`
+/// here; the loud `E_DISK` refusal lives in
+/// [`crate::record::available_space_mib`], which this wraps.
+pub fn record_space_mib_for(dir: Option<&Path>) -> f64 {
+    dir.and_then(|d| crate::record::available_space_mib(d).ok())
+        .unwrap_or(0.0)
+}
+
+/// Build one engine-owned telemetry frame, measuring `recordSpaceMib`
+/// against the real target volume when `record_dir` is `Some`.
+pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> EngineFrame {
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
             .dropped_frames_total
             .load(std::sync::atomic::Ordering::SeqCst),
         render_gpu_time_ms: 0.0,
-        decode_sessions: state.sessions.peak(),
+        decode_sessions: state.sessions.active(),
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
         stream_buffer_ms: 0.0,
-        record_space_mib: 0.0,
+        record_space_mib: record_space_mib_for(record_dir),
         master_clock_drift_ms: 0.0,
         fallback_active: state
             .fallback_active
@@ -51,4 +63,16 @@ pub fn build_tick(state: &EngineState) -> EngineFrame {
             .unwrap_or(0.0),
         fields: frame,
     }
+}
+
+/// Build one engine-owned telemetry frame from the current state. The shape
+/// must be complete even when values are stubs — a consumer should never see
+/// a missing field (§5.9.1 + §10.1.1).
+///
+/// Render-loop path: unchanged. No record target is known here, so
+/// `recordSpaceMib` reports `0.0`; callers holding the record directory use
+/// [`build_tick_for_dir`]. The channel pump reads the loaded package's record
+/// directory out of engine state and calls [`build_tick_for_dir`] with it.
+pub fn build_tick(state: &EngineState) -> EngineFrame {
+    build_tick_for_dir(state, None)
 }

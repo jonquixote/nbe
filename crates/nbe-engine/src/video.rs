@@ -12,7 +12,8 @@ use crate::decode::{DecodeError, DecodeSession, DecodedFrame};
 use crate::loop_cache::{self, CacheBudget, CachePlan, LoopSpec};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// SPEC §24: cap simultaneous decode sessions and reuse them. Eight is a
 /// conservative ceiling well under the platform limit.
@@ -31,20 +32,43 @@ pub const CLIP_PRELOAD_FRAMES: usize = 30;
 /// a measurement rather than a guess.
 #[derive(Debug, Default)]
 pub struct SessionPool {
-    active: AtomicU32,
-    peak: AtomicU32,
-    refused: AtomicU32,
+    inner: Arc<PoolInner>,
     cap: u32,
 }
 
-/// A live lease on a decode session. Dropping it returns the slot.
-pub struct SessionLease<'a> {
-    pool: &'a SessionPool,
+#[derive(Debug, Default)]
+struct PoolInner {
+    active: AtomicU32,
+    peak: AtomicU32,
+    refused: AtomicU32,
+    /// Bumped by every [`SessionPool::release_all`]. A lease born in an older
+    /// epoch was already reclaimed; its `Drop` must not decrement again.
+    epoch: AtomicU64,
 }
 
-impl Drop for SessionLease<'_> {
+/// A live lease on a decode session. Owned, not borrowed: the lease keeps the
+/// pool's counters alive via `Arc`, so a [`VideoAsset`] can hold its session
+/// for the show's duration without self-referential state.
+///
+/// Dropping the lease returns the slot — unless a [`SessionPool::release_all`]
+/// has since reclaimed it, in which case the stale lease drops silently. The
+/// epoch guard plus a saturating decrement mean a
+/// live-lease-after-`release_all` can never underflow `active` below zero.
+#[derive(Debug)]
+pub struct SessionLease {
+    pool: Arc<PoolInner>,
+    epoch: u64,
+}
+
+impl Drop for SessionLease {
     fn drop(&mut self) {
-        self.pool.active.fetch_sub(1, Ordering::SeqCst);
+        if self.pool.epoch.load(Ordering::SeqCst) != self.epoch {
+            return; // reclaimed by release_all; nothing to return
+        }
+        let _ = self
+            .pool
+            .active
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
     }
 }
 
@@ -63,38 +87,57 @@ impl SessionPool {
     /// Take a session slot, or `None` when the cap is reached. A refusal is
     /// counted: an operator seeing decode failures needs to know whether the
     /// cap or the media was the cause.
-    pub fn acquire(&self) -> Option<SessionLease<'_>> {
+    pub fn acquire(&self) -> Option<SessionLease> {
         loop {
-            let current = self.active.load(Ordering::SeqCst);
+            let current = self.inner.active.load(Ordering::SeqCst);
             if current >= self.cap {
-                self.refused.fetch_add(1, Ordering::SeqCst);
+                self.inner.refused.fetch_add(1, Ordering::SeqCst);
                 return None;
             }
             if self
+                .inner
                 .active
                 .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                self.peak.fetch_max(current + 1, Ordering::SeqCst);
-                return Some(SessionLease { pool: self });
+                self.inner.peak.fetch_max(current + 1, Ordering::SeqCst);
+                return Some(SessionLease {
+                    pool: Arc::clone(&self.inner),
+                    epoch: self.inner.epoch.load(Ordering::SeqCst),
+                });
             }
         }
     }
 
     pub fn active(&self) -> u32 {
-        self.active.load(Ordering::SeqCst)
+        self.inner.active.load(Ordering::SeqCst)
     }
 
     pub fn peak(&self) -> u32 {
-        self.peak.load(Ordering::SeqCst)
+        self.inner.peak.load(Ordering::SeqCst)
     }
 
     pub fn refused(&self) -> u32 {
-        self.refused.load(Ordering::SeqCst)
+        self.inner.refused.load(Ordering::SeqCst)
     }
 
     pub fn cap(&self) -> u32 {
         self.cap
+    }
+
+    /// Release all held decode sessions ([RI-8] unload-at-next-load).
+    ///
+    /// `show.stop` and the top of `show.load` (release-then-rebuild) call
+    /// this: `active` drops to zero so `decodeSessions` telemetry (which
+    /// reads `active`) clears within the grace window, while package
+    /// residency (video rings, image textures, audio assets) is retained
+    /// elsewhere until the next `show.load` replaces it. Outstanding leases
+    /// go stale via the epoch bump and their `Drop` becomes a no-op — no
+    /// double-return, no underflow.
+    pub fn release_all(&self) {
+        self.inner.active.store(0, Ordering::SeqCst);
+        self.inner.peak.store(0, Ordering::SeqCst);
+        self.inner.epoch.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -112,6 +155,11 @@ pub struct VideoAsset {
     /// The loop period. For a non-looping clip this is the frame count.
     pub period_frames: u32,
     pub plan: CachePlan,
+    /// The decode session this asset holds for the show's duration ([RI-8]).
+    /// Ownership IS the effect: the lease keeps `active` above zero while the
+    /// asset is resident, and dropping the asset (load replacement, stop
+    /// release) returns the slot. Never read — hence the prefix.
+    _session: SessionLease,
 }
 
 impl VideoAsset {
@@ -156,7 +204,7 @@ pub fn load_video_asset(
     declared_period: Option<u32>,
     gop_frames: u32,
 ) -> Result<VideoAsset, DecodeError> {
-    let _lease = pool.acquire().ok_or_else(|| DecodeError::Failed {
+    let lease = pool.acquire().ok_or_else(|| DecodeError::Failed {
         path: path.display().to_string(),
         reason: format!(
             "decode-session cap reached ({} active of {}); SPEC §24",
@@ -241,6 +289,11 @@ pub fn load_video_asset(
         budget,
     );
 
+    // [RI-8] unload-at-next-load: a successfully decoded asset OWNS its
+    // decode session until show.stop (or the next show.load's
+    // release-then-rebuild) releases it. Failures drop the lease and free
+    // the slot. No `mem::forget`: the lease lives in the asset, so a
+    // load→load without a stop cannot stack sessions to the cap.
     Ok(VideoAsset {
         asset_id: asset_id.to_string(),
         frames,
@@ -249,6 +302,7 @@ pub fn load_video_asset(
         source_frame_rate,
         period_frames,
         plan,
+        _session: lease,
     })
 }
 
@@ -269,5 +323,17 @@ mod tests {
         let _c = pool.acquire().expect("a slot freed by drop is reusable");
         assert_eq!(pool.peak(), 2);
         drop(b);
+    }
+
+    #[test]
+    fn stale_lease_after_release_all_does_not_underflow() {
+        let pool = SessionPool::with_cap(2);
+        let stale = pool.acquire().expect("first");
+        pool.release_all();
+        assert_eq!(pool.active(), 0);
+        drop(stale); // reclaimed already: must be a silent no-op, not a wrap
+        assert_eq!(pool.active(), 0);
+        let _fresh = pool.acquire().expect("pool usable after release");
+        assert_eq!(pool.active(), 1);
     }
 }

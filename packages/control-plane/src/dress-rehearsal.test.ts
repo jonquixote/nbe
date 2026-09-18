@@ -19,9 +19,9 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { WebSocket } from "ws";
 
 import { AuditLog } from "./audit.js";
@@ -285,7 +285,7 @@ after(async () => {
     writeFileSync(join(dir, "show-states.json"), JSON.stringify(showStates, null, 2));
     writeFileSync(
       join(dir, "timings.json"),
-      JSON.stringify({ timings, clockMovedAtMs, clipAudibleAtMs }, null, 2),
+      JSON.stringify({ timings, clockMovedAtMs, clipAudibleAtMs, recordSpan }, null, 2),
     );
   } catch {
     // Artifacts are diagnostics, never a reason to fail the gate.
@@ -580,3 +580,414 @@ function droppedNow(): number {
   return ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["droppedFramesTotal"] ??
     0) as number;
 }
+
+// --- Record extension (Prompt 09): structure, never performance --------------
+//
+// The dress package declares no `show.outputs.record.directory` (proven RED:
+// the engine refused `record.start` with "no record directory"), so these
+// steps stage a record-enabled COPY of the package in a temp dir at runtime:
+// same assets, plus `show.outputs.record.directory` pointing at a temp record
+// out dir. No schema edit, no fixture edit, no engine seam — the schema
+// already allows `outputs.record.directory`, preflight does not gate on it,
+// and the take path is discovered by scanning the record dir for `*.mp4`
+// (the control-plane ack carries no path).
+//
+// CI runner is 3 arm64 cores with zero-drop thresholds already failing by
+// design there. Every assertion below is STRUCTURE (bytes on disk,
+// parseability, alignment) — never a frame budget or callback cadence.
+
+/** ffprobe fallback locations when PATH lookup misses (Intel vs arm64 Homebrew). */
+const FFPROBE_FALLBACKS = ["/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe"];
+/** Nominal house rate the engine is spawned with (`NBE_HOUSE_RATE: "30"`). */
+const HOUSE_RATE = 30;
+/** Seconds of show recorded in the clean-stop take. */
+const RECORD_SECS = 4;
+/** `record.stop` finalize is a real mux finish: generous, not inherited. */
+const RECORD_STOP_MS = 30_000;
+
+/** The clean-stop take's artifact, shared from step 11 to step 12. */
+let recordFile: string | null = null;
+/** Wall clock at `record.start` applied (content begins) and at `marker.add`. */
+let recordWallStartMs = 0;
+let markerWallOffsetSecs = 0;
+/** Record-path pressure across the step-11 span (fork condition #2). */
+let recordSpan: Record<string, unknown> | null = null;
+
+/**
+ * Resolve ffprobe via PATH lookup first, then the two Homebrew prefixes.
+ * Returns null when absent; callers SKIP the 3 record steps with a logged
+ * line (documented skip, never false-green — the steps return early without
+ * asserting anything).
+ */
+function resolveFfprobe(): string | null {
+  const pathEnv = process.env["PATH"] ?? "";
+  for (const dir of pathEnv.split(":")) {
+    if (!dir) continue;
+    const cand = join(dir, "ffprobe");
+    try {
+      if (existsSync(cand)) return cand;
+    } catch {
+      // Ignore bad PATH entries and keep scanning.
+    }
+  }
+  for (const fb of FFPROBE_FALLBACKS) {
+    try {
+      if (existsSync(fb)) return fb;
+    } catch {
+      // Ignore and keep scanning.
+    }
+  }
+  // Last resort: a bare `ffprobe` resolvable by exec even if the file probe
+  // above missed (unusual PATH layouts). Only accept when it runs.
+  try {
+    const probe = spawnSync("ffprobe", ["-version"], { encoding: "utf8" });
+    if (probe.status === 0) return "ffprobe";
+  } catch {
+    // Absent — fall through to null.
+  }
+  return null;
+}
+
+/** ffprobe path, or null with a skip message when absent (the ONLY skip). */
+function ffprobeOrSkip(): string | null {
+  const found = resolveFfprobe();
+  if (found !== null) return found;
+  console.log(
+    `SKIP: ffprobe absent (PATH + ${FFPROBE_FALLBACKS.join(", ")} checked) — record steps need ffprobe 9.0.1`,
+  );
+  return null;
+}
+
+function ffprobeJson(ffprobe: string, file: string, extra: string[]): Record<string, unknown> {
+  const run = spawnSync(ffprobe, ["-v", "error", ...extra, "-of", "json", file], {
+    encoding: "utf8",
+  });
+  assert.equal(
+    run.status,
+    0,
+    `ffprobe must parse the recording; stderr: ${run.stderr}`,
+  );
+  return JSON.parse(run.stdout) as Record<string, unknown>;
+}
+
+/**
+ * Stage a record-enabled copy of the dress package: same assets, plus
+ * `show.outputs.record.directory` (absolute) into a fresh record out dir.
+ * Returns the staged package dir and the record out dir.
+ */
+function stageRecordPackage(): { pkgDir: string; recordDir: string } {
+  const tmp = mkdtempSync(join(tmpdir(), "nbe-dress-record-"));
+  const pkgDir = join(tmp, "dress_show");
+  mkdirSync(pkgDir, { recursive: true });
+  const recordDir = join(tmp, "record-out");
+  mkdirSync(recordDir, { recursive: true });
+  // Copy the whole fixture (136 K: manifest + media + preflight sidecar).
+  cpSync(PKG, pkgDir, { recursive: true });
+  const manifestPath = join(pkgDir, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  const show = manifest["show"] as Record<string, unknown>;
+  show["outputs"] = { record: { directory: recordDir } };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return { pkgDir, recordDir };
+}
+
+/** The single `*.mp4` in `dir`, or fail listing what was there. */
+function soleRecording(dir: string): string {
+  const mp4s = readdirSync(dir).filter((f) => f.endsWith(".mp4"));
+  assert.equal(mp4s.length, 1, `expected one recording in ${dir}, saw ${JSON.stringify(mp4s)}`);
+  const name = mp4s[0];
+  assert.ok(name !== undefined);
+  return join(dir, name);
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () => {
+  const ffprobe = ffprobeOrSkip();
+  if (ffprobe === null) return;
+  const { pkgDir, recordDir } = stageRecordPackage();
+
+  const loadReply = await ok("show.load", { packagePath: pkgDir, mode: "reload" }, LOAD_MS);
+  const loadApplied = await server.awaitApplied(
+    (loadReply["stateVersion"] ?? 0) as number,
+    LOAD_MS,
+  );
+  assert.ok(loadApplied, "the engine must apply the record-enabled package load (§5.9.5)");
+  const startReply = await ok("show.start", { startClock: true });
+  assert.ok(
+    await server.awaitApplied((startReply["stateVersion"] ?? 0) as number, LOAD_MS),
+    "the engine must apply show.start before recording",
+  );
+
+  // Real A/V content under the take: A1 carries the fixture's AAC track.
+  await ok("preview.set", { itemRef: "A1" });
+  await ok("view.take", { transition: "cut", audio: { transition: "follow" } });
+  await untilTelemetry(
+    "A1 on air before recording",
+    (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A1",
+  );
+
+  const recReply = await ok("record.start", { outputId: "rehearsal" });
+  // Capability gate: a machine without a hardware H.264 encoder (headless CI
+  // runners have no GPU) refuses record.start engine-side with
+  // E_NO_HARDWARE_ENCODER — but the control plane already acked ok (dispatch
+  // does not wait for engine application), so no ack ever arrives and the
+  // wait below times out identically for refusal and for a wedged pipeline.
+  // Distinguish via the engine's own log (captured in engineLog): a refusal
+  // logs the E_NO_HARDWARE_ENCODER token; an absent token with no ack means
+  // the pipeline is wedged → fail, never skip.
+  const recApplied = await server.awaitApplied(
+    (recReply["stateVersion"] ?? 0) as number,
+    COMMAND_MS,
+  );
+  if (!recApplied) {
+    const refused = engineLog.some((line) => line.includes("E_NO_HARDWARE_ENCODER"));
+    assert.ok(
+      refused,
+      `record.start produced no engine ack and no encoder refusal in the engine log — pipeline wedged, not a missing encoder (last log lines: ${JSON.stringify(engineLog.slice(-3))})`,
+    );
+    console.log("SKIP record steps: engine refused record.start (no hardware H.264 encoder on this machine)");
+    return;
+  }
+  recordWallStartMs = Date.now();
+  // Record-path pressure snapshot (fork condition #2): the wire-visible
+  // counters at span start. record_tap_ms / skipped_record_frames live in
+  // EngineState only — NOT on the §10.1 tick — so operators cannot see
+  // record-path pressure today (recorded finding, v0.5 candidate); the tick
+  // carries drops + underruns, which is what lands in timings.json.
+  const spanStart = {
+    droppedFramesTotal: droppedNow(),
+    audioUnderrunsTotal:
+      ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
+  };
+
+  await sleep((RECORD_SECS * 1000) / 2);
+  await ok("marker.add", { name: "midtake", timecode: "00:00:02:00" });
+  markerWallOffsetSecs = (Date.now() - recordWallStartMs) / 1000;
+  await sleep(RECORD_SECS * 1000 - (RECORD_SECS * 1000) / 2);
+
+  const stopSentMs = Date.now();
+  const stopReply = await ok("record.stop", {});
+  // The file + sidecar are complete BEFORE the engine's applied ack lands
+  // (`stop_and_finish` waits for the thread's terminal report) — so this
+  // wait, not the control-plane ack, is what the assertions below stand on.
+  assert.ok(
+    await server.awaitApplied((stopReply["stateVersion"] ?? 0) as number, RECORD_STOP_MS),
+    "the engine must finalize the take before record.stop applies",
+  );
+
+  const file = soleRecording(recordDir);
+  recordFile = file;
+  // Span end: no View drop may occur while recording on the normative
+  // machine (CI-gated: the 3-core runner drops by design, so this asserts
+  // only where frame budgets mean something).
+  const spanEnd = {
+    droppedFramesTotal: droppedNow(),
+    audioUnderrunsTotal:
+      ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
+  };
+  recordSpan = { ...spanStart, endDroppedFramesTotal: spanEnd.droppedFramesTotal, endAudioUnderrunsTotal: spanEnd.audioUnderrunsTotal };
+  if (process.env["CI"] === undefined || process.env["CI"] === "") {
+    assert.equal(
+      spanEnd.droppedFramesTotal,
+      spanStart.droppedFramesTotal,
+      `no View drops while recording on the normative machine: ${spanStart.droppedFramesTotal} -> ${spanEnd.droppedFramesTotal}`,
+    );
+  }
+  const size = statSync(file).size;
+  // MEASURED 2026-09-15 on the Intel local machine: 39-41 KB for the 4 s
+  // take. Video is sparse by design there (the feed.rs ladder sheds record
+  // frames whenever render meets-or-exceeds budget while View never waits —
+  // ~34 of 120 frames landed), so the bytes are mostly AAC + boxes. The
+  // floor sits 2.4x below measured and infinitely above an empty file
+  // (which the engine refuses to materialize at all: E_RECORD_INPUT): it
+  // proves substance, not a bitrate.
+  assert.ok(size > 16 * 1024, `a ${RECORD_SECS} s take must be non-trivially sized, saw ${size} bytes`);
+
+  const bytes = readFileSync(file);
+  assert.ok(bytes.includes("ftyp"), "the recording must open with ftyp (init safe)");
+  // Structural only: the moov here is written upfront, so its presence is not
+  // finalization proof — the finalize proof is ffprobe-parse + duration match
+  // below. Kept as a structural box check, nothing more.
+  assert.ok(bytes.includes("moov"), "moov box present (structural; upfront moov, not finalize proof)");
+
+  const probed = ffprobeJson(ffprobe, file, ["-show_streams", "-show_format"]);
+  const streams = probed["streams"] as Array<Record<string, unknown>>;
+  assert.equal(streams.length, 2, "exactly 1 video + 1 audio stream");
+  const video = streams.find((s) => s["codec_type"] === "video");
+  const audio = streams.find((s) => s["codec_type"] === "audio");
+  assert.equal(video?.["codec_name"], "h264");
+  assert.equal(audio?.["codec_name"], "aac", "audio must be AAC frames, never PCM-in-MP4");
+
+  // Duration bound is honestly ~107ms = 1 video frame + 3 AAC frames + 10ms
+  // container rounding, audio-driven (64ms of the ~107ms is the 3x1024-sample
+  // AAC packets), video exempted (sparse by design — see the size comment
+  // above; video duration is asserted as presence-only below). The AAC side
+  // is named, not guessed: the writer trims 2 priming packets at mux
+  // time leaving a 64-sample / 1.33 ms residual, and the audio track holds
+  // whole 1024-sample packets against exact video. Expected is measured
+  // wall (stop signal sent minus start applied), NOT the commanded sleep:
+  // sleep overshoot moves content and wall together, while mux finalize
+  // happens after the stop signal and is in neither — so the bound holds
+  // under scheduling slop instead of flaking on it.
+  const expectedSecs = (stopSentMs - recordWallStartMs) / 1000;
+  const dur = parseFloat((probed["format"] as Record<string, unknown>)["duration"] as string);
+  const durTol = 1 / HOUSE_RATE + (3 * 1024) / 48000 + 0.01;
+  assert.ok(
+    Math.abs(dur - expectedSecs) <= durTol,
+    `duration ${dur}s must match the ${expectedSecs.toFixed(2)}s wall take within ~107ms = 1 video frame + 3 AAC + 10ms, audio-driven, video exempted (tol ${durTol.toFixed(3)}s)`,
+  );
+  // Video is sparse by design (see the size comment above), so its only
+  // honest claim is presence: the h264 path wrote real frames.
+  const fileVideo = streams.find((s) => s["codec_type"] === "video");
+  assert.ok(
+    fileVideo !== undefined && parseFloat(fileVideo["duration"] as string) > 0,
+    "the take must contain video content (sparse is by design, absent is not)",
+  );
+
+  // Marker chapter/sidecar: fMP4 carries chapters poorly, so chapters ride
+  // the always-sidecar `<stem>.markers.json` beside the recording for every
+  // container (crates/nbe-engine/src/record/markers.rs: honest container
+  // story; in-container chapters deferred). The sidecar IS the chapter
+  // record the suite asserts — nothing here claims the MP4 carries chapters.
+  const sidecar = file.replace(/\.mp4$/, ".markers.json");
+  assert.ok(existsSync(sidecar), `marker sidecar must sit beside the recording: ${sidecar}`);
+  const markers = (
+    JSON.parse(readFileSync(sidecar, "utf8")) as Record<string, unknown>
+  )["markers"] as Array<Record<string, unknown>>;
+  assert.ok(
+    markers.some((m) => m["name"] === "midtake"),
+    `sidecar must carry the mid-take chapter, saw ${JSON.stringify(markers)}`,
+  );
+});
+
+test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async () => {
+  const ffprobe = ffprobeOrSkip();
+  if (ffprobe === null) return;
+  if (recordFile === null) {
+    console.log("SKIP sync step: step 11 skipped (no recording — capability gate)");
+    return;
+  }
+  const file = recordFile as string;
+
+  // AC-13 bound, borrowed — with the nuance on the record. AC-13 is the
+  // SOUNDBOARD-trigger latency bound (a live-path number), the closest
+  // normative latency figure to hand; it is NOT a file-sync spec, and no
+  // normative file A/V-sync bound exists. This assertion borrows AC-13's
+  // 20 ms for the one file-observable sync claim that survives the feed.rs
+  // shed ladder: the KNOWN EVENT is the take itself (A1 on air when the
+  // take opened), its EXPECTED FILE TIMECODE is zero, and both tracks must
+  // start there. Track DURATION equality is deliberately NOT asserted —
+  // video is sparse by design while audio runs whole, so durations disagree
+  // on a healthy file; samples are timestamped, and start alignment is what
+  // "in sync" means for the artifact. Structure, never performance.
+  const probed = ffprobeJson(ffprobe, file, ["-show_streams"]);
+  const streams = probed["streams"] as Array<Record<string, unknown>>;
+  const video = streams.find((s) => s["codec_type"] === "video");
+  const audio = streams.find((s) => s["codec_type"] === "audio");
+  assert.ok(video !== undefined && audio !== undefined, "the take must carry video + audio streams");
+  const vStart = parseFloat(video["start_time"] as string);
+  const aStart = parseFloat(audio["start_time"] as string);
+  assert.ok(
+    vStart <= 0.02,
+    `video must start at file zero within 20 ms, started at ${vStart}s`,
+  );
+  assert.ok(
+    aStart <= 0.02,
+    `audio must start at file zero within 20 ms, started at ${aStart}s (priming trim leaves 1.33 ms)`,
+  );
+  assert.ok(
+    Math.abs(vStart - aStart) <= 0.02,
+    `tracks must start together within 20 ms (v ${vStart}s vs a ${aStart}s)`,
+  );
+
+  // The known event (the mid-take marker, sent at a measured wall offset)
+  // lands inside the take: 0 <= marker offset <= file duration.
+  const full = ffprobeJson(ffprobe, file, ["-show_format"]);
+  const dur = parseFloat((full["format"] as Record<string, unknown>)["duration"] as string);
+  assert.ok(
+    markerWallOffsetSecs >= 0 && markerWallOffsetSecs <= dur,
+    `marker at wall offset ${markerWallOffsetSecs.toFixed(2)}s must land inside the ${dur}s take`,
+  );
+});
+
+test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable", async () => {
+  const ffprobe = ffprobeOrSkip();
+  if (ffprobe === null) return;
+  if (recordFile === null) {
+    console.log("SKIP kill step: step 11 skipped (no recording — capability gate)");
+    return;
+  }
+  // The show is still RUNNING from step 11 (no show.stop since): open a
+  // second take under a distinct episode name so its file is unambiguous.
+  // No re-take first: A1 is still the on-air item (an exhausted clip holds
+  // its last viewItem rather than clearing it), and this step asserts
+  // parseability only, so any rendered picture — even a held frame — plus
+  // the live master mix is the content it needs.
+  const recReply = await ok("record.start", { outputId: "killtake" });
+  assert.ok(
+    await server.awaitApplied((recReply["stateVersion"] ?? 0) as number, COMMAND_MS),
+    "the engine must apply the kill-take record.start",
+  );
+  // Fragments complete on the RECEIVED-video timeline (1 s of handed-off
+  // video per moof), and the feed.rs ladder sheds most frames on slow
+  // render hardware — so 2.5 s of wall holds zero complete fragments here
+  // (measured: init-only 1122-byte file, ftyp+moov, no moof). Six seconds
+  // of wall buys ~1.7 received-video seconds on the local Intel machine:
+  // one flushed moof plus a partial. The wait is wall, the proof is bytes.
+  await sleep(6000);
+  engine.kill("SIGKILL");
+  await new Promise<void>((r) => {
+    if (engine.exitCode !== null || engine.signalCode !== null) return r();
+    const timer = setTimeout(r, 5000);
+    engine.once("exit", () => {
+      clearTimeout(timer);
+      r();
+    });
+  });
+
+  // Parseability plus a flushed-fragment floor — deliberately no other timing
+  // assertions here. The file shape differs by runner speed (fragment
+  // completion is wall-driven), so the content proof is gated on what this
+  // runner actually flushed. Both paths require hasMoof (≥1 flushed prior
+  // fragment): streams-parse alone passes an init-only file (ftyp+moov, no
+  // moof), so moof presence is the playability floor on CI too, not just on
+  // the normative machine. The fixed-byte size floor below is likewise gated
+  // on hasMoof — with no moof the file is bare init by wall timing, and that
+  // wall-driven flake must log-skip, never red CI. The branch is on `CI` and
+  // is logged either way.
+  const recordDir = dirname(recordFile as string);
+  const mp4s = readdirSync(recordDir).filter((f) => f.endsWith(".mp4"));
+  const killed = mp4s.find((f) => f.includes("killtake"));
+  assert.ok(killed !== undefined, `the kill take must leave a file, saw ${JSON.stringify(mp4s)}`);
+  const file = join(recordDir, killed);
+  const bytes = readFileSync(file);
+  assert.ok(bytes.includes("ftyp"), "even the partial file must open with ftyp");
+  // Structural only: the upfront moov ships with init, so its presence is not
+  // finalization proof — the finalize proof is ffprobe-parse + moof below.
+  assert.ok(bytes.includes("moov"), "even the partial file must carry the upfront moov (structural; not finalize proof)");
+  const hasMoof = bytes.includes("moof");
+  const isCI = (process.env["CI"] ?? "") !== "";
+  if (!isCI) {
+    assert.ok(hasMoof, "normative: 6 s of wall must flush ≥1 prior fragment (moof)");
+  } else {
+    console.log(`CI timing note: partial file ${hasMoof ? "has" : "has no"} flushed moof; requiring moof as the playability floor`);
+    assert.ok(hasMoof, "CI: partial file must still carry ≥1 flushed prior fragment (moof) — streams-parse alone passes an init-only file");
+  }
+  if (hasMoof) {
+    assert.ok(bytes.length > 1122, `the partial take must exceed bare init, saw ${bytes.length} bytes`);
+  } else {
+    console.log(`SKIP size floor: no moof flushed (wall-driven), saw ${bytes.length} bytes — size assert skipped, not failed`);
+  }
+  const probed = ffprobeJson(ffprobe, file, ["-show_streams", "-show_format"]);
+  const streams = probed["streams"] as Array<Record<string, unknown>>;
+  assert.ok(streams.some((s) => s["codec_name"] === "h264"), "prior video fragments must still parse");
+  assert.ok(streams.some((s) => s["codec_name"] === "aac"), "prior audio fragments must still parse");
+  if (hasMoof) {
+    const dur = parseFloat((probed["format"] as Record<string, unknown>)["duration"] as string);
+    assert.ok(dur > 0, `the partial file must play (duration ${dur}s)`);
+  }
+});

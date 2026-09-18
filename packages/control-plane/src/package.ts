@@ -82,8 +82,22 @@ export function preflightBin(): string {
  *   debug,   11 runs   wall 3.64-13.5 s             ->  4.04-15.0 ms/frame
  *                      (13.5 s was the cold first run; warm runs are ~4 s)
  *
+ * Re-measured 2026-09-14 against the line-tables-only debug binary on the same
+ * machine (disk triage: the 13.5 s cold figure dated from a tree under memory
+ * pressure at ~600 MB free with a 32 GB target/; codegen is unchanged by the
+ * profile, so this is a conditions correction, not a compiler effect).
+ * `valid_show_v0.3`, 900 declared frames, 6 runs:
+ *
+ *   debug, 6 runs    wall 3.51-6.09 s              ->  3.90-6.77 ms/frame
+ *
+ * The constant below now takes the new worst rate and rounds up — 6.77 -> 10
+ * debug — leaving ~1.5x on the per-frame rate before `PREFLIGHT_SAFETY_FACTOR`
+ * multiplies it again. If a future run exceeds 6.77 ms/frame debt, re-derive;
+ * do not silently widen.
+ *
  * The constants below take the **worst** observed rate and round up — 5.61 ->
- * 8 release, 15.0 -> 25 debug — leaving ~1.4x and ~1.7x on the per-frame rate
+ * 8 release, 15.0 -> 25 debug at derivation, 6.77 -> 10 debug at the 2026-09-14
+ * re-measurement — leaving ~1.4x and ~1.7x on the per-frame rate
  * before `PREFLIGHT_SAFETY_FACTOR` multiplies it again.
  *
  * Headroom that produces for the reference fixture, which is the target this
@@ -91,8 +105,8 @@ export function preflightBin(): string {
  *
  *   release  max(60,000 floor, 900*8*3 = 21,600, 19,927 bytes) = 60,000 ms
  *            against a 5.05 s worst run  ->  11.9x, and floor-bound
- *   debug    max(60,000 floor, 900*25*3 = 67,500, 62,273)      = 67,500 ms
- *            against a 13.5 s worst run  ->  5.0x
+ *   debug    max(60,000 floor, 900*10*3 = 27,000, 62,273)      = 60,000 ms
+ *            against a 6.09 s worst run  ->  9.9x, and floor-bound
  *
  * Note the release case is now bound by the **floor**, not by either term. That
  * is the honest outcome: 900 frames of real decode is genuinely ~5 s of work,
@@ -100,7 +114,7 @@ export function preflightBin(): string {
  * what dominates a package this small.
  */
 const MS_PER_FRAME_RELEASE = 8;
-const MS_PER_FRAME_DEBUG = 25;
+const MS_PER_FRAME_DEBUG = 10;
 
 /**
  * How much longer than the estimate a legitimate run may take.

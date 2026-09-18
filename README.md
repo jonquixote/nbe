@@ -40,6 +40,11 @@ cargo check --workspace
 cargo run -p nbe-preflight -- --package-path ./tests/fixtures/valid_show
 ```
 
+Weekly habit on the dev machine: `./scripts/clean-stale.sh` prunes stale
+build artifacts (cargo-sweep when installed, else the incremental cache,
+which stays empty under the workspace's `incremental = false`) and reports
+reclaimed space.
+
 ## License
 
 MIT OR Apache-2.0

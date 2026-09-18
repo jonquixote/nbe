@@ -87,6 +87,12 @@ pub struct AudioDriver {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4).
     library: BTreeMap<String, Arc<Vec<f32>>>,
     library_generation: u64,
+    /// The record tap currently attached to the graph (WU-pipe). The
+    /// directive path publishes the take's shared tap into engine state;
+    /// this driver owns the graph, so it attaches/detaches here, once per
+    /// cycle, by pointer — no audio-thread cost beyond one `Arc` clone and
+    /// comparison.
+    attached_tap: Option<Arc<crate::record::AudioTap>>,
     /// Peaks accumulating inside the current meter window.
     window_peaks: BTreeMap<String, f64>,
     /// Blocks elapsed in the current window, and how many make one.
@@ -108,6 +114,7 @@ impl AudioDriver {
             block: vec![0.0; block_frames * CHANNELS],
             library: BTreeMap::new(),
             library_generation: u64::MAX,
+            attached_tap: None,
             window_peaks: BTreeMap::new(),
             window_blocks: 0,
             // One telemetry interval's worth of blocks, so a published meter
@@ -134,11 +141,35 @@ impl AudioDriver {
         tracing::info!(assets = self.library.len(), "soundboard library resident");
     }
 
+    /// Attach/detach the take's shared record tap (WU-pipe).
+    ///
+    /// The directive path (`record.start` / stops) publishes into
+    /// `state.record_tap`; the graph lives here, so the attach happens here.
+    /// Pointer-compared once per cycle: steady state is one `Arc` clone, no
+    /// lock held across the render, no deadline change (the tap's `push` is
+    /// non-blocking by contract — single `try_lock`, shed on contention).
+    fn sync_record_tap(&mut self) {
+        let wanted = self.state.record_tap.lock().unwrap().clone();
+        let changed = match (&self.attached_tap, &wanted) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            match &wanted {
+                Some(tap) => self.graph.set_record_tap(tap.clone()),
+                None => self.graph.clear_record_tap(),
+            }
+            self.attached_tap = wanted;
+        }
+    }
+
     /// One cycle: drain intents, render a block, publish measurements.
     ///
     /// Returns the number of frames rendered.
     pub fn cycle(&mut self, master_frame: u64) -> usize {
         self.sync_library();
+        self.sync_record_tap();
 
         // Drain a bounded batch of intents. The lock is held only long enough
         // to move them out — the directive thread is never blocked behind a
