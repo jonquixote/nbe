@@ -616,6 +616,17 @@ Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines 
 
 GAP findings (spec-cited, Step 3 routes each): **GAP-1** wipe/sting/dve degrade to cut silently (v0.5); **GAP-2** move unimplemented, AC-23 unmet (v0.5); **GAP-3** easing families unapplied (v0.5); **GAP-4** per-element timing absent (v0.5); **GAP-5** preset/overrides ignored (v0.5); **GAP-6** duration edges unpinned + uncapped — Step 3 adds goldens for default/zero/one, clamp decision recorded (max accepted today); **GAP-7** back-to-back + TRANSITIONING unreported — Step 3 adds two-take golden; publication is v0.5; **GAP-8** cut-mid-mix abrupt — Step 3 adds golden pinning current behavior; **GAP-9** mix-mid-mix pop — Step 1's row (discover/define/test/falsify); **GAP-10** audio curve comment false + §8.7.7/bed unwired + no e2e — comment fix in Step 3, rest v0.5; **GAP-11** mix first-frame + e2e legs — Step 3 bisects start+1; **GAP-12** AC-24 as-written unproven — v0.5 (needs move).
 
+### TRANSITIONS v0.5 findings (recorded Step 3 — deferred, not dropped)
+
+- **GAP-1** — wipe/sting/dve render as cut with no signal (§7.9 mask tween / alpha+audio cut point / single-element transform; §16.2 admits all six).
+- **GAP-2** — move has no interpolation and AC-23 (identity/frame-exact/easing) is unmet (§7.9 shared-element transforms).
+- **GAP-3** — the five non-linear easing families are never read engine-wide (§7.9 six families; schema defaults `easeInOut`).
+- **GAP-4** — per-element duration/delay/stagger/path absent; only whole-transition `duration_frames` exists (§7.9).
+- **GAP-5** — preset + elementOverrides ignored; named presets render as plain cut/mix (§16.2 preset rule).
+- **GAP-7 (publication)** — §17.2 TRANSITIONING scene-state publication + §17.3 events have no engine counterpart (§17.2/§17.3).
+- **GAP-10 (remainder)** — §8.7.7 unwired, bed-as-clip unwired, no take→master e2e click test (§8.7.7; §8.7.5/§8.7.6 mapping only is pinned).
+- **GAP-12** — AC-24 as-written (ticker survives complex MOVE untouched) unproven; needs move (§7.9; AC-24).
+
 ## 09 — Recording
 
 **Owns `marker.add` → recording chapter (§16.11)**, assigned by `[RI-5]` — 09's current doc does not mention it, and its upgrade pass must. Inherits two dormant deferrals that its own benchmark is the trigger for: zero-copy IOSurface→Metal (re-defer *with numbers*, not with prose) and the display surface. §0.1 assumption 14 fixes fragmented MP4 as the crash-safe default. 09 should also carry `[RI-8]`'s pinned residency policy into its own resource accounting: **unload-at-next-load**, so a stop→start recovery does not pay the 46 s reload measured in the report §3.2.

@@ -80,6 +80,23 @@ jobs:
             echo "expected at least one prompt04 test to run"; exit 1
           fi
           echo "prompt04 tests that ran: $ran"
+      - name: the midmix suite actually ran (TRANSITIONS step 3)
+        # GAP-6 duration edges (default-15, zero, one, over-max/no-clamp) +
+        # GAP-11 start+1 bisection live here alongside Step 1's continuity
+        # goldens. Floor, not a count, same anchored sed shape as the
+        # prompt04/prompt07_overlay/prompt07b_graphics gates: adding tests
+        # must not need a CI edit, but deleting or skipping one must fail
+        # the job.
+        run: |
+          out=$(cargo test -p nbe-engine --test prompt04_midmix 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok")
+          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          if [ "$ran" -lt 14 ]; then
+            echo "expected at least 14 prompt04_midmix tests to run, got $ran"; exit 1
+          fi
+          echo "prompt04_midmix tests that ran: $ran"
       - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
         # §7.10's suite is three levels in one target: index (2) + directive
         # (6, GPU-free) + render (5, headless wgpu golden frames, like

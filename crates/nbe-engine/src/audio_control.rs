@@ -122,8 +122,11 @@ pub fn take_gain_and_ramp(
     match mode {
         // The item's audio is muted on air.
         "mute" => (-60.0, ramp_ms),
-        // An equal-power crossfade over the video's own duration (§8.7.5).
-        // The ramp is the crossfade; the clip arrives at unity across it.
+        // A linear crossfade over the video's own duration (§8.7.5): `Ramp`
+        // advances in linear gain steps (`Ramp::advance` adds a fixed step
+        // per sample frame toward the db_to_linear target) — spec-legal,
+        // not equal-power. The ramp is the crossfade; the clip arrives at
+        // unity across it.
         "crossfade" => (0.0, crossfade_ms.max(ramp_ms)),
         // A cut still ramps: §8.7.6 sets a 5 ms floor, which `Ramp` enforces.
         "cut" => (0.0, ramp_ms),

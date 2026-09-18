@@ -702,3 +702,160 @@ async fn underlay_video_advances_on_its_own_clock_while_alpha_stays_frozen() {
          across {reds:?})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step 3 — GAP-6 duration edges + GAP-11 start+1 bisection (stopped clock,
+// start_frame == 0, fully deterministic — no wall-clock).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn default_15_mix_path_blends_midway_and_completes_at_s_plus_15() {
+    // GAP-6 golden: a mix take with NO durationFrames takes the §7.9
+    // default-15 path — duration==15, blend mid-way, complete at s+15.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    handler
+        .apply(&directive(
+            "view.take",
+            2,
+            serde_json::json!({ "itemRef": "A2" }),
+            serde_json::json!({ "transition": "mix" }),
+        ))
+        .await
+        .unwrap();
+    let t = state.transition.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        t.duration_frames, 15,
+        "a mix with no durationFrames must take the §7.9 default-15 path"
+    );
+    let s = t.start_frame;
+
+    render.render_frame(s + 7, None);
+    let mid = centre_px(&render.readback_view().await);
+    assert!(
+        mid[0] > 0 && mid[2] > 0,
+        "mid-default-mix must blend both scenes; got {mid:?}"
+    );
+    render.render_frame(s + 15, None);
+    assert_eq!(
+        centre_px(&render.readback_view().await),
+        BLUE,
+        "default-15 mix must complete at s+15"
+    );
+}
+
+#[tokio::test]
+async fn zero_duration_mix_renders_as_cut() {
+    // GAP-6 golden: duration-0 mix collapses to a cut — render(s) is the new
+    // item full. FALSIFICATION NOTE: the `duration_frames == 0` early-return
+    // in progress() is unreachable via the general path (elapsed>=0 always
+    // wins for frame>=start), so this is falsified by forcing 0.0 for
+    // duration==0 (progress returns 0.0, is_complete false, the mix branch
+    // renders old@1.0 + new@0.0 = old full) and watching this test fail
+    // with old-full instead of new-full — NOT by a mutation that changes
+    // nothing.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 0).await;
+    let t = state.transition.lock().unwrap().clone().unwrap();
+    assert_eq!(t.duration_frames, 0);
+    assert!(
+        t.is_complete(t.start_frame),
+        "a zero-duration mix must be complete at its start frame"
+    );
+    render.render_frame(t.start_frame, None);
+    assert_eq!(
+        centre_px(&render.readback_view().await),
+        BLUE,
+        "zero-duration mix renders as cut: full new item at s"
+    );
+}
+
+#[tokio::test]
+async fn one_frame_mix_completes_at_s_plus_1() {
+    // GAP-6 golden: a 1-frame mix is complete at s+1.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 1).await;
+    let t = state.transition.lock().unwrap().clone().unwrap();
+    assert_eq!(t.duration_frames, 1);
+    render.render_frame(t.start_frame + 1, None);
+    assert_eq!(
+        centre_px(&render.readback_view().await),
+        BLUE,
+        "one-frame mix must complete at s+1"
+    );
+}
+
+#[tokio::test]
+async fn over_max_mix_accepted_without_clamp() {
+    // GAP-6 golden + NO-CLAMP DECISION RECORD: there is deliberately NO clamp
+    // anywhere on duration_frames (scene.rs Transition carries the raw u64;
+    // directive.rs passes it through), so a 10000-frame mix is ACCEPTED and
+    // progress stays sane at its midpoint (0.5). If a max clamp ever lands
+    // (schema max 600/120), this test must be updated to pin the clamped
+    // value instead — the decision today is accept, recorded here.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 10_000).await;
+    let t = state.transition.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        t.duration_frames, 10_000,
+        "over-max mix accepted without clamp (no-clamp decision)"
+    );
+    let p = t.progress(t.start_frame + 5_000);
+    assert!(
+        (p - 0.5).abs() < 1e-6,
+        "progress sane at midpoint of a 10000-frame mix: got {p}"
+    );
+    render.render_frame(t.start_frame + 5_000, None);
+    let mid = centre_px(&render.readback_view().await);
+    assert!(
+        mid[0] > 0 && mid[2] > 0,
+        "mid-over-max-mix must blend both scenes; got {mid:?}"
+    );
+}
+
+#[tokio::test]
+async fn mix_first_mixed_frame_bisected_at_start_plus_1() {
+    // GAP-11 golden: the mix's first mixed frame (start+1) is a PARTIAL
+    // blend — neither old-full nor new-full. The existing
+    // `mix_interpolates_across_its_duration_and_never_mid_frame` jumps to
+    // start+5; this bisects start+1 (progress 0.1 on a 10-frame mix).
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 10).await;
+    let t = state.transition.lock().unwrap().clone().unwrap();
+    let s = t.start_frame;
+    assert!(
+        (t.progress(s + 1) - 0.1).abs() < 1e-6,
+        "progress at start+1 of a 10-frame mix must be 0.1"
+    );
+    render.render_frame(s + 1, None);
+    let px = centre_px(&render.readback_view().await);
+    assert!(
+        px[0] > 0 && px[2] > 0,
+        "start+1 must blend both scenes; got {px:?}"
+    );
+    assert_ne!(
+        px,
+        [255, 0, 0, 255],
+        "start+1 must not be old-full: got {px:?}"
+    );
+    assert_ne!(px, BLUE, "start+1 must not be new-full yet: got {px:?}");
+}
