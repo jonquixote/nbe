@@ -504,6 +504,85 @@ duration as a performance result.**
    while `masterClockState` carries the distinction, and worth removing when
    observation 1 is addressed.
 
+### The queue after Prompt 09 — decided 2026-09-17, in this order
+
+| # | Work order | Why it sits here |
+|---|---|---|
+| 1 | **TRANSITIONS** | Ahead of the others because it is the last piece of the compositor's own contract. §16.6's `Animation.easing` permits six families and the overlay path implements **linear only**, ignoring `easing` and `delayFrames` — schema and implementation disagree in the tree today (v0.5 outline rows 4 and 5). Exit-time override is engine-reachable and wire-unreachable. None of that needs recording or streaming to exist, and all of it is in front of anything that composites |
+| 2 | **ZERO-COPY** | 10's lead-in, and the resolution path SPEC v0.4.2 names for §0.1 assumption 24. The recording allowance is scoped to the record output on 1080p reference geometry with four expiry trip-wires; streaming inherits none of it, so the general rule has to be satisfied before a second encoder consumer arrives. IOSurface-backed `CVPixelBuffer` → `MTLTexture` → `wgpu::hal` import, so decode, composite and encode share one surface. Measurements already in `docs/09-measurements.md` — this work order spends them rather than re-deriving them |
+| 3 | **Prompt 10 — Streaming** | Needs 2 first by construction: it is the second consumer of the same frames, and per-consumer readback is what assumption 24 exists to forbid. Inherits the guest-link JWT/`jti` revocation work and the TURN credential derivation rule (`[RI-5]`, §5.1 #11, §9.6.2). WHEP preview (AC-20) is explicitly post-v1 and not 10's scope |
+
+The ordering is a dependency claim, not a preference: TRANSITIONS touches only
+the compositor, ZERO-COPY is what makes a second encoder consumer legal, and 10
+is that consumer. Reversing 2 and 3 would land streaming on a per-consumer
+readback the spec forbids and the v0.4.2 allowance does not cover.
+
+### The gate split — decided 2026-09-17, and DRESS-2 discharged by it
+
+Two review passes converged on the same defect from opposite directions. Work
+order DRESS found a job that was **red on purpose** and learned that teaches
+reviewers to ignore red. The two-key pass over PR #18 found floors that were
+**green about what they could not see** — they counted `passed`, a
+capability-gated skip reports `ok`, and forcing the H.264 probe absent satisfied
+all ten Prompt 09 floors while exercising nothing. CI run `34953923576` proved it
+was not hypothetical: 22 of 60 tests and the rehearsal's record, sync and kill
+steps skipped, so **AC-6 had never run in CI.**
+
+The decision, recorded so nobody re-litigates it:
+
+**a. Structure gates in CI, everywhere, today.** Every machine-independent claim
+— the rehearsal's steps 1-11 composition and protocol assertions, the Prompt 09
+hard floors — asserts and gates on every run. The 09 floors now carry a second
+number, `exercised = ran - skipped`, which skipping cannot satisfy; the floors
+are `min` of two derivations (ungated-test counts read from source, and the
+worst-case no-hardware measurement) so no runner flakes them.
+
+**b. Hardware claims gate on failure, skip loudly on absence.** The threshold
+assertions — zero View drops, zero underruns, the record/sync/kill steps, AC-6 —
+run wherever the capability exists, and on a run where they executed a failure
+fails the job. On a runner without the capability they skip loudly, as they now
+do, and the job stays green. The observational step names exactly what went
+unexercised on every such run; its exit 0 is not evidence about recording.
+
+**c. The soak is the gate for hardware claims.** `docs/soak-protocol.md` +
+`scripts/soak.sh`: weekly, and **required before anything called a release**.
+It owns the zero-drop/zero-underrun thresholds, the recording contract
+end-to-end, and the v0.5 failover drill when that exists. Artifacts are the
+existing `timings.json` + `engine.log` + `telemetry.jsonl` shape plus `soak.json`
+and the Prompt 09 pressure counters (`record_tap_ms`, `skipped_record_frames`).
+Scheduling mechanics are the operator's choice; the protocol is what must exist
+in the tree. Its three outcomes are PASS / FAIL / **VOID**, and the last one is
+the point: a run whose preconditions did not hold proves nothing in either
+direction, and conflating it with FAIL is how "it passed on rerun" becomes a
+habit.
+
+**d. R7 rides the soak's watch list.** Flake-register entries are asserted every
+soak with their **counts** recorded, not merely pass/fail, because a flake that
+goes quiet may have moved to a machine nobody watches. R7's three sightings are
+all load-sensitive and all green on rerun; a soak appearance is the first chance
+to catch a payload.
+
+**Two preconditions had to be recalibrated during the first runs, and both
+recalibrations are the same lesson as (b).** The script initially refused on any
+running `node` — unsatisfiable here, because long-lived MCP servers hold node
+processes that never touch the tree — and demanded 20 GiB free when the machine
+reports 14. A precondition the normative machine cannot meet is the same defect
+as a gate that is always red. Narrowed to build/test contenders in this repo,
+and to 8 GiB, with both derivations written down in the protocol.
+
+**Quiescence earned its place empirically.** On 2026-09-17 the rehearsal returned
+13/15 when launched immediately after a full `cargo test --workspace` plus
+clippy, then 15/15 four consecutive times on an idle machine. The thresholds the
+soak owns are exactly the assertions load perturbs, so the protocol measures an
+idle machine or it measures nothing.
+
+First soak on the normative machine at `e2e22cc`: **PASS** — preconditions held,
+09 suites 0 skips, rehearsal 15/15, R7 0 sightings in 1 iteration.
+
+**What the split does NOT do.** No self-hosted runner: the normative machine is a
+daily driver and that decision stays open. No CI gate that pretends to cover
+hardware it lacks.
+
 ## 08 — Companion mapping (elevated to a normative requirement)
 
 Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an **Input Intent schema** — a mapping layer that is *data, not code* — from physical intents (Companion button, MIDI note, keyboard chord) to semantic §16 commands, with per-device profiles as user-editable documents. The §16 command surface with token auth and audit is already the device-independent core (`docs/portability.md`, known-good boundary 1), so 08 adds a layer above it and must not add a second command surface beside it. The proof of generality is normative: a keyboard-shortcut adapter ships in the same prompt and must work with **zero** changes to the core. The Input Intent schema is a wire-level contract and takes normative spec text at 08's moment. Target hardware: StreamDeck XL via Companion.
@@ -513,6 +592,29 @@ Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an 
 ## 09 — Recording
 
 **Owns `marker.add` → recording chapter (§16.11)**, assigned by `[RI-5]` — 09's current doc does not mention it, and its upgrade pass must. Inherits two dormant deferrals that its own benchmark is the trigger for: zero-copy IOSurface→Metal (re-defer *with numbers*, not with prose) and the display surface. §0.1 assumption 14 fixes fragmented MP4 as the crash-safe default. 09 should also carry `[RI-8]`'s pinned residency policy into its own resource accounting: **unload-at-next-load**, so a stop→start recovery does not pay the 46 s reload measured in the report §3.2.
+
+**Fourth sighting, 2026-09-17 (PR #19 run `35314193753`).** Same test, same
+signature (`expected 3 directives, got 4`), on a branch whose entire diff was
+docs, a shell script and a workflow comment — no TypeScript at all. Local run on
+the same tree: 82/82. That makes two of four sightings on docs-only branches,
+which is as close to proof as this gets that R7 is timing, not content.
+
+**The register's own gap, closed.** Four sightings produced four counts and no
+payloads, because the assertion's message carried only `directives.length`. The
+message now dumps each directive's `command`, `seq` and `stateVersion`
+(`server.test.ts`, diagnostics only — the assertion is unchanged), verified by
+forcing the expected count to 2:
+
+```
+received: [{"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3}]
+```
+
+So the next sighting names the duplicate instead of adding a tally mark, and the
+redelivery-vs-extra-bump question becomes answerable rather than merely open.
+The likely mechanism is visible in the test: a fixed `setTimeout(r, 30)` before
+the count, which is exactly the window a slow or loaded runner widens.
 
 ### P9 Step 0b — frame-path fork decided (recorded 2026-09-14, normative machine)
 
@@ -553,7 +655,7 @@ Inherits the display-surface deferral (04 → 09 → here in practice) and S2: *
 | `viewItemStartFrame` in the resync snapshot | v0.4 outline §2, already confirmed |
 | `sequenceRef` | v0.4 outline §5 — review recommends **retire**; evidence absent |
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
-| **The dress-rehearsal CI job is `continue-on-error`** — still open, for a new reason | `.github/workflows/ci.yml:322` (the citation read `:248` until 2026-09-11; that line is now `echo "::endgroup::"` — the number rotted under edits in the very commit that wrote it, which is the argument for citing by name as well as line). Note there are **two** `continue-on-error: true` in the file and only one is this row's: `:178` belongs to the control-plane job's preflight-timing diagnostic step and stays deliberately non-failing. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Work order DRESS closed R5, R4 and R2 (12/12 three times on the normative machine, each falsified) and attempted the promotion — which failed on CI and was reverted.** The row stays open because the reason changed rather than vanished: the gate asserts zero dropped frames and zero audio underruns, which are reference-hardware claims, and the macos-14 runner measured 83 then 120 underruns on 3 arm64 cores. Promotion now needs the gate split so composition claims run everywhere and threshold claims run where they mean something. See the DRESS entry under 07. |
+| ~~**The dress-rehearsal CI job is `continue-on-error`**~~ **DISCHARGED 2026-09-17 by the gate split** — superseded, original text standing per §2c | `.github/workflows/ci.yml:322` (the citation read `:248` until 2026-09-11; that line is now `echo "::endgroup::"` — the number rotted under edits in the very commit that wrote it, which is the argument for citing by name as well as line). Note there are **two** `continue-on-error: true` in the file and only one is this row's: `:178` belongs to the control-plane job's preflight-timing diagnostic step and stays deliberately non-failing. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Work order DRESS closed R5, R4 and R2 (12/12 three times on the normative machine, each falsified) and attempted the promotion — which failed on CI and was reverted.** The row stays open because the reason changed rather than vanished: the gate asserts zero dropped frames and zero audio underruns, which are reference-hardware claims, and the macos-14 runner measured 83 then 120 underruns on 3 arm64 cores. Promotion now needs the gate split so composition claims run everywhere and threshold claims run where they mean something. See the DRESS entry under 07. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. **[DISCHARGED 2026-09-12 by PR #12 — streaming probe landed (163x less memory, bound re-derived); original text left standing per §2c.]** |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)

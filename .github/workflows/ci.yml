@@ -391,7 +391,34 @@ jobs:
           if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi
 
   # ---------------------------------------------------------------------------
-  # The dress rehearsal ([RI-1]) — ADVISORY, and no longer red on purpose.
+  # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.
+  #
+  # THE GATE SPLIT, decided 2026-09-17 (docs/prompt-map-07-13.md; the protocol
+  # is docs/soak-protocol.md). This job's status is settled, so the next reader
+  # does not re-open it:
+  #
+  #   (a) STRUCTURE GATES HERE, EVERYWHERE. Steps 1-11's composition and
+  #       protocol claims are machine-independent and gate on every run, as do
+  #       the Prompt 09 hard floors in the `rust` job.
+  #   (b) HARDWARE CLAIMS GATE ON FAILURE, SKIP LOUDLY ON ABSENCE. The
+  #       thresholds — zero View drops, zero underruns, record/sync/kill,
+  #       AC-6 — run wherever the capability exists, and where they EXECUTED a
+  #       failure fails. On this runner the capability is absent: macos-14 has
+  #       no hardware H.264 encoder, so those steps skip loudly and the job
+  #       stays green. It is 3 arm64 cores against a 6-core Intel reference
+  #       machine (SPEC 0.3), and DRESS measured 83 then 120 underruns here
+  #       against 0 there, so the thresholds are not measurable on this runner
+  #       even when the encoder is.
+  #   (c) THE SOAK IS THE GATE for everything in (b): weekly on the normative
+  #       machine, and REQUIRED before anything called a release.
+  #       `scripts/soak.sh`, PASS / FAIL / VOID.
+  #
+  # So this job is advisory because the claims it cannot measure were moved to
+  # where they can be, NOT because it is tolerated as broken. Both failure modes
+  # are named and rejected: a gate red on purpose (DRESS's lesson — it teaches
+  # reviewers to ignore red) and a gate green about what it cannot see (PR #18's
+  # 09 floors, which counted `passed` while a forced-absent encoder satisfied
+  # every one of them). AC-6's home is docs/hardware-baseline.txt.
   #
   # A real control plane, the engine binary as a separate process, the real
   # WebSocket protocol, and a real 1920x1080/30 package with H.264+AAC media. It

@@ -156,7 +156,29 @@ test("render-role session receives directives in order with correct stateVersion
 
   const expect = [loadSeq, prevSeq, takeSeq];
   // Three directives, in command order.
-  assert.equal(directives.length, 3, `expected 3 directives, got ${directives.length}`);
+  //
+  // R7's assertion. Four sightings now — 2026-09-08, and twice on branches
+  // whose diff was docs+CI only (PR #17 run 34745014794, PR #19 run
+  // 35314193753) — always `got 4`, always green on rerun. Every sighting
+  // produced a COUNT and nothing else, because the message carried only
+  // `directives.length`. So four sightings in, the open question (a redelivered
+  // directive, or a fourth from an extra stateVersion bump) is still
+  // unanswered. The message now dumps the directives so the next sighting
+  // answers it instead of adding a tally mark. Diagnostics only — the
+  // assertion itself is unchanged.
+  assert.equal(
+    directives.length,
+    3,
+    `expected 3 directives, got ${directives.length}\n` +
+      `expected seqs ${JSON.stringify(expect)}\n` +
+      `received: ${JSON.stringify(
+        directives.map((d) => ({
+          command: d.command,
+          seq: d.seq,
+          stateVersion: (d as Record<string, unknown>)["stateVersion"],
+        })),
+      )}`,
+  );
   assert.deepEqual(directives.map((d) => d.command), ["show.load", "preview.set", "view.take"]);
   // seq strictly increasing across all three.
   const seqs = directives.map((d) => d.seq as number);
