@@ -128,25 +128,111 @@ jobs:
             echo "expected at least 3 bindings tests to run, got $ran"; exit 1
           fi
           echo "bindings tests that ran: $ran"
-      - name: the 09 record suites actually ran
-        # Prompt 09's recording suites (arms, encoder, writer, markers,
-        # residency, telemetry, feed, thread, session). Floor per suite, not
-        # a count, same shape as the prompt04/07_overlay/07b_graphics/
-        # bindings gates: a silently skipped suite fails the job, so the
-        # recording contract cannot go unexercised while the gate stays green.
+      - name: the 09 suites ran, and their runner-independent coverage is intact
+        # TWO floors per suite, because one floor could not tell the difference
+        # that matters.
+        #
+        # The previous version of this step counted `passed` and claimed "a
+        # silently skipped suite fails the job, so the recording contract cannot
+        # go unexercised while the gate stays green." That claim was FALSE, and
+        # the two-key pass over PR #18 disproved it by measurement: these suites
+        # are capability-gated (`hw_or_skip`, `aac_or_skip`, `ffprobe_or_skip`)
+        # and a gated test prints SKIP to stderr, returns, and reports `ok`.
+        # Force the H.264 probe to report absent and all ten suites return their
+        # FULL passing counts — every floor satisfied, nothing exercised.
+        # Measured on the normative machine:
+        #
+        #   no H.264 + no AAC:  60 ran, 27 skipped, 33 actually exercised
+        #   prompt09_thread:     3 ran,  3 skipped,  0 actually exercised
+        #
+        # The exercised floors are min(two derivations), so no runner can flake
+        # them: (a) the count of tests carrying NO capability gate at all, read
+        # from the sources — 5/3/2/5/4/0/3/1/3/6; (b) the worst-case measurement
+        # above — 5/2/3/6/4/0/3/1/3/6. Where they disagree the lower wins.
+        #
+        # So `ran` is kept (it catches a suite that stops compiling or loses
+        # tests) and `exercised = ran - skipped` is added, floored at the
+        # worst-case measurement above. That second floor cannot be satisfied by
+        # skipping, which is the property the old comment claimed and lacked.
+        #
+        # Markers are matched as `^SKIP`, NOT `^SKIP:` — two of the thirteen
+        # markers in the tree ("SKIP hardware roundtrip:", "SKIP read-only-dir
+        # case:") carry no colon, and a `^SKIP:` grep silently misses them.
+        #
+        # PROVES: the suites exist, compile, run, and their runner-independent
+        # coverage (seam-forced refusals, synthetic-unit paths, pure functions,
+        # marker ordering) is intact.
+        # DOES NOT PROVE: that recording works. That is the next step.
         run: |
-          for t in "prompt09_record:6" "prompt09_record_file:8" "prompt09_session:12" "prompt09_markers:8" "prompt09_telemetry:4" "prompt09_thread:3" "prompt09_feed:5" "prompt09_encode:2" "prompt09_residency:3" "prompt09_review:9"; do
-            target="${t%%:*}"; floor="${t##*:}"
-            out=$(cargo test -p nbe-engine --test "$target" 2>&1)
+          set -u
+          rm -f /tmp/p09-coverage.txt
+          fail=0
+          for t in "prompt09_record:6:5" "prompt09_record_file:8:2" "prompt09_session:12:2" "prompt09_markers:8:5" "prompt09_telemetry:4:4" "prompt09_thread:3:0" "prompt09_feed:5:3" "prompt09_encode:2:1" "prompt09_residency:3:3" "prompt09_review:9:6"; do
+            target=$(echo "$t" | cut -d: -f1)
+            floor=$(echo "$t" | cut -d: -f2)
+            exercised_floor=$(echo "$t" | cut -d: -f3)
+            out=$(cargo test -p nbe-engine --test "$target" -- --nocapture 2>&1)
             echo "$out"
-            line=$(echo "$out" | grep "test result: ok")
-            ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+            line=$(echo "$out" | grep "test result: ok" || true)
+            ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
             case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+            skipped=$(echo "$out" | grep -c '^SKIP' || true)
+            case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+            exercised=$((ran - skipped))
+            echo "$target: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=$floor exercised>=$exercised_floor)"
             if [ "$ran" -lt "$floor" ]; then
-              echo "expected at least $floor $target tests to run, got $ran"; exit 1
+              echo "FAIL $target: expected at least $floor tests to run, got $ran"; fail=1
             fi
-            echo "$target tests that ran: $ran"
+            if [ "$exercised" -lt "$exercised_floor" ]; then
+              echo "FAIL $target: expected at least $exercised_floor tests to actually execute rather than skip, got $exercised"; fail=1
+            fi
+            echo "$target:$ran:$skipped:$exercised" >> /tmp/p09-coverage.txt
           done
+          exit "$fail"
+      - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
+        # A REPORT, and its name says so, because macos-14 has no hardware H.264
+        # encoder and the recording contract cannot be gated here at all. Exits
+        # 0 by design.
+        #
+        # Deliberately NOT a `continue-on-error` gate that fails on every run:
+        # work order DRESS settled that doctrine — a gate red on purpose teaches
+        # reviewers to ignore red. The opposite failure, a gate GREEN about
+        # something it cannot see, is what this pair of steps exists to end. The
+        # hard floors above claim only what they prove; the unexercised truth is
+        # printed here where nobody has to infer it from a passing count.
+        #
+        # Making recording genuinely gateable is the pending gate-split decision
+        # (the user's call): separate the threshold claims from the composition
+        # claims and run the hardware half on the normative machine, or on a
+        # self-hosted runner that is one. Until then AC-6's home is
+        # docs/hardware-baseline.txt, and a green run here is not evidence of it.
+        run: |
+          set -u
+          total_ran=0; total_skipped=0
+          while IFS=: read -r target ran skipped exercised; do
+            total_ran=$((total_ran + ran)); total_skipped=$((total_skipped + skipped))
+            if [ "$skipped" -gt 0 ]; then
+              echo "  $target: $skipped of $ran tests SKIPPED (capability-gated), $exercised exercised"
+            fi
+          done < /tmp/p09-coverage.txt
+          echo "09 recording coverage: $total_ran ran, $total_skipped skipped, $((total_ran - total_skipped)) exercised"
+          if [ "$total_skipped" -gt 0 ]; then
+            echo "============================================================"
+            echo "UNEXERCISED ON THIS RUNNER - $total_skipped capability-gated tests skipped."
+            echo "No hardware H.264 encoder here, so this green build does NOT cover:"
+            echo "  * VideoToolbox H.264 encode (SPEC 9.2)"
+            echo "  * the fMP4 writer, fragment cadence and moov placement (9.3)"
+            echo "  * the AAC audio tap and A/V sync inside the file"
+            echo "  * the marker sidecar written to disk"
+            echo "  * AC-6 crash-safe recording (kill -9 mid-take)"
+            echo "AC-6's home is the normative machine (docs/hardware-baseline.txt),"
+            echo "where this suite runs with ZERO skips. Gating it here needs the"
+            echo "gate-split decision. Do not read this step's exit 0 as evidence"
+            echo "that recording works."
+            echo "============================================================"
+          else
+            echo "No skips: this runner exercised the full recording contract."
+          fi
       - name: overlay_show fixture passes (four overlay kinds)
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
@@ -458,7 +544,7 @@ jobs:
           failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}')
           echo "ran=${ran:-0} passed=${passed:-0} failed=${failed:-0}"
           if [ "${ran:-0}" -lt 12 ]; then
-            echo "the rehearsal must run all 12 steps, ran ${ran:-0}"
+            echo "the rehearsal must run all 15 steps (12 + P9 record/sync/kill), ran ${ran:-0}"
             exit 1
           fi
           # The band stays, and the reason has CHANGED. It used to tolerate R2,
