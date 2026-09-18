@@ -118,7 +118,7 @@ jobs:
           fi
           if [ "$exercised" -lt 20 ]; then
             echo "expected at least 20 prompt04_midmix tests to actually execute rather than skip, got $exercised"; exit 1
-          fi"
+          fi
       - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
         # §7.10's suite is three levels in one target: index (2) + directive
         # (6, GPU-free) + render (5, headless wgpu golden frames, like
