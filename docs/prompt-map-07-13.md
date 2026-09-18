@@ -593,6 +593,8 @@ Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an 
 
 Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines × engine × golden × falsification. Known state going in: cut and mix proven; overlay persistence across a 15-frame mix proven (07).
 
+(Line numbers below are as-audited; Step 1 added the underlay — `Transition.underlay`, `FrozenLayer`, freeze/collapse in `on_take`, underlay branch in `scene_for` — so engine sites moved. The audit's claims stand; only the coordinates aged.)
+
 | Kind/param | Spec citation | Engine? | Golden test? | Falsified? | Gap |
 |---|---|---|---|---|---|
 | cut | §7.9 zero-duration tween; `view.take` default | Yes — `TransitionKind::Cut` (`scene.rs:881-885`); non-`mix` maps to Cut (`directive.rs:430-433`); progress always 1.0 (`scene.rs:910-911`) | Yes — `take_changes_the_view_within_two_frames` (`prompt04.rs:161-212`) | Yes, pixels before/after boundary | — |

@@ -874,8 +874,15 @@ async fn interrupt_at_progress_zero_carries_no_dead_layer() {
 
     take_mix(&handler, 2, "A2", 20).await;
     let s1 = transition_start(&state);
-    // Second take on the very next master frame: old elapsed == 0.
+    // Second take on the very next master frame: old elapsed == 0. Pinned,
+    // not assumed: if the clock ran between the two takes this fails loudly
+    // instead of testing a mid-blend interrupt under a progress-0 name.
     take_mix(&handler, 3, "A3", 20).await;
+    let s2 = transition_start(&state);
+    assert!(
+        s2 == s1 || s2 == s1 + 1,
+        "back-to-back takes share the frame or adjacent boundaries (old elapsed == 0 either way): S1={s1} S2={s2}"
+    );
     let guard = state.transition.lock().unwrap();
     let t = guard.as_ref().expect("second take arms a transition");
     assert_eq!(t.to_item, "A3", "new transition targets the second take");
@@ -893,5 +900,93 @@ async fn interrupt_at_progress_zero_carries_no_dead_layer() {
     assert_eq!(underlay.layers[0].item, "A1", "base is the displayed scene");
     assert_eq!(underlay.layers[0].alpha, 1.0, "base is opaque");
     drop(guard);
-    let _ = s1;
+}
+
+#[tokio::test]
+async fn interrupt_before_first_blend_carries_no_underlay() {
+    // Degenerate back-to-back: the old transition rendered nothing yet (no
+    // from_item known — first take of the show — and frozen progress 0), so
+    // the layer list is empty and construction yields None, not an empty
+    // underlay struct. The new mix starts clean, exactly as a fresh take.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, _render) = loaded_engine(dir.path()).await;
+    state.clock.lock().unwrap().start();
+    // No view_item set: the first take has no from_item.
+    take_mix(&handler, 2, "A2", 20).await;
+    let s1 = transition_start(&state);
+    take_mix(&handler, 3, "A3", 20).await;
+    let s2 = transition_start(&state);
+    assert!(
+        s2 == s1 || s2 == s1 + 1,
+        "adjacent boundaries (old elapsed == 0 either way): S1={s1} S2={s2}"
+    );
+    let guard = state.transition.lock().unwrap();
+    let t = guard.as_ref().expect("second take arms a transition");
+    assert!(
+        t.underlay.is_none(),
+        "nothing rendered yet means no underlay, got {:?}",
+        t.underlay.as_ref().map(|u| u.layers.len())
+    );
+}
+
+#[tokio::test]
+async fn stop_clears_inflight_transition() {
+    // A mix interrupted by show.stop must not resume stale on the next
+    // start: the clock restarts from zero, so in-flight t0s would render
+    // against the wrong timeline.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, _render) = loaded_engine(dir.path()).await;
+    state.clock.lock().unwrap().start();
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 20).await;
+    assert!(
+        state.transition.lock().unwrap().is_some(),
+        "precondition: mix in flight"
+    );
+    handler
+        .apply(&directive(
+            "show.stop",
+            3,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        state.transition.lock().unwrap().is_none(),
+        "stop clears the in-flight transition"
+    );
+}
+
+#[tokio::test]
+async fn resync_without_view_item_key_clears_inflight_transition() {
+    // Key ABSENT (not null): an empty bus holds no transition, so the clear
+    // must not hide inside the viewItem-present branch.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, _render) = loaded_engine(dir.path()).await;
+    state.clock.lock().unwrap().start();
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 20).await;
+    assert!(
+        state.transition.lock().unwrap().is_some(),
+        "precondition: mix in flight"
+    );
+    handler
+        .apply(&directive(
+            nbe_protocol::command::RESYNC,
+            3,
+            serde_json::json!({}),
+            serde_json::json!({ "showState": "RUNNING" }),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        state.transition.lock().unwrap().is_none(),
+        "key-absent resync clears the in-flight transition"
+    );
 }

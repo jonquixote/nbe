@@ -900,12 +900,13 @@ pub struct Transition {
     pub start_frame: u64,
     /// Frozen mid-mix underlay (Step 1): when a MIX take lands while another
     /// mix is still in flight, the interrupted blend is frozen here instead
-    /// of discarded — the old transition's two layers (from@1.0, to@α_frozen)
-    /// composite beneath the new to_item at its fresh α, so the new
-    /// transition starts from the displayed state. Dropped (reads as absent)
-    /// the frame the new transition completes. `None` on every other path: a
-    /// cut landing mid-mix snaps (no underlay — a cut is supposed to jump),
-    /// and a take after a completed mix is ordinary.
+    /// of discarded — the old transition's layers (base plus to_item at its
+    /// frozen α; a zero-α to_item is skipped, and an empty result means no
+    /// underlay at all) composite beneath the new to_item at its fresh α,
+    /// so the new transition starts from the displayed state. Dropped (reads
+    /// as absent) the frame the new transition completes. `None` on every
+    /// other path: a cut landing mid-mix snaps (no underlay — a cut is
+    /// supposed to jump), and a take after a completed mix is ordinary.
     ///
     /// The underlay is FLAT (depth 1 by construction): chained mid-mix
     /// interrupts extend `layers`, never nest. See [`Underlay`].
@@ -928,10 +929,10 @@ pub struct Transition {
 /// flattened top blend, and nothing beneath it is reachable by any path.
 #[derive(Debug, Clone)]
 pub struct Underlay {
-    /// Bottom-up frozen layers. Index 0 is the base (alpha 1.0 when the
-    /// interrupted transition had a from_item; absent when it had rendered
-    /// nothing yet — then the composite beneath shows through, exactly as a
-    /// fresh mix's first frame). Each further entry is one interrupted
+    /// Bottom-up frozen layers. Index 0 is the base as-frozen (alpha 1.0 when
+    /// the interrupted transition had a from_item; a chained interrupt clones
+    /// the old underlay verbatim, so layers[0] carries whatever alpha it froze
+    /// with — always the displayed composite's own base, never a guess). Each further entry is one interrupted
     /// transition's to_item at its frozen alpha. One entry per chained
     /// interrupt — small (item ref + two numbers), and dropped whole when
     /// the new transition completes.

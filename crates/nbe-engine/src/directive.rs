@@ -412,6 +412,10 @@ impl DirectiveHandler {
         }
         self.state.clock.lock().unwrap().stop();
         self.state.sessions.release_all();
+        // A stopped show holds no transition: the clock restarts from zero on
+        // the next start, so in-flight t0s would resume stale. Start-without-
+        // load re-arms from a clean slate; load replaces state wholesale.
+        *self.state.transition.lock().unwrap() = None;
         // Outputs are stubs in this prompt; the protocol shape is the point.
         Ok(())
     }
@@ -953,10 +957,12 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(t0, std::sync::atomic::Ordering::SeqCst);
-            // A resync supersedes any transition the engine was mid-way
-            // through: the snapshot is the state, not a waypoint toward it.
-            *self.state.transition.lock().unwrap() = None;
         }
+        // A resync supersedes any transition the engine was mid-way through:
+        // the snapshot is the state, not a waypoint toward it. Unconditional —
+        // an absent viewItem key means an empty bus, which holds no transition
+        // either (and the old key-gated placement stranded one there).
+        *self.state.transition.lock().unwrap() = None;
         if snapshot.get("previewItem").is_some() {
             let preview = snapshot
                 .get("previewItem")
