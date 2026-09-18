@@ -311,6 +311,7 @@ async fn a_cut_and_a_mix_do_not_reshape_the_ticker() {
         kind: nbe_engine::scene::TransitionKind::Mix,
         duration_frames: 15,
         start_frame: 12,
+        underlay: None,
     });
     for f in 12..=27 {
         render.render_frame(f, None);
