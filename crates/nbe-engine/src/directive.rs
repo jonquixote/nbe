@@ -520,6 +520,22 @@ impl DirectiveHandler {
                                 t0: old.start_frame,
                             });
                         }
+                        // Bound: every chained interrupt appends exactly one
+                        // layer, so adversarial take rates grow the composite
+                        // linearly (and squeeze the shared MAX_LAYERS draw
+                        // budget overlays rely on). Past the cap, drop the
+                        // oldest NON-base layer — the base (index 0) is the
+                        // continuity anchor and is never the one to go. The
+                        // cap sits far above human rates (WS dispatch admits
+                        // ~5 takes/s; a 20-frame mix spans <1 s), so it fires
+                        // only as insurance, and the drop is logged loudly.
+                        const MAX_UNDERLAY_LAYERS: usize = 8;
+                        while layers.len() > MAX_UNDERLAY_LAYERS {
+                            layers.remove(1);
+                            tracing::warn!(
+                                "underlay layer cap hit; dropping oldest non-base frozen layer"
+                            );
+                        }
                         (!layers.is_empty()).then_some(crate::scene::Underlay { layers })
                     }
                     _ => None,

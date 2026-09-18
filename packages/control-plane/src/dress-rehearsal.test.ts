@@ -785,13 +785,22 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;
   await ok("preview.set", { itemRef: "A2" });
   await ok("view.take", { transition: "mix", durationFrames: 15 });
-  await untilTelemetry(
+  const mixTakeTick = await untilTelemetry(
     "A2 on air after the record-through-mix",
     (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A2",
   );
-  // 15 frames is 0.5 s; this outlasts the blend plus a telemetry tick so the
-  // whole transition is inside the measured span.
-  await sleep(1500);
+  // Poll, don't sleep: the 15-frame blend (0.5 s) plus one telemetry tick
+  // must elapse so the whole transition is inside the measured span. A fixed
+  // sleep assumes render speed; the clock does not.
+  const mixStartFrame =
+    ((mixTakeTick["data"] as Record<string, unknown>)?.["masterClockFrame"] ?? 0) as number;
+  await untilTelemetry(
+    "blend complete plus one tick",
+    (t) =>
+      (((t["data"] as Record<string, unknown>)?.["masterClockFrame"] ?? 0) as number) >=
+      mixStartFrame + 15 + 30,
+    15000,
+  );
   const mixDropsAfter = droppedNow();
   const mixUnderrunsAfter =
     ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;

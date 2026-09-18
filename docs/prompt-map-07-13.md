@@ -609,8 +609,8 @@ Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines 
 | preset + elementOverrides | §16.2 preset rule; `TransitionPreset` schema | No — engine reads neither; named preset silently plain cut/mix | No | No | GAP-5 |
 | back-to-back takes | Spec silent (§17.3 no mid-transition row) | Works by construction (`render.rs:435-440`) | No two-take test | No | GAP-7 |
 | cut landing mid-mix | Spec silent | Defined: instant new `view_item` (`scene.rs:910-911` + `render.rs:435-440`); audio ramp-only | No | No | GAP-8 |
-| mix landing mid-mix | Spec silent | Defined but LOSSY: struct overwritten, `from_item` = old `to_item` (`directive.rs:451-458`); blend discarded, new mix ramps from old-target full (`render.rs:417-434`); timelines stay correct (`directive.rs:447-450`) | No | No | GAP-9 |
-| audio crossfade §8.7.5 | Mix crossfades over same duration | Yes, wired (`directive.rs:480-488`; `audio_control.rs:111-141`); curve linear (spec-legal; "equal-power" comment at `audio_control.rs:125` is FALSE) | Mapping pinned (`prompt06.rs:1407-1427`); no take→master e2e | Partial | GAP-10 |
+| mix landing mid-mix | Spec silent | **[SUPERSEDED by Step 1 — see resolutions note below.]** Was: struct overwritten, blend discarded. Is: freeze-at-take underlay starts the new mix from the displayed blend | Step-1 suite | Falsified | GAP-9 |
+| audio crossfade §8.7.5 | Mix crossfades over same duration | Yes, wired (`directive.rs:480-488`; `audio_control.rs:111-141`); curve linear (spec-legal; "equal-power" comment FIXED to linear in Step 3) | Mapping pinned (`prompt06.rs:1407-1427`); no take→master e2e | Partial | GAP-10 |
 | audio cut ramp §8.7.6 | Cut + ≥5 ms ramp | Yes (`directive.rs:472-488`; 5 ms floor `audio.rs:25,104-106`); §8.7.7 unwired | Partial, same prompt06 tests | Partial | GAP-10 |
 | AC-17 latency | ≤2 frames; mix first frame by next frame | Yes, next-boundary discipline (`directive.rs:443`) | Cut proven (`prompt04.rs:161-212`); mix first-frame unbisected | Partial | GAP-11 |
 | AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | GAP-12 |
@@ -628,6 +628,10 @@ GAP findings (spec-cited, Step 3 routes each): **GAP-1** wipe/sting/dve degrade 
 - **GAP-7 (publication)** — §17.2 TRANSITIONING scene-state publication + §17.3 events have no engine counterpart (§17.2/§17.3).
 - **GAP-10 (remainder)** — §8.7.7 unwired, bed-as-clip unwired, no take→master e2e click test (§8.7.7; §8.7.5/§8.7.6 mapping only is pinned).
 - **GAP-12** — AC-24 as-written (ticker survives complex MOVE untouched) unproven; needs move (§7.9; AC-24).
+
+### TRANSITIONS resolutions (recorded post-Step-3)
+
+Step-0 rows above stay as-audited per §2c; what changed since: **GAP-9 closed** — mix-mid-mix no longer discards the blend (freeze-at-take underlay; continuity falsified); **GAP-6/GAP-8/GAP-11 closed** — duration/default/zero/one/max goldens, cut-mid-mix pin, start+1 bisection; **GAP-10 comment leg closed** (linear-per-code). Underlay chains capped at 8 layers (drop-oldest-nonbase, human rates never reach it). Stop/resync clear in-flight transitions. Remainder stays v0.5 as routed.
 
 ## 09 — Recording
 
