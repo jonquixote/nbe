@@ -16,6 +16,16 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
+v0.4.2 ratifies two corrections that were already load-bearing in the tree, and
+records the second one's birth rather than tidying it away.
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | **Recording-first-cut allowance on the CPU-readback prohibition.** §0.1 assumption 24 says outputs share frames with encoders "without CPU readback"; Prompt 09's record tap reads back. Rather than violate the row silently or weaken it for everything, the row gains a scoped, measured allowance for the recording output with four expiry trip-wires, and names the ZERO-COPY work order as the resolution path. | 0.1 item 24 |
+| 2 | **Target hygiene as an agent duty.** Incremental build state is pruned after any falsification battery and a `target/` above 40 GB is reported rather than tolerated. Ratified with its provenance: the rule arrived inside PR #18 as the output of an authorized disk-triage interrupt (the counterexample was a 32 GB `target/` at ~600 MB free), not as its own separately-authorized change. Every previous standards rule landed on its own; this one did not, and the record says so. | `docs/implementation-standards.md` §4 |
+
+Neither correction changes a wire format or a schema. `schemas/manifest.v0.4.json` is unchanged by v0.4.2.
+
 v0.4.1 ratifies the Input Intent contract drafted spec-first by Prompt 08. The mapping rule and its failure mode were implemented and proven before ratification (PR #15); this entry makes them law.
 
 | # | Change | Sections |
@@ -91,6 +101,13 @@ The following assumptions are normative unless changed by spec revision:
 22. **Floor device baseline.** The 2019 dual-GPU Intel/Radeon MacBook Pro is the reference floor. The degradation ladder MUST engage gracefully on it.
 23. **Sequence recursion — none.** The rundown is flat: `sequenceRef` was retired in v0.4 (§16.4) and there is no nesting to cap. The space-axis sub-scene depth cap of 4 is unaffected and remains in force.
 24. **Multi-output frame sharing.** Outputs share rendered frames with hardware encoders via GPU texture sharing (Metal `IOSurface` / Vulkan external memory) without CPU readback.
+
+    **Scoped correction, ratified in v0.4.2 — recording first cut.** The sentence above stays as the general rule and the target. It is not what v1's record tap does: the Prompt 09 recording output rides a **measured CPU readback**, and the measurement is why the allowance is narrow rather than open-ended. On the reference machine (§0.3), against dress content at 1080p30, render + `readback_view` costs p95 **19.2 ms** and max **23.9 ms** of the **33.333 ms** frame budget, with **0 of 600** measured frames over budget and zero View drops across three recorded takes (`docs/09-measurements.md`, complete pastes). A budget pre-check sheds record frames before the View can be made late, so the degradation order is record-yields-first by construction.
+
+    The allowance covers **the recording output only**, on the reference machine's geometry, and it expires on any of four measured trip-wires, each of which mandates the zero-copy path instead: dress-content composite + readback p95 crossing ~28 ms; encoder, mux and audio-tap load tripping View drops; any resolution above 1080p (4K readback alone is ≈48 ms, exceeding the budget — no re-measurement needed); or long-run p99 over budget. Streaming (Prompt 10) inherits no allowance from this row.
+
+    **The resolution path for the general rule is the ZERO-COPY work order**, which lands IOSurface-backed `CVPixelBuffer` → `MTLTexture` → `wgpu::hal` import so decode, composite and encode share one surface as this row describes. Until it lands, an implementation reading this row alone would conclude v1 violates it; that conclusion is correct about the mechanism and wrong about the authorization, which is what this note exists to record.
+
 25. **WASM memory ceiling.** Every plugin instance runs under a hard memory limit (default 64 MiB, manifest-configurable via `maxMemoryMib`). Exceeding it MUST terminate the plugin instance and substitute a transparent frame — it MUST NOT crash the render node.
 
 ### 0.2 Phasing honesty note

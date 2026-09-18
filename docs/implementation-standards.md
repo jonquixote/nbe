@@ -156,6 +156,16 @@ Every prompt MUST also state, in its constraints:
    (the 32 GB reading at ~600 MB free on 2026-09-14 is the counterexample; the
    ceiling leaves headroom for 09's media and rehearsal artifacts).
 
+   **Ratified 2026-09-17, with its birth recorded (§2c).** This rule did not
+   arrive the way the others did. Every other rule in this document landed as
+   its own separately-authorized change; this one appeared inside PR #18, a
+   feature PR, as the output of an authorized disk-triage interrupt — the build
+   cache had filled the disk mid-session and 09's media and rehearsal artifacts
+   needed the headroom. The two-key pass over that PR flagged it as a normative
+   rule arriving as a side effect, and the user's nod is now explicit rather
+   than inferred from the merge. Also recorded in SPEC v0.4.2's changelog, so a
+   reader who finds the rule from either direction finds how it got here.
+
 ## 4a. Blocked work items
 
 When a prompt contains independent work items and one is blocked by a false assumption in
