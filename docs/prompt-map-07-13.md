@@ -160,6 +160,45 @@ record understated it. Raised as reviewer finding **F1**, and it is the third re
 instance of a truncating pipe producing a false claim in this project — hence the standards
 rule now forbidding them in evidence.
 
+### Finding R9 — a wall-clock threshold microbenchmark sits in the default suite (recorded 2026-09-18)
+
+`audio_tap_push_never_blocks_contention_micro`
+(`crates/nbe-engine/tests/prompt09_record_file.rs:749`) asserts that the worst
+single `AudioTap::push` over 10,000 pushes stays under **1 ms**. It was added by
+the transitions branch (`29efe89`, "review round 3 — SPSC contract") and merged
+in PR #20, and it runs in every `cargo test --workspace`.
+
+Measured on the normative machine, same binary, same commit:
+
+| Load (1m) | Result |
+|---:|---|
+| 2.58 | passes on the first attempt, 0.98 s |
+| ~30 | **fails** — worst pushes of 13.4 ms and 32.1 ms across its retry attempts, best 10.9 ms against a 1 ms bar |
+
+It already carries a retry loop (up to 10 attempts, keeping the best), which is
+an acknowledgement that the number is not stable — but retries widen the window
+rather than close it, because the contended case is precisely when the assertion
+is unmeetable.
+
+**This is the exact class the gate split assigned to the soak**: a wall-clock
+threshold whose value depends on machine quiescence, living in a suite that runs
+on 3 arm64 CI cores and on a developer machine mid-build. Its home is
+`docs/soak-protocol.md` §1, where quiescence is a checked precondition and a
+violated one produces VOID rather than FAIL.
+
+**Not fixed here.** Work order V05-PHASE0 scopes Mission 1 to docs and Mission 2
+to `packages/control-plane`; this is a Rust test. Recorded rather than touched,
+with the measurement above as the evidence a fix can start from. The options are
+to move it behind the soak, to relax it to something load-independent (a bound on
+work done rather than wall time — the SPSC contract it means to pin is "push does
+not block", which is a property of the code path, not of the clock), or to delete
+it in favour of the contention test that does not assert a duration.
+
+It also cost this session a false reading: the workspace summary said "0 failed"
+while this test was failing, because the ad-hoc awk in use split on `;` and read
+an empty field for the failure count. CI's own summary uses the default separator
+and is correct.
+
 ### Finding R7 — CLOSED 2026-09-18 (work order V05-PHASE0). Original heading and every sighting kept below per §2c
 
 **Mechanism.** Not a product defect: the test's synchronisation could not
