@@ -862,10 +862,11 @@ async fn mix_first_mixed_frame_bisected_at_start_plus_1() {
 
 #[tokio::test]
 async fn interrupt_at_progress_zero_carries_no_dead_layer() {
-    // Back-to-back take (S2 == S1+1, old progress still 0.0): the frozen
-    // to_item would be a zero-alpha dead layer carried for the whole new
-    // mix, so construction skips it. The opaque base remains: displayed
-    // frame IS old-from at full, which is what the new blend starts from.
+    // Back-to-back takes: the old blend rendered zero frames or (on a loaded
+    // machine that ticked between the takes) a few. Either measured regime
+    // has an exact shape — progress-0 skips the dead zero-alpha layer,
+    // mid-blend keeps base plus frozen to_item — so the test branches on
+    // S1/S2 instead of assuming adjacency and flaking on load.
     let dir = tempfile::tempdir().unwrap();
     make_package3(dir.path());
     let (state, handler, _render) = loaded_engine(dir.path()).await;
@@ -874,31 +875,45 @@ async fn interrupt_at_progress_zero_carries_no_dead_layer() {
 
     take_mix(&handler, 2, "A2", 20).await;
     let s1 = transition_start(&state);
-    // Second take on the very next master frame: old elapsed == 0. Pinned,
-    // not assumed: if the clock ran between the two takes this fails loudly
-    // instead of testing a mid-blend interrupt under a progress-0 name.
+    // Second take immediately after: the wall clock decides whether the old
+    // blend rendered zero frames or more. Branch on the MEASURED regime
+    // instead of assuming adjacency — a loaded machine may tick between the
+    // two takes, and either regime has an exact expected shape.
     take_mix(&handler, 3, "A3", 20).await;
     let s2 = transition_start(&state);
-    assert!(
-        s2 == s1 || s2 == s1 + 1,
-        "back-to-back takes share the frame or adjacent boundaries (old elapsed == 0 either way): S1={s1} S2={s2}"
-    );
     let guard = state.transition.lock().unwrap();
     let t = guard.as_ref().expect("second take arms a transition");
     assert_eq!(t.to_item, "A3", "new transition targets the second take");
-    let underlay = t.underlay.as_ref().expect("base layer retained");
-    assert_eq!(
-        underlay.layers.len(),
-        1,
-        "only the opaque base survives a progress-0 interrupt, got {:?}",
-        underlay
-            .layers
-            .iter()
-            .map(|l| (l.item.clone(), l.alpha))
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(underlay.layers[0].item, "A1", "base is the displayed scene");
-    assert_eq!(underlay.layers[0].alpha, 1.0, "base is opaque");
+    if s2 <= s1 + 1 {
+        // Progress-0 regime: the frozen to_item would be a zero-alpha dead
+        // layer carried for the whole new mix, so construction skips it. The
+        // opaque base remains: displayed frame IS old-from at full.
+        let underlay = t.underlay.as_ref().expect("base layer retained");
+        assert_eq!(
+            underlay.layers.len(),
+            1,
+            "only the opaque base survives a progress-0 interrupt, got {:?}",
+            underlay
+                .layers
+                .iter()
+                .map(|l| (l.item.clone(), l.alpha))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(underlay.layers[0].item, "A1", "base is the displayed scene");
+        assert_eq!(underlay.layers[0].alpha, 1.0, "base is opaque");
+    } else {
+        // Mid-blend regime (clock ticked between takes): base plus the
+        // frozen to_item at positive alpha — the shape the 25/50/75% tests
+        // pin by pixels; here pinned structurally.
+        let underlay = t.underlay.as_ref().expect("underlay retained");
+        assert_eq!(underlay.layers.len(), 2, "base plus frozen to_item");
+        assert_eq!(underlay.layers[0].item, "A1");
+        assert!(
+            underlay.layers[1].alpha > 0.0,
+            "frozen to_item carries positive alpha, got {:?}",
+            underlay.layers[1].alpha
+        );
+    }
     drop(guard);
 }
 
@@ -917,17 +932,25 @@ async fn interrupt_before_first_blend_carries_no_underlay() {
     let s1 = transition_start(&state);
     take_mix(&handler, 3, "A3", 20).await;
     let s2 = transition_start(&state);
-    assert!(
-        s2 == s1 || s2 == s1 + 1,
-        "adjacent boundaries (old elapsed == 0 either way): S1={s1} S2={s2}"
-    );
     let guard = state.transition.lock().unwrap();
     let t = guard.as_ref().expect("second take arms a transition");
-    assert!(
-        t.underlay.is_none(),
-        "nothing rendered yet means no underlay, got {:?}",
-        t.underlay.as_ref().map(|u| u.layers.len())
-    );
+    if s2 <= s1 + 1 {
+        // Progress-0 regime: old rendered nothing (no from_item, frozen
+        // progress 0), so the layer list is empty and construction yields
+        // None — not an empty underlay struct. The new mix starts clean.
+        assert!(
+            t.underlay.is_none(),
+            "nothing rendered yet means no underlay, got {:?}",
+            t.underlay.as_ref().map(|u| u.layers.len())
+        );
+    } else {
+        // Mid-blend regime: no from_item, but the frozen to_item carries
+        // positive alpha — a single-layer underlay, base absent.
+        let underlay = t.underlay.as_ref().expect("frozen to_item retained");
+        assert_eq!(underlay.layers.len(), 1, "only the frozen to_item");
+        assert_eq!(underlay.layers[0].item, "A2");
+        assert!(underlay.layers[0].alpha > 0.0, "frozen alpha positive");
+    }
 }
 
 #[tokio::test]

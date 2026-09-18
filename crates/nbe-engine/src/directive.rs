@@ -399,9 +399,13 @@ impl DirectiveHandler {
                     }
                     if let Err(e) = result {
                         // The show still stops, but the ack is withheld: the
-                        // 1.5 s window saw no graceful shutdown.
+                        // 1.5 s window saw no graceful shutdown. The transition
+                        // clears on every exit from this arm, not just the Ok
+                        // path — a failed finalize must not leave stale t0s
+                        // for the next start either.
                         self.state.clock.lock().unwrap().stop();
                         self.state.sessions.release_all();
+                        *self.state.transition.lock().unwrap() = None;
                         return Err(e);
                     }
                 }
