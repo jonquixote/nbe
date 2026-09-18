@@ -160,6 +160,66 @@ record understated it. Raised as reviewer finding **F1**, and it is the third re
 instance of a truncating pipe producing a false claim in this project — hence the standards
 rule now forbidding them in evidence.
 
+### Finding R7 — CLOSED 2026-09-18 (work order V05-PHASE0). Original heading and every sighting kept below per §2c
+
+**Mechanism.** Not a product defect: the test's synchronisation could not
+express what it meant to wait for, and the assertion was therefore taken at an
+arbitrary moment.
+
+The ok-response travels on the `admin` socket and the directive on the `render`
+socket, so a response can be observed before its own directive lands. The test
+read `directives.at(-1)` immediately after each response to learn "the seq this
+command produced". When the directive had not landed yet, `at(-1)` returned the
+**previous** command's directive, the `waitForSeq` built from it found that
+already-present entry and returned instantly, and the test moved on without ever
+waiting for the directive it meant to wait for. Two of the three waits were
+therefore capable of being no-ops. What remained was a fixed
+`await setTimeout(30)` and a count — a duration standing in for a condition, on
+runners between 1 and 3 arm64 cores.
+
+That explains every property of the register: load-sensitivity, always green on
+rerun, and two of four sightings on branches whose diff was docs-only.
+
+**What was ruled out, by reading rather than by assumption.** Every emit path
+produces exactly one directive per command — `view.take` emits one
+extraDirective, `show.stop` emits via `emitDirectivesNow` and then returns
+`{ warnings }` with no second send, and there is no replay, resend or retry
+anywhere on the render channel. A normal run collects exactly three, seqs 1-2-3
+against stateVersions 1-2-3, with no connect-time directive. Each test gets a
+fresh server on an ephemeral port, so cross-test leakage is not available either.
+
+**Fix.** The waits are now by **command name** (`waitForCommand`), which cannot
+alias: a directive for `preview.set` is the only thing that satisfies the wait
+for `preview.set`. The fixed 30 ms sleep is replaced by a settle window, and the
+count is asserted a **second** time after a further settle window, so a
+duplicate or extra directive arriving late still fails the test instead of
+slipping past the first count — which the 30 ms sleep never caught at all. The
+4-detection is kept and made deterministic; what changed is WHEN the count is
+taken, never what counts as wrong.
+
+**Verification, and which kind it is.** Proof by construction, not by
+reproduction, and the distinction is the honest part: R7 could not be forced
+locally either — 70 runs before the fix (40 idle, 30 at load 4.9) produced zero
+sightings, so the 75 clean runs after it (50 idle, 25 at load 14.2) are
+*consistent with* the fix rather than proof of it. What is proof: the aliasing
+path is gone by construction, and the assertion still bites a real fourth.
+Falsified by making `view.take` emit a duplicate extraDirective:
+
+```
+expected 3 directives, got 4
+received: [{"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3},
+           {"command":"view.take","seq":4,...}]
+```
+
+The diagnostic added at the fourth sighting is what makes that legible, and it
+stays. **No production code was touched** — the root cause was in the test, which
+is why the work order's stop-and-report condition was never reached.
+
+**If R7 returns**, it is now a different finding: the waits are unambiguous, so a
+fourth directive would be a real one, and the dump names it.
+
 ### Finding R7 (new) — control-plane test 34 saw a fourth directive where three were expected (recorded 2026-09-09)
 
 `render-role session receives directives in order with correct stateVersion` failed once

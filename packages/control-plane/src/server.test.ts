@@ -129,6 +129,23 @@ test("render-role session receives directives in order with correct stateVersion
     throw new Error(`directive seq ${seq} never arrived; have ${directives.length}`);
   };
 
+  // Wait for the directive a specific command produced, BY NAME. `at(-1)` reads
+  // whatever arrived last, which is not necessarily the directive the command
+  // just issued: the ok-response travels on `admin` and the directive on
+  // `render`, so a response can be observed before its own directive lands. When
+  // that happened, `at(-1)` aliased the PREVIOUS command's directive, and the
+  // `waitForSeq` built from it found that already-present directive and returned
+  // immediately — so the test proceeded without ever waiting for the directive
+  // it meant to wait for. Waiting by command name cannot alias.
+  const waitForCommand = async (command: string): Promise<Record<string, unknown>> => {
+    for (let i = 0; i < 400; i++) {
+      const found = directives.find((d) => d.command === command);
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error(`directive '${command}' never arrived; have ${JSON.stringify(directives.map((d) => d.command))}`);
+  };
+
   const admin = conn("admin", TOKEN);
   await connect(admin);
   const ev = (cmd: string, payload: Record<string, unknown>, seq: number) => ({ cmd, payload, seq });
@@ -136,23 +153,25 @@ test("render-role session receives directives in order with correct stateVersion
   // show.load -> forward:true, one directive
   const load = await send(admin, { v: "0.3", id: randomUUID(), command: "show.load", payload: { packagePath: pkgPath } });
   assert.equal(load.status, "ok");
-  const loadSeq = directives.length ? (directives.at(-1)!.seq as number) : -1;
-  await waitForSeq(loadSeq);
+  const loadSeq = (await waitForCommand("show.load")).seq as number;
 
   // preview.set -> forward:true, one directive
   const prev = await send(admin, { v: "0.3", id: randomUUID(), command: "preview.set", payload: { itemRef: "A1" } });
   assert.equal(prev.status, "ok");
-  const prevSeq = directives.at(-1)!.seq as number;
-  await waitForSeq(prevSeq);
+  const prevSeq = (await waitForCommand("preview.set")).seq as number;
 
   // view.take -> forward:false + extraDirective (resolved), one directive
   const take = await send(admin, { v: "0.3", id: randomUUID(), command: "view.take", payload: {} });
   assert.equal(take.status, "ok");
-  const takeSeq = directives.at(-1)!.seq as number;
-  await waitForSeq(takeSeq);
+  const takeSeq = (await waitForCommand("view.take")).seq as number;
 
-  // Wait for all three to be collected evented.
-  await new Promise((r) => setTimeout(r, 30));
+  // All three have now been observed BY NAME, so the count below cannot be taken
+  // early. What remains is the opposite risk — a fourth arriving late — and the
+  // settle window below is what catches it. The 30 ms fixed sleep this replaced
+  // did neither job: it could expire before a slow directive landed, and a
+  // fourth arriving after it was never noticed at all.
+  const SETTLE_MS = 150;
+  await new Promise((r) => setTimeout(r, SETTLE_MS));
 
   const expect = [loadSeq, prevSeq, takeSeq];
   // Three directives, in command order.
@@ -180,6 +199,18 @@ test("render-role session receives directives in order with correct stateVersion
       )}`,
   );
   assert.deepEqual(directives.map((d) => d.command), ["show.load", "preview.set", "view.take"]);
+  // A second settle window, asserted again: a duplicate or extra directive that
+  // arrives late must still fail this test rather than slip past the first
+  // count. This is the 4-detection R7 was reporting, kept and made deterministic
+  // rather than removed — the fix changes WHEN the count is taken, never what
+  // counts as wrong.
+  await new Promise((r) => setTimeout(r, SETTLE_MS));
+  assert.equal(
+    directives.length,
+    3,
+    `a fourth directive arrived ${SETTLE_MS} ms after the first count settled: ` +
+      `${JSON.stringify(directives.map((d) => ({ command: d.command, seq: d.seq })))}`,
+  );
   // seq strictly increasing across all three.
   const seqs = directives.map((d) => d.seq as number);
   for (let i = 1; i < seqs.length; i++) assert.ok(seqs[i]! > seqs[i - 1]!, `seq not increasing: ${seqs}`);
