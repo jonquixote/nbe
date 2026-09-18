@@ -767,6 +767,43 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   await sleep((RECORD_SECS * 1000) / 2);
   await ok("marker.add", { name: "midtake", timecode: "00:00:02:00" });
   markerWallOffsetSecs = (Date.now() - recordWallStartMs) / 1000;
+
+  // Step-2 record-through-mix probe (transitions audit): mid-recording, drive
+  // a real 15-frame mix between two real dress scenes (A1→A2, both video —
+  // clip and loop) so the span covers a blend under record load. The mix and
+  // the cut back below both sit inside the spanStart→spanEnd window, so the
+  // whole-span no-drop assert below covers them; the mix-local delta assert
+  // beside recordSpan names the blend itself.
+  //
+  // record_tap_ms / skipped_record_frames re-verified Step 2 against
+  // `telemetry.rs`'s `build_tick_for_dir`: still EngineState-only, still
+  // absent from the §10.1 tick — the reachability gap stands (v0.5
+  // candidate), so only the wire counters (drops + underruns) land in
+  // timings.json. No wire fields added.
+  const mixDropsBefore = droppedNow();
+  const mixUnderrunsBefore =
+    ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;
+  await ok("preview.set", { itemRef: "A2" });
+  await ok("view.take", { transition: "mix", durationFrames: 15 });
+  await untilTelemetry(
+    "A2 on air after the record-through-mix",
+    (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A2",
+  );
+  // 15 frames is 0.5 s; this outlasts the blend plus a telemetry tick so the
+  // whole transition is inside the measured span.
+  await sleep(1500);
+  const mixDropsAfter = droppedNow();
+  const mixUnderrunsAfter =
+    ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;
+  // Back to A1 on a cut: step 13's kill-take assumes A1 is the on-air item
+  // (an exhausted clip holds its viewItem), and this step must not move it.
+  await ok("preview.set", { itemRef: "A1" });
+  await ok("view.take", { transition: "cut" });
+  await untilTelemetry(
+    "A1 back on air before record.stop",
+    (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A1",
+  );
+
   await sleep(RECORD_SECS * 1000 - (RECORD_SECS * 1000) / 2);
 
   const stopSentMs = Date.now();
@@ -789,12 +826,17 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     audioUnderrunsTotal:
       ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
   };
-  recordSpan = { ...spanStart, endDroppedFramesTotal: spanEnd.droppedFramesTotal, endAudioUnderrunsTotal: spanEnd.audioUnderrunsTotal };
+  recordSpan = { ...spanStart, endDroppedFramesTotal: spanEnd.droppedFramesTotal, endAudioUnderrunsTotal: spanEnd.audioUnderrunsTotal, mixDroppedBefore: mixDropsBefore, mixDroppedAfter: mixDropsAfter, mixUnderrunsBefore, mixUnderrunsAfter };
   if (process.env["CI"] === undefined || process.env["CI"] === "") {
     assert.equal(
       spanEnd.droppedFramesTotal,
       spanStart.droppedFramesTotal,
       `no View drops while recording on the normative machine: ${spanStart.droppedFramesTotal} -> ${spanEnd.droppedFramesTotal}`,
+    );
+    assert.equal(
+      mixDropsAfter,
+      mixDropsBefore,
+      `no View drops through the record-through-mix on the normative machine: ${mixDropsBefore} -> ${mixDropsAfter}`,
     );
   }
   const size = statSync(file).size;

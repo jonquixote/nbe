@@ -231,3 +231,67 @@ CONFIRMED as measured. Release composite+record p95 19.2 ms / max 23.9 ms
 against the ~28 ms criterion with zero View drops across three recorded
 takes: the readback first cut stands on its own numbers, and zero-copy stays
 deferred with the four trip-wires from the decision table above still armed.
+
+## Appendix C — mid-mix composite on dress content, release (2026-09-18, Step 2)
+
+Heaviest normal frame under Step-1 semantics: a MIX take landing mid-mix, so
+the underlay path composites 3 layers (2 frozen + 1 fresh) instead of the
+plain blend. Scratch harness
+`crates/nbe-engine/tests/scratch_step2_midmix.rs` (deleted after; helpers
+copied from `prompt04_midmix.rs`): dress_show loaded via the real `show.load`
+path, clock started, A1 on air, real `view.take` directives drive both mixes
+through `DirectiveHandler::on_take` (no hand-built Transition state — the
+interrupt arms exactly what production arms): A1→A2 over 600 frames,
+interrupted ~5 frames in by →A3 over 600, so all measured frames sit inside
+the 3-layer window. A3 (cadence clip) chosen as the interrupting target so
+all three layers are video — the honest heaviest on this package.
+`cargo test --release`, 30 warmup frames excluded, 300 measured, deadline
+`None` (same blind-accounting caveat as 0b/Appendix A: the honest
+over-budget signal is render+readback vs 33.333 ms). Complete output:
+
+```
+underlay layers: A1@1.000 A2@0.007 + fresh A3 ramping; S1=1 S2=6
+midmix render_frame ms: n=300 mean=0.418ms min=0.285ms p50=0.403ms p95=0.555ms max=0.703ms
+midmix readback_view ms: n=300 mean=11.703ms min=8.282ms p50=10.010ms p95=19.229ms max=23.156ms
+midmix render+readback ms: n=300 mean=12.121ms min=8.626ms p50=10.433ms p95=19.634ms max=23.593ms
+midmix layers S2/S2+299/end: 3/3/3
+midmix dropped_frames_total delta: 0 (deadline None — blind by construction)
+midmix frames where render+readback > 33.333ms budget: 0/300
+test result: ok. 1 passed
+```
+
+Against Appendix A (plain on-air composite, release): render mean
+0.217→0.418 ms / p95 0.318→0.555 ms — two extra fullscreen layers cost
+~0.2 ms mean; the total stays readback-dominated (p95 19.221→19.634 ms,
+max 23.907→23.593 ms). verdict: mid-mix composite p95 19.6 ms sits
+~8.4 ms inside the ~28 ms criterion, 0/300 over budget — no fork-reopening,
+the readback first cut still stands.
+
+## Appendix D — record-through-mix span on the normative machine (Step 2)
+
+Step 11 now drives a real 15-frame A1→A2 mix mid-recording (both video:
+clip + loop), waits it out (1.5 s > 0.5 s blend + a tick), then cuts back
+to A1 so step 13's on-air assumption is undisturbed — the mix and the cut
+both sit inside the spanStart→spanEnd window. `timings.json` `recordSpan`
+gains the mix-local wire deltas (`mixDroppedBefore/After`,
+`mixUnderrunsBefore/After`); the new no-View-drop assert mirrors the
+existing whole-span assert's normative-only gating (CI skips). Re-verified
+Step 2 against `telemetry.rs`'s `build_tick_for_dir`: `record_tap_ms` /
+`skipped_record_frames` still EngineState-only, still absent from the §10.1
+tick — the reachability gap stands (v0.5 candidate); no wire fields added,
+no schema edits, no engine behavior change.
+
+Machine is the normative one (i7-9750H, same silicon as the §0 baseline).
+Three consecutive rehearsal runs, 2026-09-18 (extension adds no new test —
+the file still holds 15):
+
+```
+run 1: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0, "mixDroppedBefore": 0, "mixDroppedAfter": 0, "mixUnderrunsBefore": 0, "mixUnderrunsAfter": 0}
+run 2: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0, "mixDroppedBefore": 0, "mixDroppedAfter": 0, "mixUnderrunsBefore": 0, "mixUnderrunsAfter": 0}
+run 3: # tests 15 / # pass 15 / # fail 0 — recordSpan {"droppedFramesTotal": 0, "audioUnderrunsTotal": 0, "endDroppedFramesTotal": 0, "endAudioUnderrunsTotal": 0, "mixDroppedBefore": 0, "mixDroppedAfter": 0, "mixUnderrunsBefore": 0, "mixUnderrunsAfter": 0}
+```
+
+Zero View drops across the whole span AND across the blend itself, zero
+audio underruns throughout, on all three runs: the OBS scar (transitions
+skipping while recording) does not reproduce on the normative machine for
+a 15-frame mix under record load. Fork stays closed on this leg.
