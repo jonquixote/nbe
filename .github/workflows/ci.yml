@@ -83,20 +83,42 @@ jobs:
       - name: the midmix suite actually ran (TRANSITIONS step 3)
         # GAP-6 duration edges (default-15, zero, one, over-max/no-clamp) +
         # GAP-11 start+1 bisection live here alongside Step 1's continuity
-        # goldens. Floor, not a count, same anchored sed shape as the
-        # prompt04/prompt07_overlay/prompt07b_graphics gates: adding tests
-        # must not need a CI edit, but deleting or skipping one must fail
-        # the job.
+        # goldens.
+        #
+        # TWO floors, matching the 09 gate, because one cannot tell the
+        # difference that matters. This step's comment originally claimed the
+        # single `ran` floor meant "deleting OR SKIPPING one must fail the job".
+        # Deleting, yes. Skipping, no: a capability-gated test prints SKIP,
+        # returns, and reports `ok`, so `ran` is unchanged — that is exactly how
+        # the Prompt 09 floors went green over an unexercised recording contract
+        # until PR #18 measured it. `exercised = ran - skipped` cannot be
+        # satisfied by skipping.
+        #
+        # The suite has no capability gate today (all 20 run everywhere, so the
+        # floors are equal), and the exercised floor is what keeps that true: the
+        # next hardware-touching test added here either runs on the runner or
+        # fails this step. That is not hypothetical — `failed_quiesce_still_
+        # clears_inflight_transition` opens a RecordSession, and on the
+        # encoder-less runner it reds the job (run 35339778904) rather than
+        # skipping, because it accepts either loud-finalize token instead of
+        # gating itself off the machine.
         run: |
-          out=$(cargo test -p nbe-engine --test prompt04_midmix 2>&1)
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt04_midmix -- --nocapture 2>&1)
           echo "$out"
-          line=$(echo "$out" | grep "test result: ok")
-          ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt04_midmix: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=20)"
           if [ "$ran" -lt 20 ]; then
             echo "expected at least 20 prompt04_midmix tests to run, got $ran"; exit 1
           fi
-          echo "prompt04_midmix tests that ran: $ran"
+          if [ "$exercised" -lt 20 ]; then
+            echo "expected at least 20 prompt04_midmix tests to actually execute rather than skip, got $exercised"; exit 1
+          fi"
       - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
         # §7.10's suite is three levels in one target: index (2) + directive
         # (6, GPU-free) + render (5, headless wgpu golden frames, like

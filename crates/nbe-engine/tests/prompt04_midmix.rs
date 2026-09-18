@@ -1064,9 +1064,18 @@ async fn chained_interrupts_stay_within_the_layer_cap() {
 async fn failed_quiesce_still_clears_inflight_transition() {
     // The Err path out of show.stop's quiescence arm must clear the
     // transition exactly like the Ok path: a failed finalize withholds the
-    // ack but must not strand stale t0s for the next start. No-video finish
-    // fails E_RECORD_INPUT deterministically on every machine (no encoder,
-    // no AAC, no wall timing involved).
+    // ack but must not strand stale t0s for the next start.
+    //
+    // WHICH loud failure arrives is machine-dependent, and this comment used to
+    // say the opposite — "E_RECORD_INPUT deterministically on every machine (no
+    // encoder ...)". CI refuted it (run 35339778904): `RecordSession::open` is
+    // lazy, so on a runner with no hardware H.264 encoder the finalize opens the
+    // encoder first and fails `E_NO_HARDWARE_ENCODER` before it can reach the
+    // no-video check. Both are loud finalize failures and either satisfies this
+    // test's actual claim, which is about the Err path clearing the transition —
+    // not about which Err it was. Accepting both keeps the test running
+    // EVERYWHERE rather than capability-skipping it off the encoder-less runner,
+    // which would have cost the coverage this assertion exists for.
     let dir = tempfile::tempdir().unwrap();
     make_package3(dir.path());
     let (state, handler, _render) = loaded_engine(dir.path()).await;
@@ -1104,9 +1113,11 @@ async fn failed_quiesce_still_clears_inflight_transition() {
         ))
         .await
         .expect_err("empty-take finalize must fail, ack withheld");
+    let token = err.to_string();
     assert!(
-        err.to_string().contains("E_RECORD_INPUT"),
-        "expected loud empty-take failure, got: {err}"
+        token.contains("E_RECORD_INPUT") || token.contains("E_NO_HARDWARE_ENCODER"),
+        "expected a loud finalize failure (E_RECORD_INPUT where an encoder exists, \
+         E_NO_HARDWARE_ENCODER where one does not), got: {err}"
     );
     assert!(
         state.transition.lock().unwrap().is_none(),
