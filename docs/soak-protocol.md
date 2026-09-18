@@ -127,7 +127,7 @@ during a soak with its **count** recorded, not merely its pass/fail:
 
 | Entry | Signature | What the soak records |
 |---|---|---|
-| **R7** | `expected 3 directives, got 4` in the control-plane suite — 3 sightings across unrelated changes (2026-09-08, and again on a docs+CI-only branch, PR #17 run `34745014794`), load-sensitive, always green on rerun | Iterations run, iterations where the signature appeared, and the full stderr of any appearance. The redelivery-vs-extra-bump question is still open and the payloads are still uncaught — a soak appearance is the first chance to catch one |
+| **R7** | `expected 3 directives, got 4` in the control-plane suite — **4** sightings across unrelated changes (2026-09-08; PR #17 run `34745014794`; PR #19 run `35314193753`) — two of them on branches whose diff was docs+CI only, load-sensitive, always green on rerun | Iterations run, iterations where the signature appeared, and the full stderr of any appearance. The redelivery-vs-extra-bump question is still open. The payloads are no longer uncaught: as of the fourth sighting the assertion dumps each directive's `command`, `seq` and `stateVersion`, so the next appearance — in CI or in a soak — names the duplicate |
 
 A quiet return is the thing this list exists to catch. An entry leaves the list
 when its root cause is found and falsified, never because it went quiet.

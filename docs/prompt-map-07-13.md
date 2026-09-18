@@ -593,6 +593,29 @@ Per the v0.4 outline §6, 08 is no longer "wire up a Stream Deck." It builds an 
 
 **Owns `marker.add` → recording chapter (§16.11)**, assigned by `[RI-5]` — 09's current doc does not mention it, and its upgrade pass must. Inherits two dormant deferrals that its own benchmark is the trigger for: zero-copy IOSurface→Metal (re-defer *with numbers*, not with prose) and the display surface. §0.1 assumption 14 fixes fragmented MP4 as the crash-safe default. 09 should also carry `[RI-8]`'s pinned residency policy into its own resource accounting: **unload-at-next-load**, so a stop→start recovery does not pay the 46 s reload measured in the report §3.2.
 
+**Fourth sighting, 2026-09-17 (PR #19 run `35314193753`).** Same test, same
+signature (`expected 3 directives, got 4`), on a branch whose entire diff was
+docs, a shell script and a workflow comment — no TypeScript at all. Local run on
+the same tree: 82/82. That makes two of four sightings on docs-only branches,
+which is as close to proof as this gets that R7 is timing, not content.
+
+**The register's own gap, closed.** Four sightings produced four counts and no
+payloads, because the assertion's message carried only `directives.length`. The
+message now dumps each directive's `command`, `seq` and `stateVersion`
+(`server.test.ts`, diagnostics only — the assertion is unchanged), verified by
+forcing the expected count to 2:
+
+```
+received: [{"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3}]
+```
+
+So the next sighting names the duplicate instead of adding a tally mark, and the
+redelivery-vs-extra-bump question becomes answerable rather than merely open.
+The likely mechanism is visible in the test: a fixed `setTimeout(r, 30)` before
+the count, which is exactly the window a slow or loaded runner widens.
+
 ### P9 Step 0b — frame-path fork decided (recorded 2026-09-14, normative machine)
 
 Full table in `docs/09-measurements.md` (complete pastes, 300 frames/phase, 1080p30, Radeon Pro 555X). Decision: **(A) CPU readback first cut; zero-copy deferred with numbers.** Render+readback p95 19.3 ms / max 24.5 ms vs 33.333 ms budget, 0/300 over budget; GPU-copy proxy p95 4.5 ms. Reload cost re-measured: release preflight on dress_show 0.8–1.7 s (the stale 46 s was debug-under-contention; DRESS's 10.7 s was show.load decode, a different cost — cited correctly here). Answer changes if: dress-content composite + readback p95 crosses ~28 ms; encoder+mux+audio load trips drops; 4K target (≈48 ms readback alone); long-run p99 exceeds budget.
