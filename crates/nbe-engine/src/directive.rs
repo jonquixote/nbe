@@ -497,12 +497,22 @@ impl DirectiveHandler {
                                 .into_iter()
                                 .collect(),
                         };
-                        layers.push(crate::scene::FrozenLayer {
-                            item: old.to_item.clone(),
-                            alpha: old.progress(frozen_frame),
-                            t0: old.start_frame,
-                        });
-                        Some(crate::scene::Underlay { layers })
+                        // Back-to-back take (old progress still 0.0): pushing the
+                        // to_item would carry a dead zero-alpha layer for the
+                        // whole new mix, so skip it. If nothing remains (no
+                        // from_item either — the interrupted transition had
+                        // rendered nothing yet), there is no underlay at all
+                        // and the new mix starts clean, exactly as a fresh
+                        // take would.
+                        let frozen = old.progress(frozen_frame);
+                        if frozen > 0.0 {
+                            layers.push(crate::scene::FrozenLayer {
+                                item: old.to_item.clone(),
+                                alpha: frozen,
+                                t0: old.start_frame,
+                            });
+                        }
+                        (!layers.is_empty()).then_some(crate::scene::Underlay { layers })
                     }
                     _ => None,
                 },

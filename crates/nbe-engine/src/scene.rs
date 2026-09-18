@@ -928,10 +928,13 @@ pub struct Transition {
 /// flattened top blend, and nothing beneath it is reachable by any path.
 #[derive(Debug, Clone)]
 pub struct Underlay {
-    /// Bottom-up frozen layers. Index 0 is the opaque base (alpha 1.0); each
-    /// further entry is one interrupted transition's to_item at its frozen
-    /// alpha. One entry per chained interrupt — small (item ref + two
-    /// numbers), and dropped whole when the new transition completes.
+    /// Bottom-up frozen layers. Index 0 is the base (alpha 1.0 when the
+    /// interrupted transition had a from_item; absent when it had rendered
+    /// nothing yet — then the composite beneath shows through, exactly as a
+    /// fresh mix's first frame). Each further entry is one interrupted
+    /// transition's to_item at its frozen alpha. One entry per chained
+    /// interrupt — small (item ref + two numbers), and dropped whole when
+    /// the new transition completes.
     pub layers: Vec<FrozenLayer>,
 }
 

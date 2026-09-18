@@ -499,7 +499,7 @@ async fn three_deep_takes_stay_continuous_and_bounded() {
 }
 
 #[tokio::test]
-async fn midmix_take_replaces_audio_with_fresh_take_at_new_t0() {
+async fn midmix_take_queues_fresh_take_at_new_t0() {
     // Audio mid-mix honesty pin: a take REPLACES the clip-bus source (it
     // restarts through silence via `swap_source_through_silence`) rather than
     // crossfading out of the current video blend. The observable contract on
@@ -858,4 +858,40 @@ async fn mix_first_mixed_frame_bisected_at_start_plus_1() {
         "start+1 must not be old-full: got {px:?}"
     );
     assert_ne!(px, BLUE, "start+1 must not be new-full yet: got {px:?}");
+}
+
+#[tokio::test]
+async fn interrupt_at_progress_zero_carries_no_dead_layer() {
+    // Back-to-back take (S2 == S1+1, old progress still 0.0): the frozen
+    // to_item would be a zero-alpha dead layer carried for the whole new
+    // mix, so construction skips it. The opaque base remains: displayed
+    // frame IS old-from at full, which is what the new blend starts from.
+    let dir = tempfile::tempdir().unwrap();
+    make_package3(dir.path());
+    let (state, handler, _render) = loaded_engine(dir.path()).await;
+    state.clock.lock().unwrap().start();
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    take_mix(&handler, 2, "A2", 20).await;
+    let s1 = transition_start(&state);
+    // Second take on the very next master frame: old elapsed == 0.
+    take_mix(&handler, 3, "A3", 20).await;
+    let guard = state.transition.lock().unwrap();
+    let t = guard.as_ref().expect("second take arms a transition");
+    assert_eq!(t.to_item, "A3", "new transition targets the second take");
+    let underlay = t.underlay.as_ref().expect("base layer retained");
+    assert_eq!(
+        underlay.layers.len(),
+        1,
+        "only the opaque base survives a progress-0 interrupt, got {:?}",
+        underlay
+            .layers
+            .iter()
+            .map(|l| (l.item.clone(), l.alpha))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(underlay.layers[0].item, "A1", "base is the displayed scene");
+    assert_eq!(underlay.layers[0].alpha, 1.0, "base is opaque");
+    drop(guard);
+    let _ = s1;
 }
