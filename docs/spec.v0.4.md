@@ -16,7 +16,7 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
-v0.4.3 — **UNRATIFIED, pending PR review.** v0.5 phase 0: normative catch-up. Every
+v0.4.3 — **RATIFIED 2026-09-19.** v0.5 phase 0: normative catch-up. Every
 row below is a behaviour that is implemented, tested and falsified on `main`
 today and that no sentence made law. Nothing here adds behaviour; each sentence
 was written from the code and its guarding test, not from an intent. An
@@ -39,6 +39,40 @@ have duplicated a normative rule rather than added one.
 `schemas/manifest.v0.4.json` is unchanged by v0.4.3. No wire field, no command,
 no behaviour changes — this revision moves facts from the records into the
 document.
+
+**Ratification, 2026-09-19.** The three sentences above are law as of this
+revision. Each guard was run immediately before its marker was flipped, at the
+ratifying commit, because a ratification is worth exactly as much as the test
+that would catch its violation:
+
+| Section | Guard | Result at ratification |
+|---|---|---|
+| 7.10 | `animation_immune_to_take` | ok. 1 passed; 0 failed |
+| 7.10 | `overlay_persists_across_take` | ok. 1 passed; 0 failed |
+| 7.14 | `fallback_covers_overlays` | ok. 1 passed; 0 failed |
+| 16.6 | `a noop overlay command forwards no directive` | ok |
+| 16.6 | `overlay.show on an on-air overlay is an idempotent noop` | ok |
+| 16.6 | `overlay.hide removes the overlay; hide on hidden is a noop` | ok |
+
+Two of the three could not have been ratified as first drafted. The two-key pass
+over the drafting PR found §7.10's guards installing a transition directly into
+state — so a test named for a take never entered `on_take`, and re-keying every
+in-flight overlay animation there left all thirteen tests in the file green — and
+found §7.14's View-bus qualifier unguarded, with the whole workspace staying at
+309 passed after the qualifier was deleted from the code. Both now carry guards
+proven by the mutations that used to pass: the take guards dispatch a real
+`view.take` through the directive handler, and the fallback guard reads back the
+Preview bus. §16.6 needed no repair; both its mutations always bit.
+
+That history is the reason this revision's premise holds. "Writing law for what
+is already true" is safe only when *true* means *guarded*, and for two of these
+three sentences it did not, until it did. The trap that hid it — a test claiming
+a path it never enters — is now §2a rule 7 of the implementation standards, with
+three instances closed across three suites.
+
+Ratified as its own change, not inside a feature PR. The counter-precedent is on
+the record: §4's target-hygiene rule arrived inside PR #18 and needed a later
+pass to make the nod explicit.
 
 v0.4.2 ratifies two corrections that were already load-bearing in the tree, and
 records the second one's birth rather than tidying it away.
@@ -1041,7 +1075,7 @@ Overlay elements (ticker, logo bug, breaking banner, clock) live on the overlay 
 
 Overlays have independent `overlay.show` / `overlay.hide` commands with their own enter/exit animations.
 
-**A take never disturbs an overlay [UNRATIFIED, v0.4.3 draft].** "Persist across
+**A take never disturbs an overlay (normative, new in v0.4.3).** "Persist across
 scene transitions" above is stated for the scene change; this makes the stronger
 guarantee the engine already provides, because the weaker reading permits a
 visible artefact the implementation does not produce:
@@ -1152,7 +1186,7 @@ Fallback triggers:
 
 Fallback MUST be automatic and MUST NOT require operator action.
 
-**The fallback slate composites above the overlay level [UNRATIFIED, v0.4.3 draft].**
+**The fallback slate composites above the overlay level (normative, new in v0.4.3).**
 A fallback cut MUST cover the whole View — ticker, logo bug, breaking banner and
 clock included. An operator seeing the slate is seeing that the show is off air,
 and an overlay drawn on top of it would contradict that at exactly the moment
@@ -2664,7 +2698,7 @@ Deleting a reserved hook is cheaper than maintaining a fiction. If nested rundow
 | `overlay.hide` | `{ overlayId: string }` | overlay exists | overlay hidden with its exit animation | `E_NOT_FOUND` |
 
 **Repeating an overlay command is an idempotent success, not a refusal
-[UNRATIFIED, v0.4.3 draft].** `overlay.show` on an overlay already on air, and
+(normative, new in v0.4.3).** `overlay.show` on an overlay already on air, and
 `overlay.hide` on one already hidden, MUST be accepted. Each:
 
 - returns `status: "ok"` with `data.noop: true`;
