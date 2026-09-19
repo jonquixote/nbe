@@ -145,8 +145,15 @@ test("render-role session receives directives in order with correct stateVersion
   //              {"command":"show.load","seq":1,...}, ...]
   //
   // Attaching first makes the resync deterministic rather than racy, so it is
-  // now asserted as the contract §5.9.4 says it is — which also gives that
-  // sentence its first guard.
+  // asserted here as the contract §5.9.4 says it is.
+  //
+  // NOT this test's first guard, and an earlier version of this comment claimed
+  // it was (§2c). render-channel.test.ts already covered the sentence from the
+  // channel's side — "show.resync is the first directive on a render
+  // connection", the mid-show reconnect case, and `resyncRequest` — and deleting
+  // `sendResync` from the connect path fails four tests, three of them those.
+  // This assertion is a duplicate at a different layer: it is what stops THIS
+  // test from counting a frame it never meant to observe.
   const directives: Record<string, unknown>[] = [];
   render.on("message", (buf: Buffer) => {
     const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
@@ -154,12 +161,24 @@ test("render-role session receives directives in order with correct stateVersion
   });
   await connect(render);
   const resync = await waitForCommandIn(directives, "show.resync");
-  assert.equal(resync.seq, 0, "§5.9.4: the resync snapshot opens the connection");
+  // What §5.9.4 actually says, and what is merely true of THIS fixture, are
+  // different things, so they are labelled differently.
+  //
+  // The contract: "On every render-role connection — initial connect and every
+  // reconnect — the control plane MUST send a `show.resync` directive before any
+  // other directive on that connection." That is the length-1 assertion below.
   assert.equal(
     directives.length,
     1,
     "§5.9.4: show.resync goes out BEFORE any other directive on this connection",
   );
+  // FIXTURE FACTS, not §5.9.4 properties. seq 0 and stateVersion 0 hold because
+  // this is an INITIAL connect against a server that has accepted no commands; a
+  // reconnect mid-show carries the current stateVersion, and the snapshot is
+  // still correct. The reconnect half of the sentence is covered by
+  // "a render node connecting mid-show is resynced, and its seq starts at 0" in
+  // render-channel.test.ts, which is where that case lives — not here.
+  assert.equal(resync.seq, 0, "initial connect: the render channel's seq starts at 0");
 
   // A helper that returns the directive recorded for a given seq once it
   // appears (guards the delivery/ordering assertion below by waiting for it).

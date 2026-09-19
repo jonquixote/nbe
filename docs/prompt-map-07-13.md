@@ -271,6 +271,35 @@ while this test was failing, because the ad-hoc awk in use split on `;` and read
 an empty field for the failure count. CI's own summary uses the default separator
 and is correct.
 
+### PR #21's fix-round pass — a third rule-7 instance, found by the new rule (2026-09-18)
+
+Rule 7 earned its place on its first application. The pass swept the engine
+suites for tests whose names claim a dispatched path, and found one the previous
+rounds had not:
+
+**`a_cut_and_a_mix_do_not_reshape_the_ticker`** (`prompt07b_graphics.rs:292`)
+bound `handler`, then performed "a cut" by writing `state.view_item` and "a mix"
+by writing `state.transition` — neither dispatched. Third instance, third suite.
+Proven with the positive control the rule's own entry now recommends: `panic!` on
+entry to `on_take` left the ticker test **green** while the repaired overlay
+guards **failed**.
+
+Repaired the same way: both the cut and the mix are dispatched `view.take`
+directives, and the armed transition is asserted (kind Mix, duration 15, start
+frame 0 on a stopped clock) rather than hand-written. The control now bites:
+
+```
+test a_cut_and_a_mix_do_not_reshape_the_ticker ... FAILED
+thread '...' panicked at crates/nbe-engine/src/directive.rs:428:9
+test result: FAILED. 0 passed; 1 failed
+```
+
+Seven other sweep hits were name-collisions and are clean — `sigkill_shape_drop_mid_take`
+means a *record* take, and `record_start_on_running_show_opens_pipeline`
+dispatches through `start_recording` → `.apply(&directive(…))`. The sweep's value
+was not its hit rate; it was that the one real instance had survived two passes
+that were looking directly at it.
+
 ### R7 — FIFTH sighting settled it, and my first mechanism was WRONG (2026-09-18)
 
 The retirement recorded below was premature, and this entry supersedes its
@@ -313,15 +342,49 @@ never sent. §2a rule 7's lesson generalises here: I inferred a property of the
 server from a test whose observation window did not cover it.
 
 **The fix.** The collector is attached BEFORE the handshake, so the resync is
-observed deterministically rather than raced for, and it is now asserted as the
-contract §5.9.4 says it is: first on the connection, `seq` 0, `stateVersion` 0,
-and alone until the first command. Falsified: deleting `sendResync(session)` from
-the connect path fails with `directive 'show.resync' never arrived; have []`.
-That sentence of §5.9.4 had no guard at all before this.
+observed deterministically rather than raced for, and it is asserted as the
+contract §5.9.4 says it is: first on the connection, and alone until the first
+command. Falsified: deleting `sendResync(session)` from the connect path fails
+with `directive 'show.resync' never arrived; have []`.
+
+~~That sentence of §5.9.4 had no guard at all before this.~~ **CORRECTED
+2026-09-18 (§2c) — that claim was false, and the tree says so.**
+`render-channel.test.ts` already guarded the sentence from the channel's side:
+`:223` "show.resync is the first directive on a render connection" with its
+payload-key assertions, `:236` the mid-show reconnect case, and `:257`
+`resyncRequest`. Deleting `sendResync` from the connect path fails **four**
+tests — 42, 43, 44 and 56 — three of them pre-existing. The new assertion is a
+**duplicate at a different layer**, which is worth having (it is what stops
+`server.test.ts` from counting a frame it never meant to observe) but is not a
+first guard.
+
+How the false claim was made is the instructive part: the falsification that
+produced it ran only `server.test.ts`, saw one failure, and inferred
+exclusivity. That is the same shape as reading one sample of a race as evidence
+of absence — the error this very entry was written to correct, repeated one
+paragraph later against a different question. A falsification that is scoped to
+one file answers "does this test guard it", never "is this the only guard".
+
+Two smaller over-assertions were corrected with it: `seq` 0 and `stateVersion` 0
+are facts about an **initial connect against a fresh server**, not §5.9.4
+properties — a reconnect mid-show carries the current `stateVersion`. They are
+now labelled as fixture facts in the test, and the reconnect half of the
+sentence is named as living at `render-channel.test.ts:236`.
 
 The count assertions move from 3 to 4 and still bite a real extra: making
 `view.take` emit a duplicate gives `expected 4 directives (resync + three
 commands), got 5`.
+
+**THE REFUTATION CONDITION, written before the next run rather than after it.**
+This retirement rests on one mechanism: the §5.9.4 `show.resync` is always sent
+on render-session registration, and the test used to race its own collector
+against it. **A sixth sighting of the `expected 3 directives, got 4` signature —
+or its post-fix form, `expected 4 directives (resync + three commands), got 5` —
+refutes this retirement and returns R7 to open.** The condition is recorded now,
+before any run that could satisfy it, because the fifth sighting's lesson is that
+a confident mechanism can be wrong: the fourth retirement attempt named aliasing,
+was argued from code and a 75-run streak, and was refuted by the next push. A
+standard stated after the fact is a standard fitted to the outcome.
 
 **One process note.** The first attempt at that falsification mutated the wrong
 call site: the pattern `        sendResync(session);` (8 spaces) is a substring of
