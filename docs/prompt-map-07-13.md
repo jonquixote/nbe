@@ -160,6 +160,55 @@ record understated it. Raised as reviewer finding **F1**, and it is the third re
 instance of a truncating pipe producing a false claim in this project — hence the standards
 rule now forbidding them in evidence.
 
+### PR #21's two-key findings — both closed by guarding, not by trimming (2026-09-18)
+
+The pass found two of the three drafted v0.4.3 sentences making claims their
+cited tests could not fail for. Neither sentence was wrong about the code; both
+were unfalsifiable as law, which is worse than an unwritten rule because the
+citation reads as a guarantee.
+
+**F2 — §7.10's guards never entered the take path they name.** The sentence says
+`anim_start` and duration are "untouched by the take path", and both cited tests
+installed a transition straight into `state.transition` via a `set_mix` helper.
+Re-keying every in-flight overlay animation inside `on_take` left all thirteen
+tests in the file green. Closed by making `overlay_persists_across_take` and
+`animation_immune_to_take` dispatch a real `view.take` through
+`DirectiveHandler`, with the armed transition asserted (start frame 0 on a
+stopped clock, duration 15) and the overlay runtime compared field-by-field
+across the take. The same mutation now fails:
+
+```
+test animation_immune_to_take ... FAILED
+assertion `left == right` failed: a take must not re-key anim_start
+test result: FAILED. 12 passed; 1 failed
+```
+
+The helper survives only where the claim is about compositing against an
+already-armed transition, renamed `install_transition_directly` with a doc
+comment saying it is not the take path. The trap now has a standards rule —
+§2a rule 7 — because it had already invalidated a falsification probe in the
+step-5c pass, and a review that names an un-entered path is making a finding
+about the test, not the code.
+
+**F1 — §7.14's View-bus qualifier was unguarded.** Deleting `bus == Bus::View &&`
+from `render.rs` left the workspace at 309 passed, 0 failed. The preferred
+outcome was taken rather than the trim: the code shows Preview keeps compositing
+its own scene while the View shows the slate, and `fallback_covers_overlays` now
+arms Preview on A2 (SCN_BLUE) and asserts the Preview readback is BLUE and not
+SLATE. Preview renders at `PREVIEW_W x PREVIEW_H`, so it needed its own sampler —
+`px_at` indexes by the View's geometry and ran off the end of the buffer, which
+is why the first attempt panicked rather than failing an assertion. With the
+guard in place, deleting the qualifier fails:
+
+```
+test fallback_covers_overlays ... FAILED
+assertion `left == right` failed: Preview composites its own scene
+  (A2 -> SCN_BLUE) while the View shows the slate
+```
+
+Both sentences are now law the tree can keep. §16.6 needed no work — both its
+mutations already bit.
+
 ### Finding R9 — a wall-clock threshold microbenchmark sits in the default suite (recorded 2026-09-18)
 
 `audio_tap_push_never_blocks_contention_micro`
@@ -185,6 +234,29 @@ threshold whose value depends on machine quiescence, living in a suite that runs
 on 3 arm64 CI cores and on a developer machine mid-build. Its home is
 `docs/soak-protocol.md` §1, where quiescence is a checked precondition and a
 violated one produces VOID rather than FAIL.
+
+**ADJUDICATED AND ADOPTED 2026-09-18 (PR #21 fix round): rebound by work, not
+wall.** Of the three options below, the chosen one is the second — the SPSC
+promise asserted without a clock. The test is now
+`audio_tap_push_is_bounded_and_lossless_accounting_under_a_hammer`, pinning what
+the contract actually says: capacity fixed across 10k pushes (a ring that
+reallocates allocates on the audio deadline), occupancy never above capacity, 10k
+pushes into an undrained ring completing rather than stalling, and every sample
+either retained or counted dropped — exactly once, arithmetic rather than timing.
+
+The old comment had already conceded the gap in passing — *"the lock-freedom
+itself is asserted by code inspection in review"* — so the one property that
+mattered was the one the test never checked.
+
+Falsified both ways: removing `dropped.fetch_add` fails the accounting assertion
+(`pushed 10241024, retained 480000, counted 0`); asserting a grown capacity fails
+the bounded assertion. Load-independence demonstrated rather than claimed — the
+rebound test passes in **0.72 s at load 6.19**, on the same machine where the
+wall-clock version failed at load 5.08 in 8.07 s while this rebind was being
+written. The suite fell from ~19 s to 2.4 s, because the timing loops were most
+of its runtime. The wall-clock number moves to the soak's threshold list.
+
+Original disposition, kept per §2c:
 
 **Not fixed here.** Work order V05-PHASE0 scopes Mission 1 to docs and Mission 2
 to `packages/control-plane`; this is a Rust test. Recorded rather than touched,

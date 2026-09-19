@@ -38,6 +38,7 @@ protocol owns the rest, on the machine where the numbers mean something.
 | A/V sync inside the file (≤ 20 ms) | rehearsal step 12 |
 | **AC-6 — crash-safe recording under `SIGKILL`** | rehearsal step 13 |
 | The encoder, fMP4 writer, fragment cadence, AAC tap, on-disk sidecar | `prompt09_*` suites (22 of which skip on CI) |
+| **Audio-tap push latency** — worst single `AudioTap::push` over 10k pushes under 1 ms | Nowhere else. Rebound out of the default suite 2026-09-18 (R9): it measured the machine, passing at load 2.58 and failing at load ~5 and ~30 on the same binary. The SPSC contract is now asserted by work in `prompt09_record_file`; this THRESHOLD lives here, where quiescence is checked and a violation is VOID |
 | Flake-register watch list (R7 and successors) | §5 below |
 | The v0.5 failover drill | when it exists; this protocol is its home |
 
