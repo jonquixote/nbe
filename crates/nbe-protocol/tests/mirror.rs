@@ -357,8 +357,22 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         audio_underruns_total: 0,
         audio_drift_ms: 0.0,
         bus_peak_dbfs: Default::default(),
-        record_tap_path: None,
-        record_tap_reason: None,
+        // Some, NOT None, and that is the whole point of this fixture.
+        //
+        // These fields are `skip_serializing_if = "Option::is_none"`, so a
+        // `None` sample serializes them to NOTHING — the key-set check below
+        // then never sees them, and the agreement holds vacuously while
+        // TypeScript knows nothing about the fields. That is exactly what
+        // happened when they were added: the suite read 16/16 while the TS
+        // schema, which is `.strict()`, would have REJECTED the whole frame the
+        // first time a real tick carried a value. Fourth instance of the shape
+        // the gate split was built to retire — a floor green about what it
+        // cannot see (§2a rule 7's neighbourhood).
+        //
+        // Any optional field added here must be sampled with a VALUE, or this
+        // audit does not audit it.
+        record_tap_path: Some("zeroCopy".into()),
+        record_tap_reason: Some("Table".into()),
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();

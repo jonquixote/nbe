@@ -40,6 +40,11 @@ export interface TelemetryTick {
   // addendum fields
   engineConnected: boolean;
   deprecationWarnings: Array<{ command: string; resolvedTo: string; stateVersionAtTime: number }>;
+  /** ZERO-COPY Phase 2: which frame path the record tap took — `"zeroCopy"` or
+   *  `"cpuReadback"`. Absent until a take selects one. */
+  recordTapPath?: string;
+  /** Why that path was chosen, so a fallback is distinguishable from a choice. */
+  recordTapReason?: string;
 }
 
 /** How long a cached engine report stays authoritative (default 2 s). */
@@ -71,6 +76,14 @@ export function buildTick(
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,
     degradationRung: f?.degradationRung ?? 0,
+    // ZERO-COPY Phase 2: forwarded only when the engine actually reported one.
+    // No `?? "cpuReadback"` default — absent means "no take has selected a
+    // path", and defaulting would make a machine that never recorded look
+    // identical to one that fell back to the §0.1 assumption 24 allowance.
+    // Parsing the field at the boundary is not the same as an operator seeing
+    // it, which is what these two lines are for.
+    ...(f?.recordTapPath !== undefined ? { recordTapPath: f.recordTapPath } : {}),
+    ...(f?.recordTapReason !== undefined ? { recordTapReason: f.recordTapReason } : {}),
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),

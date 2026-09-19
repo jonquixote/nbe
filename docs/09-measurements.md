@@ -409,9 +409,30 @@ dependency would pull the entire GPU stack into a 13.5 MB CLI binary that CI
 already size-gates. Measured after the change:
 
 ```
-wgpu nodes in nbe-preflight's dependency tree: 0
-wgpu nodes in nbe-engine's dependency tree:   12
+distinct wgpu-family packages in nbe-preflight: 0
+distinct wgpu-family packages in nbe-engine:    8
 ```
+
+~~*wgpu nodes in nbe-engine's dependency tree: 12*~~ **CORRECTED 2026-09-19
+(§2c).** Two numbers were reported for the same quantity — 12, then 13 — and
+neither was the quantity. `cargo tree | grep -c wgpu` counts **lines**, and a
+package appears on as many lines as it has paths into the graph; the count also
+moved when a `pollster` dev-dependency landed between the two readings. Derived
+three ways at the fix round:
+
+| Method | nbe-engine | nbe-preflight |
+|---|---:|---:|
+| `cargo tree \| grep -c wgpu` (lines) | 13 | 0 |
+| `cargo tree --prefix none`, unique first field | 13 | 0 |
+| `cargo metadata`, **distinct packages** | **8** | **0** |
+
+Eight is the number that means what the sentence claims. The discrepancy stays
+recorded rather than quietly replaced: the measurement discipline says a count
+derived one way is a count nobody checked, and this is the counter-example that
+earned the rule its second instance — the first was an awk field separator that
+made a failure count read zero forever.
+
+The load-bearing half was never in doubt: **preflight is 0 by every method.**
 
 Preflight's surface is unchanged. `nbe-engine` turns the feature on; nothing
 else does.
@@ -509,3 +530,57 @@ evaluable, but **nothing in the production record path calls them yet** — the
 work order places migration in Phase 3 and says this PR ships none. What exists
 now: the tap, the table, the telemetry, the falsifications, and the crate
 boundary with its cost measured.
+
+
+## PR #24's two-key pass — three findings, closed (2026-09-19)
+
+**F1 (HIGH) — the mirror agreement was vacuous, and the field would have broken
+the control plane.** `rust_and_typescript_agree_on_the_engine_telemetry_fields`
+collects the **serialized key set** and checks each key against the TypeScript
+schema. The new fields are `skip_serializing_if = "Option::is_none"`, and the
+fixture sampled them as `None` — so they serialized to nothing, the loop never
+checked them, and the suite read 16/16 while TypeScript knew nothing about them.
+
+That was not merely a coverage gap. The TS schema is `.strict()`:
+
+```
+without the new fields: ACCEPTED
+WITH recordTapPath:     REJECTED — unrecognized_keys ["recordTapPath","recordTapReason"]
+```
+
+The first tick Phase 3 populated would have been rejected **whole** — not the
+field dropped, the entire §10.1 tick refused, every tick.
+
+Closed three ways, because parsing is not visibility: the TS schema gained both
+fields as `.optional()` (never `.default()` — absent means "no take yet", and a
+default would make a machine that never recorded look like one that fell back);
+the agreement fixture samples them with values so the key-set check actually
+checks them; and `buildTick` now **forwards** them to the operator tick, which
+the first version did not — the frame parsed at the boundary and the field died
+there. Guarded by `an engineTelemetry tick carrying recordTapPath parses and the
+field is readable`.
+
+Falsified both directions: remove the fields from the TS schema →
+`TypeScript engineTelemetry has no 'recordTapPath' field`; remove
+`rename_all = "camelCase"` from the Rust struct →
+`TypeScript engineTelemetry has no 'audio_drift_ms' field`.
+
+**This is the fourth instance of one shape** — a floor green about what it
+cannot see. The 09 floors counted `passed` while capability-gated tests skipped;
+two overlay guards named a take path they never entered; a wall-clock bound
+measured the machine instead of the code; and now an agreement audit checked a
+key set that omitted the keys. The lineage is worth naming because the fix is
+always the same: make the check see the thing it claims to check.
+
+**F2 (MED) — the suite shipped with no gate.** `zerocopy_tap` appeared nowhere
+in `ci.yml`, so all six tests reported `ok` on CI and nothing said whether the
+two GPU-dependent ones had run or skipped. It now carries the same two-floor
+shape as the 09 suites (`ran >= 6`, `exercised >= 4`, where four tests run on any
+runner) plus an observational block that greps `^SKIP` and prints what went
+unexercised. Locally: `ran=6 skipped=0 exercised=6`.
+
+**F3 (LOW-MED) — the soak row described the plan in the present tense.** It said
+the path choice is "recorded every soak", but `scripts/soak.sh` is unchanged,
+nothing in production calls `select()`, and the field is absent from every tick
+by design until Phase 3. The row now says so, and names the migration as what
+backs it.

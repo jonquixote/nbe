@@ -420,6 +420,14 @@ export const EngineTelemetryFrameSchema = z
     audioDriftMs: z.number().default(0),
     /** Per-bus peak level in dBFS (SPEC §10.1). */
     busPeakDbfs: z.record(z.number()).default({}),
+    // ZERO-COPY Phase 2: which frame path the record tap took, and why.
+    // `.optional()` and NOT `.default()` — the Rust side omits these when no
+    // take has selected a path (`skip_serializing_if = "Option::is_none"`), and
+    // a default here would fabricate a choice that was never made. Absent means
+    // "no take yet", which is the distinction an operator needs: a machine that
+    // never recorded must not look like one that fell back to CPU readback.
+    recordTapPath: z.string().optional(),
+    recordTapReason: z.string().optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

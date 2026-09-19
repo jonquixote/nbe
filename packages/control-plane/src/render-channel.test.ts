@@ -217,6 +217,61 @@ test("stateChange frames do not go to render sessions", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// ZERO-COPY Phase 2: the record tap's path choice reaches an operator.
+test("an engineTelemetry tick carrying recordTapPath parses and the field is readable", async () => {
+  // The claim these fields exist for is OPERATOR VISIBILITY, so tolerating them
+  // is not enough — they have to arrive readable. The schema is `.strict()`, so
+  // before the fields were added a tick carrying them was rejected WHOLE:
+  // `unrecognized_keys ["recordTapPath","recordTapReason"]`. Not the field
+  // dropped — the entire §10.1 tick refused, every tick, from the moment Phase 3
+  // started populating it.
+  const ws = conn("admin", ADMIN);
+  await connect(ws);
+  const ticks = collect(ws, "telemetry");
+  const sub = await send(ws, "system.telemetry.subscribe", { intervalMs: 100 });
+  assert.equal(sub.status, "ok");
+
+  const render = conn("render", RENDER);
+  await connect(render);
+  render.send(
+    JSON.stringify({
+      v: "0.3",
+      kind: "engineTelemetry",
+      ts: Date.now(),
+      masterClockFrame: 10,
+      droppedFramesTotal: 0,
+      renderGpuTimeMs: 4.2,
+      decodeSessions: 0,
+      vramUsedMib: 100,
+      textureCacheUsedMib: 0,
+      streamBufferMs: 0,
+      recordSpaceMib: 0,
+      masterClockDriftMs: 0,
+      fallbackActive: false,
+      degradationRung: 0,
+      recordTapPath: "cpuReadback",
+      recordTapReason: "ProbeUnavailable",
+    }),
+  );
+  await until(
+    () =>
+      ticks.length >= 1 &&
+      (ticks.at(-1)!.data as Record<string, unknown>).recordTapPath !== undefined,
+    3000,
+  );
+  const data = ticks.at(-1)!.data as Record<string, unknown>;
+  assert.equal(
+    data.recordTapPath,
+    "cpuReadback",
+    "the path must be readable by an operator, not merely accepted",
+  );
+  assert.equal(
+    data.recordTapReason,
+    "ProbeUnavailable",
+    "a fallback is only visible if its reason survives the wire",
+  );
+});
+
 // §5.9.4 show.resync
 // ---------------------------------------------------------------------------
 
