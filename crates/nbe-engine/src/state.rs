@@ -117,6 +117,10 @@ pub struct EngineState {
     /// render budget by construction; observable to tests, no wire/telemetry
     /// change).
     pub record_tap_ms: Mutex<f64>,
+    /// The frame path the record tap selected, and why (ZERO-COPY Phase 2).
+    /// `None` until a take has selected one — which is what the telemetry
+    /// field's absence means on the wire, rather than a defaulted guess.
+    pub record_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
     /// Record frames skipped over budget or on a saturated handoff
     /// (loop-updated, observable to tests). `Arc` so the record thread can
     /// count its own sheds into the same counter — no skip is invisible.
@@ -171,6 +175,7 @@ impl EngineState {
             record_session: Mutex::new(None),
             record_tap: Mutex::new(None),
             record_tap_ms: Mutex::new(0.0),
+            record_tap_selection: Mutex::new(None),
             skipped_record_frames: Arc::new(AtomicU64::new(0)),
             record_dir: Mutex::new(None),
             degradation_rung: AtomicU64::new(0),

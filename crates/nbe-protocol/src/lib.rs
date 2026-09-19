@@ -368,6 +368,22 @@ pub struct EngineTelemetry {
     /// without opening a meter bridge (SPEC §10.1).
     #[serde(default)]
     pub bus_peak_dbfs: std::collections::BTreeMap<String, f64>,
+    /// Which frame path the record tap is using — `"zeroCopy"` or
+    /// `"cpuReadback"` — and why it was chosen.
+    ///
+    /// ZERO-COPY Phase 2. Which path is live is **operational state**, not an
+    /// implementation detail: SPEC §0.1 assumption 24 forbids CPU readback for
+    /// outputs, v0.4.2 grants recording one scoped allowance, and an operator
+    /// who cannot see which path is running cannot tell a machine that chose
+    /// zero-copy from one that silently fell back to the allowance. Additive and
+    /// optional; `None` before a record take has selected a path.
+    ///
+    /// **Recorded as a §10.1 wire-addition candidate**, unratified — the same
+    /// shape `intentSource` took before v0.4.1 ratified it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_tap_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_tap_reason: Option<String>,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.

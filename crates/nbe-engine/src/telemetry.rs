@@ -22,6 +22,12 @@ pub fn record_space_mib_for(dir: Option<&Path>) -> f64 {
 /// Build one engine-owned telemetry frame, measuring `recordSpaceMib`
 /// against the real target volume when `record_dir` is `Some`.
 pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> EngineFrame {
+    // Read the tap selection ONCE, before the struct literal. Locking twice
+    // inside it deadlocks: struct-literal temporaries live until the end of the
+    // enclosing statement, so the first `MutexGuard` is still held when the
+    // second `lock()` runs, on a non-reentrant `Mutex`. Found by
+    // `pump_tick_wires_the_loaded_record_dir` hanging rather than failing.
+    let tap = *state.record_tap_selection.lock().unwrap();
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
@@ -54,6 +60,12 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         // A snapshot: the driver closes each meter window on its own boundary,
         // so reading here neither ends a window nor races another reader.
         bus_peak_dbfs: state.bus_peaks.lock().unwrap().clone(),
+        // ZERO-COPY Phase 2: which path the record tap took, and why. Absent
+        // until a take selects one — an operator reading this can tell a
+        // machine that chose zero-copy from one that fell back to the §0.1
+        // assumption 24 allowance, which is the whole reason it is reported.
+        record_tap_path: tap.map(|s| s.path.as_str().to_string()),
+        record_tap_reason: tap.map(|s| format!("{:?}", s.reason)),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

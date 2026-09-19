@@ -188,6 +188,8 @@ fn render_channel_frames_round_trip() {
             audio_underruns_total: 3,
             audio_drift_ms: 0.4,
             bus_peak_dbfs: [("master".to_string(), -12.3)].into_iter().collect(),
+            record_tap_path: Some("zeroCopy".into()),
+            record_tap_reason: Some("Table".into()),
         },
     });
     round_trip(&PushFrame::StateChange {
@@ -355,6 +357,8 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         audio_underruns_total: 0,
         audio_drift_ms: 0.0,
         bus_peak_dbfs: Default::default(),
+        record_tap_path: None,
+        record_tap_reason: None,
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();
