@@ -295,3 +295,92 @@ Zero View drops across the whole span AND across the blend itself, zero
 audio underruns throughout, on all three runs: the OBS scar (transitions
 skipping while recording) does not reproduce on the normative machine for
 a 15-frame mix under record load. Fork stays closed on this leg.
+
+---
+
+# ZERO-COPY Phase 1 — the spike, and what it measured (2026-09-19)
+
+## Outcome: the chain works. Every link, on the normative machine.
+
+wgpu View texture → IOSurface-backed `MTLTexture` → `CVPixelBuffer` →
+VideoToolbox, with no CPU readback at any point. Run on the reference machine
+per `docs/hardware-baseline.txt` — Intel i7-9750H, and wgpu's
+`HighPerformance` preference selected the **AMD Radeon Pro 555X**, which matters:
+the IOSurface-backed texture is created on the *same* `MTLDevice` wgpu renders
+with, so the dual-GPU hazard this machine presents (Intel UHD 630 alongside the
+Radeon) never arises.
+
+```
+== link 1: IOSurfaceCreate 1920x1080 BGRA
+   ok: IOSurface created, id 117
+== link 2: wgpu Metal device -> MTLTexture backed by that IOSurface
+   adapter: AMD Radeon Pro 555X
+   ok: MTLTexture from IOSurface
+== link 3: import that MTLTexture into wgpu
+   ok: wgpu::Texture imported
+== link 4: render into it through wgpu
+   ok: rendered a clear into the IOSurface-backed texture
+== link 5: same IOSurface -> CVPixelBuffer -> VideoToolbox encode
+   ok: CVPixelBuffer wraps the IOSurface (no copy)
+   ok: encoded 30 IOSurface frames with NO readback -> 24 units (30 total, 2143 bytes)
+== CHAIN COMPLETE
+```
+
+**What made it possible, recorded because it was the open question.** wgpu 30.0.1
+exposes `Device::as_hal::<Metal>()` and `create_texture_from_hal`, and
+`wgpu_hal::metal::Device` has a public `raw_device()` returning the
+`MTLDevice` — without that accessor the texture would have to be created on
+`MTLCreateSystemDefaultDevice()`, which on this dual-GPU machine is not
+necessarily the device wgpu chose. `objc2-metal 0.3.2` is already in the lock via
+wgpu-hal, the same 0.3.x line as `nbe-decode`'s existing objc2 dependencies, so
+the `Retained<ProtocolObject<dyn MTLTexture>>` types unify rather than colliding
+across versions.
+
+**One architectural fact the spike settles.** The workspace denies `unsafe_code`
+with a single exemption — `crates/nbe-decode`. Every link above is `unsafe` FFI,
+so a production zero-copy tap lives in `nbe-decode` (which today has no wgpu
+dependency) or in a new crate carrying the same exemption. It cannot live in
+`nbe-engine` without changing that lint, which is a portability decision, not an
+implementation detail.
+
+## Measurements — 300 frames, render + encode submit, quiescent
+
+The span timed is the whole tap: render one frame into the shared surface, then
+hand the *same* surface to the encoder. No readback anywhere inside it.
+
+| Path | Geometry | Load (1m) | mean | min | p50 | p95 | max | over 33.333 ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **Zero-copy** | 1080p30 | 2.60 | **4.033** | 1.977 | 3.574 | **6.044** | 26.052 | **0 / 300** |
+| **Zero-copy** | 4K (3840×2160) | 2.32 | **13.092** | 6.000 | 13.095 | **17.582** | 51.720 | 1 / 300 |
+| CPU readback (published, §0b above) | 1080p30 | — | 12.1 | — | 13.2 | 19.3 | 24.5 | 0 / 600 |
+
+**At 1080p30 zero-copy costs about a third of readback** — mean 4.0 against 12.1,
+p95 6.0 against 19.3. Its `max` is marginally worse (26.1 against 24.5), a single
+outlier rather than a trend, and it is stated rather than smoothed.
+
+**At 4K the comparison is not close, and this is the trip-wire answer.** The fork
+decision listed four conditions that would force zero-copy; the third was "any 4K
+target requires zero-copy, no re-measure needed", because readback alone scales
+linearly to ≈48 ms and exceeds the 33.333 ms budget by itself. Zero-copy renders
+*and encodes* 4K at p95 **17.6 ms** — inside the budget with room. That condition
+is now answered with a measurement rather than an extrapolation.
+
+**Discipline notes, because the numbers are only as good as their conditions.**
+The first 4K run was taken at load 4.66 and is **VOID**, not data — the soak
+protocol's word, applied to itself. It is recorded here because a discarded run
+that goes unmentioned is indistinguishable from one that never happened: it read
+mean 13.104 / p95 15.155, within noise of the quiescent re-run at 13.092 / 17.582,
+so nothing turned on it. The 1080p run at load 2.60 and the 4K re-run at 2.32 are
+both under the 3.0 ceiling.
+
+## Status: Phase 1 only
+
+The spike is deleted, as its phase required — it lived in
+`crates/nbe-decode/examples/` with temporary dev-dependencies and one temporary
+`encode_pixel_buffer_spike` method, all reverted. **Nothing in this revision
+changes the product.** The record path still runs CPU readback; §0.1 assumption
+24's scoped allowance still stands unretired; Phases 2 and 3 are not done.
+
+What the next phase now has that it did not: a proven chain, the accessor that
+makes it reachable, the crate boundary it must respect, and both numbers the
+selection table needs.
