@@ -95,6 +95,33 @@ Rules:
    basis reported the render suite and the records as absent. The commit made
    the claim possible; the review made it.
 
+7. **A test that claims a path it never enters is not a guard.** A test
+   asserting behaviour on path X must reach X by dispatch or drive — through the
+   handler, the command, the real entry point — not by writing X's *effects*
+   into state and asserting on those. Setting up the post-conditions by hand and
+   checking them proves the assertion runs; it proves nothing about the code
+   that was supposed to produce them, and the test's name then makes a promise
+   the suite cannot keep.
+
+   The tell is a name that says one thing and a body that reaches another:
+   `overlay_persists_across_take` and `animation_immune_to_take` both installed
+   a transition straight into `state.transition` via a `set_mix` helper, so
+   neither ever entered `DirectiveHandler::on_take`. Re-keying every in-flight
+   overlay animation inside `on_take` left all thirteen tests in that file
+   green. The same helper had already invalidated a falsification probe during
+   the Prompt 07 step-5c pass, where a reviewer concluded `on_take` was dead
+   code for the overlay case — a correct observation about the test, read as an
+   observation about the engine.
+
+   So the rule has a second half, for reviews: **a finding that names an
+   un-entered path is a finding about the test, not about the code.** The
+   behaviour may be perfectly correct — in both instances above it was — and the
+   guard still has to be rebuilt before the claim can be trusted. Where a
+   direct-install shortcut is genuinely right (a test about compositing against
+   a transition that is already armed, say), name it for what it is: the helper
+   is now `install_transition_directly`, and its doc comment says it is not the
+   take path.
+
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
 render path left 7 of 8 tests passing.

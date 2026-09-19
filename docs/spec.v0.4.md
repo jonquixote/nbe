@@ -16,6 +16,30 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
+v0.4.3 — **UNRATIFIED, pending PR review.** v0.5 phase 0: normative catch-up. Every
+row below is a behaviour that is implemented, tested and falsified on `main`
+today and that no sentence made law. Nothing here adds behaviour; each sentence
+was written from the code and its guarding test, not from an intent. An
+implemented behaviour with no normative statement is one the next agent may
+"fix", which is the whole reason this phase runs early.
+
+| # | Change | Sections | Guarded by |
+|---|---|---|---|
+| 1 | **The fallback slate composites above the overlay level.** A fallback cut covers ticker, bug, banner and clock; the rule binds the View bus only; recovery restores the pre-fallback set because the fallback path substitutes what is drawn, never what is on air | 7.14 | `fallback_covers_overlays` |
+| 2 | **A take never disturbs an overlay**, and never re-keys an animation in flight. §7.10 said overlays persist across scene transitions; the weaker reading permits a visible artefact the engine does not produce | 7.10 | `overlay_persists_across_take`, `animation_immune_to_take` |
+| 3 | **Repeating an overlay command is an idempotent success, not a refusal** — `data.noop: true`, exactly one `stateVersion` bump, and no directive forwarded. `overlay.hide`'s precondition column is corrected from "overlay visible" to "overlay exists" to match | 16.6 | three tests in `overlay.test.ts` |
+
+**One row of the v0.5 outline's §2 is NOT here, and that is the finding.** The
+outline listed "empty `visibleOverlays` clears the on-air set wholesale" among
+the behaviours awaiting law. It is already law: §5.9.4 has said "An empty
+`visibleOverlays` array MUST clear all visible overlays" since v0.4. The outline
+carries a §2c correction; no sentence was written, because writing one would
+have duplicated a normative rule rather than added one.
+
+`schemas/manifest.v0.4.json` is unchanged by v0.4.3. No wire field, no command,
+no behaviour changes — this revision moves facts from the records into the
+document.
+
 v0.4.2 ratifies two corrections that were already load-bearing in the tree, and
 records the second one's birth rather than tidying it away.
 
@@ -1017,6 +1041,23 @@ Overlay elements (ticker, logo bug, breaking banner, clock) live on the overlay 
 
 Overlays have independent `overlay.show` / `overlay.hide` commands with their own enter/exit animations.
 
+**A take never disturbs an overlay [UNRATIFIED, v0.4.3 draft].** "Persist across
+scene transitions" above is stated for the scene change; this makes the stronger
+guarantee the engine already provides, because the weaker reading permits a
+visible artefact the implementation does not produce:
+
+1. An overlay on air before a take is **pixel-identical** after it. A take
+   changes the scene level; the overlay level is not redrawn, re-keyed, or
+   re-composited on account of it.
+2. A take **MUST NOT re-key an animation in flight**. An overlay mid-enter when
+   a take lands continues on its original master-clock timeline and completes on
+   the frame it would have completed on had no take occurred. `anim_start` and
+   duration are untouched by the take path.
+
+Guarded by `overlay_persists_across_take` and `animation_immune_to_take`
+(`crates/nbe-engine/tests/prompt07_overlay.rs`), the second by pixel comparison
+against a reference engine that received no take.
+
 ## 7.11 Chroma key
 
 The chroma key effect MUST be GPU-shader-based.
@@ -1110,6 +1151,26 @@ Fallback triggers:
 7. Unrecoverable state error.
 
 Fallback MUST be automatic and MUST NOT require operator action.
+
+**The fallback slate composites above the overlay level [UNRATIFIED, v0.4.3 draft].**
+A fallback cut MUST cover the whole View — ticker, logo bug, breaking banner and
+clock included. An operator seeing the slate is seeing that the show is off air,
+and an overlay drawn on top of it would contradict that at exactly the moment
+the contradiction is most expensive.
+
+The rule binds the **View bus only**: Preview composites normally while the View
+shows the slate, which is what lets an operator rebuild the next item while the
+slate is up.
+
+Recovery restores the pre-fallback on-air set exactly, and does so **because the
+fallback path never mutates that set** — it substitutes what is drawn, not what
+is on air. Overlay alpha is a pure function of the master clock, so an animation
+that was in flight when the slate came up resumes at the position the clock says
+it should occupy, not the position it held when it was interrupted.
+
+Guarded by `fallback_covers_overlays` (`crates/nbe-engine/tests/prompt07_overlay.rs`);
+`render.rs`'s `show_fallback` gates the entire scene-plus-overlay branch, and
+forcing that gate to `false` fails the test.
 
 ---
 
@@ -2600,7 +2661,25 @@ Deleting a reserved hook is cheaper than maintaining a fiction. If nested rundow
 | Command | Payload schema | Preconditions | State transitions | Failure modes |
 |---|---|---|---|---|
 | `overlay.show` | `{ overlayId: string, animation?: string }` | overlay exists | overlay visible with its enter animation | `E_NOT_FOUND` |
-| `overlay.hide` | `{ overlayId: string }` | overlay visible | overlay hidden with its exit animation | `E_NOT_FOUND` |
+| `overlay.hide` | `{ overlayId: string }` | overlay exists | overlay hidden with its exit animation | `E_NOT_FOUND` |
+
+**Repeating an overlay command is an idempotent success, not a refusal
+[UNRATIFIED, v0.4.3 draft].** `overlay.show` on an overlay already on air, and
+`overlay.hide` on one already hidden, MUST be accepted. Each:
+
+- returns `status: "ok"` with `data.noop: true`;
+- bumps `stateVersion` exactly once, like any other accepted command, so the
+  change stream stays a complete record of what was asked;
+- forwards **no directive to the render node** — a no-op must not re-trigger an
+  animation that is already settled, which is the whole point of the rule.
+
+`overlay.hide`'s precondition column above read "overlay visible" before this
+draft, which implied a refusal on an already-hidden overlay; the implementation
+has always returned an idempotent success instead, and the column now reads
+"overlay exists" to match. Guarded by `a noop overlay command forwards no
+directive`, `overlay.show on an on-air overlay is an idempotent noop`, and
+`overlay.hide removes the overlay; hide on hidden is a noop`
+(`packages/control-plane/src/overlay.test.ts`).
 
 ## 16.7 Ticker commands
 

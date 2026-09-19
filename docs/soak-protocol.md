@@ -38,6 +38,7 @@ protocol owns the rest, on the machine where the numbers mean something.
 | A/V sync inside the file (≤ 20 ms) | rehearsal step 12 |
 | **AC-6 — crash-safe recording under `SIGKILL`** | rehearsal step 13 |
 | The encoder, fMP4 writer, fragment cadence, AAC tap, on-disk sidecar | `prompt09_*` suites (22 of which skip on CI) |
+| **Audio-tap push latency** — worst single `AudioTap::push` over 10k pushes under 1 ms | Nowhere else. Rebound out of the default suite 2026-09-18 (R9): it measured the machine, passing at load 2.58 and failing at load ~5 and ~30 on the same binary. The SPSC contract is now asserted by work in `prompt09_record_file`; this THRESHOLD lives here, where quiescence is checked and a violation is VOID |
 | Flake-register watch list (R7 and successors) | §5 below |
 | The v0.5 failover drill | when it exists; this protocol is its home |
 
@@ -127,7 +128,7 @@ during a soak with its **count** recorded, not merely its pass/fail:
 
 | Entry | Signature | What the soak records |
 |---|---|---|
-| **R7** | `expected 3 directives, got 4` in the control-plane suite — **4** sightings across unrelated changes (2026-09-08; PR #17 run `34745014794`; PR #19 run `35314193753`) — two of them on branches whose diff was docs+CI only, load-sensitive, always green on rerun | Iterations run, iterations where the signature appeared, and the full stderr of any appearance. The redelivery-vs-extra-bump question is still open. The payloads are no longer uncaught: as of the fourth sighting the assertion dumps each directive's `command`, `seq` and `stateVersion`, so the next appearance — in CI or in a soak — names the duplicate |
+| ~~**R7**~~ **CLOSED 2026-09-18 (second attempt — the first mechanism was wrong)** | `expected 3 directives, got 4` in the control-plane suite — **4** sightings across unrelated changes (2026-09-08; PR #17 run `34745014794`; PR #19 run `35314193753`) — two of them on branches whose diff was docs+CI only, load-sensitive, always green on rerun | Iterations run, iterations where the signature appeared, and the full stderr of any appearance. **Closed:** neither — the test read `directives.at(-1)` for "the seq this command produced", which aliased the previous command's directive whenever the response outran its own directive, so two of three waits could be no-ops and the count fell on a fixed 30 ms sleep. Waits are now by command name and the count is asserted twice around settle windows. Kept on this list for one quarter of soaks as a watch, then removed. The payloads are no longer uncaught: as of the fourth sighting the assertion dumps each directive's `command`, `seq` and `stateVersion`, so the next appearance — in CI or in a soak — names the duplicate |
 
 A quiet return is the thing this list exists to catch. An entry leaves the list
 when its root cause is found and falsified, never because it went quiet.

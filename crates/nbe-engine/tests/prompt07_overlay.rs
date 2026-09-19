@@ -488,7 +488,32 @@ const CYAN: [u8; 4] = [0, 255, 255, 255];
 
 /// A mix from SCN_RED (A1) to SCN_BLUE (A2), beginning at `start` for
 /// `duration` frames.
-fn set_mix(state: &Arc<EngineState>, start: u64, duration: u64) {
+/// Dispatch a REAL `view.take` through the directive handler — the path.
+async fn take_mix(handler: &DirectiveHandler, sv: u64, item: &str, duration: u64) {
+    handler
+        .apply(&directive(
+            "view.take",
+            sv,
+            serde_json::json!({ "itemRef": item }),
+            serde_json::json!({ "transition": "mix", "durationFrames": duration }),
+        ))
+        .await
+        .unwrap();
+}
+
+/// Install a transition **directly into state**, bypassing `on_take`.
+///
+/// NOT THE TAKE PATH, and the name says so because the old one (`set_mix`) did
+/// not. Two tests whose names claimed the take path used this helper and
+/// therefore never entered `DirectiveHandler::on_take`: re-keying every overlay
+/// animation inside `on_take` left all thirteen tests in this file green. The
+/// same trap invalidated a falsification probe during the Prompt 07 step-5c
+/// pass, which is why it now has a standards rule (§2a rule 7).
+///
+/// Legitimate only where the test is about COMPOSITING against a transition
+/// that is already armed — `overlay_composites_above_transition` — and never
+/// where the claim under test is about what a take does.
+fn install_transition_directly(state: &Arc<EngineState>, start: u64, duration: u64) {
     *state.transition.lock().unwrap() = Some(Transition {
         from_item: Some("A1".into()),
         from_start_frame: 0,
@@ -505,7 +530,7 @@ fn set_mix(state: &Arc<EngineState>, start: u64, duration: u64) {
 async fn overlay_persists_across_take() {
     let dir = tempfile::tempdir().unwrap();
     write_render_package(dir.path());
-    let (state, _handler, mut render) = render_engine(dir.path()).await;
+    let (state, handler, mut render) = render_engine(dir.path()).await;
 
     *state.view_item.lock().unwrap() = Some("A1".into());
     state
@@ -513,11 +538,27 @@ async fn overlay_persists_across_take() {
         .lock()
         .unwrap()
         .insert("bug".into(), stable_overlay(true));
-    // A 15-frame mix between two solid-color scenes; the overlay region is
-    // pixel-identical at transition start, midpoint, and end.
-    set_mix(&state, 10, 15);
+    // A REAL take, dispatched through the directive handler — A1 -> A2 with a
+    // 15-frame mix. This test used to install the transition straight into
+    // state, which meant the test named "across_take" never entered `on_take`
+    // at all: a two-key pass proved it by re-keying every overlay animation
+    // inside `on_take` and watching all thirteen tests stay green (§2a rule 7).
+    // The clock is stopped in this harness, so `on_take` arms at frame 0.
+    take_mix(&handler, 2, "A2", 15).await;
+    let armed = state
+        .transition
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the dispatched take must arm a transition");
+    assert_eq!(
+        armed.start_frame, 0,
+        "clock stopped: the take arms at frame 0"
+    );
+    assert_eq!(armed.duration_frames, 15);
 
-    for frame in [10, 17, 24] {
+    // Start, midpoint and end of the mix the take armed.
+    for frame in [0, 7, 15] {
         render.render_frame(frame, None);
         let px = px_at(&render.readback_view().await, 0.9, 0.85);
         assert_eq!(
@@ -539,7 +580,9 @@ async fn overlay_composites_above_transition() {
         .lock()
         .unwrap()
         .insert("bug".into(), stable_overlay(true));
-    set_mix(&state, 10, 15);
+    // Compositing-only: this test asserts the overlay draws ABOVE an armed
+    // transition, not anything about takes, so the direct install is honest here.
+    install_transition_directly(&state, 10, 15);
 
     // Mix midpoint (frame 17): the adjacent non-overlay centre blends red and
     // blue, but the overlay region carries the overlay's exact color, unmixed.
@@ -660,8 +703,17 @@ async fn animation_immune_to_take() {
         ))
         .await
         .unwrap();
-    // anim_start = 1 (clock stopped); take at F+3 = frame 4.
-    set_mix(&state, 4, 15);
+    // A REAL take, dispatched through the directive handler, while the enter
+    // animation is in flight (anim_start = 1, duration = 10). Previously this
+    // installed the transition directly into state, so the assertions below —
+    // which are precisely about what THE TAKE PATH does to an overlay timeline
+    // — were checked against a path no take ever travelled (§2a rule 7).
+    let before = state.overlays.lock().unwrap().get("bug").copied().unwrap();
+    take_mix(&handler, 3, "A2", 15).await;
+    assert!(
+        state.transition.lock().unwrap().is_some(),
+        "precondition: the dispatched take armed a transition"
+    );
 
     // The take left the overlay timeline alone.
     let rt = state
@@ -673,6 +725,11 @@ async fn animation_immune_to_take() {
         .expect("overlay still on air after the take");
     assert_eq!(rt.anim_start, 1, "a take must not re-key anim_start");
     assert_eq!(rt.duration_frames, 10, "a take must not stretch duration");
+    assert_eq!(
+        (rt.anim_start, rt.duration_frames, rt.phase),
+        (before.anim_start, before.duration_frames, before.phase),
+        "the dispatched take changed the overlay runtime; it must not touch it at all"
+    );
 
     render.render_frame(5, None);
     let mid = px_at(&render.readback_view().await, 0.9, 0.85);
@@ -698,6 +755,9 @@ async fn fallback_covers_overlays() {
     let dir = tempfile::tempdir().unwrap();
     write_render_package(dir.path());
     let (state, handler, mut render) = render_engine(dir.path()).await;
+    // Preview armed on the other scene, so the View-bus-only assertion below has
+    // something to distinguish the slate from.
+    *state.preview_item.lock().unwrap() = Some("A2".into());
 
     {
         let mut ovs = state.overlays.lock().unwrap();
@@ -749,6 +809,32 @@ async fn fallback_covers_overlays() {
             "a fallback cut covers the overlay level ({name})"
         );
     }
+
+    // The rule binds the VIEW BUS ONLY, and this is the assertion that holds it.
+    // `render.rs` gates on `bus == Bus::View && fallback_active`, so Preview
+    // keeps compositing its own scene while the View shows the slate — which is
+    // what lets an operator rebuild the next item while the slate is up. A
+    // two-key pass found the qualifier unguarded: deleting `bus == Bus::View &&`
+    // left the whole workspace green at 309 passed, so the drafted §7.14
+    // sentence stated a behaviour no test could fail for.
+    let preview = render.readback_preview().await;
+    // Preview renders at PREVIEW_W x PREVIEW_H, not the View's geometry, so it
+    // needs its own sampler — `px_at` indexes by VIEW_W/VIEW_H and runs off the
+    // end of this buffer.
+    let pw = nbe_engine::render::PREVIEW_W as usize;
+    let ph = nbe_engine::render::PREVIEW_H as usize;
+    let pidx = ((ph / 2) * pw + pw / 2) * 4;
+    let ppx = [
+        preview[pidx],
+        preview[pidx + 1],
+        preview[pidx + 2],
+        preview[pidx + 3],
+    ];
+    assert_eq!(
+        ppx, BLUE,
+        "Preview composites its own scene (A2 -> SCN_BLUE) while the View shows the slate"
+    );
+    assert_ne!(ppx, SLATE, "the fallback must NOT reach the Preview bus");
 
     // Recovery: the on-air set was never touched by the fallback (runtimes
     // preserved), so clearing the flag brings every overlay straight back,

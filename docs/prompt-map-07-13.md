@@ -160,6 +160,300 @@ record understated it. Raised as reviewer finding **F1**, and it is the third re
 instance of a truncating pipe producing a false claim in this project — hence the standards
 rule now forbidding them in evidence.
 
+### PR #21's two-key findings — both closed by guarding, not by trimming (2026-09-18)
+
+The pass found two of the three drafted v0.4.3 sentences making claims their
+cited tests could not fail for. Neither sentence was wrong about the code; both
+were unfalsifiable as law, which is worse than an unwritten rule because the
+citation reads as a guarantee.
+
+**F2 — §7.10's guards never entered the take path they name.** The sentence says
+`anim_start` and duration are "untouched by the take path", and both cited tests
+installed a transition straight into `state.transition` via a `set_mix` helper.
+Re-keying every in-flight overlay animation inside `on_take` left all thirteen
+tests in the file green. Closed by making `overlay_persists_across_take` and
+`animation_immune_to_take` dispatch a real `view.take` through
+`DirectiveHandler`, with the armed transition asserted (start frame 0 on a
+stopped clock, duration 15) and the overlay runtime compared field-by-field
+across the take. The same mutation now fails:
+
+```
+test animation_immune_to_take ... FAILED
+assertion `left == right` failed: a take must not re-key anim_start
+test result: FAILED. 12 passed; 1 failed
+```
+
+The helper survives only where the claim is about compositing against an
+already-armed transition, renamed `install_transition_directly` with a doc
+comment saying it is not the take path. The trap now has a standards rule —
+§2a rule 7 — because it had already invalidated a falsification probe in the
+step-5c pass, and a review that names an un-entered path is making a finding
+about the test, not the code.
+
+**F1 — §7.14's View-bus qualifier was unguarded.** Deleting `bus == Bus::View &&`
+from `render.rs` left the workspace at 309 passed, 0 failed. The preferred
+outcome was taken rather than the trim: the code shows Preview keeps compositing
+its own scene while the View shows the slate, and `fallback_covers_overlays` now
+arms Preview on A2 (SCN_BLUE) and asserts the Preview readback is BLUE and not
+SLATE. Preview renders at `PREVIEW_W x PREVIEW_H`, so it needed its own sampler —
+`px_at` indexes by the View's geometry and ran off the end of the buffer, which
+is why the first attempt panicked rather than failing an assertion. With the
+guard in place, deleting the qualifier fails:
+
+```
+test fallback_covers_overlays ... FAILED
+assertion `left == right` failed: Preview composites its own scene
+  (A2 -> SCN_BLUE) while the View shows the slate
+```
+
+Both sentences are now law the tree can keep. §16.6 needed no work — both its
+mutations already bit.
+
+### Finding R9 — a wall-clock threshold microbenchmark sits in the default suite (recorded 2026-09-18)
+
+`audio_tap_push_never_blocks_contention_micro`
+(`crates/nbe-engine/tests/prompt09_record_file.rs:749`) asserts that the worst
+single `AudioTap::push` over 10,000 pushes stays under **1 ms**. It was added by
+the transitions branch (`29efe89`, "review round 3 — SPSC contract") and merged
+in PR #20, and it runs in every `cargo test --workspace`.
+
+Measured on the normative machine, same binary, same commit:
+
+| Load (1m) | Result |
+|---:|---|
+| 2.58 | passes on the first attempt, 0.98 s |
+| ~30 | **fails** — worst pushes of 13.4 ms and 32.1 ms across its retry attempts, best 10.9 ms against a 1 ms bar |
+
+It already carries a retry loop (up to 10 attempts, keeping the best), which is
+an acknowledgement that the number is not stable — but retries widen the window
+rather than close it, because the contended case is precisely when the assertion
+is unmeetable.
+
+**This is the exact class the gate split assigned to the soak**: a wall-clock
+threshold whose value depends on machine quiescence, living in a suite that runs
+on 3 arm64 CI cores and on a developer machine mid-build. Its home is
+`docs/soak-protocol.md` §1, where quiescence is a checked precondition and a
+violated one produces VOID rather than FAIL.
+
+**ADJUDICATED AND ADOPTED 2026-09-18 (PR #21 fix round): rebound by work, not
+wall.** Of the three options below, the chosen one is the second — the SPSC
+promise asserted without a clock. The test is now
+`audio_tap_push_is_bounded_and_lossless_accounting_under_a_hammer`, pinning what
+the contract actually says: capacity fixed across 10k pushes (a ring that
+reallocates allocates on the audio deadline), occupancy never above capacity, 10k
+pushes into an undrained ring completing rather than stalling, and every sample
+either retained or counted dropped — exactly once, arithmetic rather than timing.
+
+The old comment had already conceded the gap in passing — *"the lock-freedom
+itself is asserted by code inspection in review"* — so the one property that
+mattered was the one the test never checked.
+
+Falsified both ways: removing `dropped.fetch_add` fails the accounting assertion
+(`pushed 10241024, retained 480000, counted 0`); asserting a grown capacity fails
+the bounded assertion. Load-independence demonstrated rather than claimed — the
+rebound test passes in **0.72 s at load 6.19**, on the same machine where the
+wall-clock version failed at load 5.08 in 8.07 s while this rebind was being
+written. The suite fell from ~19 s to 2.4 s, because the timing loops were most
+of its runtime. The wall-clock number moves to the soak's threshold list.
+
+Original disposition, kept per §2c:
+
+**Not fixed here.** Work order V05-PHASE0 scopes Mission 1 to docs and Mission 2
+to `packages/control-plane`; this is a Rust test. Recorded rather than touched,
+with the measurement above as the evidence a fix can start from. The options are
+to move it behind the soak, to relax it to something load-independent (a bound on
+work done rather than wall time — the SPSC contract it means to pin is "push does
+not block", which is a property of the code path, not of the clock), or to delete
+it in favour of the contention test that does not assert a duration.
+
+It also cost this session a false reading: the workspace summary said "0 failed"
+while this test was failing, because the ad-hoc awk in use split on `;` and read
+an empty field for the failure count. CI's own summary uses the default separator
+and is correct.
+
+### PR #21's fix-round pass — a third rule-7 instance, found by the new rule (2026-09-18)
+
+Rule 7 earned its place on its first application. The pass swept the engine
+suites for tests whose names claim a dispatched path, and found one the previous
+rounds had not:
+
+**`a_cut_and_a_mix_do_not_reshape_the_ticker`** (`prompt07b_graphics.rs:292`)
+bound `handler`, then performed "a cut" by writing `state.view_item` and "a mix"
+by writing `state.transition` — neither dispatched. Third instance, third suite.
+Proven with the positive control the rule's own entry now recommends: `panic!` on
+entry to `on_take` left the ticker test **green** while the repaired overlay
+guards **failed**.
+
+Repaired the same way: both the cut and the mix are dispatched `view.take`
+directives, and the armed transition is asserted (kind Mix, duration 15, start
+frame 0 on a stopped clock) rather than hand-written. The control now bites:
+
+```
+test a_cut_and_a_mix_do_not_reshape_the_ticker ... FAILED
+thread '...' panicked at crates/nbe-engine/src/directive.rs:428:9
+test result: FAILED. 0 passed; 1 failed
+```
+
+Seven other sweep hits were name-collisions and are clean — `sigkill_shape_drop_mid_take`
+means a *record* take, and `record_start_on_running_show_opens_pipeline`
+dispatches through `start_recording` → `.apply(&directive(…))`. The sweep's value
+was not its hit rate; it was that the one real instance had survived two passes
+that were looking directly at it.
+
+### R7 — FIFTH sighting settled it, and my first mechanism was WRONG (2026-09-18)
+
+The retirement recorded below was premature, and this entry supersedes its
+mechanism while leaving it standing per §2c. The fix in it was real but partial;
+the diagnosis was not the cause.
+
+**What happened.** The very PR that retired R7 flaked again on push — run on
+`d48240c`, `not ok 56`, `expected 3 directives, got 4` — and this time on the
+FIRST count, after all three command-name waits had completed. That alone
+refuted the aliasing explanation: with the waits keyed by name, all three
+directives are confirmed present, and a fourth still existed.
+
+**The payload dump, added two rounds earlier for exactly this, named it:**
+
+```
+received: [{"command":"show.resync","seq":0,"stateVersion":0},
+           {"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3}]
+```
+
+**The mechanism, finally.** Neither a redelivery nor an extra `stateVersion`
+bump — both of which I had ruled out correctly. It is `show.resync`, the §5.9.4
+snapshot the server sends the moment a render session registers, "before any
+other directive on this connection" (`server.ts:367`). It is **always sent**. The
+test attached its collector *after* `await connect(render)`, so whether that
+frame was observed was a race between the handshake resolving and the listener
+binding. Locally the listener loses and the test sees three; on a loaded 1-3 core
+runner it sometimes wins and the test sees four.
+
+Every recorded property follows: load-sensitivity, always green on rerun, two of
+five sightings on docs-only branches, and a count that is always exactly one too
+many rather than a duplicate of anything.
+
+**Why I missed it.** I checked for a connect-time directive and concluded there
+was none — from a local run that printed exactly three. That was the race
+resolving the usual way, read as evidence of absence. A frame that is always sent
+and only sometimes seen looks identical, from one sample, to a frame that is
+never sent. §2a rule 7's lesson generalises here: I inferred a property of the
+server from a test whose observation window did not cover it.
+
+**The fix.** The collector is attached BEFORE the handshake, so the resync is
+observed deterministically rather than raced for, and it is asserted as the
+contract §5.9.4 says it is: first on the connection, and alone until the first
+command. Falsified: deleting `sendResync(session)` from the connect path fails
+with `directive 'show.resync' never arrived; have []`.
+
+~~That sentence of §5.9.4 had no guard at all before this.~~ **CORRECTED
+2026-09-18 (§2c) — that claim was false, and the tree says so.**
+`render-channel.test.ts` already guarded the sentence from the channel's side:
+`:223` "show.resync is the first directive on a render connection" with its
+payload-key assertions, `:236` the mid-show reconnect case, and `:257`
+`resyncRequest`. Deleting `sendResync` from the connect path fails **four**
+tests — 42, 43, 44 and 56 — three of them pre-existing. The new assertion is a
+**duplicate at a different layer**, which is worth having (it is what stops
+`server.test.ts` from counting a frame it never meant to observe) but is not a
+first guard.
+
+How the false claim was made is the instructive part: the falsification that
+produced it ran only `server.test.ts`, saw one failure, and inferred
+exclusivity. That is the same shape as reading one sample of a race as evidence
+of absence — the error this very entry was written to correct, repeated one
+paragraph later against a different question. A falsification that is scoped to
+one file answers "does this test guard it", never "is this the only guard".
+
+Two smaller over-assertions were corrected with it: `seq` 0 and `stateVersion` 0
+are facts about an **initial connect against a fresh server**, not §5.9.4
+properties — a reconnect mid-show carries the current `stateVersion`. They are
+now labelled as fixture facts in the test, and the reconnect half of the
+sentence is named as living at `render-channel.test.ts:236`.
+
+The count assertions move from 3 to 4 and still bite a real extra: making
+`view.take` emit a duplicate gives `expected 4 directives (resync + three
+commands), got 5`.
+
+**THE REFUTATION CONDITION, written before the next run rather than after it.**
+This retirement rests on one mechanism: the §5.9.4 `show.resync` is always sent
+on render-session registration, and the test used to race its own collector
+against it. **A sixth sighting of the `expected 3 directives, got 4` signature —
+or its post-fix form, `expected 4 directives (resync + three commands), got 5` —
+refutes this retirement and returns R7 to open.** The condition is recorded now,
+before any run that could satisfy it, because the fifth sighting's lesson is that
+a confident mechanism can be wrong: the fourth retirement attempt named aliasing,
+was argued from code and a 75-run streak, and was refuted by the next push. A
+standard stated after the fact is a standard fitted to the outcome.
+
+**One process note.** The first attempt at that falsification mutated the wrong
+call site: the pattern `        sendResync(session);` (8 spaces) is a substring of
+the 10-space occurrence in the `resyncRequest` handler, so it matched there,
+`count == 1` passed, and the connect path was untouched — which is why the
+mutation appeared not to bite. Anchoring the match to the line boundary found
+the real site. A substring match that silently hits the wrong instance is the
+same failure as a test that never enters its path.
+
+### Finding R7 — CLOSED 2026-09-18 (work order V05-PHASE0). Original heading and every sighting kept below per §2c
+
+**Mechanism.** Not a product defect: the test's synchronisation could not
+express what it meant to wait for, and the assertion was therefore taken at an
+arbitrary moment.
+
+The ok-response travels on the `admin` socket and the directive on the `render`
+socket, so a response can be observed before its own directive lands. The test
+read `directives.at(-1)` immediately after each response to learn "the seq this
+command produced". When the directive had not landed yet, `at(-1)` returned the
+**previous** command's directive, the `waitForSeq` built from it found that
+already-present entry and returned instantly, and the test moved on without ever
+waiting for the directive it meant to wait for. Two of the three waits were
+therefore capable of being no-ops. What remained was a fixed
+`await setTimeout(30)` and a count — a duration standing in for a condition, on
+runners between 1 and 3 arm64 cores.
+
+That explains every property of the register: load-sensitivity, always green on
+rerun, and two of four sightings on branches whose diff was docs-only.
+
+**What was ruled out, by reading rather than by assumption.** Every emit path
+produces exactly one directive per command — `view.take` emits one
+extraDirective, `show.stop` emits via `emitDirectivesNow` and then returns
+`{ warnings }` with no second send, and there is no replay, resend or retry
+anywhere on the render channel. A normal run collects exactly three, seqs 1-2-3
+against stateVersions 1-2-3, with no connect-time directive. Each test gets a
+fresh server on an ephemeral port, so cross-test leakage is not available either.
+
+**Fix.** The waits are now by **command name** (`waitForCommand`), which cannot
+alias: a directive for `preview.set` is the only thing that satisfies the wait
+for `preview.set`. The fixed 30 ms sleep is replaced by a settle window, and the
+count is asserted a **second** time after a further settle window, so a
+duplicate or extra directive arriving late still fails the test instead of
+slipping past the first count — which the 30 ms sleep never caught at all. The
+4-detection is kept and made deterministic; what changed is WHEN the count is
+taken, never what counts as wrong.
+
+**Verification, and which kind it is.** Proof by construction, not by
+reproduction, and the distinction is the honest part: R7 could not be forced
+locally either — 70 runs before the fix (40 idle, 30 at load 4.9) produced zero
+sightings, so the 75 clean runs after it (50 idle, 25 at load 14.2) are
+*consistent with* the fix rather than proof of it. What is proof: the aliasing
+path is gone by construction, and the assertion still bites a real fourth.
+Falsified by making `view.take` emit a duplicate extraDirective:
+
+```
+expected 3 directives, got 4
+received: [{"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3},
+           {"command":"view.take","seq":4,...}]
+```
+
+The diagnostic added at the fourth sighting is what makes that legible, and it
+stays. **No production code was touched** — the root cause was in the test, which
+is why the work order's stop-and-report condition was never reached.
+
+**If R7 returns**, it is now a different finding: the waits are unambiguous, so a
+fourth directive would be a real one, and the dump names it.
+
 ### Finding R7 (new) — control-plane test 34 saw a fourth directive where three were expected (recorded 2026-09-09)
 
 `render-role session receives directives in order with correct stateVersion` failed once

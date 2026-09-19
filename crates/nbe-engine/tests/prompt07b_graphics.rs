@@ -301,19 +301,48 @@ async fn a_cut_and_a_mix_do_not_reshape_the_ticker() {
         .text_rasterizations
         .load(std::sync::atomic::Ordering::SeqCst);
 
-    // A cut, then a mix, under the band.
-    *state.view_item.lock().unwrap() = Some("A2".into());
+    // A cut, then a mix — both DISPATCHED through the directive handler.
+    //
+    // This test previously performed the cut by writing `state.view_item` and
+    // the mix by writing `state.transition` directly, so a test named for a cut
+    // and a mix entered neither `on_take` nor any handler. A two-key pass found
+    // it by applying §2a rule 7 — the rule the same PR had just added — and
+    // proved it with a positive control: `panic!` on entry to `on_take` left
+    // this test green while the repaired overlay guards failed. That is the
+    // third instance of the trap, in the third suite.
+    take(
+        &handler,
+        3,
+        "A2",
+        serde_json::json!({ "transition": "cut" }),
+    )
+    .await;
     render.render_frame(11, None);
-    *state.transition.lock().unwrap() = Some(nbe_engine::scene::Transition {
-        from_item: Some("A2".into()),
-        from_start_frame: 0,
-        to_item: "A1".into(),
-        kind: nbe_engine::scene::TransitionKind::Mix,
-        duration_frames: 15,
-        start_frame: 12,
-        underlay: None,
-    });
-    for f in 12..=27 {
+
+    // The clock is stopped in this harness, so `on_take` arms at frame 0
+    // (`master_frame().map(|f| f + 1).unwrap_or(0)`) — the window below covers
+    // the whole 15-frame mix the dispatched take arms, which is what the old
+    // hand-written `start_frame: 12` was standing in for.
+    take(
+        &handler,
+        4,
+        "A1",
+        serde_json::json!({ "transition": "mix", "durationFrames": 15 }),
+    )
+    .await;
+    let armed = state
+        .transition
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the dispatched take must arm a transition");
+    assert_eq!(armed.kind, nbe_engine::scene::TransitionKind::Mix);
+    assert_eq!(armed.duration_frames, 15);
+    assert_eq!(
+        armed.start_frame, 0,
+        "clock stopped: the take arms at frame 0"
+    );
+    for f in 0..=16 {
         render.render_frame(f, None);
     }
 
@@ -518,6 +547,19 @@ fn directive(
         target,
         payload,
     }
+}
+
+/// Dispatch a REAL `view.take` through the directive handler — the path.
+async fn take(handler: &DirectiveHandler, sv: u64, item: &str, payload: serde_json::Value) {
+    handler
+        .apply(&directive(
+            "view.take",
+            sv,
+            serde_json::json!({ "itemRef": item }),
+            payload,
+        ))
+        .await
+        .unwrap();
 }
 
 async fn show_overlay(handler: &DirectiveHandler, id: &str) {
