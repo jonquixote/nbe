@@ -108,15 +108,58 @@ test("render-role session receives directives in order with correct stateVersion
       headers: { authorization: `Bearer ${token}`, "x-nbe-role": role },
     });
 
-  const render = conn("render", "render-token-1");
-  await connect(render);
+  // Free-standing form, usable before the per-test closure below exists.
+  const waitForCommandIn = async (
+    list: Record<string, unknown>[],
+    command: string,
+  ): Promise<Record<string, unknown>> => {
+    for (let i = 0; i < 400; i++) {
+      const found = list.find((d) => d.command === command);
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error(`directive '${command}' never arrived; have ${JSON.stringify(list.map((d) => d.command))}`);
+  };
 
-  // Render node sees directive frames in order; collect all of them.
+  const render = conn("render", "render-token-1");
+
+  // The collector is attached BEFORE the handshake completes, and that ordering
+  // is the whole of R7.
+  //
+  // §5.9.4 makes the server send `show.resync` the moment a render session
+  // registers — "before any other directive on this connection". This test used
+  // to attach its listener after `await connect(render)`, so whether that frame
+  // was observed was a race between the handshake resolving and the listener
+  // binding. Locally the listener lost and the test saw three directives;
+  // on a loaded 1-3 core runner it sometimes won and the test saw four. Five
+  // sightings across a year of CI, always `got 4`, always green on rerun, twice
+  // on branches whose diff was docs only — every property explained by a frame
+  // that is always sent and only sometimes seen.
+  //
+  // The earlier diagnosis in this register — `directives.at(-1)` aliasing a
+  // previous command's directive — was a real defect in the waits and is fixed
+  // below, but it was NOT this. The payload dump added for exactly this purpose
+  // is what settled it, on the fifth sighting:
+  //
+  //   received: [{"command":"show.resync","seq":0,"stateVersion":0},
+  //              {"command":"show.load","seq":1,...}, ...]
+  //
+  // Attaching first makes the resync deterministic rather than racy, so it is
+  // now asserted as the contract §5.9.4 says it is — which also gives that
+  // sentence its first guard.
   const directives: Record<string, unknown>[] = [];
   render.on("message", (buf: Buffer) => {
     const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
     if (msg.kind === "directive") directives.push(msg);
   });
+  await connect(render);
+  const resync = await waitForCommandIn(directives, "show.resync");
+  assert.equal(resync.seq, 0, "§5.9.4: the resync snapshot opens the connection");
+  assert.equal(
+    directives.length,
+    1,
+    "§5.9.4: show.resync goes out BEFORE any other directive on this connection",
+  );
 
   // A helper that returns the directive recorded for a given seq once it
   // appears (guards the delivery/ordering assertion below by waiting for it).
@@ -173,7 +216,7 @@ test("render-role session receives directives in order with correct stateVersion
   const SETTLE_MS = 150;
   await new Promise((r) => setTimeout(r, SETTLE_MS));
 
-  const expect = [loadSeq, prevSeq, takeSeq];
+  const expect = [0, loadSeq, prevSeq, takeSeq]; // resync opens the stream
   // Three directives, in command order.
   //
   // R7's assertion. Four sightings now — 2026-09-08, and twice on branches
@@ -187,8 +230,8 @@ test("render-role session receives directives in order with correct stateVersion
   // assertion itself is unchanged.
   assert.equal(
     directives.length,
-    3,
-    `expected 3 directives, got ${directives.length}\n` +
+    4,
+    `expected 4 directives (resync + three commands), got ${directives.length}\n` +
       `expected seqs ${JSON.stringify(expect)}\n` +
       `received: ${JSON.stringify(
         directives.map((d) => ({
@@ -198,7 +241,12 @@ test("render-role session receives directives in order with correct stateVersion
         })),
       )}`,
   );
-  assert.deepEqual(directives.map((d) => d.command), ["show.load", "preview.set", "view.take"]);
+  assert.deepEqual(directives.map((d) => d.command), [
+    "show.resync",
+    "show.load",
+    "preview.set",
+    "view.take",
+  ]);
   // A second settle window, asserted again: a duplicate or extra directive that
   // arrives late must still fail this test rather than slip past the first
   // count. This is the 4-detection R7 was reporting, kept and made deterministic
@@ -207,8 +255,8 @@ test("render-role session receives directives in order with correct stateVersion
   await new Promise((r) => setTimeout(r, SETTLE_MS));
   assert.equal(
     directives.length,
-    3,
-    `a fourth directive arrived ${SETTLE_MS} ms after the first count settled: ` +
+    4,
+    `an extra directive arrived ${SETTLE_MS} ms after the first count settled: ` +
       `${JSON.stringify(directives.map((d) => ({ command: d.command, seq: d.seq })))}`,
   );
   // seq strictly increasing across all three.
@@ -223,9 +271,12 @@ test("render-role session receives directives in order with correct stateVersion
   }
   void ev;
   // Each directive's stateVersion matches the stateVersion its ack returned.
-  assert.equal(directives[0]!.stateVersion, load.stateVersion);
-  assert.equal(directives[1]!.stateVersion, prev.stateVersion);
-  assert.equal(directives[2]!.stateVersion, take.stateVersion);
+  // Indices are offset by one: the §5.9.4 resync occupies slot 0 at
+  // stateVersion 0, and the three commands follow it.
+  assert.equal(directives[0]!.stateVersion, 0, "the resync snapshot carries stateVersion 0");
+  assert.equal(directives[1]!.stateVersion, load.stateVersion);
+  assert.equal(directives[2]!.stateVersion, prev.stateVersion);
+  assert.equal(directives[3]!.stateVersion, take.stateVersion);
 
   admin.close();
   render.close();

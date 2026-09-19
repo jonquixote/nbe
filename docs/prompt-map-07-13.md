@@ -271,6 +271,66 @@ while this test was failing, because the ad-hoc awk in use split on `;` and read
 an empty field for the failure count. CI's own summary uses the default separator
 and is correct.
 
+### R7 — FIFTH sighting settled it, and my first mechanism was WRONG (2026-09-18)
+
+The retirement recorded below was premature, and this entry supersedes its
+mechanism while leaving it standing per §2c. The fix in it was real but partial;
+the diagnosis was not the cause.
+
+**What happened.** The very PR that retired R7 flaked again on push — run on
+`d48240c`, `not ok 56`, `expected 3 directives, got 4` — and this time on the
+FIRST count, after all three command-name waits had completed. That alone
+refuted the aliasing explanation: with the waits keyed by name, all three
+directives are confirmed present, and a fourth still existed.
+
+**The payload dump, added two rounds earlier for exactly this, named it:**
+
+```
+received: [{"command":"show.resync","seq":0,"stateVersion":0},
+           {"command":"show.load","seq":1,"stateVersion":1},
+           {"command":"preview.set","seq":2,"stateVersion":2},
+           {"command":"view.take","seq":3,"stateVersion":3}]
+```
+
+**The mechanism, finally.** Neither a redelivery nor an extra `stateVersion`
+bump — both of which I had ruled out correctly. It is `show.resync`, the §5.9.4
+snapshot the server sends the moment a render session registers, "before any
+other directive on this connection" (`server.ts:367`). It is **always sent**. The
+test attached its collector *after* `await connect(render)`, so whether that
+frame was observed was a race between the handshake resolving and the listener
+binding. Locally the listener loses and the test sees three; on a loaded 1-3 core
+runner it sometimes wins and the test sees four.
+
+Every recorded property follows: load-sensitivity, always green on rerun, two of
+five sightings on docs-only branches, and a count that is always exactly one too
+many rather than a duplicate of anything.
+
+**Why I missed it.** I checked for a connect-time directive and concluded there
+was none — from a local run that printed exactly three. That was the race
+resolving the usual way, read as evidence of absence. A frame that is always sent
+and only sometimes seen looks identical, from one sample, to a frame that is
+never sent. §2a rule 7's lesson generalises here: I inferred a property of the
+server from a test whose observation window did not cover it.
+
+**The fix.** The collector is attached BEFORE the handshake, so the resync is
+observed deterministically rather than raced for, and it is now asserted as the
+contract §5.9.4 says it is: first on the connection, `seq` 0, `stateVersion` 0,
+and alone until the first command. Falsified: deleting `sendResync(session)` from
+the connect path fails with `directive 'show.resync' never arrived; have []`.
+That sentence of §5.9.4 had no guard at all before this.
+
+The count assertions move from 3 to 4 and still bite a real extra: making
+`view.take` emit a duplicate gives `expected 4 directives (resync + three
+commands), got 5`.
+
+**One process note.** The first attempt at that falsification mutated the wrong
+call site: the pattern `        sendResync(session);` (8 spaces) is a substring of
+the 10-space occurrence in the `resyncRequest` handler, so it matched there,
+`count == 1` passed, and the connect path was untouched — which is why the
+mutation appeared not to bite. Anchoring the match to the line boundary found
+the real site. A substring match that silently hits the wrong instance is the
+same failure as a test that never enters its path.
+
 ### Finding R7 — CLOSED 2026-09-18 (work order V05-PHASE0). Original heading and every sighting kept below per §2c
 
 **Mechanism.** Not a product defect: the test's synchronisation could not
