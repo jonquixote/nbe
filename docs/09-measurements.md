@@ -384,3 +384,128 @@ changes the product.** The record path still runs CPU readback; §0.1 assumption
 What the next phase now has that it did not: a proven chain, the accessor that
 makes it reachable, the crate boundary it must respect, and both numbers the
 selection table needs.
+
+
+---
+
+# ZERO-COPY Phase 2 — the tap, the table, the candidate (2026-09-19)
+
+## The crate boundary, decided and costed
+
+**The tap lives in `crates/nbe-decode`, with wgpu as an OPTIONAL dependency
+behind a `gpu-tap` feature.**
+
+It was not a free choice. The workspace denies `unsafe_code` with exactly one
+exemption, and a CI gate hard-codes it: `grep -rn "allow(unsafe_code)" crates
+… | grep -v "^crates/nbe-decode/"` fails the job on any hit. Every link of the
+chain is Objective-C FFI. So the options were this crate, or a new crate that
+would need the gate amended — and amending the exemption policy is the kind of
+portability decision this work order reserves for the user. `nbe-engine` was
+never available without a lint change, for the same reason.
+
+**The cost, and why it is paid with a feature flag.** `nbe-preflight` also
+depends on `nbe-decode` and never touches a GPU. An unconditional wgpu
+dependency would pull the entire GPU stack into a 13.5 MB CLI binary that CI
+already size-gates. Measured after the change:
+
+```
+wgpu nodes in nbe-preflight's dependency tree: 0
+wgpu nodes in nbe-engine's dependency tree:   12
+```
+
+Preflight's surface is unchanged. `nbe-engine` turns the feature on; nothing
+else does.
+
+## The published selection table
+
+Capability × resolution × consumer → path. **This table is the product
+decision**; `record::tap_path::select` is only its evaluator. A runtime dial
+was rejected: it would make every deployment's frame path an operational
+accident, and the one thing the §0.1 assumption 24 allowance cannot survive is
+a path nobody can predict.
+
+| zero-copy capable | height | consumer | path | reason |
+|---|---|---|---|---|
+| no | any | record | `CpuReadback` | `ProbeUnavailable` |
+| no | any | **stream** *(future, unbuilt)* | **none — refused** | no lawful path |
+| yes | ≤ 1080 | record | `ZeroCopy` | `Table` |
+| yes | > 1080 | record | `ZeroCopy` | `Table` |
+| yes | any | **stream** *(future, unbuilt)* | `ZeroCopy` | `Table` |
+
+The two capable record rows are identical in outcome and listed separately on
+purpose: their *reasons differ in strength*. At ≤ 1080 either path fits the
+budget and zero-copy is chosen because it is three times cheaper (4.033 ms mean
+against 12.1). Above 1080 readback does not fit at all — 4K readback is ~48 ms
+against a 33.333 ms budget — so that row is a requirement, not a preference.
+Collapsing them would hide which is which.
+
+**The stream rows are the point of the consumer axis.** Streaming is Prompt 10,
+next in the queue, and it is not built. Its incapable row is **refused**, not
+`CpuReadback`: §0.1 assumption 24 forbids readback for outputs, and v0.4.2's
+allowance is recording-only in as many words — *"Streaming (Prompt 10) inherits
+no allowance from this row."* `select_stream` returns `None` there. Prompt 10
+arrives to a decision already made rather than finding the tap defaulted to the
+path it is forbidden from.
+
+**The override is an escape hatch, not a feature.** It exists for the day the
+probe is wrong — a machine where the chain links but produces garbage. It can
+*restrict* (force CPU) but never *conjure*: an override to `ZeroCopy` on a
+machine whose probe failed is refused and reports `ProbeUnavailable`. An
+override that becomes routine means the table is wrong, and the fix is the
+table.
+
+## The choice is telemetry-visible
+
+`record_tap_path` and `record_tap_reason` join the §10.1 tick, additive and
+optional. Which path is live is **operational state**: an operator who cannot
+see it cannot tell a machine that chose zero-copy from one that silently fell
+back to the allowance. Absent until a take selects a path — absence means "no
+take yet", not a defaulted guess, which is why the fields are `Option` rather
+than defaulted strings.
+
+**Recorded as a §10.1 wire-addition candidate, unratified** — the same shape
+`intentSource` took before v0.4.1 ratified it.
+
+## Falsifications
+
+| Mutation | Result |
+|---|---|
+| Suppress the telemetry report of the chosen path | `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` FAILED — *"the fallback path must be visible on the wire"* |
+| Swallow the probe's geometry refusal | Metal aborts the process: `MTLTextureDescriptor has width of zero`, SIGABRT. The guard converts a hard abort into a typed `E_NO_ZEROCOPY` refusal |
+| Remove the override guard so a pin beats the table | `the_table_drives_the_choice_and_an_override_cannot_conjure_a_capability` FAILED — *"an override to ZeroCopy on an incapable machine must not be honoured"* |
+
+Every test drives a real entry point — `zerocopy::probe`, `tap_path::select*`,
+`telemetry::build_tick` — never a hand-written state effect (§2a rule 7).
+
+## One defect found in the building, recorded because it was mine
+
+The first telemetry wiring read `state.record_tap_selection.lock()` **twice
+inside one struct literal**. Struct-literal temporaries live until the end of
+the enclosing statement, so the first `MutexGuard` was still held when the
+second `lock()` ran — a deadlock on a non-reentrant `Mutex`. It surfaced as
+`pump_tick_wires_the_loaded_record_dir` **hanging** rather than failing, which
+is the worse failure mode: a hang has no assertion message. The lock is hoisted
+and read once, with the reason at the site.
+
+A second process note: `git checkout --` restored neither `tap_path.rs` nor
+`zerocopy.rs` after their falsifications, because both were **untracked**. It
+did revert the tracked telemetry work alongside. §2a rule 3's trap in a shape
+the rule does not yet name — new files need a manual copy, not a checkout.
+
+## Clean feed: not built, not precluded
+
+`docs/v0.5-outline.md` §3a's clean-feed row wants
+`outputs.record.source: "program" | "clean"`, where `clean` composites the scene
+level only. The selection design does not preclude it: `Consumer` is an axis, not
+a boolean, and a clean feed is a *second consumer of a second surface* — another
+`SharedSurface` built by the same `probe`, selected by the same table with a new
+consumer row. Nothing in the path selection assumes one surface per engine. That
+is the whole claim; no clean-feed code exists.
+
+## Status: Phase 2 ships no migration
+
+The record path still runs CPU readback. `probe` is reachable and the table is
+evaluable, but **nothing in the production record path calls them yet** — the
+work order places migration in Phase 3 and says this PR ships none. What exists
+now: the tap, the table, the telemetry, the falsifications, and the crate
+boundary with its cost measured.

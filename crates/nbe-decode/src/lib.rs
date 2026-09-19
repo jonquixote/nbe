@@ -20,6 +20,9 @@
 // VideoToolbox session call is `unsafe` by construction.
 
 /// Hardware H.264 encode (Prompt 09 WU2, SPEC §9.2).
+#[cfg(feature = "gpu-tap")]
+pub mod zerocopy;
+
 pub mod encode;
 
 /// AAC-LC audio encode for recording (Prompt 09 WU34, SPEC §9.3).
