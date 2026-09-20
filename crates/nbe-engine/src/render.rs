@@ -154,6 +154,12 @@ impl RenderLoop {
         // assigning) means a re-probe after device loss re-applies the
         // manifest cap instead of dropping it.
         state.set_probed_quality(gpu.quality);
+        // The same publication, for the same reason, for the sibling fact: the
+        // directive path probes the zero-copy chain on the device wgpu chose,
+        // and on a dual-GPU machine (`docs/hardware-baseline.txt`) that is not
+        // necessarily the system default. Published here so a re-init after
+        // device loss replaces the handle rather than leaving a dead one.
+        state.set_render_device(Arc::new(gpu.device.clone()));
 
         let targets = RenderTargets {
             view: gpu.make_texture(VIEW_W, VIEW_H, "view"),

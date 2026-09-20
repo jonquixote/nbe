@@ -152,6 +152,47 @@ fn the_probe_builds_a_shared_surface_where_the_hardware_allows_it() {
 }
 
 // ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 2 — the device reaches the directive path.
+// ---------------------------------------------------------------------------
+
+/// `record.start` runs on the directive path and holds no wgpu handles. The
+/// device lives in `RenderLoop`. This is the seam that lets the one ask the
+/// other, and it is the `probed_quality` pattern §10.1.1 already mandates for
+/// the sibling fact (`docs/zero-copy-p3-design.md`, Q1, option (a)).
+///
+/// Drives `RenderLoop::new` — the production constructor `main.rs:53` calls —
+/// and never writes the publication itself (§2a rule 7).
+#[tokio::test]
+async fn the_render_loop_publishes_its_device_so_the_directive_path_can_probe() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(_render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+
+    // Exactly the question step 5's `record.start` will ask, asked the way it
+    // will ask it: through `EngineState`, with no device handle of its own.
+    let capable = state
+        .render_device()
+        .map(|d| nbe_decode::zerocopy::is_available(&d, 1920, 1080))
+        .unwrap_or(false);
+    let selection = select(capable, 1080, Consumer::Record);
+
+    assert_eq!(
+        selection.reason,
+        Reason::Table,
+        "with the device published the table speaks for itself; drop the \
+         publication and the directive path reports ProbeUnavailable on a \
+         machine that has a working GPU — a fallback that is not a fallback"
+    );
+    assert_eq!(selection.path, TapPath::ZeroCopy);
+    assert!(
+        state.render_device().is_some(),
+        "the handle must survive in state, not merely have existed during new()"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Falsification 3 — the published table drives the choice, not a pin.
 // ---------------------------------------------------------------------------
 

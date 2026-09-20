@@ -229,11 +229,16 @@ jobs:
           done
           exit "$fail"
       - name: the zero-copy tap suite ran, and its runner-independent part is intact
-        # Same two-floor shape as the 09 gate, for the same reason. Two of this
-        # suite's six tests need a wgpu adapter and skip loudly without one; the
-        # other four (selection table, override refusal, streaming's refused row,
-        # telemetry reporting) run everywhere and are the floor that skipping
-        # cannot satisfy.
+        # Same two-floor shape as the 09 gate, for the same reason. Three of
+        # this suite's seven tests need a wgpu adapter and skip loudly without
+        # one; the other four (selection table, override refusal, streaming's
+        # refused row, §10.1.1 completeness + telemetry reporting) run
+        # everywhere and are the floor that skipping cannot satisfy.
+        #
+        # ran 6 -> 7 with ZERO-COPY Phase 3b step 2's device-reach test, which
+        # drives `RenderLoop::new` and so joins the adapter-gated group. The
+        # exercised floor stays 4: the count of tests that need no adapter did
+        # not change.
         #
         # Added by PR #24's two-key pass: the suite shipped with NO gate at all,
         # so all six reported `ok` on CI and nothing said whether the GPU pair
@@ -248,9 +253,9 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=4)"
-          if [ "$ran" -lt 6 ]; then
-            echo "FAIL zerocopy_tap: expected at least 6 tests to run, got $ran"; exit 1
+          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=7 exercised>=4)"
+          if [ "$ran" -lt 7 ]; then
+            echo "FAIL zerocopy_tap: expected at least 7 tests to run, got $ran"; exit 1
           fi
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL zerocopy_tap: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
