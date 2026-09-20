@@ -798,6 +798,44 @@ duration as a performance result.**
    while `masterClockState` carries the distinction, and worth removing when
    observation 1 is addressed.
 
+### ZERO-COPY Phase 3 — blocked on design, memo written (2026-09-19)
+
+Phase 3's executor read the frame path and **stopped before touching production
+code**, which was the right call: the migration is three changes across three
+crates (device reach, retarget, encode seam), and the only tractable slice would
+have published `record_tap_path: zeroCopy` while the frames still went through
+readback — the exact report-vs-reality lie its own falsification exists to catch.
+
+`docs/zero-copy-p3-design.md` answers the three questions that stop was waiting
+on, argued against the tree, with a go/no-go each and an ordered plan. **No
+no-gos.** Two things changed shape under examination and are worth carrying:
+
+1. **A finding against merged code.** §10.1.1 says *"The emitted field shape is
+   always complete. A telemetry consumer MUST never see a missing field."*
+   Phase 2 shipped `recordTapPath` as `.optional()`, absent until a take selects
+   — deliberately, so absence means "no take yet". That conflicts with a
+   normative sentence **today**, before any migration. The memo recommends
+   stubbing (`"none"`) rather than scoping §10.1.1, and puts the fix first in the
+   plan because it is independent of Phase 3.
+2. **Backpressure does not transfer.** `RecordMsg::Frame { rgba: Vec<u8> }`
+   carries an owned copy per frame, so shedding is free. A shared surface is one
+   mutable allocation — shedding a surface already drawn into is a corrupted
+   frame, not a skip. Zero-copy therefore needs a **surface pool** and a
+   pre-check that asks "is a free surface available?" **before** the draw. That
+   is the design, not a complication of it.
+
+Mid-take chain loss is named as **new behaviour** (nothing in the tree answers
+it) and decided to loud failure with `E_NO_ZEROCOPY`, on the precedent that
+`record.stop`'s finalize failure withholds its ack rather than reporting a
+success it cannot vouch for.
+
+One prompt defect recorded: the work order asked for the argument against
+"§7.4's render-role isolation sentence". §7.4 is *Element identity and state
+model* and no such sentence exists. The real texts are §5.2 (topology) and
+§10.1.1, and the latter settles device reach outright — the render node probing
+its own hardware and reporting over `engineTelemetry` is exactly what the
+effective quality profile already does.
+
 ### The queue after Prompt 09 — decided 2026-09-17, in this order
 
 | # | Work order | Why it sits here |
