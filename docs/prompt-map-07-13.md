@@ -836,6 +836,43 @@ model* and no such sentence exists. The real texts are §5.2 (topology) and
 its own hardware and reporting over `engineTelemetry` is exactly what the
 effective quality profile already does.
 
+### ZERO-COPY Phase 3b — the migration, executed (2026-09-20)
+
+The memo's seven-step plan, in order, each step its own commit with its
+falsification signature. Steps 1-4 shipped no behaviour change to recording;
+step 5 is the migration.
+
+`record.start` now probes the chain at the take's geometry, asks the published
+table, publishes the selection to the §10.1 tick, and builds the take's surface
+pool — so the frame path and telemetry's claim became the same statement at one
+point rather than drifting apart. Measured on the reference machine, quiescent:
+render + tap at 1080p30 goes **15.866 ms → 1.376 ms** (`docs/09-measurements.md`).
+Three consecutive green rehearsals, each naming `zeroCopy (Table)`.
+
+**Three things the memo did not reach**, all found by a test failing rather than
+by review, and recorded in the memo under "Corrections found in execution":
+
+1. **Q2's carried obligation named dimensions; FORMAT is a second one.** A
+   record surface is `Bgra8Unorm` (VideoToolbox wants 32BGRA) and the composite
+   pipeline targets `Rgba8Unorm`; wgpu refuses the mismatch outright. A BGRA
+   sibling pipeline is built at init — at init, because compiling one mid-take
+   would be work inside the frame path. The consequence the memo also missed:
+   `readback_view` promises RGBA8, so it swizzles while the View is BGRA, or
+   every golden-frame comparison silently swaps red and blue instead of failing.
+2. **The probe's texture needed `COPY_SRC | COPY_DST`.** Q2's GO rests on the
+   readback still working across the retarget, and a copy needs the usage flag.
+   Free on the Metal side: `MTLTextureUsage` has no blit bit.
+3. **Q2's "the take's surface for the take's lifetime" is superseded by Q3's
+   pool**, written after it. The retarget is per frame.
+
+**A number the migration found and did not keep.** Paced at 30 fps through the
+production seams, a `cpuReadback` take sheds 20 of 40 frames; the zero-copy take
+sheds 0. That is the case for the migration in the tree's own terms — and per
+the gate split it is a soak number, not a test threshold.
+
+§0.1 assumption 24's rescoped candidate (b) **remains UNRATIFIED**. This work
+makes its mechanism a fact in the tree, not law.
+
 ### The queue after Prompt 09 — decided 2026-09-17, in this order
 
 | # | Work order | Why it sits here |
