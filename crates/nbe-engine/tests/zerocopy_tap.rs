@@ -333,6 +333,150 @@ fn the_encoder_refuses_a_surface_of_the_wrong_shape_rather_than_reinterpreting_i
 }
 
 // ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 4 — the retarget.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_mismatched_surface_is_refused_at_the_swap_rather_than_drawn_into() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(mut render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+    let device = state.render_device().expect("published by RenderLoop::new");
+
+    // The carried obligation of the memo's Q2 GO. `targets.view` is
+    // VIEW_W x VIEW_H; a smaller surface accepted here would not error, it
+    // would hand `readback_view` — and therefore every golden-frame suite — a
+    // buffer of the wrong shape to read as content.
+    let wrong = nbe_decode::zerocopy::SurfacePool::new(&device, 1280, 720, 1)
+        .expect("pool builds")
+        .acquire()
+        .expect("free");
+    let err = render
+        .set_view_surface(Some(wrong))
+        .expect_err("a 1280x720 surface must not become a 1920x1080 View");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("E_NO_ZEROCOPY") && msg.contains("1280x720") && msg.contains("1920x1080"),
+        "the refusal must carry the token and name both shapes, got: {msg}"
+    );
+
+    // The View is untouched by a refused swap — a failed retarget must leave a
+    // working compositor, not a half-swapped one.
+    assert_eq!(
+        render.view_target().width(),
+        nbe_engine::render::VIEW_W,
+        "a refused swap must not have moved the View"
+    );
+}
+
+#[tokio::test]
+async fn the_compositor_draws_into_the_loaned_surface_and_the_readback_reads_it() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(mut render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+    let device = state.render_device().expect("published by RenderLoop::new");
+    let pool = nbe_decode::zerocopy::SurfacePool::new(
+        &device,
+        nbe_engine::render::VIEW_W,
+        nbe_engine::render::VIEW_H,
+        1,
+    )
+    .expect("pool builds at the View's geometry");
+    let surface = pool.acquire().expect("free");
+
+    // Stain the surface a colour no frame produces, and an ASYMMETRIC one:
+    // orange (255,128,0) distinguishes a channel swap, where magenta would not.
+    // The surface is Bgra8Unorm, so the bytes that put R=255,G=128,B=0 in it
+    // are blue-first. If the compositor draws somewhere else the stain
+    // survives, which is exactly what a retarget that silently does nothing
+    // would leave behind.
+    let px = (nbe_engine::render::VIEW_W as usize) * (nbe_engine::render::VIEW_H as usize);
+    let stain: Vec<u8> = [0u8, 128, 255, 255]
+        .iter()
+        .copied()
+        .cycle()
+        .take(px * 4)
+        .collect();
+    render.gpu.upload_rgba(
+        surface.texture(),
+        nbe_engine::render::VIEW_W,
+        nbe_engine::render::VIEW_H,
+        &stain,
+    );
+
+    let staged = render.gpu.readback_rgba(surface.texture()).await;
+    assert_eq!(
+        &staged[..4],
+        &[0, 128, 255, 255],
+        "the raw texture is blue-first, as a BGRA surface must be"
+    );
+
+    render
+        .set_view_surface(Some(surface.clone()))
+        .expect("a surface at the View's own geometry is accepted");
+    assert_eq!(
+        render.view_target().width(),
+        nbe_engine::render::VIEW_W,
+        "the swapped-in surface is the View now"
+    );
+
+    // Before any draw, and on an ASYMMETRIC colour: `readback_view` promises
+    // RGBA8, and the View is now a BGRA surface. Handing the raw bytes through
+    // would swap red and blue in every golden-frame comparison rather than
+    // fail. Asserted here because the frame drawn below is black, and black is
+    // symmetric — a swizzle checked only after the draw is a guard that cannot
+    // fire (§2a rule 4).
+    let staged_view = render.readback_view().await;
+    assert_eq!(
+        &staged_view[..4],
+        &[255, 128, 0, 255],
+        "readback_view must keep its RGBA8 contract across the retarget"
+    );
+
+    // Production draw. No package is loaded, so this composites the empty
+    // scene — which is still a draw, and still overwrites the stain.
+    let _ = render.render_frame(0, None);
+
+    let after = render.readback_view().await;
+    assert_eq!(
+        after.len(),
+        px * 4,
+        "the readback reads a View-shaped buffer"
+    );
+    let stained = after
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] == 255 && p[1] == 128 && p[2] == 0)
+        .count();
+    assert_eq!(
+        stained, 0,
+        "{stained} of {px} pixels still carry the stain: the compositor did not \
+         draw into the loaned surface"
+    );
+    assert!(
+        after
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| *p == [0, 0, 0, 255]),
+        "an empty scene clears the View to opaque black; the surface began \
+         fully transparent, so an opaque frame is the draw's own signature"
+    );
+
+    // And the swap is reversible: back to the built-in target, which the draw
+    // above never touched, so it is whatever the compositor last left there.
+    render
+        .set_view_surface(None)
+        .expect("clearing the retarget cannot fail");
+    assert_eq!(render.view_target().width(), nbe_engine::render::VIEW_W);
+}
+
+// ---------------------------------------------------------------------------
 // Falsification 3 — the published table drives the choice, not a pin.
 // ---------------------------------------------------------------------------
 

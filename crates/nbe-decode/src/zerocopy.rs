@@ -220,8 +220,25 @@ pub fn probe(
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Bgra8Unorm,
+                // COPY_SRC and COPY_DST are NOT optional here, and their
+                // absence was found by the step-4 retarget test rather than
+                // reasoned about: `readback_view` copies the View to a buffer,
+                // so without COPY_SRC the first `readback_view` during a
+                // zero-copy take aborts with
+                //   "Usage flags TextureUsages(TEXTURE_BINDING |
+                //    RENDER_ATTACHMENT) ... do not contain required usage
+                //    flags TextureUsages(COPY_DST)"
+                // and every golden-frame suite that inspects the View goes with
+                // it. The memo's Q2 GO rests on exactly that readback still
+                // working across the retarget.
+                //
+                // Free on the Metal side: `MTLTextureUsage` has no blit bit —
+                // copies are always permitted — so this widens what wgpu will
+                // validate, not what the texture can do.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
             wgpu::TextureUses::COLOR_TARGET,

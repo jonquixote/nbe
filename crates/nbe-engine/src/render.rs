@@ -124,6 +124,9 @@ pub struct RenderLoop {
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
     pipeline: wgpu::RenderPipeline,
+    /// The same pipeline with a `Bgra8Unorm` colour target, for drawing into a
+    /// zero-copy record surface. See [`build_pipeline`].
+    pipeline_bgra: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -144,6 +147,16 @@ pub struct RenderLoop {
     /// True while the View is in a failure episode, so the log is written
     /// once per episode rather than once per frame.
     view_failing: bool,
+    /// When set, the View draws into this shared IOSurface instead of the
+    /// built-in target — the zero-copy record tap (ZERO-COPY Phase 3b, step 4).
+    ///
+    /// One frame's loan from the pool, not the take's. The memo's Q2 said "the
+    /// take's surface for the take's lifetime"; Q3, written after it, found
+    /// that one surface cannot serve a take because it is one mutable
+    /// allocation and the encoder is still reading frame N when the compositor
+    /// starts N+1. The pool supersedes that phrasing, so the retarget is per
+    /// frame and this field is set and cleared around each one.
+    view_surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
 }
 
 impl RenderLoop {
@@ -169,7 +182,11 @@ impl RenderLoop {
         gpu.upload_rgba(&white, 1, 1, &[255, 255, 255, 255]);
         let fallback_tex = gpu.make_texture(VIEW_W, VIEW_H, "fallback");
 
-        let (pipeline, bind_layout) = build_pipeline(&gpu);
+        let (pipeline, bind_layout) = build_pipeline(&gpu, wgpu::TextureFormat::Rgba8Unorm);
+        // The BGRA sibling, for a zero-copy record surface. Built at init with
+        // everything else: a pipeline compiled mid-take would be work inside
+        // the frame path, which is the one thing this whole design refuses.
+        let (pipeline_bgra, _) = build_pipeline(&gpu, wgpu::TextureFormat::Bgra8Unorm);
         let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer-uniforms"),
             size: UNIFORM_STRIDE * MAX_LAYERS,
@@ -200,6 +217,7 @@ impl RenderLoop {
             loaded_generation: u64::MAX,
             house_rate,
             pipeline,
+            pipeline_bgra,
             bind_layout,
             uniforms,
             sampler,
@@ -209,6 +227,7 @@ impl RenderLoop {
             consecutive_late: 0,
             consecutive_on_time: 0,
             view_failing: false,
+            view_surface: None,
         };
         me.sync_package();
         Ok(me)
@@ -460,6 +479,45 @@ impl RenderLoop {
         }
     }
 
+    /// The texture the View draws into this frame: the loaned surface if one
+    /// is in place, the built-in target otherwise.
+    ///
+    /// One answer to "what is the View", used by the draw, the readback and
+    /// every layout calculation that asks the View its size, so those cannot disagree.
+    pub fn view_target(&self) -> &wgpu::Texture {
+        match &self.view_surface {
+            Some(s) => s.texture(),
+            None => &self.targets.view,
+        }
+    }
+
+    /// Point the View at a shared surface for the next frame, or back at the
+    /// built-in target with `None`.
+    ///
+    /// **Dimensions are asserted here and the swap fails loudly on mismatch.**
+    /// This is the carried obligation the memo's Q2 GO was conditional on:
+    /// `targets.view` is allocated at `VIEW_W x VIEW_H`, and a differently
+    /// shaped substitute would not error — it would hand every consumer a
+    /// buffer of the wrong shape, including `readback_view` and therefore every
+    /// golden-frame suite, which would read wrong-shaped pixels as content.
+    pub fn set_view_surface(
+        &mut self,
+        surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
+    ) -> anyhow::Result<()> {
+        if let Some(s) = &surface {
+            let (w, h) = s.dimensions();
+            let (vw, vh) = (self.targets.view.width(), self.targets.view.height());
+            if (w, h) != (vw, vh) {
+                anyhow::bail!(
+                    "E_NO_ZEROCOPY: record surface is {w}x{h} but the View is {vw}x{vh}; \
+                     refusing to retarget"
+                );
+            }
+        }
+        self.view_surface = surface;
+        Ok(())
+    }
+
     fn render_bus(&self, bus: Bus, frame: u64) -> anyhow::Result<()> {
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
@@ -468,7 +526,7 @@ impl RenderLoop {
             anyhow::bail!("injected view failure");
         }
         let target = match bus {
-            Bus::View => &self.targets.view,
+            Bus::View => self.view_target(),
             Bus::Preview => &self.targets.preview,
         };
         // §7.10 / FTB-above-DSK: the fallback slate composites ABOVE the
@@ -534,7 +592,10 @@ impl RenderLoop {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(match target.format() {
+                wgpu::TextureFormat::Bgra8Unorm => &self.pipeline_bgra,
+                _ => &self.pipeline,
+            });
             for (i, (tex, uniform)) in draws.iter().take(MAX_LAYERS as usize).enumerate() {
                 let offset = UNIFORM_STRIDE * i as u64;
                 self.gpu
@@ -644,8 +705,27 @@ impl RenderLoop {
     }
 
     /// Read the View target back as RGBA8. Inspection and test path only.
+    ///
+    /// Reads whatever the View currently IS — the loaned surface while one is
+    /// in place. **RGBA8 stays the contract across the retarget**: a record
+    /// surface is `Bgra8Unorm`, so its bytes come back blue-first, and handing
+    /// those to a caller that asked for RGBA would swap red and blue in every
+    /// golden-frame comparison rather than fail. The swizzle is here, not in
+    /// `Gpu::readback_rgba`, because it is a property of this accessor's
+    /// promise and not of reading a texture.
+    ///
+    /// Nothing in production calls this during a zero-copy take — that is the
+    /// point of the take — so the cost is paid only by inspection and tests.
     pub async fn readback_view(&self) -> Vec<u8> {
-        self.gpu.readback_rgba(&self.targets.view).await
+        let target = self.view_target();
+        let bgra = target.format() == wgpu::TextureFormat::Bgra8Unorm;
+        let mut px = self.gpu.readback_rgba(target).await;
+        if bgra {
+            for p in px.as_chunks_mut::<4>().0 {
+                p.swap(0, 2);
+            }
+        }
+        px
     }
 
     /// The on-air overlay draws for this frame, appended after the transition
@@ -747,9 +827,9 @@ impl RenderLoop {
         // The raster is sized in pixels against the View, not the element box:
         // a band 10% of a 1080-line frame is 108 px tall, and text sized to the
         // box is text that reads the same at any output resolution.
-        let target_h = self.targets.view.height().max(1);
+        let target_h = self.view_target().height().max(1);
         let height_px = (target_h as f32 * 0.06).round().max(8.0) as u32;
-        let width_px = self.targets.view.width().max(1);
+        let width_px = self.view_target().width().max(1);
         // A ticker's raster holds the item twice, separated by a gap, so the
         // scroll can wrap without a seam and without a repeating sampler. The
         // period is one copy plus the gap, which `ticker_window` slides by.
@@ -840,7 +920,7 @@ impl RenderLoop {
         // is why this needs no texture-repeat mode: sampling never leaves the
         // texture, so the existing clamped sampler stays correct for every
         // layer including this one.
-        let band_px = self.targets.view.width().max(1) as f32;
+        let band_px = self.view_target().width().max(1) as f32;
         let scale = (band_px / entry.width as f32).min(1.0);
         let px = crate::text::ticker_offset_px(frame, t.speed_px_per_frame, entry.period_px);
         [px / entry.width as f32, 0.0, scale, 1.0]
@@ -886,7 +966,32 @@ fn clock_face_inner(c: &crate::scene::ClockSpec, frame: u64, house_rate: u32) ->
     }
 }
 
-fn build_pipeline(gpu: &Gpu) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+/// Build the composite pipeline for one colour-target format.
+///
+/// The format is a parameter because the View is not always `Rgba8Unorm` any
+/// more. A zero-copy record surface is `Bgra8Unorm` — that is forced by the
+/// other end of the chain, where VideoToolbox wants `kCVPixelFormatType_32BGRA`
+/// — and wgpu refuses a pipeline whose colour target does not match the render
+/// pass attachment:
+///
+///   "Render pipeline targets are incompatible with render pass ... the
+///    RenderPass uses textures with formats [Some(Bgra8Unorm)] but the
+///    RenderPipeline with 'composite' label uses attachments with formats
+///    [Some(Rgba8Unorm)]"
+///
+/// Found by the step-4 retarget test. The memo's Q2 argued the retarget was a
+/// drop-in because "the IOSurface-backed texture is a `wgpu::Texture` like any
+/// other"; it is, but its FORMAT is not the View's, and Q2's carried obligation
+/// named only dimensions. Both are now asserted — dimensions in
+/// [`RenderLoop::set_view_surface`], format by there being a pipeline for it.
+///
+/// The shader is unchanged and needs no variant: a fragment shader writes an
+/// RGBA-ordered `vec4`, and the attachment's format decides how that lands in
+/// memory. Nothing swizzles in the shader, so nothing can disagree.
+fn build_pipeline(
+    gpu: &Gpu,
+    format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let shader = gpu
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -948,7 +1053,7 @@ fn build_pipeline(gpu: &Gpu) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
                 module: &shader,
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

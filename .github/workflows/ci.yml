@@ -229,13 +229,13 @@ jobs:
           done
           exit "$fail"
       - name: the zero-copy tap suite ran, and its runner-independent part is intact
-        # Same two-floor shape as the 09 gate, for the same reason. Six of
-        # this suite's ten tests need a wgpu adapter and skip loudly without
+        # Same two-floor shape as the 09 gate, for the same reason. Eight of
+        # this suite's twelve tests need a wgpu adapter and skip loudly without
         # one; the other four (selection table, override refusal, streaming's
         # refused row, §10.1.1 completeness + telemetry reporting) run
         # everywhere and are the floor that skipping cannot satisfy.
         #
-        # ran 6 -> 7 -> 10 across ZERO-COPY Phase 3b steps 2 and 3. Every test
+        # ran 6 -> 7 -> 10 -> 12 across ZERO-COPY Phase 3b steps 2, 3 and 4. Every test
         # added there needs an adapter (device reach drives `RenderLoop::new`;
         # the pool and the encode seam build real IOSurfaces), so they all join
         # the adapter-gated group and the exercised floor stays 4: the count of
@@ -258,9 +258,9 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=4)"
-          if [ "$ran" -lt 10 ]; then
-            echo "FAIL zerocopy_tap: expected at least 10 tests to run, got $ran"; exit 1
+          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=12 exercised>=4)"
+          if [ "$ran" -lt 12 ]; then
+            echo "FAIL zerocopy_tap: expected at least 12 tests to run, got $ran"; exit 1
           fi
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL zerocopy_tap: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
