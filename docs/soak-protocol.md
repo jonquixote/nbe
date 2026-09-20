@@ -39,6 +39,7 @@ protocol owns the rest, on the machine where the numbers mean something.
 | **AC-6 — crash-safe recording under `SIGKILL`** | rehearsal step 13 |
 | The encoder, fMP4 writer, fragment cadence, AAC tap, on-disk sidecar | `prompt09_*` suites (22 of which skip on CI) |
 | **Audio-tap push latency** — worst single `AudioTap::push` over 10k pushes under 1 ms | Nowhere else. Rebound out of the default suite 2026-09-18 (R9): it measured the machine, passing at load 2.58 and failing at load ~5 and ~30 on the same binary. The SPSC contract is now asserted by work in `prompt09_record_file`; this THRESHOLD lives here, where quiescence is checked and a violation is VOID |
+| **The record tap's path choice** — `record_tap_path` / `record_tap_reason` from the §10.1 tick. **Absent until Phase 3 migration selects a path; recorded every soak from then on.** `scripts/soak.sh` gains the capture with that migration, not before | ZERO-COPY Phase 2 built the field; nothing populates it yet, and the row says so rather than describing the plan in the present tense (found by PR #24's two-key pass). Once live: a silent fallback from `zeroCopy` to `cpuReadback` is the event this catches: the machine still records, the file is still correct, and the only visible difference is a telemetry field nobody was reading. Recording it every soak makes a capability regression a dated event rather than a discovery |
 | Flake-register watch list (R7 and successors) | §5 below |
 | The v0.5 failover drill | when it exists; this protocol is its home |
 

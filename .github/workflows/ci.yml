@@ -228,6 +228,45 @@ jobs:
             echo "$target:$ran:$skipped:$exercised" >> /tmp/p09-coverage.txt
           done
           exit "$fail"
+      - name: the zero-copy tap suite ran, and its runner-independent part is intact
+        # Same two-floor shape as the 09 gate, for the same reason. Two of this
+        # suite's six tests need a wgpu adapter and skip loudly without one; the
+        # other four (selection table, override refusal, streaming's refused row,
+        # telemetry reporting) run everywhere and are the floor that skipping
+        # cannot satisfy.
+        #
+        # Added by PR #24's two-key pass: the suite shipped with NO gate at all,
+        # so all six reported `ok` on CI and nothing said whether the GPU pair
+        # had run or skipped. That inability was the finding.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_tap -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=4)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL zerocopy_tap: expected at least 6 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL zerocopy_tap: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+          if [ "$skipped" -gt 0 ]; then
+            echo "============================================================"
+            echo "UNEXERCISED ON THIS RUNNER - $skipped zero-copy test(s) skipped."
+            echo "$out" | grep '^SKIP' || true
+            echo "No wgpu adapter here, so the IOSurface chain itself is NOT"
+            echo "covered by this green build - only the selection table, the"
+            echo "override refusal, and the telemetry reporting are. The chain's"
+            echo "home is the normative machine (docs/hardware-baseline.txt)."
+            echo "============================================================"
+          else
+            echo "No skips: this runner exercised the zero-copy chain itself."
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
