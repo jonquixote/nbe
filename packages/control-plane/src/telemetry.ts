@@ -40,12 +40,20 @@ export interface TelemetryTick {
   // addendum fields
   engineConnected: boolean;
   deprecationWarnings: Array<{ command: string; resolvedTo: string; stateVersionAtTime: number }>;
-  /** ZERO-COPY Phase 2: which frame path the record tap took — `"zeroCopy"` or
-   *  `"cpuReadback"`. Absent until a take selects one. */
-  recordTapPath?: string;
-  /** Why that path was chosen, so a fallback is distinguishable from a choice. */
-  recordTapReason?: string;
+  /** ZERO-COPY: which frame path the record tap took — `"zeroCopy"`,
+   *  `"cpuReadback"`, or `"none"` before any take has selected one. Required,
+   *  not optional: §10.1.1 says a telemetry consumer must never see a missing
+   *  field, and that holds for the control plane's tick as much as the
+   *  engine's. */
+  recordTapPath: string;
+  /** Why that path was chosen, so a fallback is distinguishable from a choice.
+   *  `"none"` before any take. Required, same reason. */
+  recordTapReason: string;
 }
+
+/** The stub a telemetry field carries before its subsystem has run (§10.1.1).
+ *  Mirrors `nbe_protocol::tap_none`. */
+export const TAP_NONE = "none";
 
 /** How long a cached engine report stays authoritative (default 2 s). */
 export const ENGINE_TELEMETRY_TTL_MS = 2000;
@@ -76,14 +84,14 @@ export function buildTick(
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,
     degradationRung: f?.degradationRung ?? 0,
-    // ZERO-COPY Phase 2: forwarded only when the engine actually reported one.
-    // No `?? "cpuReadback"` default — absent means "no take has selected a
-    // path", and defaulting would make a machine that never recorded look
-    // identical to one that fell back to the §0.1 assumption 24 allowance.
-    // Parsing the field at the boundary is not the same as an operator seeing
-    // it, which is what these two lines are for.
-    ...(f?.recordTapPath !== undefined ? { recordTapPath: f.recordTapPath } : {}),
-    ...(f?.recordTapReason !== undefined ? { recordTapReason: f.recordTapReason } : {}),
+    // ZERO-COPY: always forwarded, stubbed when the engine has not reported
+    // one — no stale engine report, or an engine build older than the stub.
+    // Still no `?? "cpuReadback"`: `TAP_NONE` is not a path, so a machine that
+    // never recorded stays distinguishable from one that fell back to the §0.1
+    // assumption 24 allowance. Parsing the field at the boundary is not the
+    // same as an operator seeing it, which is what these two lines are for.
+    recordTapPath: f?.recordTapPath ?? TAP_NONE,
+    recordTapReason: f?.recordTapReason ?? TAP_NONE,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),

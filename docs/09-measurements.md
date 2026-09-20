@@ -477,12 +477,24 @@ table.
 
 ## The choice is telemetry-visible
 
-`record_tap_path` and `record_tap_reason` join the §10.1 tick, additive and
-optional. Which path is live is **operational state**: an operator who cannot
-see it cannot tell a machine that chose zero-copy from one that silently fell
-back to the allowance. Absent until a take selects a path — absence means "no
-take yet", not a defaulted guess, which is why the fields are `Option` rather
-than defaulted strings.
+`record_tap_path` and `record_tap_reason` join the §10.1 tick, additive.
+Which path is live is **operational state**: an operator who cannot see it
+cannot tell a machine that chose zero-copy from one that silently fell back to
+the allowance.
+
+**They are always emitted, stubbed `"none"` before any take has selected a
+path.** Superseded text kept per §2c:
+
+> Absent until a take selects a path — absence means "no take yet", not a
+> defaulted guess, which is why the fields are `Option` rather than defaulted
+> strings.
+
+That was a §10.1.1 violation — *"an absent field and a stubbed field are
+different failures and only one of them is diagnosable"* — caught by the Phase
+3a design memo (Q1′) and fixed in Phase 3b before the migration, since it is a
+defect in merged code independent of it. The distinction the old shape wanted is
+kept in full: `"none"` is not `"cpuReadback"`, so a machine that never recorded
+is still distinguishable from one that fell back.
 
 **Recorded as a §10.1 wire-addition candidate, unratified** — the same shape
 `intentSource` took before v0.4.1 ratified it.
@@ -492,6 +504,7 @@ than defaulted strings.
 | Mutation | Result |
 |---|---|
 | Suppress the telemetry report of the chosen path | `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` FAILED — *"the fallback path must be visible on the wire"* |
+| Omit the field from the wire (`#[serde(skip_serializing)]`, Phase 3b) | `the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects` FAILED — *"§10.1.1: `recordTapPath` must be present on every tick"* |
 | Swallow the probe's geometry refusal | Metal aborts the process: `MTLTextureDescriptor has width of zero`, SIGABRT. The guard converts a hard abort into a typed `E_NO_ZEROCOPY` refusal |
 | Remove the override guard so a pin beats the table | `the_table_drives_the_choice_and_an_override_cannot_conjure_a_capability` FAILED — *"an override to ZeroCopy on an incapable machine must not be honoured"* |
 

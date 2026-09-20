@@ -50,29 +50,62 @@ fn a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry() {
         panic!("build_tick must produce telemetry");
     };
     assert_eq!(
-        fields.record_tap_path.as_deref(),
-        Some("cpuReadback"),
+        fields.record_tap_path, "cpuReadback",
         "the fallback path must be visible on the wire"
     );
     assert_eq!(
-        fields.record_tap_reason.as_deref(),
-        Some("ProbeUnavailable"),
+        fields.record_tap_reason, "ProbeUnavailable",
         "a silent fallback to the §0.1 assumption 24 allowance is the event this reports"
     );
 }
 
+/// **Replaces** `a_selection_that_was_never_made_reports_nothing_rather_than_a_default`
+/// (ZERO-COPY Phase 2), which asserted the opposite: that the keys were ABSENT
+/// until a take selected a path. That was a §10.1.1 violation shipped as a
+/// guard — *"The emitted field shape is always complete. A telemetry consumer
+/// MUST never see a missing field, whatever the engine's state — an absent
+/// field and a stubbed field are different failures and only one of them is
+/// diagnosable."* Found by the Phase 3a design memo (Q1′), fixed before the
+/// migration because it is a defect in merged code independent of it.
+///
+/// The distinction the retired test was protecting is real and survives intact:
+/// a machine that never recorded must not look like one that fell back. It is
+/// now carried by `"none"` against `"cpuReadback"` — two values, both present,
+/// rather than a key that is not there.
 #[test]
-fn a_selection_that_was_never_made_reports_nothing_rather_than_a_default() {
-    // Absence on the wire means "no take has selected a path", not "CPU".
-    // Defaulting here would make a machine that never recorded indistinguishable
-    // from one that fell back.
+fn the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects() {
     let state = EngineState::new(HOUSE_RATE);
     let frame = nbe_engine::telemetry::build_tick(&state);
+
+    // §10.1.1 COMPLETENESS. Asserted on the SERIALIZED frame, not the struct,
+    // because "a consumer must never see a missing field" is a claim about the
+    // wire — a `#[serde(skip_serializing)]` on the field would leave the struct
+    // assertions below untouched and still strip the key from every tick.
+    let wire = serde_json::to_value(&frame).expect("the tick serializes");
+    let obj = wire
+        .as_object()
+        .expect("an engineTelemetry frame is an object");
+    for key in ["recordTapPath", "recordTapReason"] {
+        assert!(
+            obj.contains_key(key),
+            "§10.1.1: `{key}` must be present on every tick, before any take \
+             selects a path; keys were {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // And the value is the stub, which is NOT the fallback's value. This pair
+    // is the whole distinction the retired test existed for.
     let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } = frame else {
         panic!("telemetry");
     };
-    assert!(fields.record_tap_path.is_none());
-    assert!(fields.record_tap_reason.is_none());
+    assert_eq!(fields.record_tap_path, "none");
+    assert_eq!(fields.record_tap_reason, "none");
+    assert_ne!(
+        fields.record_tap_path,
+        TapPath::CpuReadback.as_str(),
+        "a machine that never recorded must stay distinguishable from one that fell back"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -231,6 +231,18 @@ test("an engineTelemetry tick carrying recordTapPath parses and the field is rea
   const sub = await send(ws, "system.telemetry.subscribe", { intervalMs: 100 });
   assert.equal(sub.status, "ok");
 
+  // §10.1.1 on the control plane's own tick: present BEFORE any engine frame,
+  // stubbed rather than missing. Without this the wait below could settle on a
+  // tick that simply lacks the key and the test would still read green.
+  await until(() => ticks.length >= 1, 3000);
+  const first = ticks.at(-1)!.data as Record<string, unknown>;
+  assert.equal(
+    first.recordTapPath,
+    "none",
+    "§10.1.1: the field is stubbed before any take, never absent",
+  );
+  assert.equal(first.recordTapReason, "none");
+
   const render = conn("render", RENDER);
   await connect(render);
   render.send(
@@ -253,10 +265,14 @@ test("an engineTelemetry tick carrying recordTapPath parses and the field is rea
       recordTapReason: "ProbeUnavailable",
     }),
   );
+  // `!== undefined` was the predicate here until the stub landed; it is now
+  // satisfied by the very first tick, so the wait would return before the
+  // engine frame arrived and the assertion below would read `"none"`. Wait for
+  // the VALUE the engine sent.
   await until(
     () =>
       ticks.length >= 1 &&
-      (ticks.at(-1)!.data as Record<string, unknown>).recordTapPath !== undefined,
+      (ticks.at(-1)!.data as Record<string, unknown>).recordTapPath === "cpuReadback",
     3000,
   );
   const data = ticks.at(-1)!.data as Record<string, unknown>;
