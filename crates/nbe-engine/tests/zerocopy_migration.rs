@@ -169,8 +169,13 @@ async fn run_take(
                 None => (None, None),
             }
         };
-        let loan = nbe_engine::record::begin_tap_frame(render, pool.as_deref(), skipped)
-            .expect("retarget");
+        let claims_zero_copy = matches!(
+            *state.record_tap_selection.lock().unwrap(),
+            Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
+        );
+        let loan =
+            nbe_engine::record::begin_tap_frame(render, pool.as_deref(), claims_zero_copy, skipped)
+                .expect("retarget");
         let started = Instant::now();
         let _ = render.render_frame(frame as u64, Some(budget));
         let render_elapsed = started.elapsed();
@@ -456,4 +461,211 @@ fn the_pool_skip_uses_the_same_counter_as_every_other_skip() {
         "acquire_record_surface must count its refusal, or a zero-copy take \
          under pressure looks like a take with nothing to report"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 6 — mid-take chain loss, Option A.
+// ---------------------------------------------------------------------------
+
+/// **New behaviour.** Nothing in the tree answered this before step 6, because
+/// no live take used the chain. The probe was right at `record.start`; the
+/// chain dies mid-take.
+///
+/// Option A: the take ends loudly with `E_NO_ZEROCOPY`. Not Option B (fall back
+/// to readback mid-file), because `record_tap_path` is per take by construction
+/// and Option B makes it a lie for part of every take it applies to — and the
+/// field exists so that a fallback is visible.
+#[tokio::test]
+async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_frames() {
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() || !aac_or_skip() {
+        return;
+    }
+    let Some(ffprobe) = ffprobe_or_skip() else {
+        return;
+    };
+    nbe_engine::record::markers::clear();
+    let state = Arc::new(EngineState::new(30));
+    let handler = DirectiveHandler::new(state.clone(), Arc::new(OutgoingQueue::default()));
+    let Ok(mut render) = RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    if state.render_device().is_none() {
+        eprintln!("SKIP: no device published; the zero-copy chain needs one");
+        return;
+    }
+
+    let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
+    handler
+        .apply(&directive("show.start", 1, serde_json::json!({})))
+        .await
+        .unwrap();
+    handler
+        .apply(&directive("record.start", 2, serde_json::json!({})))
+        .await
+        .expect("start");
+    let path = state
+        .record_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("session")
+        .output_path()
+        .to_path_buf();
+    let tap: Arc<AudioTap> = state.record_session.lock().unwrap().as_ref().unwrap().tap();
+    tap.push(&tone_secs(3));
+    assert_eq!(reported_path(&state), ("zeroCopy".into(), "Table".into()));
+
+    let budget = Duration::from_secs_f64(1.0 / 30.0);
+    let skipped = &state.skipped_record_frames;
+    let mut next_boundary = Instant::now() + budget;
+    let mut fed = 0u32;
+    let mut loss: Option<String> = None;
+    // 40 frames BEFORE the loss, deliberately: at 30 fps that is 1.33 s, and
+    // the writer flushes a fragment at most every 1 s (§9.3). A shorter run
+    // ends the take before any fragment has completed and the file is empty —
+    // which is §9.3 behaving correctly and this test measuring nothing. Found
+    // by writing it with 20 and getting 0 packets.
+    for frame in 0..60u32 {
+        // The chain dies here. Injected through the session's named seam
+        // (`lose_surface_pool`, the `force_no_encoder` pattern) because device
+        // loss and surface invalidation cannot be asked for on demand.
+        if frame == 40 {
+            if let Some(s) = state.record_session.lock().unwrap().as_mut() {
+                s.lose_surface_pool();
+            }
+        }
+        let recording =
+            *state.record_state.lock().unwrap() == nbe_engine::state::RecordState::Recording;
+        if !recording {
+            // The take is over. The loop keeps composing the View; it simply
+            // records nothing, which is what "the View never waits" means here.
+            continue;
+        }
+        let (pool, endpoint) = {
+            let g = state.record_session.lock().unwrap();
+            match g.as_ref() {
+                Some(s) => (s.surface_pool(), Some(s.frame_sender())),
+                None => (None, None),
+            }
+        };
+        let claims_zero_copy = matches!(
+            *state.record_tap_selection.lock().unwrap(),
+            Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
+        );
+        let loan = match nbe_engine::record::begin_tap_frame(
+            &mut render,
+            pool.as_deref(),
+            claims_zero_copy,
+            skipped,
+        ) {
+            Ok(loan) => loan,
+            Err(e) => {
+                loss = Some(nbe_engine::record::end_take_on_chain_loss(
+                    &state,
+                    &e.to_string(),
+                ));
+                continue;
+            }
+        };
+        let _ = render.render_frame(frame as u64, Some(budget));
+        nbe_engine::record::restore_view(&mut render, &loan);
+        let tx = endpoint.expect("a live take has a frame sender");
+        let feed_ms = nbe_engine::record::end_tap_frame(
+            loan,
+            Duration::from_millis(2),
+            Some(budget),
+            &tx,
+            skipped,
+            || async {
+                let t = Instant::now();
+                let rgba = render.readback_view().await;
+                (rgba, t.elapsed())
+            },
+        )
+        .await;
+        *state.record_tap_ms.lock().unwrap() += feed_ms;
+        fed += 1;
+        let now = Instant::now();
+        if next_boundary > now {
+            tokio::time::sleep(next_boundary - now).await;
+        }
+        next_boundary += budget;
+    }
+
+    let token = loss.expect("losing the chain mid-take must end the take");
+    assert!(
+        token.contains("E_NO_ZEROCOPY"),
+        "the failure must carry the stable token, got: {token}"
+    );
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        nbe_engine::state::RecordState::Idle,
+        "Option A ends the take; a take that kept running would be recording \
+         through a transport nobody chose"
+    );
+    assert!(
+        state.record_session.lock().unwrap().is_none(),
+        "the session is abandoned, so the file is kept exactly as it is"
+    );
+    assert_eq!(
+        reported_path(&state),
+        ("zeroCopy".into(), "Table".into()),
+        "the take that WAS is still reported as zeroCopy: the field is per take, \
+         and rewriting it here would erase what happened"
+    );
+    assert_eq!(fed, 40, "exactly the pre-loss frames were fed");
+
+    // A `record.stop` now is refused — there is no take to stop. The operator
+    // learns the take is over from `recordState`, which is what §10.1 is for.
+    let err = handler
+        .apply(&directive("record.stop", 3, serde_json::json!({})))
+        .await
+        .expect_err("there is no take left to stop");
+    assert!(err.to_string().contains("E_FORBIDDEN_STATE"), "got: {err}");
+
+    // The partial file parses, and carries NO frames past the loss: an
+    // abandoned take keeps its flushed fragments (§9.3) and writes nothing
+    // more. A take that swallowed the error and kept feeding would write
+    // frames from a surface nobody was drawing into.
+    let v = ffprobe_streams(&ffprobe, &path);
+    let streams = v["streams"].as_array().expect("streams array");
+    assert!(
+        streams.iter().any(|s| s["codec_name"] == "h264"),
+        "the partial file must still parse as video"
+    );
+    // Packets, not `-count_frames`: on this ffprobe build `-show_entries
+    // stream=nb_read_frames` returns an empty stream object for a fragmented,
+    // unfinalized mp4 (`{"streams":[{}]}`), which would have made the count
+    // assertion below unreachable rather than false. One video packet is one
+    // access unit here.
+    let counted = std::process::Command::new(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-of",
+            "json",
+        ])
+        .arg(&path)
+        .output()
+        .expect("ffprobe -show_packets must spawn");
+    let counted: serde_json::Value = serde_json::from_slice(&counted.stdout).expect("ffprobe JSON");
+    let n = counted["packets"]
+        .as_array()
+        .expect("a packets array")
+        .len() as u32;
+    assert!(
+        n > 0,
+        "the pre-loss fragments must survive: an abandoned take is not an empty file"
+    );
+    assert!(
+        n <= fed,
+        "{n} frames in a file fed {fed}: frames were written after the chain was lost"
+    );
+    nbe_engine::record::markers::clear();
 }

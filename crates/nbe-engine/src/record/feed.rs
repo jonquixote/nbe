@@ -167,15 +167,24 @@ impl TapLoan {
 /// zero-copy path the draw goes INTO the surface, so by then a missing surface
 /// has already cost a corrupted frame rather than a skipped one.
 ///
-/// A retarget that fails — a surface whose geometry does not match the View —
-/// returns the error to the caller. Step 6 decides what a take does with that;
-/// this function's job is to refuse rather than draw.
+/// **Chain loss is an error here, not a quiet CPU frame.** A take that claims
+/// `zeroCopy` and finds no pool has lost the chain mid-take, and Option A
+/// (`docs/zero-copy-p3-design.md`, Q3') says such a take ends loudly rather
+/// than substituting a transport nobody chose. `claims_zero_copy` is what
+/// separates that from an ordinary CPU take, which also has no pool.
 pub fn begin_tap_frame(
     render: &mut crate::render::RenderLoop,
     pool: Option<&SurfacePool>,
+    claims_zero_copy: bool,
     skipped: &AtomicU64,
 ) -> Result<TapLoan, anyhow::Error> {
     let Some(pool) = pool else {
+        if claims_zero_copy {
+            anyhow::bail!(
+                "E_NO_ZEROCOPY: the take's surface pool is gone mid-take; \
+                 the chain was available at record.start and is not now"
+            );
+        }
         return Ok(TapLoan::default());
     };
     let surface = acquire_record_surface(pool, skipped);
@@ -240,4 +249,46 @@ where
         skipped.fetch_add(1, Ordering::SeqCst);
     }
     outcome.feed_ms
+}
+
+/// Mid-take chain loss: end the take, loudly (ZERO-COPY Phase 3b, step 6).
+///
+/// **New behaviour, named as such.** Nothing in the tree answered this before,
+/// because no live take used the chain. The honest framing: the probe was right
+/// at `record.start`, and the chain died mid-take — device loss, surface
+/// invalidation.
+///
+/// This is Option A of the memo's Q3'. Option B — fall back to readback
+/// mid-recording — keeps the file whole but was rejected on two counts from the
+/// tree rather than from taste. `record_tap_path` is *per take* by
+/// construction, written once at selection and read by every tick after, so
+/// Option B makes the field a lie for part of every take it applies to — and
+/// the field's entire purpose is that a fallback is visible. And the
+/// loud-failure precedent is strong and recent: `record.stop`'s finalize
+/// failure withholds the ack rather than reporting a success it cannot vouch
+/// for. A take that silently changes its own transport is the same class of
+/// quiet substitution that rule refuses.
+///
+/// What happens: the session is ABANDONED, not finished — the file is kept
+/// exactly as it is, which §9.3's finalization-free fragment policy makes
+/// playable — the state returns to Idle, and the take's `record_tap_selection`
+/// is left alone, because `zeroCopy` is the truth about the take that was.
+///
+/// Option B becomes attractive the day `record_tap_path` can carry a transition
+/// rather than a value. That is a wire change and belongs to whoever wants it.
+pub fn end_take_on_chain_loss(state: &crate::state::EngineState, cause: &str) -> String {
+    *state.record_tap.lock().unwrap() = None;
+    if let Some(mut session) = state.record_session.lock().unwrap().take() {
+        session.abandon();
+    }
+    *state.record_state.lock().unwrap() = crate::state::RecordState::Idle;
+    let token = match cause.contains("E_NO_ZEROCOPY") {
+        true => cause.to_string(),
+        false => format!("E_NO_ZEROCOPY: {cause}"),
+    };
+    tracing::error!(
+        err = %token,
+        "record tap: zero-copy chain lost mid-take; take ended, file kept as-is"
+    );
+    token
 }

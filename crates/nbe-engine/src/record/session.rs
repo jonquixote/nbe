@@ -275,6 +275,17 @@ impl RecordSession {
         self.surface_pool = Some(pool);
     }
 
+    /// **Fault injection: lose the zero-copy chain mid-take.**
+    ///
+    /// The same shape as `force_no_encoder` in this module — a named seam for a
+    /// failure the hardware will not produce on demand. Device loss and surface
+    /// invalidation are real and cannot be asked for, so the one consequence
+    /// that matters (the take's surfaces are gone while the take still claims
+    /// `zeroCopy`) is injected here instead of simulated in a test's own state.
+    pub fn lose_surface_pool(&mut self) {
+        self.surface_pool = None;
+    }
+
     pub fn frame_sender(&self) -> SyncSender<RecordMsg> {
         self.frame_tx.clone()
     }

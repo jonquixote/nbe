@@ -114,26 +114,24 @@ async fn main() -> anyhow::Result<()> {
                 }
                 false => (None, None),
             };
+            // What the take CLAIMS, which is what makes a missing pool a chain
+            // loss rather than an ordinary CPU take.
+            let claims_zero_copy = matches!(
+                *render_state.record_tap_selection.lock().unwrap(),
+                Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
+            ) && recording;
             let loan = match nbe_engine::record::begin_tap_frame(
                 &mut render,
                 pool.as_deref(),
+                claims_zero_copy,
                 &render_state.skipped_record_frames,
             ) {
                 Ok(loan) => loan,
-                // Unreachable today: the pool is built at VIEW_W x VIEW_H by
-                // `record.start`, which is the only geometry the View has, so
-                // the swap's dimension check cannot fire. Handled rather than
-                // unwrapped because "unreachable" is a claim about today's call
-                // sites. INTERIM: the record frame is dropped and counted, the
-                // View still goes on air. Step 6 replaces this with Option A —
-                // the take ends loudly with `E_NO_ZEROCOPY` — which is a
-                // decision about mid-take chain loss and is named as new
-                // behaviour there, not smuggled in here.
+                // Option A: the take ends here, loudly, rather than recording
+                // frames through a transport nobody chose. The View is
+                // unaffected and still goes on air this frame.
                 Err(e) => {
-                    tracing::error!(err = %e, "record tap: cannot retarget the View; frame not recorded");
-                    render_state
-                        .skipped_record_frames
-                        .fetch_add(1, Ordering::SeqCst);
+                    nbe_engine::record::end_take_on_chain_loss(&render_state, &e.to_string());
                     Default::default()
                 }
             };

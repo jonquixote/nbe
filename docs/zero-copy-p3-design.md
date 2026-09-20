@@ -401,6 +401,21 @@ failing, not by review.
    a take. The retarget is therefore **per frame**, set and cleared around each
    one, which is what the code does.
 
+4. **Q3's mid-take falsification named "no black frames"; what the tree can
+   assert is stronger and narrower.** Option A ends the take, so no frames at
+   all are written after the loss — the check is that the file's video packet
+   count never exceeds what was fed before it. Two adjustments were forced by
+   the tree: `ffprobe -show_entries stream=nb_read_frames` returns an empty
+   stream object for a fragmented, unfinalized mp4 on this build, so the count
+   comes from `-show_packets`; and the take must run past a fragment boundary
+   (≥ 1 s, §9.3) before the loss or the abandoned file is legitimately empty
+   and the assertion measures nothing.
+
+5. **A number the migration found and did not keep.** Paced at 30 fps on the
+   reference machine, a `cpuReadback` take sheds 20 of 40 frames. That is the
+   case for the migration stated in the tree's own terms, and per the gate split
+   it is a soak number, not a test threshold.
+
 ## What this memo does not decide
 
 The clean-feed outputs model stays unbuilt and unprecluded — a second consumer

@@ -33,8 +33,8 @@ pub mod writer;
 
 pub use audio_tap::{AudioTap, DEFAULT_CAPACITY_SAMPLES};
 pub use feed::{
-    begin_tap_frame, end_tap_frame, handoff_record_frame, handoff_record_surface, restore_view,
-    should_skip_record_frame, HandoffOutcome, TapLoan,
+    begin_tap_frame, end_take_on_chain_loss, end_tap_frame, handoff_record_frame,
+    handoff_record_surface, restore_view, should_skip_record_frame, HandoffOutcome, TapLoan,
 };
 
 /// Build a take's surface pool at this geometry.
