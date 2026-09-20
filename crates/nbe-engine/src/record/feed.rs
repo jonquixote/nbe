@@ -19,8 +19,12 @@
 //! ([`thread`](crate::record::thread)) owns the encoder, the writer, and the
 //! tap drain. `record.stop` / `show.stop` quiescence ends the take there.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use nbe_decode::zerocopy::{SharedSurface, SurfacePool};
 
 use crate::record::thread::RecordMsg;
 
@@ -67,6 +71,63 @@ pub fn handoff_record_frame(
         Err(_) => HandoffOutcome {
             sent: false,
             feed_ms: readback_ms,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The zero-copy tap's two extra seams (ZERO-COPY Phase 3b, step 3)
+// ---------------------------------------------------------------------------
+
+/// Take this frame's surface, or count a skip — **asked before the draw**.
+///
+/// [`should_skip_record_frame`] above runs AFTER `render_frame`, because it
+/// needs the View's measured time. The free-surface question cannot wait that
+/// long: on the zero-copy path the draw goes *into* the surface, so by the time
+/// the budget check runs the damage a missing surface would do is already done.
+/// Asking here preserves the discipline's promise — record degrades, the View
+/// never waits — at the only point where it can still be kept.
+///
+/// The counter is the same `skipped_record_frames` the budget skip and the
+/// shed handoff feed, deliberately: `record_tap_ms` and the skip count are how
+/// the two paths are compared in a soak, and a skip that counted differently
+/// by path would make the span counters incomparable exactly when the
+/// comparison matters.
+pub fn acquire_record_surface(
+    pool: &SurfacePool,
+    skipped: &AtomicU64,
+) -> Option<Arc<SharedSurface>> {
+    match pool.acquire() {
+        Some(s) => Some(s),
+        None => {
+            skipped.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }
+}
+
+/// Hand one drawn-into surface to the record thread. The mirror of
+/// [`handoff_record_frame`], minus the readback that no longer happens.
+///
+/// `readback_elapsed` has no analogue here and there is no parameter for one:
+/// the zero-copy path's `feed_ms` is the `try_send` alone, which is the
+/// measurement the before/after table compares. A shed still reports
+/// `sent=false` so the loop counts it — but note that a shed here is now the
+/// *rare* case, because the free-surface question already refused the frames
+/// the channel had no room for.
+pub fn handoff_record_surface(
+    surface: Arc<SharedSurface>,
+    tx: &SyncSender<RecordMsg>,
+) -> HandoffOutcome {
+    let started = Instant::now();
+    match tx.try_send(RecordMsg::Surface { surface }) {
+        Ok(()) => HandoffOutcome {
+            sent: true,
+            feed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        },
+        Err(_) => HandoffOutcome {
+            sent: false,
+            feed_ms: 0.0,
         },
     }
 }

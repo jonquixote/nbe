@@ -193,6 +193,146 @@ async fn the_render_loop_publishes_its_device_so_the_directive_path_can_probe() 
 }
 
 // ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 3 — the surface pool and the pixel-buffer encode.
+// ---------------------------------------------------------------------------
+
+/// Pool size: one surface in flight per channel slot, plus the one being drawn
+/// into. Read from the production constant so the two cannot drift.
+fn pool_size() -> usize {
+    nbe_engine::record::thread::RECORD_CHANNEL_BOUND + 1
+}
+
+#[test]
+fn an_exhausted_pool_skips_the_frame_before_the_draw_and_counts_it() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, pool_size())
+        .expect("the pool is built from the same probe Phase 1 proved");
+    assert_eq!(pool.len(), pool_size());
+    assert_eq!(pool.free(), pool_size(), "a fresh pool is entirely free");
+
+    let skipped = std::sync::atomic::AtomicU64::new(0);
+
+    // Hold every surface, as the encoder would while it works through a full
+    // channel plus the frame in hand.
+    let mut in_flight = Vec::new();
+    for _ in 0..pool_size() {
+        in_flight.push(
+            nbe_engine::record::feed::acquire_record_surface(&pool, &skipped)
+                .expect("a free surface while any remain"),
+        );
+    }
+    assert_eq!(pool.free(), 0);
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "handing out surfaces that existed is not a skip"
+    );
+
+    // The frame that finds no surface. This is the whole point: the answer is
+    // `None` and the count moves BEFORE anything is drawn — there is no
+    // surface to draw into, so "shed after drawing" is not reachable.
+    let denied = nbe_engine::record::feed::acquire_record_surface(&pool, &skipped);
+    assert!(denied.is_none(), "an exhausted pool must refuse, not reuse");
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the refusal counts as a skipped record frame, the same counter the \
+         budget skip and the shed handoff feed"
+    );
+
+    // And the loan returns: the encoder finishing is the same event as the
+    // compositor being allowed to draw the next frame.
+    in_flight.pop();
+    assert_eq!(pool.free(), 1);
+    assert!(
+        nbe_engine::record::feed::acquire_record_surface(&pool, &skipped).is_some(),
+        "a returned surface must become available again, or the pool drains to \
+         zero and the take silently stops recording"
+    );
+    assert_eq!(skipped.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_pool_never_hands_out_a_surface_that_is_still_in_flight() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, pool_size())
+        .expect("pool builds");
+    let ids = pool.surface_ids();
+    let distinct: std::collections::BTreeSet<u32> = ids.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "each pool member must be its OWN allocation; duplicates mean one \
+         surface wearing several hats, which is the corruption the pool exists \
+         to prevent: {ids:?}"
+    );
+
+    // Hand them all out and check no id repeats. A pool that "draws anyway" —
+    // handing back a surface the encoder still holds — shows up here as the
+    // same IOSurface id twice, which is a torn frame waiting to happen.
+    let mut held = Vec::new();
+    let mut handed: Vec<u32> = Vec::new();
+    while let Some(s) = pool.acquire() {
+        handed.push(s.surface_id());
+        held.push(s);
+        assert!(
+            held.len() <= pool_size(),
+            "acquire kept yielding past the pool's size: it is reusing surfaces"
+        );
+    }
+    let handed_distinct: std::collections::BTreeSet<u32> = handed.iter().copied().collect();
+    assert_eq!(
+        handed_distinct.len(),
+        handed.len(),
+        "a surface was handed out twice while still in flight: {handed:?}"
+    );
+    assert_eq!(handed.len(), pool_size());
+}
+
+#[test]
+fn the_encoder_refuses_a_surface_of_the_wrong_shape_rather_than_reinterpreting_it() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    if !nbe_engine::encode::is_available() {
+        eprintln!("SKIP: no hardware H.264 encoder on this machine; the encode seam needs one");
+        return;
+    }
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1280, 720, 1).expect("pool builds");
+    let surface = pool.acquire().expect("a fresh pool has a free surface");
+
+    // A session at a DIFFERENT geometry. Without the check this buffer would be
+    // interpreted rather than rejected, which is how a zero-copy path produces
+    // a plausible-looking corrupt file instead of an error.
+    let mut session = nbe_engine::encode::EncodeSession::open(1920, 1080, 30, 8_000_000)
+        .expect("a hardware session at the reference geometry");
+    let err = session
+        .encode_pixel_buffer(surface.pixel_buffer())
+        .expect_err("a 1280x720 buffer must not be encoded as 1920x1080");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("1280x720") && msg.contains("1920x1080"),
+        "the refusal must name both shapes, got: {msg}"
+    );
+
+    // And the matching shape is accepted by the same call, so the refusal above
+    // is about the mismatch and not about the path being unusable.
+    let ok_pool =
+        nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, 1).expect("pool builds");
+    let ok_surface = ok_pool.acquire().expect("free");
+    session
+        .encode_pixel_buffer(ok_surface.pixel_buffer())
+        .expect("the encoder takes the compositor's own allocation");
+}
+
+// ---------------------------------------------------------------------------
 // Falsification 3 — the published table drives the choice, not a pin.
 // ---------------------------------------------------------------------------
 
