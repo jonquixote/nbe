@@ -753,6 +753,32 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     return;
   }
   recordWallStartMs = Date.now();
+
+  // ZERO-COPY Phase 3b step 7: the take NAMES ITS FRAME PATH on the wire.
+  // `record.start` selects the path and publishes it, so the first tick after
+  // the engine applies the start must carry it. Not a threshold — which path a
+  // given machine gets is a property of that machine — but the field must stop
+  // reading `"none"`, because `"none"` after a start means the selection never
+  // reached telemetry and the soak's capture would record nothing every week.
+  const pathTick = await untilTelemetry(
+    "the take names its frame path",
+    (t) => {
+      const p = (t["data"] as Record<string, unknown>)?.["recordTapPath"];
+      return typeof p === "string" && p !== "none";
+    },
+  );
+  const takePath = (pathTick["data"] as Record<string, unknown>)["recordTapPath"] as string;
+  const takeReason = (pathTick["data"] as Record<string, unknown>)["recordTapReason"] as string;
+  assert.ok(
+    takePath === "zeroCopy" || takePath === "cpuReadback",
+    `recordTapPath must be one of the published table's paths, got ${JSON.stringify(takePath)}`,
+  );
+  assert.ok(
+    typeof takeReason === "string" && takeReason !== "none",
+    `a path without a reason cannot be told from a default, got ${JSON.stringify(takeReason)}`,
+  );
+  console.log(`RECORD PATH: ${takePath} (${takeReason})`);
+
   // Record-path pressure snapshot (fork condition #2): the wire-visible
   // counters at span start. record_tap_ms / skipped_record_frames live in
   // EngineState only — NOT on the §10.1 tick — so operators cannot see

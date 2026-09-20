@@ -127,6 +127,10 @@ say "=== preconditions held; $ITERATIONS iterations"
 FAILED=0
 PASSES=0
 R7_HITS=0
+# The last iteration's record-tap capture, for soak.json. Empty until an
+# iteration records; `set -u` is on, so they are declared rather than assumed.
+LAST_TAP_PATHS=""
+LAST_TAP_REASONS=""
 
 for i in $(seq 1 "$ITERATIONS"); do
   say "--- iteration $i/$ITERATIONS"
@@ -168,6 +172,38 @@ for i in $(seq 1 "$ITERATIONS"); do
     [ -f "$SRC" ] && cp "$SRC" "$ITER/$f"
   done
 
+  # The record tap's path choice (§1), live since ZERO-COPY Phase 3b.
+  #
+  # Read out of the rehearsal's own telemetry rather than re-derived: the
+  # rehearsal already asserts the take names a path, and this records WHICH,
+  # every soak. A silent fall from zeroCopy to cpuReadback is the event this
+  # catches — the machine still records, the file is still correct, and the
+  # only visible difference is this field. Recording it weekly makes a
+  # capability regression a dated event rather than a discovery.
+  #
+  # Distinct values across the run, so a take that changed path mid-soak shows
+  # as two rows and not as whichever tick happened to be last.
+  TAP_PATHS="$(grep -ho '"recordTapPath":"[^"]*"' "$ITER/telemetry.jsonl" 2>/dev/null \
+    | sed 's/.*:"//; s/"$//' | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')"
+  TAP_REASONS="$(grep -ho '"recordTapReason":"[^"]*"' "$ITER/telemetry.jsonl" 2>/dev/null \
+    | sed 's/.*:"//; s/"$//' | sort -u | tr '\n' ' ')"
+  # The rehearsal prints it too, which is the cross-check: two independent
+  # derivations of the same fact, from the ticks and from the step.
+  TAP_LINE="$(grep -h '^RECORD PATH:' "$ITER/rehearsal.log" 2>/dev/null | head -1)"
+  say "  record tap: ${TAP_PATHS:-<none captured>} | reasons: ${TAP_REASONS:-<none>}"
+  [ -n "$TAP_LINE" ] && say "  rehearsal said: $TAP_LINE"
+  echo "${TAP_PATHS:-}" >"$ITER/record-tap-path.txt"
+  # A soak whose rehearsal recorded (no skips, which is already required above)
+  # and whose ticks never named a path has lost the field, not the capability.
+  if [ "$RS" -eq 0 ] && [ "${RF:-1}" -eq 0 ]; then
+    case "${TAP_PATHS:-}" in
+      *zeroCopy*|*cpuReadback*) : ;;
+      *) say "  record tap: NO PATH ON THE WIRE across a clean recording iteration"; FAILED=1 ;;
+    esac
+  fi
+  LAST_TAP_PATHS="$TAP_PATHS"
+  LAST_TAP_REASONS="$TAP_REASONS"
+
   # Flake-register watch list (§5): R7's signature, with a COUNT, because a
   # quiet return is what the list exists to catch.
   RUN7="$(cd packages/control-plane && npm test 2>&1)"
@@ -200,10 +236,15 @@ cat >"$OUT/soak.json" <<JSON
   "iterations": $ITERATIONS,
   "rehearsal_clean_iterations": $PASSES,
   "flake_register": { "R7_sightings": $R7_HITS, "R7_iterations": $ITERATIONS },
+  "record_tap": {
+    "paths_last_iteration": "${LAST_TAP_PATHS:-}",
+    "reasons_last_iteration": "${LAST_TAP_REASONS:-}"
+  },
   "outcome": "$([ "$FAILED" -eq 0 ] && echo PASS || echo FAIL)"
 }
 JSON
 say "=== soak.json written"
+say "=== record tap: ${LAST_TAP_PATHS:-<none>} (${LAST_TAP_REASONS:-<none>})"
 say "=== R7 watch list: $R7_HITS sighting(s) in $ITERATIONS iterations"
 
 if [ "$FAILED" -eq 0 ]; then
