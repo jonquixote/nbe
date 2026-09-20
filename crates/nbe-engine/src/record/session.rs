@@ -118,6 +118,16 @@ pub struct RecordSession {
     done_rx: Option<Receiver<SessionResult>>,
     handle: Option<std::thread::JoinHandle<()>>,
     finished: bool,
+    /// The take's surface pool, when the take runs zero-copy.
+    ///
+    /// It lives HERE rather than in `EngineState` on purpose: three separate
+    /// paths end a take (`record.stop`, `show.stop` graceful, `show.stop`
+    /// force), each of which already takes and drops the session, so the pool's
+    /// lifetime is the take's by construction and no teardown site can forget
+    /// it. A pool held past its take is ~25 MiB of VRAM per take at 1080p and
+    /// would show up as `vramUsedMib` drifting upward across a show — a leak
+    /// whose only symptom is a §10.1 counter nobody reads until it matters.
+    surface_pool: Option<Arc<nbe_decode::zerocopy::SurfacePool>>,
 }
 
 impl RecordSession {
@@ -232,6 +242,7 @@ impl RecordSession {
             done_rx: Some(done_rx),
             handle: Some(handle),
             finished: false,
+            surface_pool: None,
         })
     }
 
@@ -249,6 +260,21 @@ impl RecordSession {
 
     /// The loop's handoff endpoint (cloned per handoff; `try_send` only —
     /// a full channel sheds, never blocks).
+    /// The take's surface pool, or `None` on a CPU-readback take.
+    ///
+    /// `Some` here is what makes a frame take the zero-copy path — one place
+    /// to ask, so telemetry's `record_tap_path` and the loop's behaviour cannot
+    /// disagree about which path a take is on.
+    pub fn surface_pool(&self) -> Option<Arc<nbe_decode::zerocopy::SurfacePool>> {
+        self.surface_pool.clone()
+    }
+
+    /// Attach the pool this take will draw into. Called by `record.start`
+    /// immediately after the probe, before the state flips to Recording.
+    pub fn set_surface_pool(&mut self, pool: Arc<nbe_decode::zerocopy::SurfacePool>) {
+        self.surface_pool = Some(pool);
+    }
+
     pub fn frame_sender(&self) -> SyncSender<RecordMsg> {
         self.frame_tx.clone()
     }

@@ -723,6 +723,50 @@ impl DirectiveHandler {
             self.state.skipped_record_frames.clone(),
         )
         .map_err(finish_err)?;
+
+        // ZERO-COPY Phase 3b, step 5 — THE MIGRATION. This is the first point
+        // at which telemetry's claim and the frame path's behaviour are the
+        // same statement: the path is probed, chosen by the published table,
+        // published for telemetry, and built, all here.
+        //
+        // The probe is honest: it builds the whole chain at the take's geometry
+        // and keeps it (as the pool) or fails. A `None` device — a headless
+        // engine, or a build where the render loop has not run — is a machine
+        // with no chain, and the table's answer for that is `CpuReadback` /
+        // `ProbeUnavailable`, which is a lawful take under the v0.4.2
+        // allowance and not a failure.
+        let mut session = session;
+        let device = self.state.render_device();
+        let pool = device.and_then(|d| {
+            match crate::record::zerocopy_pool(&d, VIEW_W, VIEW_H) {
+                Ok(p) => Some(Arc::new(p)),
+                Err(e) => {
+                    // Loud, because a silent fallback to the readback path is
+                    // exactly the event `record_tap_reason` exists to expose.
+                    tracing::warn!(err = %e, "record.start: zero-copy unavailable, falling back to CPU readback");
+                    None
+                }
+            }
+        });
+        let selection = crate::record::tap_path::select(
+            pool.is_some(),
+            VIEW_H,
+            crate::record::tap_path::Consumer::Record,
+        );
+        if let Some(pool) = pool {
+            session.set_surface_pool(pool);
+        }
+        info!(
+            path = selection.path.as_str(),
+            reason = ?selection.reason,
+            "record.start: frame path selected"
+        );
+        // Published for the §10.1 tick. Not cleared at stop: the field is per
+        // take and reads as the path the LAST take used, which is the answer an
+        // operator asking "what did that take do?" needs. `"none"` stays the
+        // answer only for a machine that has never recorded.
+        *self.state.record_tap_selection.lock().unwrap() = Some(selection);
+
         // Fresh counters per take: the loop accumulates into these for the
         // take's lifetime, so a new take starts from zero (set before the
         // state flip, while the loop still sees Idle).

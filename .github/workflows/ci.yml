@@ -277,6 +277,45 @@ jobs:
           else
             echo "No skips: this runner exercised the zero-copy chain itself."
           fi
+      - name: the zero-copy migration suite ran, and its runner-independent part is intact
+        # ZERO-COPY Phase 3b step 5. Same two-floor shape, third instance.
+        #
+        # Three of the five tests drive a whole take and need a wgpu adapter, a
+        # hardware H.264 encoder, AudioToolbox AAC and ffprobe; on macos-14 they
+        # skip, which is why the recording contract is gated by the soak and not
+        # here (docs/soak-protocol.md). The other two are SOURCE assertions on
+        # the loop's wiring — that `begin_tap_frame` precedes the draw, and that
+        # the pool skip feeds the shared counter — and those run everywhere,
+        # because a `begin_tap_frame` call that drifted below `render_frame`
+        # would compile, pass every unit test, and corrupt frames in production.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_migration -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_migration: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=2)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL zerocopy_migration: expected at least 5 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL zerocopy_migration: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+          if [ "$skipped" -gt 0 ]; then
+            echo "============================================================"
+            echo "UNEXERCISED ON THIS RUNNER - $skipped migration test(s) skipped."
+            echo "$out" | grep '^SKIP' || true
+            echo "No live take ran here, so NEITHER frame path is covered by"
+            echo "this green build - only the loop's wiring is. Both paths'"
+            echo "home is the normative machine (docs/hardware-baseline.txt)."
+            echo "============================================================"
+          else
+            echo "No skips: this runner ran a take on both frame paths."
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits

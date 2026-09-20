@@ -131,3 +131,113 @@ pub fn handoff_record_surface(
         },
     }
 }
+
+// ---------------------------------------------------------------------------
+// The loop's two seams (ZERO-COPY Phase 3b, step 5)
+// ---------------------------------------------------------------------------
+
+/// What [`begin_tap_frame`] decided, carried across the draw.
+///
+/// `surface` is the pool's loan for THIS frame; holding it is what keeps the
+/// surface out of the free list until the encoder is done.
+#[derive(Debug, Default)]
+pub struct TapLoan {
+    surface: Option<Arc<SharedSurface>>,
+    /// True when the take is on the zero-copy path at all. Distinguishes "this
+    /// take is CPU readback" (`false`, `surface` None) from "this take is
+    /// zero-copy but the pool was empty" (`true`, `surface` None) — the second
+    /// has already counted its skip and must not count a second one, nor fall
+    /// through to a readback the take did not choose.
+    zero_copy_take: bool,
+}
+
+impl TapLoan {
+    pub fn is_zero_copy(&self) -> bool {
+        self.zero_copy_take
+    }
+    pub fn has_surface(&self) -> bool {
+        self.surface.is_some()
+    }
+}
+
+/// **Before the draw**: take this frame's surface and point the View at it.
+///
+/// The free-surface question cannot wait for the budget pre-check, which needs
+/// the View's measured time and therefore runs after `render_frame`. On the
+/// zero-copy path the draw goes INTO the surface, so by then a missing surface
+/// has already cost a corrupted frame rather than a skipped one.
+///
+/// A retarget that fails — a surface whose geometry does not match the View —
+/// returns the error to the caller. Step 6 decides what a take does with that;
+/// this function's job is to refuse rather than draw.
+pub fn begin_tap_frame(
+    render: &mut crate::render::RenderLoop,
+    pool: Option<&SurfacePool>,
+    skipped: &AtomicU64,
+) -> Result<TapLoan, anyhow::Error> {
+    let Some(pool) = pool else {
+        return Ok(TapLoan::default());
+    };
+    let surface = acquire_record_surface(pool, skipped);
+    if let Some(s) = &surface {
+        render.set_view_surface(Some(s.clone()))?;
+    }
+    Ok(TapLoan {
+        surface,
+        zero_copy_take: true,
+    })
+}
+
+/// **Immediately after the draw**: put the View back on the built-in target.
+///
+/// Separate from [`end_tap_frame`] for two reasons. It must run whether or not
+/// the take has a handoff endpoint — a retarget left in place would composite
+/// the NEXT frame into a surface nobody is holding — and it needs `&mut
+/// RenderLoop`, which cannot coexist with the readback closure `end_tap_frame`
+/// takes (`&render`).
+pub fn restore_view(render: &mut crate::render::RenderLoop, loan: &TapLoan) {
+    if loan.zero_copy_take {
+        // Infallible: clearing the retarget has no geometry to check.
+        let _ = render.set_view_surface(None);
+    }
+}
+
+/// **After the draw**: skip, or hand the frame off.
+///
+/// Returns the frame's `record_tap_ms` contribution. `readback` is the caller's
+/// View readback, needed only on the CPU path and NOT awaited on the zero-copy
+/// path — that removal is what the whole migration is for.
+pub async fn end_tap_frame<F, Fut>(
+    loan: TapLoan,
+    render_elapsed: Duration,
+    budget: Option<Duration>,
+    tx: &SyncSender<RecordMsg>,
+    skipped: &AtomicU64,
+    readback: F,
+) -> f64
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = (Vec<u8>, Duration)>,
+{
+    // A zero-copy take that found no free surface already counted its skip,
+    // before the draw. Counting again here would double-count, and falling
+    // through to a readback would run the path this take did not choose.
+    if loan.zero_copy_take && loan.surface.is_none() {
+        return 0.0;
+    }
+    if should_skip_record_frame(render_elapsed, budget) {
+        skipped.fetch_add(1, Ordering::SeqCst);
+        return 0.0;
+    }
+    let outcome = match loan.surface {
+        Some(surface) => handoff_record_surface(surface, tx),
+        None => {
+            let (rgba, elapsed) = readback().await;
+            handoff_record_frame(rgba, tx, elapsed)
+        }
+    };
+    if !outcome.sent {
+        skipped.fetch_add(1, Ordering::SeqCst);
+    }
+    outcome.feed_ms
+}

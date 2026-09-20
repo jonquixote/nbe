@@ -413,40 +413,66 @@ fn fake_unit_for_shed(pts: f64) -> nbe_engine::encode::EncodedUnit {
 #[test]
 fn loop_wiring_pre_check_before_readback() {
     // Wiring proof (same discipline as `prompt06.rs` source assertions): the
-    // budget pre-check sits BEFORE the readback await in the loop, and the
-    // handoff is the only record cost folded into `record_tap_ms`.
-    let src = include_str!("../src/main.rs");
-    // Order inside the loop body (positional: each search starts where the
-    // previous match ended, so the import lines cannot confuse it).
-    let pre = src
+    // budget pre-check sits BEFORE the readback await, and the handoff is the
+    // only record cost folded into `record_tap_ms`.
+    //
+    // **The subject of this guard MOVED and the guard moved with it** (§2c).
+    // Until ZERO-COPY Phase 3b step 5 this ordering was inline in `main.rs`;
+    // the migration lifted it into `record::feed::end_tap_frame` so the loop
+    // could serve both frame paths. Reading `main.rs` for
+    // `should_skip_record_frame` now finds nothing, which would make this a
+    // guard over a path the loop no longer takes (§2a rule 7) — so it reads
+    // the ordering where the ordering now is, and keeps a `main.rs` assertion
+    // for what `main.rs` still owns.
+    let feed = include_str!("../src/record/feed.rs");
+    // Order inside `end_tap_frame` only: searching the whole file would match
+    // the module's own doc comment and the primitives' definitions.
+    let end = feed
+        .find("pub async fn end_tap_frame")
+        .expect("the loop's post-draw seam exists");
+    let body = &feed[end..];
+    let pre = body
         .find("should_skip_record_frame")
-        .expect("loop must call the budget pre-check");
-    let readback = src[pre..]
-        .find("readback_view().await")
+        .expect("the seam must call the budget pre-check");
+    let readback = body[pre..]
+        .find("readback().await")
         .map(|i| pre + i)
-        .expect("loop must read back for the record handoff");
-    let handoff = src[readback..]
+        .expect("the seam must read back on the CPU path");
+    let handoff = body[readback..]
         .find("handoff_record_frame")
         .map(|i| readback + i)
-        .expect("loop must hand off to the record thread");
-    let counter = src[handoff..]
-        .find("record_tap_ms")
-        .map(|i| handoff + i)
-        .expect("loop must accumulate the record counter");
+        .expect("the seam must hand off to the record thread");
     assert!(
         pre < readback,
-        "pre-check (at {pre}) must precede the readback await (at {readback})"
+        "pre-check (at {pre}) must precede the readback await (at {readback}): \
+         an over-budget frame must cost no readback at all"
     );
     assert!(
         readback < handoff,
         "handoff (at {handoff}) follows the readback (at {readback})"
     );
+
+    // And in the loop: the counter fold follows the tap, and the inline encode
+    // path is still gone.
+    let src = include_str!("../src/main.rs");
+    let tap = src
+        .find("end_tap_frame")
+        .expect("loop must call the post-draw tap seam");
+    let counter = src[tap..]
+        .find("record_tap_ms")
+        .map(|i| tap + i)
+        .expect("loop must accumulate the record counter");
     assert!(
-        handoff < counter,
-        "counter fold (at {counter}) follows the handoff (at {handoff})"
+        tap < counter,
+        "counter fold (at {counter}) follows the tap seam (at {tap})"
     );
     assert!(
         !src.contains("feed_record_frame"),
         "the inline encode path must be gone from the loop"
+    );
+    assert!(
+        !src.contains("should_skip_record_frame"),
+        "the budget pre-check belongs to the tap seam now; two copies would be \
+         two chances for the paths to disagree about when a frame skips"
     );
 }

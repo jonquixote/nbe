@@ -5,7 +5,6 @@
 
 use nbe_engine::audio_driver;
 use nbe_engine::channel::{self, EngineConfig};
-use nbe_engine::record::{handoff_record_frame, should_skip_record_frame};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, RecordState, SharedEngineState, SharedOutgoing};
 use std::sync::atomic::Ordering;
@@ -92,44 +91,80 @@ async fn main() -> anyhow::Result<()> {
                     (stopped_frame, None)
                 }
             };
-            let render_started = Instant::now();
-            let _ = render.render_frame(frame, deadline);
-            let render_elapsed = render_started.elapsed();
-            // WU-pipe: hand one record frame after the deadline check above.
-            // Budget honesty: the pre-check runs BEFORE the readback — an
-            // over-budget frame skips (and counts) with no readback await, no
-            // handoff, no encode. A live handoff is a non-blocking `try_send`;
-            // a saturated thread sheds (and counts) instead of slowing View.
+            // WU-pipe: one record frame per loop iteration, both paths.
+            //
+            // Budget honesty is unchanged: the budget pre-check still runs
+            // AFTER the draw (it needs the View's measured time) and an
+            // over-budget frame still skips with no readback, no handoff and no
+            // encode. What the zero-copy path adds is an EARLIER question —
+            // "is a free surface available?" — asked before the draw, because
+            // on that path the draw goes into the surface and a missing one
+            // costs a corrupted frame rather than a skipped one.
+            //
+            // One lock acquisition resolves both the take's pool and its
+            // handoff endpoint, so they cannot describe different takes.
             let recording = *render_state.record_state.lock().unwrap() == RecordState::Recording;
-            if recording {
-                if should_skip_record_frame(render_elapsed, deadline) {
+            let (pool, endpoint) = match recording {
+                true => {
+                    let g = render_state.record_session.lock().unwrap();
+                    match g.as_ref() {
+                        Some(s) => (s.surface_pool(), Some(s.frame_sender())),
+                        None => (None, None),
+                    }
+                }
+                false => (None, None),
+            };
+            let loan = match nbe_engine::record::begin_tap_frame(
+                &mut render,
+                pool.as_deref(),
+                &render_state.skipped_record_frames,
+            ) {
+                Ok(loan) => loan,
+                // Unreachable today: the pool is built at VIEW_W x VIEW_H by
+                // `record.start`, which is the only geometry the View has, so
+                // the swap's dimension check cannot fire. Handled rather than
+                // unwrapped because "unreachable" is a claim about today's call
+                // sites. INTERIM: the record frame is dropped and counted, the
+                // View still goes on air. Step 6 replaces this with Option A —
+                // the take ends loudly with `E_NO_ZEROCOPY` — which is a
+                // decision about mid-take chain loss and is named as new
+                // behaviour there, not smuggled in here.
+                Err(e) => {
+                    tracing::error!(err = %e, "record tap: cannot retarget the View; frame not recorded");
                     render_state
                         .skipped_record_frames
                         .fetch_add(1, Ordering::SeqCst);
-                } else {
-                    // Resolve the handoff endpoint without holding the lock
-                    // across the readback await below.
-                    let endpoint = render_state
-                        .record_session
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|s| s.frame_sender());
-                    if let Some(tx) = endpoint {
-                        // Timed readback (the only await): its cost belongs to
-                        // the record counter, never the render budget — the
-                        // handoff folds it into `outcome.feed_ms`.
-                        let readback_started = Instant::now();
-                        let rgba = render.readback_view().await;
-                        let readback_elapsed = readback_started.elapsed();
-                        let outcome = handoff_record_frame(rgba, &tx, readback_elapsed);
-                        *render_state.record_tap_ms.lock().unwrap() += outcome.feed_ms;
-                        if !outcome.sent {
-                            render_state
-                                .skipped_record_frames
-                                .fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
+                    Default::default()
+                }
+            };
+
+            let render_started = Instant::now();
+            let _ = render.render_frame(frame, deadline);
+            let render_elapsed = render_started.elapsed();
+            // The View goes back to the built-in target the moment the draw is
+            // done, before anything can fail: a retarget left in place would
+            // composite the NEXT frame into a surface nobody is holding.
+            nbe_engine::record::restore_view(&mut render, &loan);
+
+            if recording {
+                if let Some(tx) = endpoint {
+                    let feed_ms = nbe_engine::record::end_tap_frame(
+                        loan,
+                        render_elapsed,
+                        deadline,
+                        &tx,
+                        &render_state.skipped_record_frames,
+                        || async {
+                            // Timed readback (the only await, and only on the
+                            // CPU path): its cost belongs to the record
+                            // counter, never the render budget.
+                            let started = Instant::now();
+                            let rgba = render.readback_view().await;
+                            (rgba, started.elapsed())
+                        },
+                    )
+                    .await;
+                    *render_state.record_tap_ms.lock().unwrap() += feed_ms;
                 }
                 tracing::debug!(
                     record_tap_ms = *render_state.record_tap_ms.lock().unwrap(),
