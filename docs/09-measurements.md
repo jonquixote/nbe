@@ -477,12 +477,24 @@ table.
 
 ## The choice is telemetry-visible
 
-`record_tap_path` and `record_tap_reason` join the §10.1 tick, additive and
-optional. Which path is live is **operational state**: an operator who cannot
-see it cannot tell a machine that chose zero-copy from one that silently fell
-back to the allowance. Absent until a take selects a path — absence means "no
-take yet", not a defaulted guess, which is why the fields are `Option` rather
-than defaulted strings.
+`record_tap_path` and `record_tap_reason` join the §10.1 tick, additive.
+Which path is live is **operational state**: an operator who cannot see it
+cannot tell a machine that chose zero-copy from one that silently fell back to
+the allowance.
+
+**They are always emitted, stubbed `"none"` before any take has selected a
+path.** Superseded text kept per §2c:
+
+> Absent until a take selects a path — absence means "no take yet", not a
+> defaulted guess, which is why the fields are `Option` rather than defaulted
+> strings.
+
+That was a §10.1.1 violation — *"an absent field and a stubbed field are
+different failures and only one of them is diagnosable"* — caught by the Phase
+3a design memo (Q1′) and fixed in Phase 3b before the migration, since it is a
+defect in merged code independent of it. The distinction the old shape wanted is
+kept in full: `"none"` is not `"cpuReadback"`, so a machine that never recorded
+is still distinguishable from one that fell back.
 
 **Recorded as a §10.1 wire-addition candidate, unratified** — the same shape
 `intentSource` took before v0.4.1 ratified it.
@@ -492,6 +504,7 @@ than defaulted strings.
 | Mutation | Result |
 |---|---|
 | Suppress the telemetry report of the chosen path | `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` FAILED — *"the fallback path must be visible on the wire"* |
+| Omit the field from the wire (`#[serde(skip_serializing)]`, Phase 3b) | `the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects` FAILED — *"§10.1.1: `recordTapPath` must be present on every tick"* |
 | Swallow the probe's geometry refusal | Metal aborts the process: `MTLTextureDescriptor has width of zero`, SIGABRT. The guard converts a hard abort into a typed `E_NO_ZEROCOPY` refusal |
 | Remove the override guard so a pin beats the table | `the_table_drives_the_choice_and_an_override_cannot_conjure_a_capability` FAILED — *"an override to ZeroCopy on an incapable machine must not be honoured"* |
 
@@ -584,3 +597,222 @@ the path choice is "recorded every soak", but `scripts/soak.sh` is unchanged,
 nothing in production calls `select()`, and the field is absent from every tick
 by design until Phase 3. The row now says so, and names the migration as what
 backs it.
+
+
+---
+
+# ZERO-COPY Phase 3b — the migration, measured (2026-09-20)
+
+## Outcome: recording runs the zero-copy path, and the allowance is a fact
+
+`record.start` probes the chain at the take's geometry, asks the published
+table, publishes the selection to the §10.1 tick, and builds the take's surface
+pool. The frame path and telemetry's claim are now the same statement.
+
+## The numbers
+
+Reference machine per `docs/hardware-baseline.txt`; wgpu's `HighPerformance`
+preference selected the **AMD Radeon Pro 555X**, as in Phase 1. Quiescent —
+load(1m) **2.23 at start, 2.79 at end**, both under the soak protocol's 3.0
+ceiling, no `cargo`/`rustc` running at launch. 300 frames per row, unpaced
+(pacing to the frame boundary measures the pacing). Harness:
+`crates/nbe-engine/tests/zerocopy_bench.rs`, `#[ignore]`d so it is run
+deliberately rather than by `cargo test --workspace`.
+
+**Two spans, reported separately because they answer different questions.**
+`tap` is what the record path costs and what lands on `record_tap_ms`: the
+readback plus handoff on the CPU path, the acquire plus retarget plus handoff on
+the zero-copy path. `frame` is render + tap, the whole per-frame cost against
+the 33.333 ms budget, and is the span comparable to Phase 1's table.
+
+### 1080p30, before and after
+
+| span | n | mean | min | p50 | p95 | max | over 33.333 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cpuReadback tap | 300 | 14.832 | 13.733 | 14.873 | 15.709 | 25.158 | 0 / 300 |
+| **zeroCopy tap** | 300 | **0.008** | 0.007 | 0.008 | 0.009 | 0.029 | 0 / 300 |
+| cpuReadback frame (render+tap) | 300 | 15.866 | 14.635 | 15.856 | 16.787 | 28.224 | 0 / 300 |
+| **zeroCopy frame (render+tap)** | 300 | **1.376** | 0.972 | 1.362 | 1.575 | 1.954 | 0 / 300 |
+
+**Read the tap row carefully, because the obvious reading is wrong.** 0.008 ms
+is not "encoding became free". It is the cost of a `try_send` and nothing else:
+the draw already happened inside `render_frame` (into the surface rather than
+into the View target — the retarget replaces a texture reference, so it adds no
+pass and no copy, **at about +0.3 ms per frame** against the native RGBA
+target), and the encode happens on the record thread, where it always did. What
+the 14.8 ms was, and no longer is, is a **readback the loop awaited** — 8.3 MiB
+copied out of VRAM per frame, on the record counter, every frame of every take.
+
+**The +0.3 ms, stated rather than smoothed.** Superseded wording kept per §2c:
+the passage above read *"at no extra cost"*, which the numbers do not support.
+Subtracting the tap span from the frame span leaves the render-only residual,
+and it is larger on the zero-copy side on both independent runs:
+
+| run | cpuReadback render | zeroCopy render | delta |
+|---|---:|---:|---:|
+| this revision | 1.034 | 1.368 | **+0.334** |
+| two-key pass (independent, quiescent) | 1.048 | 1.291 | **+0.243** |
+
+Drawing into a BGRA IOSurface-backed texture costs ~0.25–0.33 ms per frame more
+than drawing into the engine's own RGBA target. Structurally the claim holds —
+no additional pass, no copy — but "no extra cost" was a structural statement
+wearing a measurement's clothes. It is swamped by the ~15 ms the readback cost,
+and saying so is not the same as saying it is zero.
+
+The honest headline is the frame row: **15.866 ms → 1.376 ms** for render plus
+tap, a factor of 11.5.
+
+### 4K, the trip-wire row
+
+| span | n | mean | min | p50 | p95 | max | over 33.333 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| zeroCopy render+encode | 300 | 12.433 | 6.021 | 11.087 | 19.525 | 59.303 | 2 / 300 |
+
+Against Phase 1's 13.092 / p95 17.582 / 1 over 300 — the same measurement,
+within its own spread. **This row does not go through `RenderLoop`**, and that
+is stated rather than implied: the engine's View is fixed at `VIEW_W x VIEW_H`,
+so the 4K run renders into a 4K surface with wgpu directly and hands the same
+surface to a 4K encoder. Same chain, one link short of the production loop.
+
+**The over-budget count here is a TAIL STATISTIC, not a fixed fact**, and the
+table above reads as though it were one. Three independent runs of the same
+measurement on the same machine:
+
+| run | mean | p50 | p95 | max | over 33.333 ms |
+|---|---:|---:|---:|---:|---:|
+| Phase 1 | 13.092 | 13.095 | 17.582 | 51.720 | **1 / 300** |
+| this revision | 12.433 | 11.087 | 19.525 | 59.303 | **2 / 300** |
+| two-key pass | 12.550 | 11.306 | 19.785 | 61.257 | **4 / 300** |
+
+The count wanders — 1, 2, 4 — while mean, p50 and p95 barely move. It counts
+the far tail of an unpaced run, where a handful of samples out of 300 decide
+the number. **Anyone watching this row should watch p95, not the count.** A
+count that moved while p95 moved with it would be a finding; a count that moves
+alone is the tail breathing.
+
+### Counts, derived two independent ways
+
+| quantity | derivation A | derivation B | agree |
+|---|---|---|---|
+| 1080p frames handed off | 600 requested (2 paths × 300) | 600 received by the drain thread | yes |
+| 1080p tap cost per frame | wall clock around the seam | the seam's own `record_tap_ms` return (asserted within 2 ms per frame, in the harness) | yes |
+| 4K access units | 295 streamed during encode | 300 reported at `finish()` | yes — finish includes the streamed set plus the in-flight tail |
+
+### A number the migration found on the way
+
+Paced at 30 fps through the production seams, a **cpuReadback take sheds 20 of
+40 frames** (`zerocopy_migration::a_machine_with_no_chain_records_by_readback_and_says_so`,
+`record_tap_ms` 583.7 for 40 frames ≈ 14.6 ms each — consistent with the table
+above). The zero-copy take sheds 0. `prompt09_feed`'s live take never saw this
+because it feeds synthetic RGBA and never reads back. Per the gate split the
+number belongs to the soak, not to a test threshold.
+
+## Falsifications
+
+| Mutation | Result |
+|---|---|
+| Omit `recordTapPath` from the wire | `the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects` FAILED — *"§10.1.1: `recordTapPath` must be present on every tick"* |
+| Drop `set_render_device` from `RenderLoop::new` | `the_render_loop_publishes_its_device_so_the_directive_path_can_probe` FAILED — `left: ProbeUnavailable, right: Table` |
+| `SurfacePool::acquire` returns `surfaces.first()` (hand out a busy surface) | `the_pool_never_hands_out_a_surface_that_is_still_in_flight` FAILED — *"acquire kept yielding past the pool's size: it is reusing surfaces"* |
+| Remove the geometry check from `encode_pixel_buffer` | `the_encoder_refuses_a_surface_of_the_wrong_shape...` FAILED — and note the failure: VideoToolbox **accepted** a 1280×720 buffer as 1920×1080 and returned no error |
+| `render_bus` ignores the retarget | `the_compositor_draws_into_the_loaned_surface...` FAILED — *"2073600 of 2073600 pixels still carry the stain"* |
+| One composite pipeline (no BGRA sibling) | wgpu validation error: *"the RenderPass uses textures with formats [Some(Bgra8Unorm)] but the RenderPipeline ... [Some(Rgba8Unorm)]"* |
+| Drop the `readback_view` swizzle | FAILED — `left: [0, 128, 255, 255], right: [255, 128, 0, 255]` |
+| `record.start` selects but never attaches the pool | **At head:** `a_zero_copy_take_reports_the_table_and_never_reads_back` FAILED — *"retarget: E_NO_ZEROCOPY: the take's surface pool is gone mid-take; the chain was available at record.start and is not now"*. See the note below — the signature changed after the row was first written |
+| Never publish the selection | both migration takes FAILED — `left: ("none","none")` |
+| Swallow a mid-take chain loss and keep feeding | `losing_the_chain_mid_take...` FAILED — *"losing the chain mid-take must end the take"* |
+| Leave the take running after the loss | FAILED — `left: Recording, right: Idle` |
+| Clear `record_tap_selection` on the loss | FAILED — `left: ("none","none"), right: ("zeroCopy","Table")` |
+
+**One row's signature changed between step 5 and head, and the change was an
+improvement.** Superseded text kept per §2c — the row above originally read:
+
+> `record.start` selects but never attaches the pool | `a_zero_copy_take_reports_the_table_and_never_reads_back` FAILED — telemetry said `zeroCopy` while the frames went through readback
+
+That is what the mutation produced **at step 5** (`4588b41`), verified by
+checking that commit out and re-running it there: the take ran 40 frames through
+the readback and the test caught it afterwards, on *"THE MIGRATION'S WHOLE
+POINT: no frame on this path may await a View readback"*. Step 6 then added
+`claims_zero_copy`, which treats "the selection says `zeroCopy` and there is no
+pool" as chain loss — so at head the same mutation is refused at **frame 0**,
+before a single readback happens, with the `E_NO_ZEROCOPY` token.
+
+The step-5 commit message is accurate at its own commit and is left as written.
+The table is written for a reader at head, so it names the signature a reader at
+head will see. A guard that grew stronger after its evidence was recorded is a
+good problem; leaving the old signature in place so a reader hunts for a failure
+that no longer occurs is not.
+
+## The rehearsal names its path, three consecutive times
+
+`[RI-1]` step 11 now waits for a tick whose `recordTapPath` is not `"none"` and
+asserts it is one of the published table's paths with a reason attached. Not a
+threshold — which path a machine gets is a property of that machine — but the
+field must stop reading `"none"` during a take, because `"none"` there means the
+selection never reached telemetry and the soak's weekly capture would record
+nothing.
+
+| run | load(1m) at start | tests | pass | fail | skipped | path |
+|---|---:|---:|---:|---:|---:|---|
+| 1 | 3.90 | 15 | 15 | 0 | 0 | zeroCopy (Table) |
+| 2 | 2.73 | 15 | 15 | 0 | 0 | zeroCopy (Table) |
+| 3 | 2.57 | 15 | 15 | 0 | 0 | zeroCopy (Table) |
+
+Four earlier consecutive green runs are not tabled above because the first was
+taken at load 7.46, immediately after a release build; it passed 15/15 and named
+the same path, and is stated rather than smoothed. The three above follow the
+falsification below, so they are runs of the restored tree.
+
+**Falsification of the step:** remove `record.start`'s publication of the
+selection and rebuild the engine the rehearsal actually spawns
+(`target/debug/nbe-engine` — the rehearsal uses the debug binary):
+
+```
+not ok 13 - [RI-1] step 11: record the running show, mark it, stop cleanly
+  error: 'waited 3000 ms for the take names its frame path; last telemetry was
+  {... "recordTapPath":"none","recordTapReason":"none", ...
+       "recordState":"recording", ...}'
+# pass 14  # fail 1  # skipped 0
+```
+
+`recordState: "recording"` beside `recordTapPath: "none"` is exactly the
+diagnosable pair §10.1.1 asks for: a take is running and the field says no take
+has chosen a path. An absent key would have said nothing at all.
+
+## Three things the Phase 3a memo did not reach
+
+Recorded in `docs/zero-copy-p3-design.md` under "Corrections found in
+execution", and all three found by a test failing rather than by review: the
+retarget's **format** obligation (and the `readback_view` swizzle it implies),
+the probe texture's missing `COPY_SRC | COPY_DST`, and that Q2's "the take's
+surface for the take's lifetime" is superseded by Q3's pool — the retarget is
+per frame.
+
+## On the ledger: the override is built and wired to nothing
+
+`select_with_override` exists in `crates/nbe-engine/src/record/tap_path.rs`, is
+covered by its own tests, and honours the rule that matters — an override can
+*restrict* (force CPU) but never *conjure* a capability the probe denied.
+**Nothing calls it.** There is no config surface carrying an override from a
+manifest, an environment variable, or a command, so today the published table is
+the only voice: an operator on a machine where the chain links but produces
+garbage has no lawful way to say "use readback on this one".
+
+That is a gap in the escape hatch, not in the rule. The table is the product
+decision and it is working as designed; what is missing is the documented way
+out of it for the day the probe is right about capability and wrong about
+quality. Wiring it needs somewhere for the value to live, and inventing a config
+surface was not the migration's scope.
+
+**It lands wherever a config surface next appears** — Prompt 10's streaming work
+is the likely place, since a second consumer needs per-output settings anyway,
+but earlier is fine. This sentence is where that decision is owed; an override
+that stays unwired through the next config surface is a choice, and should be
+recorded as one rather than left to drift.
+
+## Status
+
+The record path runs zero-copy where the probe allows it and CPU readback where
+it does not, and says which. §0.1 assumption 24's **rescoped candidate (b)
+remains UNRATIFIED** — this revision makes its mechanism a fact in the tree, not
+law. Ratification is a separate word.

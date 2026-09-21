@@ -193,7 +193,17 @@ that the encoder reads the allocation the compositor wrote.
 The retarget **replaces** the target rather than adding a step. `render_frame`
 resolves `target` once per bus per frame and draws into it; swapping which
 texture that reference names adds no pass, no copy, and no await inside the
-timed region. The timed region is unchanged — `main.rs:96-97`:
+timed region.
+
+**Measured afterwards: it is not free, at about +0.3 ms per frame.** The
+structural claim above survives — there is no extra pass, copy or await — but
+drawing into a BGRA IOSurface-backed texture costs ~0.25-0.33 ms per frame more
+than drawing into the engine's own RGBA target, on two independent quiescent
+runs (`docs/09-measurements.md`, Phase 3b). Against the ~15 ms the readback
+cost, it is swamped; it is not zero, and the record says the number rather than
+the adjective.
+
+The timed region is unchanged — `main.rs:96-97`:
 
 ```rust
 let render_started = Instant::now();
@@ -362,6 +372,59 @@ state where telemetry claims something the frame path does not do.
    tense **only** once it is true.
 
 Steps 1-4 ship no behaviour change to recording. Step 5 is the migration.
+
+## Corrections found in execution (Phase 3b)
+
+Added during execution, per §2c: the text above is preserved as written and
+these are what contact with the tree changed. All three were found by a test
+failing, not by review.
+
+1. **Q2's carried obligation named dimensions; format is a second one.** The
+   memo argued the retarget is a drop-in because "the IOSurface-backed texture
+   is a `wgpu::Texture` like any other". It is — but its format is
+   `Bgra8Unorm`, forced by the far end of the chain where VideoToolbox wants
+   `kCVPixelFormatType_32BGRA`, and the composite pipeline is built for
+   `Rgba8Unorm`. wgpu refuses the mismatch outright:
+
+   > Render pipeline targets are incompatible with render pass … the RenderPass
+   > uses textures with formats [Some(Bgra8Unorm)] but the RenderPipeline with
+   > 'composite' label uses attachments with formats [Some(Rgba8Unorm)]
+
+   Step 4 builds a BGRA sibling pipeline at init and selects by the target's
+   format. The shader needs no variant: a fragment shader writes an
+   RGBA-ordered `vec4` and the attachment's format decides how that lands in
+   memory.
+
+   A consequence the memo also did not reach: `readback_view` promises RGBA8,
+   and a BGRA surface returns blue-first bytes. Handing those through would
+   swap red and blue in every golden-frame comparison **rather than fail**, so
+   the accessor swizzles while the View is a BGRA surface.
+
+2. **The probe's texture needed `COPY_SRC | COPY_DST`.** Q2's GO rests on
+   `readback_view` continuing to work across the retarget, and a copy needs the
+   usage flag; without it the first readback during a zero-copy take aborts with
+   a wgpu validation error. Free on the Metal side — `MTLTextureUsage` has no
+   blit bit.
+
+3. **"The take's surface for the take's lifetime" (Q2) is superseded by the
+   pool (Q3).** Q3 was written after Q2 and found that one surface cannot serve
+   a take. The retarget is therefore **per frame**, set and cleared around each
+   one, which is what the code does.
+
+4. **Q3's mid-take falsification named "no black frames"; what the tree can
+   assert is stronger and narrower.** Option A ends the take, so no frames at
+   all are written after the loss — the check is that the file's video packet
+   count never exceeds what was fed before it. Two adjustments were forced by
+   the tree: `ffprobe -show_entries stream=nb_read_frames` returns an empty
+   stream object for a fragmented, unfinalized mp4 on this build, so the count
+   comes from `-show_packets`; and the take must run past a fragment boundary
+   (≥ 1 s, §9.3) before the loss or the abandoned file is legitimately empty
+   and the assertion measures nothing.
+
+5. **A number the migration found and did not keep.** Paced at 30 fps on the
+   reference machine, a `cpuReadback` take sheds 20 of 40 frames. That is the
+   case for the migration stated in the tree's own terms, and per the gate split
+   it is a soak number, not a test threshold.
 
 ## What this memo does not decide
 

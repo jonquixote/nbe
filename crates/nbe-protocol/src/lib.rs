@@ -337,6 +337,12 @@ pub enum DirectiveKind {
     Directive,
 }
 
+/// The stub a telemetry field carries before its subsystem has run. §10.1.1:
+/// a consumer must never see a missing field.
+pub fn tap_none() -> String {
+    "none".to_string()
+}
+
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -380,10 +386,20 @@ pub struct EngineTelemetry {
     ///
     /// **Recorded as a §10.1 wire-addition candidate**, unratified — the same
     /// shape `intentSource` took before v0.4.1 ratified it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub record_tap_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub record_tap_reason: Option<String>,
+    ///
+    /// **Always emitted, stubbed `"none"` before any take has selected a path.**
+    /// It shipped `Option` + `skip_serializing_if` in Phase 2, absent until
+    /// selection, on the reasoning that absence meant "no take yet". §10.1.1
+    /// forbids that: *"The emitted field shape is always complete. A telemetry
+    /// consumer MUST never see a missing field, whatever the engine's state — an
+    /// absent field and a stubbed field are different failures and only one of
+    /// them is diagnosable."* The distinction Phase 2 wanted survives as
+    /// `"none"` against `"cpuReadback"`, which is strictly more diagnosable than
+    /// a key that is not there.
+    #[serde(default = "tap_none")]
+    pub record_tap_path: String,
+    #[serde(default = "tap_none")]
+    pub record_tap_reason: String,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.

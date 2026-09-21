@@ -420,12 +420,27 @@ export const EngineTelemetryFrameSchema = z
     audioDriftMs: z.number().default(0),
     /** Per-bus peak level in dBFS (SPEC §10.1). */
     busPeakDbfs: z.record(z.number()).default({}),
-    // ZERO-COPY Phase 2: which frame path the record tap took, and why.
-    // `.optional()` and NOT `.default()` — the Rust side omits these when no
-    // take has selected a path (`skip_serializing_if = "Option::is_none"`), and
-    // a default here would fabricate a choice that was never made. Absent means
-    // "no take yet", which is the distinction an operator needs: a machine that
-    // never recorded must not look like one that fell back to CPU readback.
+    // ZERO-COPY: which frame path the record tap took, and why.
+    //
+    // `.optional()` is TOLERANCE, not the contract. **The engine never omits
+    // these** — since Phase 3b they are always emitted and stubbed `"none"`
+    // before any take selects (§10.1.1). This schema is `.strict()` and rejects
+    // a frame WHOLE on an unknown key, so it must keep parsing ticks from an
+    // engine build that predates the stub rather than refusing every tick from
+    // one. A `.default("none")` here would be worse than optional: it would
+    // make the control plane fabricate the engine's answer, and the field's
+    // entire purpose is reporting what the engine actually did.
+    //
+    // Superseded reasoning kept per §2c — it argued from a premise §10.1.1
+    // forbids:
+    //
+    // > `.optional()` and NOT `.default()` — the Rust side omits these when no
+    // > take has selected a path (`skip_serializing_if = "Option::is_none"`),
+    // > and a default here would fabricate a choice that was never made. Absent
+    // > means "no take yet", which is the distinction an operator needs.
+    //
+    // That distinction is now `"none"` against `"cpuReadback"`: both present,
+    // both readable, neither a missing key.
     recordTapPath: z.string().optional(),
     recordTapReason: z.string().optional(),
   })

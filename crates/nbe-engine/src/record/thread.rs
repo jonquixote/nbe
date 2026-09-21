@@ -23,6 +23,15 @@
 //! channel sheds (`try_send` fails) and the loop counts the skip. The record
 //! path degrades; the View never waits (R4: nothing time-critical on the
 //! render pool — the thread is not the render pool either).
+//!
+//! **On the zero-copy path that policy moves earlier rather than changing.**
+//! Shedding is free for `Frame { rgba }`, which owns its copy, and impossible
+//! for `Surface`, which is a loan of one mutable allocation: a surface already
+//! drawn into cannot be dropped without dropping a frame the encoder may still
+//! be reading. So the question — *is there room?* — is asked before the draw,
+//! as *is a free surface available?*, and a `None` there is the same skip,
+//! counted the same way ([`crate::record::feed`],
+//! `docs/zero-copy-p3-design.md` Q3).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -63,9 +72,17 @@ pub enum RecordMsg {
     /// stays continuous — and continuous against the audio timeline, which
     /// counts retained packets the same way.
     Frame { rgba: Vec<u8> },
+    /// A shared IOSurface the compositor drew into, handed over WITHOUT a
+    /// copy (ZERO-COPY Phase 3b). The `Arc` is the pool's loan: dropping it
+    /// here is what returns the surface to the free list, so the encoder
+    /// finishing with a frame is the same event as the compositor being
+    /// allowed to draw the next one into it.
+    Surface {
+        surface: Arc<nbe_decode::zerocopy::SharedSurface>,
+    },
     /// A pre-encoded unit (TEST SEAM ONLY): feeds the writer without hardware
     /// video, so finish/sidecar/stop paths stay hermetic where VideoToolbox is
-    /// absent. Production sends `Frame` exclusively.
+    /// absent. Production sends `Frame` or `Surface` — never this.
     Unit(EncodedUnit),
 }
 
@@ -270,6 +287,36 @@ impl Drive {
                         self.count_skip();
                     }
                 }
+            }
+            RecordMsg::Surface { surface } => {
+                let Some(enc) = self.encoder.as_mut() else {
+                    self.count_skip();
+                    return Ok(());
+                };
+                // The ONE difference from `Frame` above: the encoder reads the
+                // allocation the compositor wrote, with no pool fetch and no
+                // row-by-row swizzle. Everything after — parameter-set capture,
+                // the push, the shed-on-refusal policy — is identical, because
+                // the path a frame took must not change what the take is.
+                match enc.encode_pixel_buffer(surface.pixel_buffer()) {
+                    Ok(units) => {
+                        self.capture_sets();
+                        for u in &units {
+                            self.push_video(u)?;
+                        }
+                    }
+                    Err(_) => {
+                        self.count_skip();
+                    }
+                }
+                // `surface` goes out of scope here, and THAT is the pool's
+                // free signal — the loan's return. Written as a note rather
+                // than an explicit `drop()`, because an explicit drop on the
+                // last use is a no-op and a no-op that reads as load-bearing is
+                // worse than nothing (§2a rule 4). What matters is the
+                // negative: never store this `Arc` anywhere that outlives the
+                // encode, or the pool starves by exactly one surface and the
+                // symptom is a rising skip count with no other sign.
             }
             RecordMsg::Unit(u) => {
                 self.push_video(&u)?;

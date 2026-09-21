@@ -112,6 +112,30 @@ pub struct SharedSurface {
     height: u32,
 }
 
+// SAFETY: the two CF handles inside are `!Send + !Sync` only because objc2
+// marks every `CFRetained<T>` that way by default — it cannot know which CF
+// types are thread-safe, so it assumes none are. These two are:
+//
+//   * `IOSurfaceRef` exists to be shared. Its entire purpose is handing one
+//     allocation between processes, between the CPU and a GPU, and between
+//     threads; `IOSurfaceLock`/`Unlock` are its documented concurrency
+//     primitives and CFRetain/CFRelease are atomic.
+//   * `CVPixelBuffer` is a CF object over that same surface, created here by
+//     `CVPixelBufferCreateWithIOSurface`. VideoToolbox is *documented* to be
+//     handed pixel buffers from other threads — `VTCompressionSessionEncodeFrame`
+//     is called from the record thread in this very design.
+//
+// `wgpu::Texture` is already `Send + Sync`.
+//
+// What the impls do NOT claim is that the PIXELS may be written concurrently.
+// One writer at a time is a discipline, and `SurfacePool` is where it lives: a
+// surface is handed out only while nobody else holds it, so the compositor
+// never draws into a surface the encoder is reading. Remove the pool and these
+// impls become a lie — which is why the pool is a precondition of the migration
+// and not an optimisation of it.
+unsafe impl Send for SharedSurface {}
+unsafe impl Sync for SharedSurface {}
+
 impl SharedSurface {
     /// The compositor's view. Render into this.
     pub fn texture(&self) -> &wgpu::Texture {
@@ -196,8 +220,25 @@ pub fn probe(
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Bgra8Unorm,
+                // COPY_SRC and COPY_DST are NOT optional here, and their
+                // absence was found by the step-4 retarget test rather than
+                // reasoned about: `readback_view` copies the View to a buffer,
+                // so without COPY_SRC the first `readback_view` during a
+                // zero-copy take aborts with
+                //   "Usage flags TextureUsages(TEXTURE_BINDING |
+                //    RENDER_ATTACHMENT) ... do not contain required usage
+                //    flags TextureUsages(COPY_DST)"
+                // and every golden-frame suite that inspects the View goes with
+                // it. The memo's Q2 GO rests on exactly that readback still
+                // working across the retarget.
+                //
+                // Free on the Metal side: `MTLTextureUsage` has no blit bit —
+                // copies are always permitted — so this widens what wgpu will
+                // validate, not what the texture can do.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
             wgpu::TextureUses::COLOR_TARGET,
@@ -241,4 +282,111 @@ pub fn probe(
 /// is not worth more than the probe behind it.
 pub fn is_available(device: &wgpu::Device, width: u32, height: u32) -> bool {
     probe(device, width, height).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// The surface pool
+// ---------------------------------------------------------------------------
+
+/// N shared surfaces, so the compositor can draw frame N+1 while the encoder
+/// still reads frame N.
+///
+/// **This is the design, not a refinement of it** (`docs/zero-copy-p3-design.md`,
+/// Q3). The record path's existing backpressure discipline — *"a full channel
+/// sheds (never blocks) and the loop counts the skip"* — does not transfer to
+/// one shared surface. `RecordMsg::Frame { rgba }` carries an owned copy per
+/// frame, so shedding is free: drop the `Vec` and the compositor's next frame
+/// has nothing to do with it. A shared surface is ONE MUTABLE ALLOCATION. If
+/// the encoder is still reading frame N when the compositor starts frame N+1,
+/// "shed" is not available — the pixels are already overwritten. Shedding a
+/// surface you have drawn into is not a skip, it is a corrupted frame.
+///
+/// So the question moves earlier: **is a free surface available?**, asked
+/// BEFORE the draw. No free surface → skip before rendering, which keeps the
+/// discipline's actual promise (record degrades, the View never waits) at the
+/// only point where it can still be kept.
+///
+/// ## Why `Arc::strong_count` is the free list
+///
+/// A surface is free exactly when nobody outside the pool holds it. The pool is
+/// the only place clones are handed out, and [`Self::acquire`] is called from
+/// one place — the render loop — so the count can only fall asynchronously, as
+/// the record thread drops what it finished with. A count of 1 therefore means
+/// *definitely free*; a higher count may be a surface freed a microsecond ago
+/// and read as busy. The error is one-sided by construction: it can cost a
+/// skipped record frame, and can never hand out a surface still in flight.
+#[derive(Debug)]
+pub struct SurfacePool {
+    surfaces: Vec<std::sync::Arc<SharedSurface>>,
+    width: u32,
+    height: u32,
+}
+
+impl SurfacePool {
+    /// Build `count` surfaces at this geometry, on the device wgpu selected.
+    ///
+    /// Every surface comes from the same [`probe`], so a pool that builds is a
+    /// pool whose every member is the chain Phase 1 proved. Fails loudly on the
+    /// first surface that will not build: a partial pool would silently lower
+    /// the frame rate the tap can sustain.
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        count: usize,
+    ) -> Result<Self, ZeroCopyError> {
+        if count == 0 {
+            return Err(unavailable("a surface pool of zero surfaces is not a pool"));
+        }
+        let mut surfaces = Vec::with_capacity(count);
+        for i in 0..count {
+            let s = probe(device, width, height).map_err(|e| {
+                unavailable(format!("surface {i} of {count} could not be built: {e}"))
+            })?;
+            surfaces.push(std::sync::Arc::new(s));
+        }
+        Ok(Self {
+            surfaces,
+            width,
+            height,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.surfaces.is_empty()
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// How many surfaces nobody else is holding right now.
+    pub fn free(&self) -> usize {
+        self.surfaces
+            .iter()
+            .filter(|s| std::sync::Arc::strong_count(s) == 1)
+            .count()
+    }
+
+    /// Take a free surface, or `None` when every one is still in flight.
+    ///
+    /// `None` is the signal to skip this record frame **before drawing it**.
+    /// Never hands out a surface another holder still has: see the type's note
+    /// on why the count is one-sided.
+    pub fn acquire(&self) -> Option<std::sync::Arc<SharedSurface>> {
+        self.surfaces
+            .iter()
+            .find(|s| std::sync::Arc::strong_count(s) == 1)
+            .map(std::sync::Arc::clone)
+    }
+
+    /// Every surface's IOSurface id, for tests that need to check "same
+    /// allocation" rather than assert it in a comment.
+    pub fn surface_ids(&self) -> Vec<u32> {
+        self.surfaces.iter().map(|s| s.surface_id()).collect()
+    }
 }

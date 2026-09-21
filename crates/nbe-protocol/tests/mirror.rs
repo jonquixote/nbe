@@ -188,8 +188,8 @@ fn render_channel_frames_round_trip() {
             audio_underruns_total: 3,
             audio_drift_ms: 0.4,
             bus_peak_dbfs: [("master".to_string(), -12.3)].into_iter().collect(),
-            record_tap_path: Some("zeroCopy".into()),
-            record_tap_reason: Some("Table".into()),
+            record_tap_path: "zeroCopy".into(),
+            record_tap_reason: "Table".into(),
         },
     });
     round_trip(&PushFrame::StateChange {
@@ -357,22 +357,27 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         audio_underruns_total: 0,
         audio_drift_ms: 0.0,
         bus_peak_dbfs: Default::default(),
-        // Some, NOT None, and that is the whole point of this fixture.
+        // **The rule this fixture teaches — still live, and still the reason
+        // every optional field below is sampled with a VALUE.** Superseded text
+        // kept per §2c, because the lesson outlived the shape that taught it:
         //
-        // These fields are `skip_serializing_if = "Option::is_none"`, so a
-        // `None` sample serializes them to NOTHING — the key-set check below
-        // then never sees them, and the agreement holds vacuously while
-        // TypeScript knows nothing about the fields. That is exactly what
-        // happened when they were added: the suite read 16/16 while the TS
-        // schema, which is `.strict()`, would have REJECTED the whole frame the
-        // first time a real tick carried a value. Fourth instance of the shape
-        // the gate split was built to retire — a floor green about what it
-        // cannot see (§2a rule 7's neighbourhood).
+        // > These fields are `skip_serializing_if = "Option::is_none"`, so a
+        // > `None` sample serializes them to NOTHING — the key-set check below
+        // > then never sees them, and the agreement holds vacuously while
+        // > TypeScript knows nothing about the fields. That is exactly what
+        // > happened when they were added: the suite read 16/16 while the TS
+        // > schema, which is `.strict()`, would have REJECTED the whole frame
+        // > the first time a real tick carried a value. Fourth instance of the
+        // > shape the gate split was built to retire — a floor green about what
+        // > it cannot see (§2a rule 7's neighbourhood).
         //
-        // Any optional field added here must be sampled with a VALUE, or this
-        // audit does not audit it.
-        record_tap_path: Some("zeroCopy".into()),
-        record_tap_reason: Some("Table".into()),
+        // ZERO-COPY Phase 3b removed the `Option` from these two specific
+        // fields (§10.1.1: always emitted, stubbed `"none"`), so they can no
+        // longer serialize to nothing and no longer depend on the fixture's
+        // care. The rule stands for every field that IS still optional here —
+        // `quality_profile` today, and whatever is added next.
+        record_tap_path: "zeroCopy".into(),
+        record_tap_reason: "Table".into(),
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();
@@ -381,8 +386,42 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
     let start = ts
         .find("EngineTelemetryFrameSchema")
         .expect("engine telemetry schema present");
-    let end = ts[start..].find(".strict()").expect("schema terminates") + start;
-    let block = &ts[start..end];
+    // Comments are stripped BEFORE the terminator is located. Without this the
+    // block ends at the first `.strict()` *mentioned in a comment*, and every
+    // field below that comment drops out of the audited region.
+    //
+    // What that costs is a SPURIOUS RED, not a silent pass. The audit below
+    // iterates the RUST keys and requires each to appear in the TypeScript
+    // text, so a truncated block makes keys unfindable and the test fails
+    // naming a field TypeScript actually has — sending whoever reads it to
+    // hunt a schema mismatch that does not exist. Found here: a Phase 3b
+    // comment explaining why the schema is strict shortened the block and the
+    // audit failed on `audioDriftMs`, a field both sides had.
+    //
+    // Superseded wording kept per §2c — it had the failure mode backwards:
+    //
+    //   > silently truncating the audited region so every field below that
+    //   > comment is checked vacuously — the same shape §2a rule 7 names,
+    //   > arriving through a parser rather than a test. […] had the comment sat
+    //   > one line lower it would have passed while auditing less.
+    //
+    // It cannot pass while auditing less. PR #26's two-key pass ran the case
+    // analysis with the strip reverted: a decoy `.strict()` ABOVE a field
+    // fails loudly; one BELOW every field passes, and correctly, because the
+    // truncated block still contains every key the audit looks for. There is
+    // no position that trades a real check for a green. The strip is still
+    // worth having — it removes a trap that costs a debugging session — but
+    // the trap is a false alarm, not a blind spot.
+    let uncommented: String = ts[start..]
+        .lines()
+        .map(|l| match l.trim_start().starts_with("//") {
+            true => "",
+            false => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let end = uncommented.find(".strict()").expect("schema terminates");
+    let block = &uncommented[..end];
     for field in &ours {
         assert!(
             block.contains(&format!("{field}:")),

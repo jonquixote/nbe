@@ -39,7 +39,7 @@ protocol owns the rest, on the machine where the numbers mean something.
 | **AC-6 — crash-safe recording under `SIGKILL`** | rehearsal step 13 |
 | The encoder, fMP4 writer, fragment cadence, AAC tap, on-disk sidecar | `prompt09_*` suites (22 of which skip on CI) |
 | **Audio-tap push latency** — worst single `AudioTap::push` over 10k pushes under 1 ms | Nowhere else. Rebound out of the default suite 2026-09-18 (R9): it measured the machine, passing at load 2.58 and failing at load ~5 and ~30 on the same binary. The SPSC contract is now asserted by work in `prompt09_record_file`; this THRESHOLD lives here, where quiescence is checked and a violation is VOID |
-| **The record tap's path choice** — `record_tap_path` / `record_tap_reason` from the §10.1 tick. **Absent until Phase 3 migration selects a path; recorded every soak from then on.** `scripts/soak.sh` gains the capture with that migration, not before | ZERO-COPY Phase 2 built the field; nothing populates it yet, and the row says so rather than describing the plan in the present tense (found by PR #24's two-key pass). Once live: a silent fallback from `zeroCopy` to `cpuReadback` is the event this catches: the machine still records, the file is still correct, and the only visible difference is a telemetry field nobody was reading. Recording it every soak makes a capability regression a dated event rather than a discovery |
+| **The record tap's path choice** — `record_tap_path` / `record_tap_reason` from the §10.1 tick | **Live.** `record.start` selects the path and publishes it (ZERO-COPY Phase 3b), the rehearsal asserts the take names one, and `scripts/soak.sh` records the distinct values per iteration into `record-tap-path.txt` and `soak.json`. A silent fallback from `zeroCopy` to `cpuReadback` is the event this catches: the machine still records, the file is still correct, and the only visible difference is a telemetry field nobody was reading. Recording it every soak makes a capability regression a dated event rather than a discovery. **Not a threshold** — which path a machine gets is a property of that machine — but a clean recording iteration whose ticks never name a path FAILS the soak, because that is the field lost, not the capability |
 | Flake-register watch list (R7 and successors) | §5 below |
 | The v0.5 failover drill | when it exists; this protocol is its home |
 
@@ -117,6 +117,12 @@ Counter set recorded per iteration, all from the §10.1 tick except where noted:
 - **pressure counters** (Prompt 09): `record_tap_ms` and `skipped_record_frames`
   deltas across the record span — the record-yields-first degradation order is
   only observable as a nonzero skip count with drops still at zero.
+- **the record tap's path** (ZERO-COPY Phase 3b): the distinct `recordTapPath`
+  and `recordTapReason` values seen across the iteration's ticks, with counts.
+  Distinct values rather than the last one, so a take that changed path mid-soak
+  shows as two rows instead of whichever tick happened to be last. Cross-checked
+  against the rehearsal's own `RECORD PATH:` line — two independent derivations
+  of the same fact, from the ticks and from the step.
 
 Artifacts are diagnostics and never a reason to fail — but a soak with no
 artifacts is void, because an unreproducible green is not evidence.

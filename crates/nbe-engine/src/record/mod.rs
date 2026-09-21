@@ -32,7 +32,25 @@ pub mod thread;
 pub mod writer;
 
 pub use audio_tap::{AudioTap, DEFAULT_CAPACITY_SAMPLES};
-pub use feed::{handoff_record_frame, should_skip_record_frame, HandoffOutcome};
+pub use feed::{
+    begin_tap_frame, end_take_on_chain_loss, end_tap_frame, handoff_record_frame,
+    handoff_record_surface, restore_view, should_skip_record_frame, HandoffOutcome, TapLoan,
+};
+
+/// Build a take's surface pool at this geometry.
+///
+/// The size is `RECORD_CHANNEL_BOUND + 1`: one surface in flight per channel
+/// slot, plus the one the compositor is drawing into. Decided in one place so
+/// the pool cannot drift from the channel it feeds — a pool smaller than the
+/// channel would shed frames the channel had room for, and a larger one would
+/// hold VRAM that can never be in flight.
+pub fn zerocopy_pool(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
+    nbe_decode::zerocopy::SurfacePool::new(device, width, height, thread::RECORD_CHANNEL_BOUND + 1)
+}
 pub use session::{encoder_available, set_force_no_encoder, RecordSession, SessionError};
 pub use thread::{
     await_done, ControlMsg, RecordMsg, SessionResult, ThreadArgs, RECORD_CHANNEL_BOUND,

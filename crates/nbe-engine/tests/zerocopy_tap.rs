@@ -50,29 +50,62 @@ fn a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry() {
         panic!("build_tick must produce telemetry");
     };
     assert_eq!(
-        fields.record_tap_path.as_deref(),
-        Some("cpuReadback"),
+        fields.record_tap_path, "cpuReadback",
         "the fallback path must be visible on the wire"
     );
     assert_eq!(
-        fields.record_tap_reason.as_deref(),
-        Some("ProbeUnavailable"),
+        fields.record_tap_reason, "ProbeUnavailable",
         "a silent fallback to the §0.1 assumption 24 allowance is the event this reports"
     );
 }
 
+/// **Replaces** `a_selection_that_was_never_made_reports_nothing_rather_than_a_default`
+/// (ZERO-COPY Phase 2), which asserted the opposite: that the keys were ABSENT
+/// until a take selected a path. That was a §10.1.1 violation shipped as a
+/// guard — *"The emitted field shape is always complete. A telemetry consumer
+/// MUST never see a missing field, whatever the engine's state — an absent
+/// field and a stubbed field are different failures and only one of them is
+/// diagnosable."* Found by the Phase 3a design memo (Q1′), fixed before the
+/// migration because it is a defect in merged code independent of it.
+///
+/// The distinction the retired test was protecting is real and survives intact:
+/// a machine that never recorded must not look like one that fell back. It is
+/// now carried by `"none"` against `"cpuReadback"` — two values, both present,
+/// rather than a key that is not there.
 #[test]
-fn a_selection_that_was_never_made_reports_nothing_rather_than_a_default() {
-    // Absence on the wire means "no take has selected a path", not "CPU".
-    // Defaulting here would make a machine that never recorded indistinguishable
-    // from one that fell back.
+fn the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects() {
     let state = EngineState::new(HOUSE_RATE);
     let frame = nbe_engine::telemetry::build_tick(&state);
+
+    // §10.1.1 COMPLETENESS. Asserted on the SERIALIZED frame, not the struct,
+    // because "a consumer must never see a missing field" is a claim about the
+    // wire — a `#[serde(skip_serializing)]` on the field would leave the struct
+    // assertions below untouched and still strip the key from every tick.
+    let wire = serde_json::to_value(&frame).expect("the tick serializes");
+    let obj = wire
+        .as_object()
+        .expect("an engineTelemetry frame is an object");
+    for key in ["recordTapPath", "recordTapReason"] {
+        assert!(
+            obj.contains_key(key),
+            "§10.1.1: `{key}` must be present on every tick, before any take \
+             selects a path; keys were {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // And the value is the stub, which is NOT the fallback's value. This pair
+    // is the whole distinction the retired test existed for.
     let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } = frame else {
         panic!("telemetry");
     };
-    assert!(fields.record_tap_path.is_none());
-    assert!(fields.record_tap_reason.is_none());
+    assert_eq!(fields.record_tap_path, "none");
+    assert_eq!(fields.record_tap_reason, "none");
+    assert_ne!(
+        fields.record_tap_path,
+        TapPath::CpuReadback.as_str(),
+        "a machine that never recorded must stay distinguishable from one that fell back"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +149,331 @@ fn the_probe_builds_a_shared_surface_where_the_hardware_allows_it() {
     // The two views exist and are of that one surface.
     assert_eq!(shared.texture().width(), 1920);
     assert_eq!(shared.texture().format(), wgpu::TextureFormat::Bgra8Unorm);
+}
+
+// ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 2 — the device reaches the directive path.
+// ---------------------------------------------------------------------------
+
+/// `record.start` runs on the directive path and holds no wgpu handles. The
+/// device lives in `RenderLoop`. This is the seam that lets the one ask the
+/// other, and it is the `probed_quality` pattern §10.1.1 already mandates for
+/// the sibling fact (`docs/zero-copy-p3-design.md`, Q1, option (a)).
+///
+/// Drives `RenderLoop::new` — the production constructor `main.rs:53` calls —
+/// and never writes the publication itself (§2a rule 7).
+#[tokio::test]
+async fn the_render_loop_publishes_its_device_so_the_directive_path_can_probe() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(_render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+
+    // Exactly the question step 5's `record.start` will ask, asked the way it
+    // will ask it: through `EngineState`, with no device handle of its own.
+    let capable = state
+        .render_device()
+        .map(|d| nbe_decode::zerocopy::is_available(&d, 1920, 1080))
+        .unwrap_or(false);
+    let selection = select(capable, 1080, Consumer::Record);
+
+    assert_eq!(
+        selection.reason,
+        Reason::Table,
+        "with the device published the table speaks for itself; drop the \
+         publication and the directive path reports ProbeUnavailable on a \
+         machine that has a working GPU — a fallback that is not a fallback"
+    );
+    assert_eq!(selection.path, TapPath::ZeroCopy);
+    assert!(
+        state.render_device().is_some(),
+        "the handle must survive in state, not merely have existed during new()"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 3 — the surface pool and the pixel-buffer encode.
+// ---------------------------------------------------------------------------
+
+/// Pool size: one surface in flight per channel slot, plus the one being drawn
+/// into. Read from the production constant so the two cannot drift.
+fn pool_size() -> usize {
+    nbe_engine::record::thread::RECORD_CHANNEL_BOUND + 1
+}
+
+#[test]
+fn an_exhausted_pool_skips_the_frame_before_the_draw_and_counts_it() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, pool_size())
+        .expect("the pool is built from the same probe Phase 1 proved");
+    assert_eq!(pool.len(), pool_size());
+    assert_eq!(pool.free(), pool_size(), "a fresh pool is entirely free");
+
+    let skipped = std::sync::atomic::AtomicU64::new(0);
+
+    // Hold every surface, as the encoder would while it works through a full
+    // channel plus the frame in hand.
+    let mut in_flight = Vec::new();
+    for _ in 0..pool_size() {
+        in_flight.push(
+            nbe_engine::record::feed::acquire_record_surface(&pool, &skipped)
+                .expect("a free surface while any remain"),
+        );
+    }
+    assert_eq!(pool.free(), 0);
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "handing out surfaces that existed is not a skip"
+    );
+
+    // The frame that finds no surface. This is the whole point: the answer is
+    // `None` and the count moves BEFORE anything is drawn — there is no
+    // surface to draw into, so "shed after drawing" is not reachable.
+    let denied = nbe_engine::record::feed::acquire_record_surface(&pool, &skipped);
+    assert!(denied.is_none(), "an exhausted pool must refuse, not reuse");
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the refusal counts as a skipped record frame, the same counter the \
+         budget skip and the shed handoff feed"
+    );
+
+    // And the loan returns: the encoder finishing is the same event as the
+    // compositor being allowed to draw the next frame.
+    in_flight.pop();
+    assert_eq!(pool.free(), 1);
+    assert!(
+        nbe_engine::record::feed::acquire_record_surface(&pool, &skipped).is_some(),
+        "a returned surface must become available again, or the pool drains to \
+         zero and the take silently stops recording"
+    );
+    assert_eq!(skipped.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_pool_never_hands_out_a_surface_that_is_still_in_flight() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, pool_size())
+        .expect("pool builds");
+    let ids = pool.surface_ids();
+    let distinct: std::collections::BTreeSet<u32> = ids.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        ids.len(),
+        "each pool member must be its OWN allocation; duplicates mean one \
+         surface wearing several hats, which is the corruption the pool exists \
+         to prevent: {ids:?}"
+    );
+
+    // Hand them all out and check no id repeats. A pool that "draws anyway" —
+    // handing back a surface the encoder still holds — shows up here as the
+    // same IOSurface id twice, which is a torn frame waiting to happen.
+    let mut held = Vec::new();
+    let mut handed: Vec<u32> = Vec::new();
+    while let Some(s) = pool.acquire() {
+        handed.push(s.surface_id());
+        held.push(s);
+        assert!(
+            held.len() <= pool_size(),
+            "acquire kept yielding past the pool's size: it is reusing surfaces"
+        );
+    }
+    let handed_distinct: std::collections::BTreeSet<u32> = handed.iter().copied().collect();
+    assert_eq!(
+        handed_distinct.len(),
+        handed.len(),
+        "a surface was handed out twice while still in flight: {handed:?}"
+    );
+    assert_eq!(handed.len(), pool_size());
+}
+
+#[test]
+fn the_encoder_refuses_a_surface_of_the_wrong_shape_rather_than_reinterpreting_it() {
+    let Some(device) = gpu_or_skip() else {
+        eprintln!("SKIP: no wgpu adapter on this machine; the zero-copy chain needs one");
+        return;
+    };
+    if !nbe_engine::encode::is_available() {
+        eprintln!("SKIP: no hardware H.264 encoder on this machine; the encode seam needs one");
+        return;
+    }
+    let pool = nbe_decode::zerocopy::SurfacePool::new(&device, 1280, 720, 1).expect("pool builds");
+    let surface = pool.acquire().expect("a fresh pool has a free surface");
+
+    // A session at a DIFFERENT geometry. Without the check this buffer would be
+    // interpreted rather than rejected, which is how a zero-copy path produces
+    // a plausible-looking corrupt file instead of an error.
+    let mut session = nbe_engine::encode::EncodeSession::open(1920, 1080, 30, 8_000_000)
+        .expect("a hardware session at the reference geometry");
+    let err = session
+        .encode_pixel_buffer(surface.pixel_buffer())
+        .expect_err("a 1280x720 buffer must not be encoded as 1920x1080");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("1280x720") && msg.contains("1920x1080"),
+        "the refusal must name both shapes, got: {msg}"
+    );
+
+    // And the matching shape is accepted by the same call, so the refusal above
+    // is about the mismatch and not about the path being unusable.
+    let ok_pool =
+        nbe_decode::zerocopy::SurfacePool::new(&device, 1920, 1080, 1).expect("pool builds");
+    let ok_surface = ok_pool.acquire().expect("free");
+    session
+        .encode_pixel_buffer(ok_surface.pixel_buffer())
+        .expect("the encoder takes the compositor's own allocation");
+}
+
+// ---------------------------------------------------------------------------
+// ZERO-COPY Phase 3b, step 4 — the retarget.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_mismatched_surface_is_refused_at_the_swap_rather_than_drawn_into() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(mut render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+    let device = state.render_device().expect("published by RenderLoop::new");
+
+    // The carried obligation of the memo's Q2 GO. `targets.view` is
+    // VIEW_W x VIEW_H; a smaller surface accepted here would not error, it
+    // would hand `readback_view` — and therefore every golden-frame suite — a
+    // buffer of the wrong shape to read as content.
+    let wrong = nbe_decode::zerocopy::SurfacePool::new(&device, 1280, 720, 1)
+        .expect("pool builds")
+        .acquire()
+        .expect("free");
+    let err = render
+        .set_view_surface(Some(wrong))
+        .expect_err("a 1280x720 surface must not become a 1920x1080 View");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("E_NO_ZEROCOPY") && msg.contains("1280x720") && msg.contains("1920x1080"),
+        "the refusal must carry the token and name both shapes, got: {msg}"
+    );
+
+    // The View is untouched by a refused swap — a failed retarget must leave a
+    // working compositor, not a half-swapped one.
+    assert_eq!(
+        render.view_target().width(),
+        nbe_engine::render::VIEW_W,
+        "a refused swap must not have moved the View"
+    );
+}
+
+#[tokio::test]
+async fn the_compositor_draws_into_the_loaned_surface_and_the_readback_reads_it() {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(mut render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return;
+    };
+    let device = state.render_device().expect("published by RenderLoop::new");
+    let pool = nbe_decode::zerocopy::SurfacePool::new(
+        &device,
+        nbe_engine::render::VIEW_W,
+        nbe_engine::render::VIEW_H,
+        1,
+    )
+    .expect("pool builds at the View's geometry");
+    let surface = pool.acquire().expect("free");
+
+    // Stain the surface a colour no frame produces, and an ASYMMETRIC one:
+    // orange (255,128,0) distinguishes a channel swap, where magenta would not.
+    // The surface is Bgra8Unorm, so the bytes that put R=255,G=128,B=0 in it
+    // are blue-first. If the compositor draws somewhere else the stain
+    // survives, which is exactly what a retarget that silently does nothing
+    // would leave behind.
+    let px = (nbe_engine::render::VIEW_W as usize) * (nbe_engine::render::VIEW_H as usize);
+    let stain: Vec<u8> = [0u8, 128, 255, 255]
+        .iter()
+        .copied()
+        .cycle()
+        .take(px * 4)
+        .collect();
+    render.gpu.upload_rgba(
+        surface.texture(),
+        nbe_engine::render::VIEW_W,
+        nbe_engine::render::VIEW_H,
+        &stain,
+    );
+
+    let staged = render.gpu.readback_rgba(surface.texture()).await;
+    assert_eq!(
+        &staged[..4],
+        &[0, 128, 255, 255],
+        "the raw texture is blue-first, as a BGRA surface must be"
+    );
+
+    render
+        .set_view_surface(Some(surface.clone()))
+        .expect("a surface at the View's own geometry is accepted");
+    assert_eq!(
+        render.view_target().width(),
+        nbe_engine::render::VIEW_W,
+        "the swapped-in surface is the View now"
+    );
+
+    // Before any draw, and on an ASYMMETRIC colour: `readback_view` promises
+    // RGBA8, and the View is now a BGRA surface. Handing the raw bytes through
+    // would swap red and blue in every golden-frame comparison rather than
+    // fail. Asserted here because the frame drawn below is black, and black is
+    // symmetric — a swizzle checked only after the draw is a guard that cannot
+    // fire (§2a rule 4).
+    let staged_view = render.readback_view().await;
+    assert_eq!(
+        &staged_view[..4],
+        &[255, 128, 0, 255],
+        "readback_view must keep its RGBA8 contract across the retarget"
+    );
+
+    // Production draw. No package is loaded, so this composites the empty
+    // scene — which is still a draw, and still overwrites the stain.
+    let _ = render.render_frame(0, None);
+
+    let after = render.readback_view().await;
+    assert_eq!(
+        after.len(),
+        px * 4,
+        "the readback reads a View-shaped buffer"
+    );
+    let stained = after
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] == 255 && p[1] == 128 && p[2] == 0)
+        .count();
+    assert_eq!(
+        stained, 0,
+        "{stained} of {px} pixels still carry the stain: the compositor did not \
+         draw into the loaned surface"
+    );
+    assert!(
+        after
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| *p == [0, 0, 0, 255]),
+        "an empty scene clears the View to opaque black; the surface began \
+         fully transparent, so an opaque frame is the draw's own signature"
+    );
+
+    // And the swap is reversible: back to the built-in target, which the draw
+    // above never touched, so it is whatever the compositor last left there.
+    render
+        .set_view_surface(None)
+        .expect("clearing the retarget cannot fail");
+    assert_eq!(render.view_target().width(), nbe_engine::render::VIEW_W);
 }
 
 // ---------------------------------------------------------------------------

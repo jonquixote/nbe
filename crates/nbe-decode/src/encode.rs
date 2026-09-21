@@ -525,6 +525,49 @@ impl EncodeSession {
         Ok(take_new_units(&self.state))
     }
 
+    /// Encode a `CVPixelBuffer` the caller already owns — **no pool fetch and
+    /// no copy**.
+    ///
+    /// The zero-copy path's encode seam (ZERO-COPY Phase 3b, step 3), restored
+    /// from the Phase 1 spike as production. [`Self::encode_rgba`] allocates a
+    /// buffer from the session's pool and copies RGBA into it row by row,
+    /// swizzling to BGRA as it goes; that copy is the whole cost this path
+    /// exists to remove. Here the buffer IS the allocation the compositor drew
+    /// into, so the encoder reads the compositor's pixels directly.
+    ///
+    /// Geometry and format are checked against the session rather than
+    /// trusted: a buffer of the wrong shape would be *interpreted* rather than
+    /// rejected, which is how a zero-copy path produces a plausible-looking
+    /// corrupt file instead of an error.
+    pub fn encode_pixel_buffer(
+        &mut self,
+        buffer: &CVPixelBuffer,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let Some(session) = self.session.as_ref() else {
+            return Err(no_hardware("encode session is already finished"));
+        };
+        unsafe {
+            if CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA {
+                return Err(no_hardware(
+                    "zero-copy buffer is not 32BGRA; refusing to reinterpret its planes",
+                ));
+            }
+            let (w, h) = (
+                CVPixelBufferGetWidth(buffer),
+                CVPixelBufferGetHeight(buffer),
+            );
+            if w != self.width as usize || h != self.height as usize {
+                return Err(no_hardware(format!(
+                    "zero-copy buffer is {w}x{h}, session is {}x{}",
+                    self.width, self.height
+                )));
+            }
+            submit_frame(session, buffer, self.frame_index, self.fps)?;
+        }
+        self.frame_index += 1;
+        Ok(take_new_units(&self.state))
+    }
+
     /// Flush all pending frames and return every access unit of the stream,
     /// in PTS order — including units already reported by [`Self::encode_rgba`].
     pub fn finish(mut self) -> Result<Vec<EncodedUnit>, EncodeError> {
@@ -752,10 +795,28 @@ unsafe fn feed_frame(
         }
         drop(_unlock);
 
+        submit_frame(session, &buffer, frame_index, fps)
+    }
+}
+
+/// Hand one `CVPixelBuffer` to VideoToolbox.
+///
+/// Extracted from [`feed_frame`] so the zero-copy path submits through the
+/// SAME code — the PTS arithmetic, the forced IDR on frame 0, and the OSStatus
+/// check are stream properties, not properties of how the pixels got there.
+/// Two copies of this would be two chances for the paths to disagree about the
+/// timeline, which is the one thing a per-take path choice must never cause.
+unsafe fn submit_frame(
+    session: &CFRetained<VTCompressionSession>,
+    buffer: &CVPixelBuffer,
+    frame_index: u64,
+    fps: u32,
+) -> Result<(), EncodeError> {
+    unsafe {
         let pts = CMTime::new(frame_index as i64, fps as i32);
         let duration = CMTime::new(1, fps as i32);
         // Frame 0 is a forced IDR so the stream always opens with a
-        // keyframe; the per-second keyframe interval below keeps them coming.
+        // keyframe; the per-second keyframe interval keeps them coming.
         let frame_props = if frame_index == 0 {
             let key: &CFString = kVTEncodeFrameOptionKey_ForceKeyFrame;
             let value: &CFType = CFBoolean::new(true);
@@ -767,7 +828,7 @@ unsafe fn feed_frame(
             None
         };
         let status = session.encode_frame(
-            &buffer,
+            buffer,
             pts,
             duration,
             frame_props.as_ref().map(|dict| dict.as_opaque()),

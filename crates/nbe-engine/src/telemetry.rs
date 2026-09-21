@@ -64,8 +64,15 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         // until a take selects one — an operator reading this can tell a
         // machine that chose zero-copy from one that fell back to the §0.1
         // assumption 24 allowance, which is the whole reason it is reported.
-        record_tap_path: tap.map(|s| s.path.as_str().to_string()),
-        record_tap_reason: tap.map(|s| format!("{:?}", s.reason)),
+        // §10.1.1: always emitted. `"none"` before a take selects — a stub, not
+        // an omission, because an absent field and a stubbed field are
+        // different failures and only one of them is diagnosable.
+        record_tap_path: tap
+            .map(|s| s.path.as_str().to_string())
+            .unwrap_or_else(nbe_protocol::tap_none),
+        record_tap_reason: tap
+            .map(|s| format!("{:?}", s.reason))
+            .unwrap_or_else(nbe_protocol::tap_none),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

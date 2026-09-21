@@ -31,6 +31,23 @@ pub struct EngineState {
     pub quality_profile: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
     /// What the hardware probe found (SPEC §10.5).
     pub probed_quality: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
+    /// The wgpu device `RenderLoop::new` opened, published so the directive
+    /// path can probe the zero-copy chain with **the device wgpu selected**.
+    ///
+    /// ZERO-COPY Phase 3b, step 2. Same shape as `probed_quality` directly
+    /// above, and for the same reason §10.1.1 gives for that one: a hardware
+    /// capability is probed by the render node, published into `EngineState`,
+    /// and read back out by whoever needs it. `record.start` runs on the
+    /// directive path and holds no wgpu handles of its own; a handshake-time
+    /// answer would have to guess the take's geometry and would go stale
+    /// silently on device loss, which is the moment it matters
+    /// (`docs/zero-copy-p3-design.md`, Q1).
+    ///
+    /// `None` on every headless test and until the render loop has run. A
+    /// `None` here is not an error — it is the machine saying it has no device,
+    /// and the selection table's answer for that is `CpuReadback` /
+    /// `ProbeUnavailable`.
+    pub render_device: std::sync::Mutex<Option<std::sync::Arc<wgpu::Device>>>,
     /// What the manifest asked for (SPEC §10.1.1).
     pub requested_quality: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
     /// What the engine is showing on its view bus: the taken item's reference.
@@ -150,6 +167,7 @@ impl EngineState {
             started_at: Instant::now(),
             quality_profile: std::sync::Mutex::new(None),
             probed_quality: std::sync::Mutex::new(None),
+            render_device: std::sync::Mutex::new(None),
             requested_quality: std::sync::Mutex::new(None),
             view_item: std::sync::Mutex::new(None),
             view_item_start_frame: AtomicU64::new(0),
@@ -203,6 +221,25 @@ impl EngineState {
     pub fn set_probed_quality(&self, probed: nbe_protocol::QualityProfile) {
         *self.probed_quality.lock().unwrap() = Some(probed);
         self.publish_quality_profile();
+    }
+
+    /// Publish the device the render loop opened.
+    ///
+    /// Publishing, not assigning: a re-init after device loss replaces the
+    /// handle at the same point the quality probe is re-applied, so the two
+    /// GPU-derived facts cannot drift apart.
+    pub fn set_render_device(&self, device: std::sync::Arc<wgpu::Device>) {
+        *self.render_device.lock().unwrap() = Some(device);
+    }
+
+    /// The device the render loop opened, if one has been published.
+    ///
+    /// Returns a clone of the `Arc` rather than lending the guard: the probe
+    /// this feeds builds an IOSurface and a Metal texture, and holding a
+    /// `MutexGuard` across that would put GPU work inside a lock the render
+    /// loop also takes.
+    pub fn render_device(&self) -> Option<std::sync::Arc<wgpu::Device>> {
+        self.render_device.lock().unwrap().clone()
     }
 
     /// Record what the manifest asked for, then republish.
