@@ -499,6 +499,10 @@ is still distinguishable from one that fell back.
 **Recorded as a §10.1 wire-addition candidate, unratified** — the same shape
 `intentSource` took before v0.4.1 ratified it.
 
+*Status, 2026-09-21: RATIFIED as v0.4.4. The fields are §10.1's, normative, with
+a note in that section and ownership assigned to the render node in §10.1.1.
+The sentence above is Phase 2's, kept as written.*
+
 ## Falsifications
 
 | Mutation | Result |
@@ -813,6 +817,19 @@ recorded as one rather than left to drift.
 ## Status
 
 The record path runs zero-copy where the probe allows it and CPU readback where
-it does not, and says which. §0.1 assumption 24's **rescoped candidate (b)
-remains UNRATIFIED** — this revision makes its mechanism a fact in the tree, not
-law. Ratification is a separate word.
+it does not, and says which.
+
+**RATIFIED as SPEC v0.4.4 on 2026-09-21**, at merge commit `84dc9c8`, with each
+of the five guards run immediately before its marker was flipped. §0.1
+assumption 24's rescope and the two §10.1 fields are law together — the rescope
+requires the engine to report which path is live, and ratifying that while its
+reporting mechanism stayed a draft would have made law of a sentence with no
+observable.
+
+Superseded text kept per §2c:
+
+> §0.1 assumption 24's **rescoped candidate (b) remains UNRATIFIED** — this
+> revision makes its mechanism a fact in the tree, not law. Ratification is a
+> separate word.
+
+The word was given.

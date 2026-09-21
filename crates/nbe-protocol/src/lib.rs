@@ -384,8 +384,10 @@ pub struct EngineTelemetry {
     /// zero-copy from one that silently fell back to the allowance. Additive and
     /// optional; `None` before a record take has selected a path.
     ///
-    /// **Recorded as a §10.1 wire-addition candidate**, unratified — the same
-    /// shape `intentSource` took before v0.4.1 ratified it.
+    /// **§10.1 fields, RATIFIED as v0.4.4 on 2026-09-21** — the same shape
+    /// `intentSource` took before v0.4.1 ratified it. Superseded status kept
+    /// per §2c: recorded as a wire-addition candidate, unratified, from
+    /// ZERO-COPY Phase 2 until the migration made the mechanism run.
     ///
     /// **Always emitted, stubbed `"none"` before any take has selected a path.**
     /// It shipped `Option` + `skip_serializing_if` in Phase 2, absent until
