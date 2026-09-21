@@ -193,7 +193,17 @@ that the encoder reads the allocation the compositor wrote.
 The retarget **replaces** the target rather than adding a step. `render_frame`
 resolves `target` once per bus per frame and draws into it; swapping which
 texture that reference names adds no pass, no copy, and no await inside the
-timed region. The timed region is unchanged — `main.rs:96-97`:
+timed region.
+
+**Measured afterwards: it is not free, at about +0.3 ms per frame.** The
+structural claim above survives — there is no extra pass, copy or await — but
+drawing into a BGRA IOSurface-backed texture costs ~0.25-0.33 ms per frame more
+than drawing into the engine's own RGBA target, on two independent quiescent
+runs (`docs/09-measurements.md`, Phase 3b). Against the ~15 ms the readback
+cost, it is swamped; it is not zero, and the record says the number rather than
+the adjective.
+
+The timed region is unchanged — `main.rs:96-97`:
 
 ```rust
 let render_started = Instant::now();

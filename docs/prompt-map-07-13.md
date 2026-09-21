@@ -873,6 +873,13 @@ the gate split it is a soak number, not a test threshold.
 §0.1 assumption 24's rescoped candidate (b) **remains UNRATIFIED**. This work
 makes its mechanism a fact in the tree, not law.
 
+**One thing left on the ledger:** `select_with_override` is built and tested and
+wired to nothing, so the published table is currently the only voice and an
+operator has no lawful way to restrict it. A gap in the escape hatch, not in the
+rule. It lands wherever a config surface next appears — Prompt 10 is the likely
+place — and `docs/09-measurements.md` ("On the ledger") is where that decision
+is owed.
+
 ### The queue after Prompt 09 — decided 2026-09-17, in this order
 
 | # | Work order | Why it sits here |

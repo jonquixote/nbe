@@ -637,11 +637,27 @@ the 33.333 ms budget, and is the span comparable to Phase 1's table.
 **Read the tap row carefully, because the obvious reading is wrong.** 0.008 ms
 is not "encoding became free". It is the cost of a `try_send` and nothing else:
 the draw already happened inside `render_frame` (into the surface rather than
-into the View target, at no extra cost — the retarget replaces a texture
-reference, it adds no pass and no copy), and the encode happens on the record
-thread, where it always did. What the 14.8 ms was, and no longer is, is a
-**readback the loop awaited** — 8.3 MiB copied out of VRAM per frame, on the
-record counter, every frame of every take.
+into the View target — the retarget replaces a texture reference, so it adds no
+pass and no copy, **at about +0.3 ms per frame** against the native RGBA
+target), and the encode happens on the record thread, where it always did. What
+the 14.8 ms was, and no longer is, is a **readback the loop awaited** — 8.3 MiB
+copied out of VRAM per frame, on the record counter, every frame of every take.
+
+**The +0.3 ms, stated rather than smoothed.** Superseded wording kept per §2c:
+the passage above read *"at no extra cost"*, which the numbers do not support.
+Subtracting the tap span from the frame span leaves the render-only residual,
+and it is larger on the zero-copy side on both independent runs:
+
+| run | cpuReadback render | zeroCopy render | delta |
+|---|---:|---:|---:|
+| this revision | 1.034 | 1.368 | **+0.334** |
+| two-key pass (independent, quiescent) | 1.048 | 1.291 | **+0.243** |
+
+Drawing into a BGRA IOSurface-backed texture costs ~0.25–0.33 ms per frame more
+than drawing into the engine's own RGBA target. Structurally the claim holds —
+no additional pass, no copy — but "no extra cost" was a structural statement
+wearing a measurement's clothes. It is swamped by the ~15 ms the readback cost,
+and saying so is not the same as saying it is zero.
 
 The honest headline is the frame row: **15.866 ms → 1.376 ms** for render plus
 tap, a factor of 11.5.
@@ -657,6 +673,22 @@ within its own spread. **This row does not go through `RenderLoop`**, and that
 is stated rather than implied: the engine's View is fixed at `VIEW_W x VIEW_H`,
 so the 4K run renders into a 4K surface with wgpu directly and hands the same
 surface to a 4K encoder. Same chain, one link short of the production loop.
+
+**The over-budget count here is a TAIL STATISTIC, not a fixed fact**, and the
+table above reads as though it were one. Three independent runs of the same
+measurement on the same machine:
+
+| run | mean | p50 | p95 | max | over 33.333 ms |
+|---|---:|---:|---:|---:|---:|
+| Phase 1 | 13.092 | 13.095 | 17.582 | 51.720 | **1 / 300** |
+| this revision | 12.433 | 11.087 | 19.525 | 59.303 | **2 / 300** |
+| two-key pass | 12.550 | 11.306 | 19.785 | 61.257 | **4 / 300** |
+
+The count wanders — 1, 2, 4 — while mean, p50 and p95 barely move. It counts
+the far tail of an unpaced run, where a handful of samples out of 300 decide
+the number. **Anyone watching this row should watch p95, not the count.** A
+count that moved while p95 moved with it would be a finding; a count that moves
+alone is the tail breathing.
 
 ### Counts, derived two independent ways
 
@@ -686,11 +718,30 @@ number belongs to the soak, not to a test threshold.
 | `render_bus` ignores the retarget | `the_compositor_draws_into_the_loaned_surface...` FAILED — *"2073600 of 2073600 pixels still carry the stain"* |
 | One composite pipeline (no BGRA sibling) | wgpu validation error: *"the RenderPass uses textures with formats [Some(Bgra8Unorm)] but the RenderPipeline ... [Some(Rgba8Unorm)]"* |
 | Drop the `readback_view` swizzle | FAILED — `left: [0, 128, 255, 255], right: [255, 128, 0, 255]` |
-| `record.start` selects but never attaches the pool | `a_zero_copy_take_reports_the_table_and_never_reads_back` FAILED — telemetry said `zeroCopy` while the frames went through readback |
+| `record.start` selects but never attaches the pool | **At head:** `a_zero_copy_take_reports_the_table_and_never_reads_back` FAILED — *"retarget: E_NO_ZEROCOPY: the take's surface pool is gone mid-take; the chain was available at record.start and is not now"*. See the note below — the signature changed after the row was first written |
 | Never publish the selection | both migration takes FAILED — `left: ("none","none")` |
 | Swallow a mid-take chain loss and keep feeding | `losing_the_chain_mid_take...` FAILED — *"losing the chain mid-take must end the take"* |
 | Leave the take running after the loss | FAILED — `left: Recording, right: Idle` |
 | Clear `record_tap_selection` on the loss | FAILED — `left: ("none","none"), right: ("zeroCopy","Table")` |
+
+**One row's signature changed between step 5 and head, and the change was an
+improvement.** Superseded text kept per §2c — the row above originally read:
+
+> `record.start` selects but never attaches the pool | `a_zero_copy_take_reports_the_table_and_never_reads_back` FAILED — telemetry said `zeroCopy` while the frames went through readback
+
+That is what the mutation produced **at step 5** (`4588b41`), verified by
+checking that commit out and re-running it there: the take ran 40 frames through
+the readback and the test caught it afterwards, on *"THE MIGRATION'S WHOLE
+POINT: no frame on this path may await a View readback"*. Step 6 then added
+`claims_zero_copy`, which treats "the selection says `zeroCopy` and there is no
+pool" as chain loss — so at head the same mutation is refused at **frame 0**,
+before a single readback happens, with the `E_NO_ZEROCOPY` token.
+
+The step-5 commit message is accurate at its own commit and is left as written.
+The table is written for a reader at head, so it names the signature a reader at
+head will see. A guard that grew stronger after its evidence was recorded is a
+good problem; leaving the old signature in place so a reader hunts for a failure
+that no longer occurs is not.
 
 ## The rehearsal names its path, three consecutive times
 
@@ -736,6 +787,28 @@ retarget's **format** obligation (and the `readback_view` swizzle it implies),
 the probe texture's missing `COPY_SRC | COPY_DST`, and that Q2's "the take's
 surface for the take's lifetime" is superseded by Q3's pool — the retarget is
 per frame.
+
+## On the ledger: the override is built and wired to nothing
+
+`select_with_override` exists in `crates/nbe-engine/src/record/tap_path.rs`, is
+covered by its own tests, and honours the rule that matters — an override can
+*restrict* (force CPU) but never *conjure* a capability the probe denied.
+**Nothing calls it.** There is no config surface carrying an override from a
+manifest, an environment variable, or a command, so today the published table is
+the only voice: an operator on a machine where the chain links but produces
+garbage has no lawful way to say "use readback on this one".
+
+That is a gap in the escape hatch, not in the rule. The table is the product
+decision and it is working as designed; what is missing is the documented way
+out of it for the day the probe is right about capability and wrong about
+quality. Wiring it needs somewhere for the value to live, and inventing a config
+surface was not the migration's scope.
+
+**It lands wherever a config surface next appears** — Prompt 10's streaming work
+is the likely place, since a second consumer needs per-output settings anyway,
+but earlier is fine. This sentence is where that decision is owed; an override
+that stays unwired through the next config surface is a choice, and should be
+recorded as one rather than left to drift.
 
 ## Status
 

@@ -122,6 +122,55 @@ Rules:
    is now `install_transition_directly`, and its doc comment says it is not the
    take path.
 
+8. **A floor that is green about what it cannot see is not a floor.** A check
+   whose subject is absent — skipped, unreachable, filtered away, or never
+   sampled — reports on its own execution and nothing else. The fix is always
+   the same and it is never "lower the bar": **make the check see the thing it
+   claims to check**, and make it say out loud when it could not.
+
+   Five instances, all on this project, all found by someone asking what a
+   green actually covered:
+
+   - **The Prompt 09 floors counted `passed`.** A capability-gated skip reports
+     `ok`, so forcing the hardware encoder absent satisfied all ten floors while
+     exercising nothing. Fixed by counting two numbers, not one: `ran`, and
+     `exercised = ran - skipped`, with the skip markers grepped from the
+     suite's own output (PR #18's fix round).
+   - **Take-path guards that never dispatched.** Tests named for behaviour on
+     the take path installed that path's *effects* into state directly and
+     asserted on them; deleting the code under test left them green. Three
+     instances across three suites. That is rule 7, and it is this rule's
+     sibling — rule 7 is about a test that cannot reach its subject, this one
+     about a gate that cannot see its subject.
+   - **A wall-clock bound that measured the machine.** The audio-tap push
+     latency assertion passed at load 2.58 and failed at load ~5 and ~30 on the
+     same binary, so what it gated was the runner's mood. Rebound out of the
+     default suite to the soak, where quiescence is a checked precondition and
+     a violation is VOID rather than a failure (R9).
+   - **A mirror fixture's `None` agreeing with itself.** The Rust→TypeScript
+     field audit sampled two new optional fields as `None`; they were
+     `skip_serializing_if`, so they serialized to nothing, so the key-set check
+     never saw them, so the agreement held while TypeScript knew nothing about
+     them. The suite read 16/16 and the `.strict()` schema would have rejected
+     the first real tick carrying a value. Any optional field in an audit
+     fixture must be sampled with a VALUE.
+   - **A verification harness that filtered itself to zero.** PR #26's two-key
+     pass built a multi-target `cargo test` invocation in a shell loop; the
+     repeated `--test` flags did not survive, cargo read the trailing name as a
+     *filter*, and all 23 suites reported `0 passed; N filtered out` with exit
+     0. Green about nothing, in the pass whose job is catching exactly that.
+     Caught only because the total was zero — a subtler filter would have
+     passed. The rule binds the reviewer's own tools.
+
+   The tell is a number that cannot move: if there is no input to the check that
+   would turn it red, it is reporting on itself. **Before trusting a floor, ask
+   what it reads when the thing it guards is absent** — and if the answer is
+   "green", the floor is decoration. A check that cannot cover its subject on
+   this machine is still worth having, but it must say which parts went
+   unexercised on every run (§2b, and the gate split in
+   `docs/soak-protocol.md`), so its green is never mistaken for coverage it does
+   not have.
+
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
 render path left 7 of 8 tests passing.

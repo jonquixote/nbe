@@ -387,13 +387,31 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         .find("EngineTelemetryFrameSchema")
         .expect("engine telemetry schema present");
     // Comments are stripped BEFORE the terminator is located. Without this the
-    // block ends at the first `.strict()` *mentioned in a comment*, silently
-    // truncating the audited region so every field below that comment is
-    // checked vacuously — the same shape §2a rule 7 names, arriving through a
-    // parser rather than a test. Found here: a Phase 3b comment explaining why
-    // the schema is strict shortened the block to nothing and the audit failed
-    // loudly; had the comment sat one line lower it would have passed while
-    // auditing less.
+    // block ends at the first `.strict()` *mentioned in a comment*, and every
+    // field below that comment drops out of the audited region.
+    //
+    // What that costs is a SPURIOUS RED, not a silent pass. The audit below
+    // iterates the RUST keys and requires each to appear in the TypeScript
+    // text, so a truncated block makes keys unfindable and the test fails
+    // naming a field TypeScript actually has — sending whoever reads it to
+    // hunt a schema mismatch that does not exist. Found here: a Phase 3b
+    // comment explaining why the schema is strict shortened the block and the
+    // audit failed on `audioDriftMs`, a field both sides had.
+    //
+    // Superseded wording kept per §2c — it had the failure mode backwards:
+    //
+    //   > silently truncating the audited region so every field below that
+    //   > comment is checked vacuously — the same shape §2a rule 7 names,
+    //   > arriving through a parser rather than a test. […] had the comment sat
+    //   > one line lower it would have passed while auditing less.
+    //
+    // It cannot pass while auditing less. PR #26's two-key pass ran the case
+    // analysis with the strip reverted: a decoy `.strict()` ABOVE a field
+    // fails loudly; one BELOW every field passes, and correctly, because the
+    // truncated block still contains every key the audit looks for. There is
+    // no position that trades a real check for a green. The strip is still
+    // worth having — it removes a trap that costs a debugging session — but
+    // the trap is a false alarm, not a blind spot.
     let uncommented: String = ts[start..]
         .lines()
         .map(|l| match l.trim_start().starts_with("//") {
