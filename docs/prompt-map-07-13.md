@@ -883,13 +883,66 @@ rule. It lands wherever a config surface next appears — Prompt 10 is the likel
 place — and `docs/09-measurements.md` ("On the ledger") is where that decision
 is owed.
 
+### Prompt 10 upgraded for the tree — 2026-09-21
+
+`agents/prompts/10-streaming.md` was written 2026-09-10, before the ZERO-COPY
+arc existed. It asked for streaming "fed by the shared GPU frames per Section
+9.7 … never read back to CPU" — an aim with no mechanism at the time, and now
+both a mechanism and **ratified law** (v0.4.4). Rewritten so an executor starts
+from the tree rather than re-deriving it: what is already true (the stream row
+and its refusal semantics, the pool, the encode seam, the telemetry precedent,
+the measurements), the §9 quotes that settle the stream shape, and the
+disciplines including §2a rules 7 and 8.
+
+**Three decisions turned out to belong to the user, not to an executor**, and
+the upgrade presents them rather than smuggling them into the brief:
+
+1. **USER CHOICE C1 — RTMP or SRT first.** §9.1 and §9.4 both say "RTMP or SRT"
+   and neither chooses. Recommendation: RTMP first (named first in both
+   sections, the platform path, pure-Rust implementations so no FFI), SRT next.
+   The FFI point is load-bearing: the workspace denies `unsafe_code` with one
+   exemption and CI hard-codes it, so a libsrt binding is a policy decision,
+   not an implementation detail — the same finding ZERO-COPY Phase 1 recorded.
+2. **Blocker B1 — there is nowhere for the stream endpoint to live.**
+   `OutputDefaults.stream` carries `protocol`, `videoBitrateKbps`,
+   `audioBitrateKbps` and `additionalProperties: false`; the schema has no
+   `url`, `endpoint`, `ingest`, `rtmpUrl` or `streamKey` anywhere. §16.14 gives
+   `stream.start` an **optional** `url`. So a stream cannot be started from a
+   manifest at all, and the old draft's "otherwise the manifest's
+   `outputs.stream` wins" was unachievable. Recommendation: clarify §16.14 so
+   the command's `url` is the only source — no schema revision, and a stream key
+   does not belong in a file meant to be copied between machines.
+3. **Blocker B2 — the owed override cannot be closed by Prompt 10 as the tree
+   stands.** The ledger says `select_with_override` "lands wherever a config
+   surface next appears" and names this prompt, but both `outputs.*` objects are
+   `additionalProperties: false`, nothing in §9 or §16 mentions a tap-path
+   override, and the standards forbid a prompt from editing the schema
+   (`schemas/*.json` changes are spec revisions). The debt stays owed and the
+   prompt is marked BLOCKED on that word for the override only.
+
+Two smaller findings recorded in the prompt: the schema's `stream.protocol`
+enum accepts `"whip"` while §9.1 defers WHIP, so a schema-valid unbuildable
+package needs a stated refusal point (§17.5's precedent says preflight); and a
+lawful refusal on a machine with no zero-copy chain has no honest error code in
+§16.14's list.
+
+**The design gate was also reframed.** The old draft implied the stream simply
+shares frames. The memo's Q3 analysis transfers but its answer does not — a
+stream outlives a take and its backpressure is the network's, so
+shed-before-draw is wrong for a consumer that can stall for seconds. And §9.7
+("One composite produces one GPU frame … MUST NOT recomposite") rules out a
+second pool, because two pools mean two draws or a copy. The shape the spec
+describes is one composite into one surface with N consumers holding
+references, and the pool's `Arc::strong_count == 1` free list already
+generalises to that at no cost.
+
 ### The queue after Prompt 09 — decided 2026-09-17, in this order
 
 | # | Work order | Why it sits here |
 |---|---|---|
 | 1 | **TRANSITIONS** | Ahead of the others because it is the last piece of the compositor's own contract. §16.6's `Animation.easing` permits six families and the overlay path implements **linear only**, ignoring `easing` and `delayFrames` — schema and implementation disagree in the tree today (v0.5 outline rows 4 and 5). Exit-time override is engine-reachable and wire-unreachable. None of that needs recording or streaming to exist, and all of it is in front of anything that composites |
 | 2 | **ZERO-COPY** | 10's lead-in, and the resolution path SPEC v0.4.2 names for §0.1 assumption 24. The recording allowance is scoped to the record output on 1080p reference geometry with four expiry trip-wires; streaming inherits none of it, so the general rule has to be satisfied before a second encoder consumer arrives. IOSurface-backed `CVPixelBuffer` → `MTLTexture` → `wgpu::hal` import, so decode, composite and encode share one surface. Measurements already in `docs/09-measurements.md` — this work order spends them rather than re-deriving them |
-| 3 | **Prompt 10 — Streaming** | Needs 2 first by construction: it is the second consumer of the same frames, and per-consumer readback is what assumption 24 exists to forbid. Inherits the guest-link JWT/`jti` revocation work and the TURN credential derivation rule (`[RI-5]`, §5.1 #11, §9.6.2). WHEP preview (AC-20) is explicitly post-v1 and not 10's scope |
+| 3 | **Prompt 10 — Streaming** *(prompt upgraded 2026-09-21; see the section above — three user decisions and two findings)* | Needs 2 first by construction: it is the second consumer of the same frames, and per-consumer readback is what assumption 24 exists to forbid. Inherits the guest-link JWT/`jti` revocation work and the TURN credential derivation rule (`[RI-5]`, §5.1 #11, §9.6.2). WHEP preview (AC-20) is explicitly post-v1 and not 10's scope |
 
 The ordering is a dependency claim, not a preference: TRANSITIONS touches only
 the compositor, ZERO-COPY is what makes a second encoder consumer legal, and 10
