@@ -1214,6 +1214,48 @@ fn record_tap_override(state: &SharedEngineState) -> Option<crate::record::tap_p
     }
 }
 
+/// WU3 — `stream.start` url precedence (SPEC v0.4.5 §9.4, §16.14): the
+/// command's `url` OVERRIDES `outputs.stream.url` for the run; the manifest
+/// answers when the command is silent; NEITHER present is refused.
+///
+/// Empty-string rule (decided in WU3, pinned by
+/// `tests/stream_url_precedence.rs`): a missing, empty, or whitespace-only
+/// `url` counts as SILENT, never as an endpoint — an empty string must not
+/// become a valid publish target. Returned urls are trimmed.
+///
+/// The refusal is `E_BAD_PAYLOAD`-shaped: the engine has no dedicated
+/// `BadPayload` variant, so — like `marker.add`'s missing name and
+/// `record.start`'s missing record directory — it surfaces as
+/// [`DirectiveError::Invalid`], with the `E_BAD_PAYLOAD` token in the message.
+///
+/// WU4 CALL SITE (no `stream.*` arm exists yet — this resolver is wired by
+/// WU4, not here): the new `"stream.start"` arm in
+/// [`DirectiveHandler::apply`]'s match must call
+/// `resolve_stream_url(manifest_url, command_url)` where `manifest_url` is
+/// the loaded package's `show.outputs.stream.url` and `command_url` is
+/// `d.payload.get("url").and_then(|v| v.as_str())`, and propagate the `Err`
+/// (which withholds the ack, like every other failed handler).
+pub fn resolve_stream_url(
+    manifest_url: Option<&str>,
+    command_url: Option<&str>,
+) -> Result<String, DirectiveError> {
+    let present = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(url) = command_url.and_then(present) {
+        return Ok(url);
+    }
+    if let Some(url) = manifest_url.and_then(present) {
+        return Ok(url);
+    }
+    Err(DirectiveError::Invalid(
+        "E_BAD_PAYLOAD: stream.start needs a publish target: neither \
+         outputs.stream.url nor the command's url supplied one"
+            .into(),
+    ))
+}
+
 /// Ceiling for the record path: 1920x1080. Refusing above it is deliberate —
 /// the loop records what is on air via a View readback, and readback-alone
 /// costs ≈48 ms at 4K, which exceeds any 30/60 fps frame budget before a
