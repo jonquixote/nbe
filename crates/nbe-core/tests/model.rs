@@ -184,3 +184,52 @@ fn preflight_report_shape_matches_spec_19_2() {
     assert!(plugin.get("pluginId").is_some());
     assert!(plugin.get("sandboxOk").is_some());
 }
+
+/// The schema's transport enum and the typed model's are one list, audited.
+///
+/// **Added because a falsification found the narrowing unguarded.** SPEC v0.4.5
+/// narrowed `outputs.stream.protocol` to `["rtmp"]`, and widening it back to
+/// `["rtmp","srt","whip"]` broke nothing: `validate::check_transport` refuses
+/// `srt` and `whip` by name whatever the schema says, so the schema half of the
+/// refusal had no test that bound it (§2a rule 4 — a behaviour whose removal
+/// breaks nothing is untested).
+///
+/// Same shape as `quality_profile_matches_the_manifest_schema_enum` in
+/// `nbe-protocol`'s mirror: the schema is normative, the model follows, and
+/// this fails if either side moves alone.
+#[test]
+fn stream_protocol_matches_the_manifest_schema_enum() {
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas/manifest.v0.4.json"),
+        )
+        .expect("the embedded schema is readable"),
+    )
+    .expect("the schema parses");
+    let declared: Vec<String> = schema["$defs"]["OutputDefaults"]["properties"]["stream"]
+        ["properties"]["protocol"]["enum"]
+        .as_array()
+        .expect("the protocol enum is an array")
+        .iter()
+        .map(|v| v.as_str().expect("enum values are strings").to_string())
+        .collect();
+
+    // The model's side, spelled the way serde spells it on the wire.
+    let ours: Vec<String> = [nbe_core::StreamProtocol::Rtmp]
+        .iter()
+        .map(|p| {
+            serde_json::to_value(p)
+                .expect("serializes")
+                .as_str()
+                .expect("a string")
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(
+        declared, ours,
+        "the schema's transport enum and the typed model's must be one list; \
+         widen one without the other and a manifest deserializes into a variant \
+         nothing can serve, or is refused for a transport the model supports"
+    );
+}
