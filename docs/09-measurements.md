@@ -694,6 +694,31 @@ the number. **Anyone watching this row should watch p95, not the count.** A
 count that moved while p95 moved with it would be a finding; a count that moves
 alone is the tail breathing.
 
+### Reproduced independently, by the two-key pass
+
+The pass over PR #26 re-ran the same `#[ignore]`d harness on the same machine,
+quiescent — load(1m) **2.32 at start, 2.90 at end**, 0 `cargo`/`rustc`, 9 GiB
+free, `target/` 7.9G, adapter **AMD Radeon Pro 555X**. Recorded here because a
+ratification changelog may cite only what a reader can chase.
+
+| span | PR mean | pass mean | PR p95 | pass p95 | PR over | pass over |
+|---|---:|---:|---:|---:|---:|---:|
+| cpuReadback tap | 14.832 | **15.191** | 15.709 | **15.763** | 0 / 300 | **0 / 300** |
+| zeroCopy tap | 0.008 | **0.008** | 0.009 | **0.010** | 0 / 300 | **0 / 300** |
+| cpuReadback frame (render+tap) | 15.866 | **16.239** | 16.787 | **16.862** | 0 / 300 | **0 / 300** |
+| zeroCopy frame (render+tap) | 1.376 | **1.299** | 1.575 | **1.497** | 0 / 300 | **0 / 300** |
+| 4K zeroCopy render+encode | 12.433 | **12.550** | 19.525 | **19.785** | 2 / 300 | **4 / 300** |
+
+**Means within ~2.5%, p95s within 1.3%.** The one row that moved is the 4K
+over-budget count, 2 → 4, and that is the tail statistic the section above
+describes rather than a change in the measurement: p50 went 11.087 → 11.306 and
+p95 19.525 → 19.785 while the count doubled.
+
+The pass's two-way accounting held on its own run: `frames handed to the drain:
+600 (requested 600, pool skips 0)`; the harness's per-frame wall-vs-`record_tap_ms`
+assertion (≤ 2 ms) never fired across 300 CPU frames; 4K `295 streamed / 300 at
+finish`.
+
 ### Counts, derived two independent ways
 
 | quantity | derivation A | derivation B | agree |
@@ -813,6 +838,15 @@ is the likely place, since a second consumer needs per-output settings anyway,
 but earlier is fine. This sentence is where that decision is owed; an override
 that stays unwired through the next config surface is a choice, and should be
 recorded as one rather than left to drift.
+
+**The debt list is one shorter than it was.** The hatch's `"Override"` reason is
+a normative §10.1 token as of v0.4.4 and was, until PR #27's corrections,
+asserted as a string nowhere — only as an enum variant, while the wire spelling
+came from `format!("{:?}")`, so a variant rename would have changed a normative
+token silently. `reason_tokens_are_stable` (beside `path_tokens_are_stable` in
+`tap_path.rs`) now pins all three reason tokens and checks `"Override"` against
+a real `build_tick`, which is the one place the spec's third token meets a tick.
+What remains owed is the wiring, not the token.
 
 ## Status
 

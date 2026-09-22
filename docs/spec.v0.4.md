@@ -46,9 +46,17 @@ table chooses, a fallback names itself `ProbeUnavailable`, the report is always
 on the wire, the dress rehearsal asserts the take names its path, and
 `scripts/soak.sh` records the values every soak. It was measured twice on the
 reference machine — 15.866 ms → 1.376 ms for render plus tap at 1080p30, and
-independently reproduced at 16.239 → 1.299 by the two-key pass over PR #26,
-which found the tree stricter than the record at every point of disagreement
-(four corrections, all to the record, none to the code).
+independently reproduced by the two-key pass over PR #26 at 16.239 → 1.299,
+means within ~2.5% and p95s within 1.3% (`docs/09-measurements.md`, "Reproduced
+independently, by the two-key pass" — both runs tabled side by side with their
+loads). That pass found the tree stricter than the record at every point of
+disagreement: four corrections, all to the record, none to the code.
+
+*Amended 2026-09-21, before merge: the sentence first cited the reproduction's
+numbers with no durable record behind them — they existed only in the pass
+report. A ratification changelog may cite only what a reader can chase, so the
+run is tabled in the records doc and this sentence points at it. §2c: nothing
+normative changed; the citation gained a home.*
 
 **One item stays open by decision.** `select_with_override` — the escape hatch
 for the day the probe reports a capability the hardware has and the output does
