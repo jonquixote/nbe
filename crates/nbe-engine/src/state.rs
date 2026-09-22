@@ -147,6 +147,19 @@ pub struct EngineState {
     /// this to measure `recordSpaceMib`; `None` when no package is loaded or
     /// the package declares no record target.
     pub record_dir: Mutex<Option<std::path::PathBuf>>,
+    /// Engine streaming state (SPEC §16.14). WU4 flips `Idle -> Live` on
+    /// `stream.start` once the [`StreamSession`](crate::record::stream::StreamSession)
+    /// opens, and back on `stream.stop` / `show.stop` quiescence after the
+    /// session closes.
+    pub stream_state: Mutex<StreamState>,
+    /// The live stream, if any. `Some` exactly while `stream_state` is `Live`
+    /// via the directive path. `stream.stop` closes it before the ack;
+    /// `show.stop` quiesces it the same way.
+    pub stream_session: Mutex<Option<crate::record::stream::StreamSession>>,
+    /// The frame path the live stream selected, and why (ZERO-COPY Phase 2
+    /// shape, record-mirrored). `None` until a stream has selected one. Not
+    /// cleared at stop: the field reads as the path the LAST stream used.
+    pub stream_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -196,6 +209,9 @@ impl EngineState {
             record_tap_selection: Mutex::new(None),
             skipped_record_frames: Arc::new(AtomicU64::new(0)),
             record_dir: Mutex::new(None),
+            stream_state: Mutex::new(StreamState::Idle),
+            stream_session: Mutex::new(None),
+            stream_tap_selection: Mutex::new(None),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -422,4 +438,16 @@ pub enum RecordState {
     #[default]
     Idle,
     Recording,
+}
+
+/// Engine streaming state (SPEC §16.14): `Idle → Live → (stop) Idle`.
+/// WU4 enters `Live` on `stream.start` (show running + encoder available +
+/// zero-copy chain available + endpoint resolved); `stream.stop` and
+/// `show.stop` quiescence return it to `Idle`. Exactly one live stream exists
+/// at a time (§9.1 ceiling — a second start while `Live` is refused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamState {
+    #[default]
+    Idle,
+    Live,
 }

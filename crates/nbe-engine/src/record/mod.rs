@@ -28,6 +28,7 @@ pub mod feed;
 pub mod markers;
 pub mod pool;
 pub mod session;
+pub mod stream;
 pub mod tap_path;
 pub mod thread;
 pub mod writer;
