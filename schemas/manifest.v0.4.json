@@ -289,6 +289,13 @@
                   }
                 }
               }
+            },
+            "tapPath": {
+              "enum": [
+                "auto",
+                "cpuReadback"
+              ],
+              "default": "auto"
             }
           }
         },
@@ -298,10 +305,12 @@
           "properties": {
             "protocol": {
               "enum": [
-                "rtmp",
-                "srt",
-                "whip"
+                "rtmp"
               ]
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
             },
             "videoBitrateKbps": {
               "type": "integer",
@@ -312,6 +321,13 @@
               "type": "integer",
               "minimum": 96,
               "maximum": 320
+            },
+            "tapPath": {
+              "enum": [
+                "auto",
+                "cpuReadback"
+              ],
+              "default": "auto"
             }
           }
         },

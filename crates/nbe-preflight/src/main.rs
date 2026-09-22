@@ -312,6 +312,12 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                 ValidationError::SchemaViolation { .. } => {
                     report.push_error(e.to_string());
                 }
+                // SPEC v0.4.5: a transport §9 names but this build does not
+                // implement. Reported with its own prefix so an operator can
+                // tell "fix the manifest" from "the package is malformed".
+                ValidationError::RefusedTransport { .. } => {
+                    report.push_error(format!("refusedTransport: {e}"));
+                }
                 ValidationError::SchemaCompile(_) => {
                     report.push_error(format!("internal: {e}"));
                 }

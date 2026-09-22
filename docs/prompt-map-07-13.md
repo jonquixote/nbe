@@ -936,13 +936,73 @@ describes is one composite into one surface with N consumers holding
 references, and the pool's `Arc::strong_count == 1` free list already
 generalises to that at no cost.
 
+### SPEC-REV — the streaming unblock, ratified as v0.4.5 (2026-09-21)
+
+The Prompt 10 upgrade found four blockers between the executor and the work. The
+user spoke all four the same day, and SPEC-REV landed them as their own change
+rather than folded into the feature PR (§4's counter-precedent). **Prompt 10 is
+unblocked.**
+
+| Blocker | The user's decision | Landed as |
+|---|---|---|
+| **C1** transport | **RTMP first.** SRT deferred *pending a policy decision about the single `unsafe_code` exemption* — most SRT stacks are libsrt bindings, so admitting one is a policy change, not an implementation detail | §9.1 narrowed; schema enum `["rtmp"]` |
+| **B1** endpoint | **The manifest carries it** — `show.outputs.stream.url`, declarative like `outputs.record.directory`. `stream.start`'s `url` is a per-run override; neither present is `E_BAD_PAYLOAD` | §9.4 (new rule); schema `url` |
+| **B2** override field | **`outputs.{record,stream}.tapPath: { enum: ["auto","cpuReadback"], default "auto" }`.** The field is law; **the wiring stays owed to Prompt 10** | schema; changelog row 5 |
+| **B3** `whip` manifest | **Refused at schema validation**, before load and before any command | §9.4 (new rule); `ValidationError::RefusedTransport` |
+| **B4** refusal code | **`E_NO_ZEROCOPY`, reused not invented** — already the tap's token, already means exactly this | §10.4 registry; §16.14 |
+
+**Four things worth carrying forward from how this landed.**
+
+1. **It is a narrowing, and the record says so.** `protocol` went from
+   `["rtmp","srt","whip"]` to `["rtmp"]`, so a v0.3 manifest declaring `srt` or
+   `whip` was valid under v0.4 and is not under v0.4.5 — a second exception to
+   "a v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest".
+   Nothing in the tree ever spoke either, and no fixture declares a protocol, so
+   it breaks nothing that worked.
+2. **The historical schemas were left alone.** `manifest.v0.2.json` and
+   `manifest.v0.3.json` still accept `whip`, and **no code loads either** —
+   `validate_manifest` embeds the v0.4 schema and validates every accepted
+   `manifestVersion` against it, and the TypeScript generator reads v0.4 too.
+   Editing a published historical schema would change the record of what v0.2
+   meant while changing no behaviour.
+
+   *Corrected 2026-09-22 (§2c). PR #29's body claimed* ~~"the only occurrence of
+   either filename anywhere is the `$id` inside v0.2 itself"~~ *— which is
+   wrong. The true counts are **11** occurrences of `manifest.v0.2.json` and
+   **31** of `manifest.v0.3.json`: the README, `spec.v0.2.5.md`, `spec.v0.3.md`,
+   eight files under `agents/prompts/`, `prompt-01-definition-of-done.md`, a
+   superpowers plan, and `review-midpoint-report.md`. **All documentation; none
+   a load** — a grep over `*.rs`, `*.ts`, `*.mjs`, `*.js`, `*.yml`, `*.toml`
+   and `*.sh` returns nothing at all. The decision stands on the claim that
+   matters; the phrasing overstated it.*
+3. **A commit message that describes intent rather than its diff (§2c).**
+   `94c71af`'s message says it *"also drops a stray `#[test]` that registered
+   `a_refused_transport_fails_validation_and_says_why` twice"*. **The commit
+   carries no such change** — `crates/nbe-core/tests/model.rs` only, +49/−0.
+   The branch's history was rewritten (`reset --soft` plus two fresh commits)
+   so that `validate.rs` landed already correct in `c942bf6`, which adds
+   exactly three `#[test]` lines for three tests; by the time the second commit
+   existed there was nothing left to remove. The message describes what
+   happened during the work, the diff describes what the tree received, and a
+   reader running `git show 94c71af` for that fix finds nothing. History is
+   **not** rewritten to fix this — the record carries the discrepancy instead,
+   which is what §2c is for. Found by PR #29's two-key pass; §2a rule 6's own
+   subject.
+
+4. **The refusal carries a REASON, not just a rejection.** The schema alone says
+   `"whip" is not one of "rtmp"`, which tells an operator what was rejected and
+   not why — the difference between fixing the manifest and filing a bug. A
+   `check_transport` pass runs first and names the reason each transport is
+   deferred, and `nbe-preflight` reports it under its own `refusedTransport:`
+   prefix.
+
 ### The queue after Prompt 09 — decided 2026-09-17, in this order
 
 | # | Work order | Why it sits here |
 |---|---|---|
 | 1 | **TRANSITIONS** | Ahead of the others because it is the last piece of the compositor's own contract. §16.6's `Animation.easing` permits six families and the overlay path implements **linear only**, ignoring `easing` and `delayFrames` — schema and implementation disagree in the tree today (v0.5 outline rows 4 and 5). Exit-time override is engine-reachable and wire-unreachable. None of that needs recording or streaming to exist, and all of it is in front of anything that composites |
 | 2 | **ZERO-COPY** | 10's lead-in, and the resolution path SPEC v0.4.2 names for §0.1 assumption 24. The recording allowance is scoped to the record output on 1080p reference geometry with four expiry trip-wires; streaming inherits none of it, so the general rule has to be satisfied before a second encoder consumer arrives. IOSurface-backed `CVPixelBuffer` → `MTLTexture` → `wgpu::hal` import, so decode, composite and encode share one surface. Measurements already in `docs/09-measurements.md` — this work order spends them rather than re-deriving them |
-| 3 | **Prompt 10 — Streaming** *(prompt upgraded 2026-09-21; see the section above — three user decisions and two findings)* | Needs 2 first by construction: it is the second consumer of the same frames, and per-consumer readback is what assumption 24 exists to forbid. Inherits the guest-link JWT/`jti` revocation work and the TURN credential derivation rule (`[RI-5]`, §5.1 #11, §9.6.2). WHEP preview (AC-20) is explicitly post-v1 and not 10's scope |
+| 3 | **Prompt 10 — Streaming** *(prompt upgraded 2026-09-21; **UNBLOCKED** — all four blockers decided and landed as SPEC v0.4.5, see the section above)* | Needs 2 first by construction: it is the second consumer of the same frames, and per-consumer readback is what assumption 24 exists to forbid. Inherits the guest-link JWT/`jti` revocation work and the TURN credential derivation rule (`[RI-5]`, §5.1 #11, §9.6.2). WHEP preview (AC-20) is explicitly post-v1 and not 10's scope |
 
 The ordering is a dependency claim, not a preference: TRANSITIONS touches only
 the compositor, ZERO-COPY is what makes a second encoder consumer legal, and 10

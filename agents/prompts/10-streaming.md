@@ -197,7 +197,12 @@ choose between them, and it defers WHIP.**
 | (b) SRT first | The contribution-link protocol, caller mode against a MediaMTX-class server; better loss behaviour on a bad uplink, which is closer to AC-10's subject | Most SRT stacks are libsrt bindings, and **FFI collides with the workspace's `unsafe_code` policy** — exactly one crate is exempt (`crates/nbe-decode`) and a CI gate hard-codes it. A pure-Rust SRT is possible but is a bigger dependency bet |
 | (c) Both in one prompt | The spec permits both, so the schema enum is already satisfied | Doubles the transport surface in one prompt, against §6's scope discipline. The record path shipped one encoder and one container first for the same reason |
 
-**Recommendation: (a) RTMP first**, with SRT as the immediate follow-on prompt.
+**DECIDED 2026-09-21: (a) RTMP first. Landed as SPEC v0.4.5 §9.1.** ~~Recommendation:
+(a) RTMP first, with SRT as the immediate follow-on prompt.~~ §9.1 now names
+RTMP as the v1 streaming transport and defers SRT explicitly — *pending a policy
+decision about the workspace's single `unsafe_code` exemption*, because most SRT
+stacks are libsrt bindings. That policy question is not this prompt's to answer;
+if you want SRT, ask for the word.
 Note carefully that this is *sequencing*, not deferral: the spec permits both
 and the schema's enum already accepts both, so refusing `srt` at runtime needs
 a stated reason and an error path (§3 blocker B3).
@@ -296,12 +301,37 @@ forget it. State the answer and its guard.
 
 ---
 
-## 3. Blockers — decisions that are NOT yours, found in the tree
+## 3. Blockers — ALL FOUR DECIDED 2026-09-21, landed as SPEC v0.4.5
 
-Each of these stops an executor on day one. **Do not work around them by
-inventing a field or weakening a rule.** They need the user's word.
+~~Each of these stops an executor on day one. **Do not work around them by
+inventing a field or weakening a rule.** They need the user's word.~~ The word
+was given for all four and `SPEC-REV` landed them. The analysis below is kept
+per §2c — it is why each decision was needed — with each blocker's resolution
+stated first.
 
-### B1 — there is nowhere for the stream endpoint to live. BLOCKING.
+| Blocker | Decision (2026-09-21) | Where it landed |
+|---|---|---|
+| **B1** the endpoint | **The manifest carries it.** `show.outputs.stream.url`, declarative, the way `outputs.record.directory` is. `stream.start`'s `url` is an override for the run, not the only source; a start with neither is `E_BAD_PAYLOAD` | §9.4's endpoint rule; `OutputDefaults.stream.url` |
+| **B2** the override's field | **Landed.** `outputs.{record,stream}.tapPath: { enum: ["auto","cpuReadback"], default "auto" }`. **The field is law; the WIRING is owed to this prompt's execution** — reading it and passing it to `select_with_override` is your work | schema; v0.4.5 changelog row 5 |
+| **B3** the `whip` manifest | **Refused at schema validation**, before load and before any command. The `protocol` enum narrowed to `["rtmp"]`; `nbe_core::validate` names the protocol *and* the reason it is deferred | §9.4's refusal rule; `ValidationError::RefusedTransport` |
+| **B4** the refusal's code | **`E_NO_ZEROCOPY`, reused not invented.** It is in the §10.4 registry and in `stream.start`'s failure modes. Distinct from `E_NO_HARDWARE_ENCODER`: the encoder can be present and the chain absent | §10.4; §16.14 |
+
+**One thing B2 does NOT give you:** a wired override. The field exists so the
+wiring has a lawful home. `select_with_override` still has no caller, the ledger
+sentence still stands, and closing it is a work item of this prompt, not a
+precondition of it.
+
+**And one thing B1 does not give you either, named because §3's table reads as
+though it did.** The `url` **precedence rule — the manifest's
+`outputs.stream.url` against `stream.start`'s `url` override — is prose-only and
+untested.** §9.4 says the command's `url` is *"an override for the run, not the
+only source"* and nothing resolves or guards it: `stream.start`'s payload type
+carries `url?`, the manifest carries `outputs.stream.url`, and no code reads
+either. Resolving precedence and guarding it is **the first thing
+`stream.start` must get right**, and it is your work — not a blocker, but not
+decided for you either. (Found by PR #29's two-key pass.)
+
+### B1 — ~~there is nowhere for the stream endpoint to live. BLOCKING.~~ DECIDED: the manifest carries it (v0.4.5).
 
 `schemas/manifest.v0.4.json` `$defs/OutputDefaults.stream` is, verbatim:
 
@@ -343,7 +373,7 @@ Two lawful resolutions, both the user's word:
 **Recommendation: (i).** It requires no schema revision, and a stream key in a
 manifest is a credential in a file meant to be copied between machines.
 
-### B2 — wiring `select_with_override` needs a schema field that does not exist. BLOCKING for §0.7's debt.
+### B2 — ~~wiring `select_with_override` needs a schema field that does not exist. BLOCKING for §0.7's debt.~~ DECIDED: the field landed in v0.4.5; the WIRING is owed to this prompt.
 
 The ledger says the override "lands wherever a config surface next appears" and
 names this prompt. But `outputs.stream` and `outputs.record` are both
@@ -361,7 +391,7 @@ else in Prompt 10 can proceed without it; the ledger sentence stays owed and
 this paragraph is where the discrepancy is recorded. Do not add the field
 yourself, and do not quietly drop the ledger item.
 
-### B3 — the schema's protocol enum permits a protocol the spec defers. NON-BLOCKING, needs a stated behaviour.
+### B3 — ~~the schema's protocol enum permits a protocol the spec defers.~~ DECIDED: refused at schema validation (v0.4.5).
 
 `stream.protocol` accepts `"whip"`; §9.1 item 5 makes WHIP a future
 contribution output and §6 below forbids it. A package declaring
@@ -372,7 +402,7 @@ because the operator should learn at load, not at air. §17.5's precedent — a
 schema-legal, semantically contradictory item is a preflight failure — is the
 one to follow.
 
-### B4 — a refused stream on an incapable machine has no error code. NON-BLOCKING, needs a stated choice.
+### B4 — ~~a refused stream on an incapable machine has no error code.~~ DECIDED: `E_NO_ZEROCOPY`, registered in v0.4.5.
 
 §0.2's `select_stream` returns `None` on a machine with no zero-copy chain, and
 that refusal is correct and ratified. But §16.14 gives `stream.start` only
@@ -491,9 +521,12 @@ WHIP/guest path, not to this one. Do not implement them here; do not break them.
 Each step is its own commit stream with its falsification signature pasted
 (§2a rules 2, 3, 5, 6).
 
-1. **Resolve the blockers.** Report §3's B1–B4 to the user and get the words for
-   B1 and B2 before writing code that depends on them. B3 and B4 need a stated
-   choice, not necessarily a new spec sentence.
+1. ~~**Resolve the blockers.** Report §3's B1–B4 to the user and get the words
+   for B1 and B2 before writing code that depends on them.~~ **Done — all four
+   decided 2026-09-21 and landed as SPEC v0.4.5 (§3).** What remains of this
+   item is the one piece the revision deliberately did not do: **wire
+   `select_with_override` to `outputs.{record,stream}.tapPath`**, closing the
+   ledger item. The field is there; nothing reads it.
 2. **Gate G1, decided and falsified** (§2). Produce the pool-ownership answer
    with its measurement, and the guard that a stalled stream raises neither
    `skipped_record_frames` nor `droppedFramesTotal`.

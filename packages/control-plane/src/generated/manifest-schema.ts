@@ -138,11 +138,14 @@ export interface OutputDefaults {
       tracks?: string[];
       [k: string]: unknown;
     };
+    tapPath?: "auto" | "cpuReadback";
   };
   stream?: {
-    protocol?: "rtmp" | "srt" | "whip";
+    protocol?: "rtmp";
+    url?: string;
     videoBitrateKbps?: number;
     audioBitrateKbps?: number;
+    tapPath?: "auto" | "cpuReadback";
   };
   preview?: {
     enabled?: boolean;
