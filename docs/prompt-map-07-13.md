@@ -870,8 +870,11 @@ production seams, a `cpuReadback` take sheds 20 of 40 frames; the zero-copy take
 sheds 0. That is the case for the migration in the tree's own terms — and per
 the gate split it is a soak number, not a test threshold.
 
-§0.1 assumption 24's rescoped candidate (b) **remains UNRATIFIED**. This work
-makes its mechanism a fact in the tree, not law.
+§0.1 assumption 24's rescoped candidate (b) — ~~**remains UNRATIFIED**. This
+work makes its mechanism a fact in the tree, not law.~~ **RATIFIED as SPEC
+v0.4.4 on 2026-09-21**, together with the two §10.1 fields that report the path,
+because the rescope's "MUST report which path is live" has no observable
+without them.
 
 **One thing left on the ledger:** `select_with_override` is built and tested and
 wired to nothing, so the published table is currently the only voice and an

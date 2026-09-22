@@ -432,3 +432,7 @@ The clean-feed outputs model stays unbuilt and unprecluded — a second consumer
 of a second surface, which the pool makes more natural rather than less.
 Ratification of §0.1 assumption 24's rescoped candidate remains a separate word;
 this memo makes its mechanism buildable, not law.
+
+*Status, 2026-09-21: that word was given — **SPEC v0.4.4** ratifies the rescope
+and the two §10.1 fields that report the path. The sentence above is the memo's
+as drafted 2026-09-19 and is kept per §2c.*

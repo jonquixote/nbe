@@ -16,6 +16,60 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
+v0.4.4 — **RATIFIED 2026-09-21.** Two drafted candidates become law, and
+neither is a sentence written ahead of its mechanism.
+
+| # | Change | Sections | Guarded by |
+|---|---|---|---|
+| 1 | **§0.1 assumption 24's rescope.** The v0.4.2 allowance — recording may read back, with four measured trip-wires — narrows to its final form: **the recording output MAY use CPU readback only where the zero-copy probe reports the chain unavailable, and the engine MUST report which path is live.** The trip-wires are superseded by the probe: what they predicted, it measures | 0.1 item 24 | `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry`, `a_machine_with_no_chain_records_by_readback_and_says_so`, `a_zero_copy_take_reports_the_table_and_never_reads_back` |
+| 2 | **`recordTapPath` / `recordTapReason` as §10.1 fields**, always emitted and stubbed `"none"` before any take has selected a path. Ratified *with* row 1 rather than after it: row 1 requires the engine to report which path is live, and ratifying that while its reporting mechanism stayed a draft would make law of a sentence with no observable | 10.1 (new note), 10.1.1 (ownership) | `the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects`, and the control-plane readability test |
+
+`schemas/manifest.v0.4.json` is unchanged by v0.4.4. No command surface is
+extended. No behaviour changes: both rows describe what `main` already does.
+
+**Ratification, 2026-09-21.** Each guard was run at the ratifying commit
+(`84dc9c8`), immediately before its marker was flipped, because a ratification
+is worth exactly as much as the test that would catch its violation:
+
+| Section | Guard | Result at ratification |
+|---|---|---|
+| 0.1 item 24 | `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` | ok. 1 passed; 0 failed |
+| 0.1 item 24 | `a_machine_with_no_chain_records_by_readback_and_says_so` | ok. 1 passed; 0 failed |
+| 0.1 item 24 | `a_zero_copy_take_reports_the_table_and_never_reads_back` | ok. 1 passed; 0 failed |
+| 10.1 | `the_tap_fields_are_always_on_the_wire_and_stub_before_any_take_selects` | ok. 1 passed; 0 failed |
+| 10.1 | `an engineTelemetry tick carrying recordTapPath parses and the field is readable` | ok 1; # pass 1; # fail 0 |
+
+**The novelty, stated once.** Every prior ratification certified a mechanism
+that was *guarded*. This one certifies a mechanism that is **running**: at
+`record.start` the probe builds the take's surface pool or fails, the published
+table chooses, a fallback names itself `ProbeUnavailable`, the report is always
+on the wire, the dress rehearsal asserts the take names its path, and
+`scripts/soak.sh` records the values every soak. It was measured twice on the
+reference machine — 15.866 ms → 1.376 ms for render plus tap at 1080p30, and
+independently reproduced by the two-key pass over PR #26 at 16.239 → 1.299,
+means within ~2.5% and p95s within 1.3% (`docs/09-measurements.md`, "Reproduced
+independently, by the two-key pass" — both runs tabled side by side with their
+loads). That pass found the tree stricter than the record at every point of
+disagreement: four corrections, all to the record, none to the code.
+
+*Amended 2026-09-21, before merge: the sentence first cited the reproduction's
+numbers with no durable record behind them — they existed only in the pass
+report. A ratification changelog may cite only what a reader can chase, so the
+run is tabled in the records doc and this sentence points at it. §2c: nothing
+normative changed; the citation gained a home.*
+
+**One item stays open by decision.** `select_with_override` — the escape hatch
+for the day the probe reports a capability the hardware has and the output does
+not deserve — exists, is tested, and honours the rule that an override may
+*restrict* but never *conjure*. It is wired to no config surface, so today the
+published table is the only voice and an operator has no lawful way to restrict
+it. That is a gap in the escape hatch, not in the rule, and it is not fixed
+here: inventing a config surface is not a ratification. **It lands wherever a
+config surface next appears** — Prompt 10's streaming work is the likely place,
+earlier is fine — and this sentence is where that decision is owed.
+
+Ratified as its own change, not inside a feature PR (§4's counter-precedent).
+
 v0.4.3 — **RATIFIED 2026-09-19.** v0.5 phase 0: normative catch-up. Every
 row below is a behaviour that is implemented, tested and falsified on `main`
 today and that no sentence made law. Nothing here adds behaviour; each sentence
@@ -164,7 +218,7 @@ The following assumptions are normative unless changed by spec revision:
 
     The allowance covers **the recording output only**, on the reference machine's geometry, and it expires on any of four measured trip-wires, each of which mandates the zero-copy path instead: dress-content composite + readback p95 crossing ~28 ms; encoder, mux and audio-tap load tripping View drops; any resolution above 1080p (4K readback alone is ≈48 ms, exceeding the budget — no re-measurement needed); or long-run p99 over budget. Streaming (Prompt 10) inherits no allowance from this row.
 
-    **CORRECTION CANDIDATE (b) RESCOPED — UNRATIFIED, drafted 2026-09-19, pending user review.** ZERO-COPY Phase 2 built the zero-copy tap this row describes, and the shape the tree supports is **(b) rescoped**, not (a) discharged. Discharge would require the allowance to have no remaining condition, and it has one: the CPU readback path *survives by design* as the portability floor (no IOSurface off Apple platforms), the test seam, and the fallback when the probe fails. A machine without the chain still records, lawfully, by reading back. So the allowance narrows rather than vanishing, and its narrowed form is: **the recording output MAY use CPU readback only where the zero-copy probe reports the chain unavailable, and the engine MUST report which path is live** (`record_tap_path` in the §10.1 tick, itself an unratified wire-addition candidate — **always emitted, stubbed `"none"` before any take has selected a path**, per §10.1.1; it shipped absent-until-selection in Phase 2 and ZERO-COPY Phase 3b corrected that). The four measured trip-wires of the original allowance are superseded by the probe: what they predicted, it measures. Rewording (c) was considered and rejected — naming the render-loop deadline instead of the bus would make the rule true of more paths than intended, including ones that read back on the frame path. Guarded by `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` (`crates/nbe-engine/tests/zerocopy_tap.rs`): suppress the report and it fails.
+    **CORRECTION (b) RESCOPED — RATIFIED 2026-09-21 as v0.4.4** (drafted 2026-09-19). ZERO-COPY Phase 2 built the zero-copy tap this row describes, and the shape the tree supports is **(b) rescoped**, not (a) discharged. Discharge would require the allowance to have no remaining condition, and it has one: the CPU readback path *survives by design* as the portability floor (no IOSurface off Apple platforms), the test seam, and the fallback when the probe fails. A machine without the chain still records, lawfully, by reading back. So the allowance narrows rather than vanishing, and its narrowed form is: **the recording output MAY use CPU readback only where the zero-copy probe reports the chain unavailable, and the engine MUST report which path is live** (`record_tap_path` in the §10.1 tick, itself a §10.1 wire addition ratified with this revision — **always emitted, stubbed `"none"` before any take has selected a path**, per §10.1.1; it shipped absent-until-selection in Phase 2 and ZERO-COPY Phase 3b corrected that). The four measured trip-wires of the original allowance are superseded by the probe: what they predicted, it measures. Rewording (c) was considered and rejected — naming the render-loop deadline instead of the bus would make the rule true of more paths than intended, including ones that read back on the frame path. Guarded by `a_failed_probe_selects_cpu_readback_and_the_fallback_reaches_telemetry` (`crates/nbe-engine/tests/zerocopy_tap.rs`): suppress the report and it fails.
 
     **The resolution path for the general rule is the ZERO-COPY work order**, which lands IOSurface-backed `CVPixelBuffer` → `MTLTexture` → `wgpu::hal` import so decode, composite and encode share one surface as this row describes. Until it lands, an implementation reading this row alone would conclude v1 violates it; that conclusion is correct about the mechanism and wrong about the authorization, which is what this note exists to record.
 
@@ -1806,7 +1860,9 @@ Telemetry fields:
   "automationHold": false,
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
-  "busPeakDbfs": { "master": -12.3, "mic": -18.0 }
+  "busPeakDbfs": { "master": -12.3, "mic": -18.0 },
+  "recordTapPath": "zeroCopy",
+  "recordTapReason": "Table"
 }
 ```
 
@@ -1815,6 +1871,29 @@ audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
 missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
+
+**The record tap's frame path (normative, new in v0.4.4).** `recordTapPath`
+carries which path the recording output's frames take from the compositor to the
+encoder — `"zeroCopy"` when the engine and the encoder share one surface,
+`"cpuReadback"` when the View is read back to CPU memory — and
+`recordTapReason` carries why that path was chosen: `"Table"` for the published
+selection table's own answer, `"ProbeUnavailable"` for the fallback taken when
+the zero-copy probe reports the chain unavailable, `"Override"` for an operator
+override.
+
+Both fields are **always emitted, stubbed `"none"` before any take has selected
+a path**, per §10.1.1. An absent field and a stubbed field are different
+failures and only one of them is diagnosable; `"none"` is also not a path, so a
+machine that has never recorded stays distinguishable from one that fell back.
+The selection is per take: written once when `record.start` chooses, and read by
+every tick after, so after a take these fields report the path that take used.
+
+This is the reporting half of §0.1 assumption 24's ratified rescope — *"the
+engine MUST report which path is live"* — and without it that rule has no
+observable. A silent fall from `zeroCopy` to `cpuReadback` is the event these
+fields exist to expose: the machine still records, the file is still correct,
+and the only visible difference is a telemetry field. `docs/soak-protocol.md`
+§1 records their values every soak for that reason.
 
 Implementation note (v0.4): `busPeakDbfs` is a **peak-hold across a meter
 window**, not an instantaneous sample. The engine's audio graph meters every
@@ -1834,7 +1913,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs` |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason` |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 

@@ -190,4 +190,53 @@ mod tests {
         assert_eq!(TapPath::ZeroCopy.as_str(), "zeroCopy");
         assert_eq!(TapPath::CpuReadback.as_str(), "cpuReadback");
     }
+
+    /// The sibling of `path_tokens_are_stable`, for the reason.
+    ///
+    /// **`"Table"`, `"ProbeUnavailable"` and `"Override"` are normative wire
+    /// tokens as of SPEC v0.4.4** (§10.1's record-tap note names all three).
+    /// `TapPath` has an explicit [`TapPath::as_str`] and the test above;
+    /// `Reason` has no such map — `telemetry::build_tick` renders it with
+    /// `format!("{:?}", reason)`, so **renaming a variant is a silent wire
+    /// change**. PR #27's two-key pass found `"Override"` named by the spec and
+    /// asserted as a string nowhere.
+    ///
+    /// Shape chosen deliberately: this pins the `Debug` rendering rather than
+    /// introducing a `Reason::as_str()`. An `as_str` telemetry does not call
+    /// would be a second spelling of the same token and a guard standing beside
+    /// the path instead of on it — §2a rule 8's shape. What goes on the wire is
+    /// `format!("{:?}")`, so that is what is pinned, and the reasons come from
+    /// the real evaluators rather than from named variants, so the test also
+    /// proves each one is reachable.
+    #[test]
+    fn reason_tokens_are_stable() {
+        let table = select(true, 1080, Consumer::Record).reason;
+        let unavailable = select(false, 1080, Consumer::Record).reason;
+        let overridden =
+            select_with_override(true, 2160, Consumer::Record, Some(TapPath::CpuReadback)).reason;
+
+        assert_eq!(format!("{table:?}"), "Table");
+        assert_eq!(format!("{unavailable:?}"), "ProbeUnavailable");
+        assert_eq!(format!("{overridden:?}"), "Override");
+
+        // And the token that reaches the WIRE is this one. `Override` is the
+        // only reason no production path can produce today — the escape hatch
+        // is wired to no config surface — so this is the one place the spec's
+        // third token is checked against a real tick. `Table` and
+        // `ProbeUnavailable` are additionally covered end to end through
+        // `record.start` by the `zerocopy_migration` suite.
+        let state = crate::state::EngineState::new(30);
+        *state.record_tap_selection.lock().unwrap() = Some(Selection {
+            path: TapPath::CpuReadback,
+            reason: overridden,
+        });
+        let frame = crate::telemetry::build_tick(&state);
+        let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } = frame else {
+            panic!("build_tick must produce telemetry");
+        };
+        assert_eq!(
+            fields.record_tap_reason, "Override",
+            "the spec names `\"Override\"` as a §10.1 token; the wire must spell it that way"
+        );
+    }
 }
