@@ -14,7 +14,9 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 | 6 | **Contradictory items are a preflight failure.** `{"kind":"slate","sceneRef":…}` validated schema-clean and passed preflight while being semantically contradictory — the engine drew a slate and the audio path resolved the scene. | 17.5 (new), 19.2 |
 | 7 | **House-rate reconciliation.** Nothing compared the engine's rate with the package's, so a 25 fps package on a 30 fps engine mis-mapped every asset undetected. `show.load` rejects; preflight warns. | 7.15, 16.1 (failure modes), 19.2 |
 
-Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
+Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest is a valid v0.4 manifest **unless** it uses `sequenceRef` **or** declares a stream protocol v0.4.5 refuses (`srt`, `whip` — see §9.4's refusal rule).
+
+*Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
@@ -49,9 +51,10 @@ previously accepted `protocol: ["rtmp", "srt", "whip"]` and now accepts
 `["rtmp"]`; `outputs.stream` gains `url` and `tapPath`; `outputs.record` gains
 `tapPath`. `additionalProperties: false` holds throughout — every new field is
 named. **A v0.3 manifest declaring `srt` or `whip` was valid under v0.4 and is
-not under v0.4.5**, which is a second exception to "a v0.3 manifest that does
-not use `sequenceRef` is a valid v0.4 manifest" and is stated rather than
-buried. Nothing in the tree has ever spoken SRT or WHIP, and no fixture declares
+not under v0.4.5**, which is a second exception to the §0 preamble's
+compatibility sentence — and **that sentence now carries the exception at its
+own site** (amended 2026-09-22 after PR #29's two-key pass found it standing
+unqualified there, which is where a reader meets it). Nothing in the tree has ever spoken SRT or WHIP, and no fixture declares
 a stream protocol, so the narrowing breaks nothing that worked.
 
 `schemas/manifest.v0.2.json` and `manifest.v0.3.json` are **untouched**. They
@@ -1799,12 +1802,31 @@ not implement **MUST fail schema validation** — before load, before preflight'
 semantic checks, before any command. The `protocol` enum is therefore narrowed
 to what is buildable, and widens again as transports land.
 
-Validation, not preflight, and not `stream.start`: a package declaring a
+**Validation, not preflight, and not `stream.start` — and the reason is where
+the permitted set lives.** §9.1 item 4 states which transports an NBE engine
+MUST support; that is a *spec-level* statement about the format, not a report of
+what one build happens to implement. Narrowing it is therefore a spec act, and
+the schema follows the spec as it always does (alignment flows schema → code,
+never the reverse). And the narrowing cannot quietly reverse itself: SRT's
+return requires the `unsafe_code`-exemption word, itself a spec-level decision,
+so the enum widens again *as a revision* by construction rather than as a build
+detail drifting under a fixed schema.
+
+§17.5's precedent — a schema-legal but semantically contradictory item is a
+*preflight* failure — is genuinely a different case, and the difference is worth
+naming: a `{"kind":"slate","sceneRef":…}` item is **self**-contradictory, asking
+for two incompatible things at once. A manifest declaring `whip` is perfectly
+coherent; what it names is outside the format's permitted set. Self-contradiction
+is preflight's; the permitted set is the schema's.
+
+*Amended 2026-09-22 (§2c). This paragraph read:* ~~"a package declaring a
 transport the engine cannot speak is malformed, not merely unsatisfiable on this
-machine, and an operator should learn it when the package is validated rather
-than at air. §17.5's precedent — a schema-legal but semantically contradictory
-item is a *preflight* failure — does not apply, because after this revision such
-a manifest is not schema-legal at all.
+machine … §17.5's precedent … does not apply, because after this revision such a
+manifest is not schema-legal at all."~~ *PR #29's two-key pass found that
+circular — "§17.5 does not apply because the manifest is not schema-legal" is
+true only because this revision made it so, which is the consequence of the
+choice and not a reason for it — and supplied the argument above, which is the
+one now given. The decision is unchanged; only its justification is.*
 
 **This narrows the enum, and that is a compatibility change**, stated rather
 than buried: `schemas/manifest.v0.4.json` previously accepted

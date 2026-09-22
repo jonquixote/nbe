@@ -951,7 +951,7 @@ unblocked.**
 | **B3** `whip` manifest | **Refused at schema validation**, before load and before any command | §9.4 (new rule); `ValidationError::RefusedTransport` |
 | **B4** refusal code | **`E_NO_ZEROCOPY`, reused not invented** — already the tap's token, already means exactly this | §10.4 registry; §16.14 |
 
-**Three things worth carrying forward from how this landed.**
+**Four things worth carrying forward from how this landed.**
 
 1. **It is a narrowing, and the record says so.** `protocol` went from
    `["rtmp","srt","whip"]` to `["rtmp"]`, so a v0.3 manifest declaring `srt` or
@@ -960,11 +960,36 @@ unblocked.**
    Nothing in the tree ever spoke either, and no fixture declares a protocol, so
    it breaks nothing that worked.
 2. **The historical schemas were left alone.** `manifest.v0.2.json` and
-   `manifest.v0.3.json` still accept `whip`, and nothing loads them —
+   `manifest.v0.3.json` still accept `whip`, and **no code loads either** —
    `validate_manifest` embeds the v0.4 schema and validates every accepted
-   `manifestVersion` against it. Editing a published historical schema would
-   change the record of what v0.2 meant while changing no behaviour.
-3. **The refusal carries a REASON, not just a rejection.** The schema alone says
+   `manifestVersion` against it, and the TypeScript generator reads v0.4 too.
+   Editing a published historical schema would change the record of what v0.2
+   meant while changing no behaviour.
+
+   *Corrected 2026-09-22 (§2c). PR #29's body claimed* ~~"the only occurrence of
+   either filename anywhere is the `$id` inside v0.2 itself"~~ *— which is
+   wrong. The true counts are **11** occurrences of `manifest.v0.2.json` and
+   **31** of `manifest.v0.3.json`: the README, `spec.v0.2.5.md`, `spec.v0.3.md`,
+   eight files under `agents/prompts/`, `prompt-01-definition-of-done.md`, a
+   superpowers plan, and `review-midpoint-report.md`. **All documentation; none
+   a load** — a grep over `*.rs`, `*.ts`, `*.mjs`, `*.js`, `*.yml`, `*.toml`
+   and `*.sh` returns nothing at all. The decision stands on the claim that
+   matters; the phrasing overstated it.*
+3. **A commit message that describes intent rather than its diff (§2c).**
+   `94c71af`'s message says it *"also drops a stray `#[test]` that registered
+   `a_refused_transport_fails_validation_and_says_why` twice"*. **The commit
+   carries no such change** — `crates/nbe-core/tests/model.rs` only, +49/−0.
+   The branch's history was rewritten (`reset --soft` plus two fresh commits)
+   so that `validate.rs` landed already correct in `c942bf6`, which adds
+   exactly three `#[test]` lines for three tests; by the time the second commit
+   existed there was nothing left to remove. The message describes what
+   happened during the work, the diff describes what the tree received, and a
+   reader running `git show 94c71af` for that fix finds nothing. History is
+   **not** rewritten to fix this — the record carries the discrepancy instead,
+   which is what §2c is for. Found by PR #29's two-key pass; §2a rule 6's own
+   subject.
+
+4. **The refusal carries a REASON, not just a rejection.** The schema alone says
    `"whip" is not one of "rtmp"`, which tells an operator what was rejected and
    not why — the difference between fixing the manifest and filing a bug. A
    `check_transport` pass runs first and names the reason each transport is

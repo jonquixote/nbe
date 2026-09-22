@@ -321,6 +321,16 @@ wiring has a lawful home. `select_with_override` still has no caller, the ledger
 sentence still stands, and closing it is a work item of this prompt, not a
 precondition of it.
 
+**And one thing B1 does not give you either, named because §3's table reads as
+though it did.** The `url` **precedence rule — the manifest's
+`outputs.stream.url` against `stream.start`'s `url` override — is prose-only and
+untested.** §9.4 says the command's `url` is *"an override for the run, not the
+only source"* and nothing resolves or guards it: `stream.start`'s payload type
+carries `url?`, the manifest carries `outputs.stream.url`, and no code reads
+either. Resolving precedence and guarding it is **the first thing
+`stream.start` must get right**, and it is your work — not a blocker, but not
+decided for you either. (Found by PR #29's two-key pass.)
+
 ### B1 — ~~there is nowhere for the stream endpoint to live. BLOCKING.~~ DECIDED: the manifest carries it (v0.4.5).
 
 `schemas/manifest.v0.4.json` `$defs/OutputDefaults.stream` is, verbatim:
