@@ -26,6 +26,7 @@ pub mod aac;
 pub mod audio_tap;
 pub mod feed;
 pub mod markers;
+pub mod pool;
 pub mod session;
 pub mod tap_path;
 pub mod thread;
