@@ -848,9 +848,19 @@ token silently. `reason_tokens_are_stable` (beside `path_tokens_are_stable` in
 a real `build_tick`, which is the one place the spec's third token meets a tick.
 What remains owed is the wiring, not the token.
 
-*Status, 2026-09-21: the Prompt 10 upgrade went looking for the config surface
-this sentence points at, and found that **the wiring cannot land in Prompt 10 as
-the tree stands.** `OutputDefaults.record` and `OutputDefaults.stream` are both
+*Status, 2026-09-21 (second update, after SPEC-REV): **the field now has a
+home; the wiring remains owed, to Prompt 10.** SPEC v0.4.5 landed
+`outputs.{record,stream}.tapPath: { enum: ["auto", "cpuReadback"], default
+"auto" }` — `auto` meaning the published table decides, which is the default
+precisely because the table is the product decision. The enum has no `zeroCopy`
+value, so "an override may restrict but never conjure" is unrepresentable rather
+than merely refused. **Nothing reads the field yet.** `select_with_override`
+still has no caller; closing that is a work item of Prompt 10's execution, no
+longer a precondition of it.*
+
+*Superseded status, kept per §2c: the Prompt 10 upgrade went looking for the
+config surface this sentence points at, and found that **the wiring could not
+land in Prompt 10 as the tree then stood.** `OutputDefaults.record` and `OutputDefaults.stream` are both
 `additionalProperties: false`, nothing in §9 or §16 mentions a tap-path
 override, and the standards make `schemas/*.json` a spec revision rather than
 prompt work. So the debt needs a spec word first — a field such as
@@ -859,7 +869,8 @@ prompt work. So the debt needs a spec word first — a field such as
 `select_with_override`'s existing behaviour and its tests. Recorded in
 `agents/prompts/10-streaming.md` §3 as blocker B2 and in the prompt map. The
 sentence above stands as written; what changed is that we now know which word
-unblocks it.*
+unblocks it.* — **that word was given on 2026-09-21 and the field landed; see
+the status note above.**
 
 ## Status
 

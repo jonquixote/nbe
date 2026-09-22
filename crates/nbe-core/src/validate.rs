@@ -23,6 +23,13 @@ pub enum ValidationError {
     MissingVersion,
 
     /// The manifest failed JSON Schema validation.
+    /// A transport SPEC §9 names but this revision does not implement. The
+    /// schema refuses it as well; this carries the reason.
+    #[error(
+        "manifest declares stream protocol \"{protocol}\", which this build does not \
+         implement: {reason}"
+    )]
+    RefusedTransport { protocol: String, reason: String },
     #[error("manifest schema validation failed:\n{details}")]
     SchemaViolation { details: String },
 
@@ -64,9 +71,56 @@ pub fn check_version(json: &serde_json::Value) -> Result<(), ValidationError> {
     }
 }
 
+/// Transports SPEC §9 names but this revision does not implement, each with the
+/// reason it is deferred (SPEC v0.4.5, §9.1 and §9.4).
+///
+/// The schema refuses them too — `outputs.stream.protocol`'s enum is narrowed
+/// to what is buildable — so this list exists for the MESSAGE, not for the
+/// refusal. `"whip" is not one of "rtmp"` tells an operator what was rejected
+/// and not why, and "why" is the difference between fixing the manifest and
+/// filing a bug.
+const DEFERRED_TRANSPORTS: &[(&str, &str)] = &[
+    (
+        "srt",
+        "deferred pending a policy decision about the workspace's single \
+         unsafe_code exemption: most SRT stacks are libsrt bindings (SPEC v0.4.5 §9.1)",
+    ),
+    (
+        "whip",
+        "a future contribution output, not a v1 streaming transport (SPEC §9.1 item 5)",
+    ),
+];
+
+/// Name a refused transport before the schema's generic enum error does.
+///
+/// Runs before schema validation so the specific message wins. Returns `Ok` for
+/// anything else, including a protocol nobody has ever named — that one is the
+/// schema's to reject, and inventing a reason for it would be inventing a fact.
+fn check_transport(json: &serde_json::Value) -> Result<(), ValidationError> {
+    let declared = json
+        .get("show")
+        .and_then(|s| s.get("outputs"))
+        .and_then(|o| o.get("stream"))
+        .and_then(|s| s.get("protocol"))
+        .and_then(|p| p.as_str());
+    let Some(declared) = declared else {
+        return Ok(());
+    };
+    for (name, reason) in DEFERRED_TRANSPORTS {
+        if declared == *name {
+            return Err(ValidationError::RefusedTransport {
+                protocol: declared.to_string(),
+                reason: (*reason).to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate a manifest value: version gate first, then JSON Schema.
 pub fn validate_manifest(json: &serde_json::Value) -> Result<(), ValidationError> {
     check_version(json)?;
+    check_transport(json)?;
     let validator = compiled_validator()?;
     let errors: Vec<String> = validator
         .iter_errors(json)
@@ -180,6 +234,66 @@ mod tests {
         m.as_object_mut().unwrap().remove("manifestVersion");
         let err = validate_manifest(&m).unwrap_err();
         assert!(matches!(err, ValidationError::MissingVersion));
+    }
+
+    /// SPEC v0.4.5 §9.4: a manifest naming a transport this build does not
+    /// implement fails VALIDATION — before load, before preflight's semantic
+    /// checks, before any command.
+    #[test]
+    fn a_refused_transport_fails_validation_and_says_why() {
+        for (proto, expect_in_reason) in [("whip", "contribution output"), ("srt", "libsrt")] {
+            let mut m = minimal_valid_manifest();
+            m["show"]["outputs"] = serde_json::json!({
+                "stream": { "protocol": proto, "url": "rtmp://example.invalid/app/key" }
+            });
+            let err = validate_manifest(&m)
+                .expect_err("a transport this build cannot speak must not validate");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(proto),
+                "the refusal must name the protocol, got: {msg}"
+            );
+            assert!(
+                msg.contains(expect_in_reason),
+                "the refusal must carry the REASON, not just the rejection, got: {msg}"
+            );
+            assert!(
+                matches!(err, ValidationError::RefusedTransport { .. }),
+                "a refused transport is its own failure, not a generic schema violation"
+            );
+        }
+    }
+
+    /// The other half: the transport this build DOES implement validates, with
+    /// the endpoint and the tap-path preference the revision added.
+    #[test]
+    fn an_rtmp_manifest_with_an_endpoint_validates() {
+        let mut m = minimal_valid_manifest();
+        m["show"]["outputs"] = serde_json::json!({
+            "stream": {
+                "protocol": "rtmp",
+                "url": "rtmp://example.invalid/app/key",
+                "videoBitrateKbps": 8000,
+                "audioBitrateKbps": 192,
+                "tapPath": "auto"
+            },
+            "record": { "directory": "./out", "tapPath": "cpuReadback" }
+        });
+        validate_manifest(&m).expect("the v1 transport with its endpoint must validate");
+    }
+
+    /// The narrowing has teeth at the SCHEMA level too, not only in the
+    /// message: bypass `check_transport` by naming a protocol no list carries,
+    /// and the enum still refuses it.
+    #[test]
+    fn the_schema_enum_refuses_an_unknown_transport_on_its_own() {
+        let mut m = minimal_valid_manifest();
+        m["show"]["outputs"] = serde_json::json!({ "stream": { "protocol": "hls" } });
+        let err = validate_manifest(&m).expect_err("an unlisted protocol must not validate");
+        assert!(
+            matches!(err, ValidationError::SchemaViolation { .. }),
+            "an unknown transport is the schema's to reject, got: {err}"
+        );
     }
 
     #[test]

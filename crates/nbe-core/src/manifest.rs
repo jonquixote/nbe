@@ -194,6 +194,11 @@ pub struct RecordOutput {
     pub directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<serde_json::Value>,
+    /// Which frame path this output prefers (SPEC v0.4.5). `auto` is the
+    /// published selection table's answer and the default, because the table
+    /// is the product decision.
+    #[serde(default)]
+    pub tap_path: TapPathPreference,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -209,18 +214,47 @@ pub enum RecordContainer {
 pub struct StreamOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<StreamProtocol>,
+    /// The publish target, declared by the package (SPEC v0.4.5 §9.4).
+    /// Optional: `stream.start`'s `url` can supply it instead, and a start with
+    /// neither is `E_BAD_PAYLOAD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_bitrate_kbps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_bitrate_kbps: Option<u32>,
+    /// See [`RecordOutput::tap_path`].
+    #[serde(default)]
+    pub tap_path: TapPathPreference,
 }
 
+/// A transport this build speaks.
+///
+/// **`Srt` and `Whip` were removed in SPEC v0.4.5** and the schema's enum
+/// narrowed to match, so a manifest declaring either now fails schema
+/// validation rather than loading into a variant nothing can serve. SRT is
+/// deferred pending the `unsafe_code`-exemption policy decision (most SRT
+/// stacks are libsrt bindings); WHIP remains a future contribution output
+/// (§9.1 item 5). Both widen the enum again when they land.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamProtocol {
     Rtmp,
-    Srt,
-    Whip,
+}
+
+/// An output's frame-path preference (SPEC v0.4.5).
+///
+/// `Auto` defers to the published selection table; `CpuReadback` restricts to
+/// the readback path. There is deliberately no `ZeroCopy` value: an override
+/// may *restrict* but never *conjure* a capability the probe denied, which is
+/// what `select_with_override` already enforces and what this enum's shape
+/// makes unrepresentable rather than merely refused.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TapPathPreference {
+    #[default]
+    Auto,
+    CpuReadback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

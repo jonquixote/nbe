@@ -93,6 +93,13 @@ pub enum ErrorCode {
     /// command was well-formed and permitted, merely too frequent.
     #[serde(rename = "E_RATE_LIMITED")]
     RateLimited,
+    /// New in SPEC v0.4.5: no zero-copy frame chain on this machine, so there
+    /// is no lawful streaming path (§0.1 assumption 24 as ratified in v0.4.4
+    /// gives the readback allowance to recording and to no other output).
+    /// Distinct from `NoHardwareEncoder`: the encoder can be present and the
+    /// chain absent.
+    #[serde(rename = "E_NO_ZEROCOPY")]
+    NoZeroCopy,
 }
 
 impl ErrorCode {
@@ -117,6 +124,7 @@ impl ErrorCode {
         ErrorCode::Turn,
         ErrorCode::Ice,
         ErrorCode::RateLimited,
+        ErrorCode::NoZeroCopy,
     ];
 
     /// The wire string, e.g. `"E_BAD_PAYLOAD"`.
@@ -141,6 +149,7 @@ impl ErrorCode {
             ErrorCode::Turn => "E_TURN",
             ErrorCode::Ice => "E_ICE",
             ErrorCode::RateLimited => "E_RATE_LIMITED",
+            ErrorCode::NoZeroCopy => "E_NO_ZEROCOPY",
         }
     }
 }

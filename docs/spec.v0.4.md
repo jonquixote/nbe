@@ -16,6 +16,62 @@ v0.4 is written after the midpoint integration review (`docs/review-midpoint-rep
 
 Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and adds no new required fields. A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest.
 
+v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
+between Prompt 10's executor and the work; the user has spoken all four and this
+revision lands them. Unlike every previous entry there was no drafting phase:
+the decisions are the user's, made before the revision was written, so the text
+is ratified on landing rather than after review.
+
+| # | Change | Sections | Closes |
+|---|---|---|---|
+| 1 | **RTMP is the v1 streaming transport.** §9.1's "RTMP or SRT" left the transport undecided, and an undecided transport is not buildable. SRT is **deferred, not withdrawn**, pending a policy decision about the workspace's single `unsafe_code` exemption — most SRT stacks are libsrt bindings, and admitting an FFI transport is the user's word. WHIP stays deferred by §9.1 item 5 | 9.1 | **C1** |
+| 2 | **The stream endpoint is declared in the manifest.** `show.outputs.stream.url` is the publish target, declarative the way `outputs.record.directory` is. Before this revision there was no field at all, so a stream could not be started from a package and no sentence said so | 9.4 (new), schema | **B1** |
+| 3 | **A refused transport fails schema validation** — before load, before preflight's semantic checks, before any command. The `protocol` enum narrows to what is buildable and widens again as transports land | 9.4 (new), schema | **B3** |
+| 4 | **`E_NO_ZEROCOPY` joins the error registry** and `stream.start`'s failure modes. A machine with no zero-copy chain has no lawful streaming path, because v0.4.4's rescope gives the readback allowance to recording and to no other output | 10.4, 16.14 | **B4** |
+| 5 | **`outputs.{record,stream}.tapPath`** — the override's field, `{ "auto", "cpuReadback" }`, default `auto`. The field is law; the WIRING is not, and stays owed to Prompt 10 | schema | **B2**, partly |
+
+**What row 5 does and does not do.** `select_with_override` has been built,
+tested and wired to nothing since ZERO-COPY Phase 2, and the ledger sentence in
+`docs/09-measurements.md` said it "lands wherever a config surface next
+appears". The Prompt 10 upgrade found it could not land there: both `outputs.*`
+objects are `additionalProperties: false`, nothing in §9 or §16 mentioned an
+override, and the standards make `schemas/*.json` a spec revision rather than
+prompt work. **This revision gives the wiring a lawful home and does not do the
+wiring.** The field exists; reading it is Prompt 10's.
+
+The enum has no `zeroCopy` value, deliberately: an override may *restrict* but
+never *conjure* a capability the probe denied, which is what
+`select_with_override` already enforces and what this shape makes
+unrepresentable rather than merely refused.
+
+**Schema impact, and it is a narrowing.** `schemas/manifest.v0.4.json`
+previously accepted `protocol: ["rtmp", "srt", "whip"]` and now accepts
+`["rtmp"]`; `outputs.stream` gains `url` and `tapPath`; `outputs.record` gains
+`tapPath`. `additionalProperties: false` holds throughout — every new field is
+named. **A v0.3 manifest declaring `srt` or `whip` was valid under v0.4 and is
+not under v0.4.5**, which is a second exception to "a v0.3 manifest that does
+not use `sequenceRef` is a valid v0.4 manifest" and is stated rather than
+buried. Nothing in the tree has ever spoken SRT or WHIP, and no fixture declares
+a stream protocol, so the narrowing breaks nothing that worked.
+
+`schemas/manifest.v0.2.json` and `manifest.v0.3.json` are **untouched**. They
+are historical artifacts: nothing in the tree loads them — `validate_manifest`
+embeds the v0.4 schema and validates every accepted `manifestVersion` against
+it — so editing published historical schemas would change the record of what
+v0.2 and v0.3 meant while changing no behaviour at all.
+
+**Ratification, 2026-09-21.** The refusal is behaviour, not text, and its guards
+ran at the landing commit:
+
+| Claim | Guard | Result |
+|---|---|---|
+| A refused transport fails validation, naming the protocol AND the reason | `a_refused_transport_fails_validation_and_says_why` | ok. 1 passed; 0 failed |
+| The v1 transport with its endpoint and tap-path preference validates | `an_rtmp_manifest_with_an_endpoint_validates` | ok. 1 passed; 0 failed |
+| An unlisted transport is the schema's own refusal | `the_schema_enum_refuses_an_unknown_transport_on_its_own` | ok. 1 passed; 0 failed |
+
+Ratified as its own change, not inside the feature PR it unblocks (§4's
+counter-precedent).
+
 v0.4.4 — **RATIFIED 2026-09-21.** Two drafted candidates become law, and
 neither is a sentence written ahead of its mechanism.
 
@@ -1609,6 +1665,24 @@ The engine MUST support:
 4. One live streaming output in MVP: RTMP or SRT.
 5. WHIP output as future/contribution output.
 
+**Narrowed to RTMP for v1 (normative, new in v0.4.5).** ~~"RTMP or SRT"~~ left
+the transport undecided, and an undecided transport is not buildable: §2c keeps
+the original wording above because the *ceiling* it states — one live streaming
+output — is unchanged and still law. What v0.4.5 settles is which one.
+
+**RTMP is the v1 streaming transport.** SRT is **deferred, not withdrawn**, and
+the reason is a policy question rather than a preference: most SRT
+implementations are bindings to libsrt, and this workspace denies `unsafe_code`
+with exactly one exemption (`crates/nbe-decode`, for Objective-C FFI) enforced
+by a CI gate. Admitting an FFI transport is a change to that policy, and a
+policy change is the user's word, not an implementer's. SRT returns to the
+buildable set when that word is given or a pure-Rust implementation is adopted.
+
+WHIP stays deferred by item 5 above, unchanged.
+
+**A manifest declaring a transport this revision does not implement MUST fail
+schema validation** — see §9.4's refusal rule.
+
 MVP hard ceiling:
 
 ```text
@@ -1688,6 +1762,57 @@ Default MVP stream:
 Stream failure MUST NOT stop local playout.
 
 Stream reconnect MUST be automatic.
+
+### The stream endpoint is declared in the manifest (normative, new in v0.4.5)
+
+`show.outputs.stream.url` is the publish target, and it is **declarative**: the
+package says where the show goes, the same way it says where the recording is
+written (`outputs.record.directory`). A show is a package plus a machine, and an
+endpoint that lived only in a command would make the package incomplete —
+`stream.start`'s `url` is an *override* for the run, not the only source.
+
+Before v0.4.5 there was no field at all: `OutputDefaults.stream` carried
+`protocol` and two bitrates with `additionalProperties: false`, and §16.14's
+`stream.start` carried an optional `url`. A stream could therefore not be
+started from a package at all, and no sentence said so. That gap is what this
+revision closes.
+
+| Field | Meaning |
+|---|---|
+| `outputs.stream.url` | The RTMP publish target, complete. Optional: a package that declares no `url` is startable only by `stream.start` carrying one, and `stream.start` with neither is `E_BAD_PAYLOAD` |
+
+**One field, deliberately, and a consequence stated plainly.** RTMP platforms
+issue a server URL and a stream key separately, and the key is a credential. The
+schema does **not** get a separate `streamKey` field: a second named slot would
+imply the two halves have different handling, and in a manifest they do not —
+a manifest is a file meant to be copied between machines, so anything in it is
+as exposed as everything else in it. **A stream key placed in `url` is a
+credential in a shared artifact.** Operators who cannot accept that use
+`stream.start`'s `url` override and leave the manifest's field absent; the spec
+supports both and recommends neither, because which is right depends on how the
+package travels.
+
+### Refused transports fail schema validation (normative, new in v0.4.5)
+
+A manifest whose `outputs.stream.protocol` names a transport this revision does
+not implement **MUST fail schema validation** — before load, before preflight's
+semantic checks, before any command. The `protocol` enum is therefore narrowed
+to what is buildable, and widens again as transports land.
+
+Validation, not preflight, and not `stream.start`: a package declaring a
+transport the engine cannot speak is malformed, not merely unsatisfiable on this
+machine, and an operator should learn it when the package is validated rather
+than at air. §17.5's precedent — a schema-legal but semantically contradictory
+item is a *preflight* failure — does not apply, because after this revision such
+a manifest is not schema-legal at all.
+
+**This narrows the enum, and that is a compatibility change**, stated rather
+than buried: `schemas/manifest.v0.4.json` previously accepted
+`["rtmp", "srt", "whip"]` and now accepts `["rtmp"]`. A v0.3 manifest declaring
+`srt` or `whip` was valid under v0.4 and is not under v0.4.5. The v0.3 statement
+— "a v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest" —
+gains a second exception, and it is a narrowing the engine could not honour
+anyway: nothing in the tree has ever spoken SRT or WHIP.
 
 ## 9.5 Local network survivability
 
@@ -2602,6 +2727,15 @@ Error code registry (normative):
 | `E_TURN` | TURN credential vending failure. |
 | `E_ICE` | WebRTC ICE failure. |
 | `E_RATE_LIMITED` | The caller exceeded a rate limit (Section 10.7 flood protection). New in v0.3.2. |
+| `E_NO_ZEROCOPY` | No zero-copy frame chain on this machine. New in v0.4.5. |
+
+`E_NO_ZEROCOPY` is **reused, not invented**: the token already exists in the
+tree as the frame tap's refusal (`crates/nbe-decode/src/zerocopy.rs`) and
+already means exactly this condition, so promoting it to the registry gives the
+one condition one spelling instead of two. It is distinct from
+`E_NO_HARDWARE_ENCODER`: a machine can have a perfectly good hardware encoder
+and still have no shareable-surface chain, and an operator told "no hardware
+encoder" would go looking for the wrong thing.
 
 `E_RATE_LIMITED` is distinct from `E_FORBIDDEN_STATE` and MUST NOT be substituted for it: an operator whose ticker injection is throttled needs to know the command was well-formed, permitted, and merely too frequent. A rate-limited command MUST NOT mutate state and MUST NOT bump `stateVersion`.
 
@@ -2958,8 +3092,24 @@ Required: `["elementId"]`.
 |---|---|---|---|---|
 | `record.start` | `{ outputId?: string }` | show running, encoder available | recording active | `E_NO_HARDWARE_ENCODER`, `E_DISK` |
 | `record.stop` | `{}` | recording active | recording stopped | `E_FORBIDDEN_STATE` |
-| `stream.start` | `{ outputId?: string, url?: string }` | show running, encoder available | stream active | `E_NO_HARDWARE_ENCODER`, `E_NETWORK` |
+| `stream.start` | `{ outputId?: string, url?: string }` | show running, encoder available, **a zero-copy chain available** | stream active | `E_NO_HARDWARE_ENCODER`, `E_NETWORK`, **`E_NO_ZEROCOPY`**, **`E_BAD_PAYLOAD`** |
 | `stream.stop` | `{}` | stream active | stream stopped | `E_FORBIDDEN_STATE` |
+
+**`stream.start`'s two added failure modes (normative, new in v0.4.5).**
+
+**`E_NO_ZEROCOPY`** — the machine has no zero-copy chain. §0.1 assumption 24 as
+ratified in v0.4.4 gives the CPU-readback allowance to the *recording* output
+and to no other, so a streaming path that reads back is a spec violation rather
+than a fallback: a machine without the chain has no lawful streaming path and
+the start is refused. The token is **reused, not invented** — it is already the
+tap's refusal token (`crates/nbe-decode/src/zerocopy.rs`) and already means
+exactly this, so a second code would be two spellings of one condition and the
+operator would have to learn both.
+
+**`E_BAD_PAYLOAD`** — neither the manifest's `outputs.stream.url` nor the
+command's `url` supplied a publish target. §9.4's endpoint table makes both
+optional individually; one of them is required in fact, and the command is where
+that is discovered.
 
 ## 16.15 System commands
 
