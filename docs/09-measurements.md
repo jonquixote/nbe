@@ -872,6 +872,18 @@ sentence above stands as written; what changed is that we now know which word
 unblocks it.* — **that word was given on 2026-09-21 and the field landed; see
 the status note above.**
 
+*Status, 2026-09-22 (WU2): **PAID for the record side.** `record.start` now reads
+`show.outputs.record.tapPath` at take time and passes it to
+`select_with_override` — `auto` (or an absent field) is the table,
+`cpuReadback` restricts the take to CPU and reports `Override`, and a
+restricted take builds no surface pool. Proven by
+`crates/nbe-engine/tests/zerocopy_override.rs` (RED: a cpuReadback manifest
+ran `zeroCopy`/`Table` before the wiring) with the absent-field, no-conjure,
+and refusal pins alongside. **The stream side (`outputs.stream.tapPath`) is
+still owed — no stream take path exists yet to carry it; WU4 (stream.start)
+wires it when the path lands.** The owed-lines above stand as the debt's
+history; this line scopes the closure.*
+
 ## Status
 
 The record path runs zero-copy where the probe allows it and CPU readback where

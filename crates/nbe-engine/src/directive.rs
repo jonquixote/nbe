@@ -736,22 +736,34 @@ impl DirectiveHandler {
         // `ProbeUnavailable`, which is a lawful take under the v0.4.2
         // allowance and not a failure.
         let mut session = session;
+        // WU2 — the manifest's `outputs.record.tapPath` override (SPEC
+        // v0.4.5). `auto` (or an absent/unreadable field) leaves the table
+        // speaking; `cpuReadback` restricts the take to CPU and reports
+        // `Override`. A restricted take builds no pool: the chain it must not
+        // use costs ~25 MiB of VRAM. `None` here is exactly `select`'s
+        // behavior, so takes without the field are bit-identical to before.
+        let override_path = record_tap_override(&self.state);
         let device = self.state.render_device();
-        let pool = device.and_then(|d| {
-            match crate::record::zerocopy_pool(&d, VIEW_W, VIEW_H) {
-                Ok(p) => Some(Arc::new(p)),
-                Err(e) => {
-                    // Loud, because a silent fallback to the readback path is
-                    // exactly the event `record_tap_reason` exists to expose.
-                    tracing::warn!(err = %e, "record.start: zero-copy unavailable, falling back to CPU readback");
-                    None
+        let pool = if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
+            None
+        } else {
+            device.and_then(|d| {
+                match crate::record::zerocopy_pool(&d, VIEW_W, VIEW_H) {
+                    Ok(p) => Some(Arc::new(p)),
+                    Err(e) => {
+                        // Loud, because a silent fallback to the readback path is
+                        // exactly the event `record_tap_reason` exists to expose.
+                        tracing::warn!(err = %e, "record.start: zero-copy unavailable, falling back to CPU readback");
+                        None
+                    }
                 }
-            }
-        });
-        let selection = crate::record::tap_path::select(
+            })
+        };
+        let selection = crate::record::tap_path::select_with_override(
             pool.is_some(),
             VIEW_H,
             crate::record::tap_path::Consumer::Record,
+            override_path,
         );
         if let Some(pool) = pool {
             session.set_surface_pool(pool);
@@ -1178,6 +1190,27 @@ fn record_show_name(state: &SharedEngineState) -> String {
             );
             "show".into()
         }
+    }
+}
+
+/// WU2 — the record output's frame-path preference (`show.outputs.record`
+/// `tapPath`, SPEC v0.4.5): `auto` (or an absent/unreadable field) defers to
+/// the published selection table, `cpuReadback` restricts the take to CPU.
+/// Read at start time (not cached at load) so `show.load` stays untouched by
+/// recording concerns — the same shape as [`record_show_name`]. Returns the
+/// override for [`crate::record::tap_path::select_with_override`]: `None`
+/// means "no override, the table speaks".
+fn record_tap_override(state: &SharedEngineState) -> Option<crate::record::tap_path::TapPath> {
+    let path = state.package_path.lock().unwrap().clone()?;
+    let bytes = std::fs::read(std::path::Path::new(&path).join("manifest.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let outputs: nbe_core::manifest::OutputDefaults =
+        serde_json::from_value(manifest.get("show")?.get("outputs")?.clone()).ok()?;
+    match outputs.record?.tap_path {
+        nbe_core::manifest::TapPathPreference::CpuReadback => {
+            Some(crate::record::tap_path::TapPath::CpuReadback)
+        }
+        nbe_core::manifest::TapPathPreference::Auto => None,
     }
 }
 
