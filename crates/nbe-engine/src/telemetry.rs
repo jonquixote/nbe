@@ -28,6 +28,17 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // second `lock()` runs, on a non-reentrant `Mutex`. Found by
     // `pump_tick_wires_the_loaded_record_dir` hanging rather than failing.
     let tap = *state.record_tap_selection.lock().unwrap();
+    // streamBufferMs: the live session's admitted-but-unwritten bytes through
+    // the §9.4 envelope (channel backlog INCLUDED — see rtmp module docs).
+    // 0.0 with no session. Read under one short lock; the counter itself is
+    // atomic, so the tick never waits on the socket.
+    let stream_buffer_ms = state
+        .stream_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.stream_buffer_ms())
+        .unwrap_or(0.0);
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
@@ -37,7 +48,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         decode_sessions: state.sessions.active(),
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
-        stream_buffer_ms: 0.0,
+        stream_buffer_ms,
         record_space_mib: record_space_mib_for(record_dir),
         master_clock_drift_ms: 0.0,
         fallback_active: state

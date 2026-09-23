@@ -27,6 +27,7 @@ pub mod audio_tap;
 pub mod feed;
 pub mod markers;
 pub mod pool;
+pub mod rtmp;
 pub mod session;
 pub mod stream;
 pub mod tap_path;

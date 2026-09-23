@@ -160,6 +160,16 @@ pub struct EngineState {
     /// shape, record-mirrored). `None` until a stream has selected one. Not
     /// cleared at stop: the field reads as the path the LAST stream used.
     pub stream_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
+    /// Stream frames dropped because no surface could be taken (G1
+    /// drop-Arc discipline): the View drew regardless, the stream took the
+    /// drawn surface or dropped it. Never moves `skipped_record_frames` nor
+    /// `droppedFramesTotal` (AC-10 item 4). `Arc` so the loop hook counts
+    /// without holding state locks across GPU work.
+    pub skipped_stream_frames: Arc<AtomicU64>,
+    /// Accumulated stream-feed cost in milliseconds (loop-updated, off the
+    /// render budget by construction; observable to tests, no wire change
+    /// beyond `streamBufferMs` which reads the transport counter).
+    pub stream_tap_ms: Mutex<f64>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -212,6 +222,8 @@ impl EngineState {
             stream_state: Mutex::new(StreamState::Idle),
             stream_session: Mutex::new(None),
             stream_tap_selection: Mutex::new(None),
+            skipped_stream_frames: Arc::new(AtomicU64::new(0)),
+            stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),
         }
     }

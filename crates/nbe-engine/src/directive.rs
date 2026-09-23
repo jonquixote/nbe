@@ -109,7 +109,7 @@ impl DirectiveHandler {
                     .map_err(|e| DirectiveError::Invalid(format!("show.load panicked: {e}")))??;
             }
             "show.start" => self.on_show_start(d)?,
-            "show.stop" => self.on_show_stop(d)?,
+            "show.stop" => self.on_show_stop(d).await?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
             "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
@@ -118,7 +118,7 @@ impl DirectiveHandler {
             "record.start" => self.on_record_start(d)?,
             "record.stop" => self.on_record_stop(d)?,
             "stream.start" => self.on_stream_start(d)?,
-            "stream.stop" => self.on_stream_stop(d)?,
+            "stream.stop" => self.on_stream_stop(d).await?,
             "marker.add" => self.on_marker_add(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
@@ -354,7 +354,14 @@ impl DirectiveHandler {
     /// [RI-8] unload-at-next-load: release decode sessions but retain package
     /// residency (video rings, image textures, audio assets) until the next
     /// show.load replaces it.
-    fn on_show_stop(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    async fn on_show_stop(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        self.on_show_stop_inner(d).await
+    }
+
+    /// `show.stop` implementation (async only so the stream quiescence can
+    /// await the transport without blocking the executor; the record half is
+    /// byte-identical behavior — no record-path change).
+    async fn on_show_stop_inner(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let record_active = *self.state.record_state.lock().unwrap() == RecordState::Recording
             && self.state.record_session.lock().unwrap().is_some();
         let stream_active = *self.state.stream_state.lock().unwrap() == StreamState::Live
@@ -425,7 +432,7 @@ impl DirectiveHandler {
                     let stream_result = if stream_active {
                         let mut session = self.state.stream_session.lock().unwrap().take();
                         let result = match session.as_mut() {
-                            Some(s) => s.stop_and_close().map(|_| ()).map_err(stream_err),
+                            Some(s) => s.stop_and_close().await.map(|_| ()).map_err(stream_err),
                             None => Ok(()),
                         };
                         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
@@ -1014,20 +1021,26 @@ impl DirectiveHandler {
     /// Concurrency note: the state check and the session take hold the session
     /// guard continuously (one acquisition) — the record `on_record_stop`
     /// shape — so two concurrent stops cannot both take the session.
-    fn on_stream_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        // Hold the session guard across the state check + take: one
-        // acquisition, so a concurrent stop cannot interleave between them.
-        let mut session_guard = self.state.stream_session.lock().unwrap();
-        if *self.state.stream_state.lock().unwrap() != StreamState::Live {
-            return Err(DirectiveError::ForbiddenState(
-                "stream.stop requires a live stream".into(),
-            ));
-        }
-        // Taken, not borrowed: the close runs without holding any state lock.
-        let mut session = session_guard.take();
-        drop(session_guard);
+    /// Async so the bounded transport wait (tokio sleep) never blocks the
+    /// executor — `stream.stop` must not stall the ack window (bounded-wait
+    /// assertion in `tests/prompt10_rtmp.rs`).
+    async fn on_stream_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // Take the session under one short sync scope (state check + take
+        // atomically, so concurrent stops cannot interleave); the guard is
+        // dropped BEFORE the await below, so this future stays Send and the
+        // executor never blocks on a std MutexGuard.
+        let mut session = {
+            let mut session_guard = self.state.stream_session.lock().unwrap();
+            if *self.state.stream_state.lock().unwrap() != StreamState::Live {
+                return Err(DirectiveError::ForbiddenState(
+                    "stream.stop requires a live stream".into(),
+                ));
+            }
+            // Taken, not borrowed: the close runs without holding any state lock.
+            session_guard.take()
+        };
         let result = match session.as_mut() {
-            Some(s) => s.stop_and_close().map(|_| ()).map_err(stream_err),
+            Some(s) => s.stop_and_close().await.map(|_| ()).map_err(stream_err),
             // No session to own the close: flip to Idle, close nothing.
             None => Ok(()),
         };

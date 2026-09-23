@@ -158,6 +158,12 @@ impl TapLoan {
     pub fn has_surface(&self) -> bool {
         self.surface.is_some()
     }
+    /// Read-only share of this frame's surface (G1 both-live: one composite,
+    /// N `Arc` holders). Cloning never moves the loan — the record handoff
+    /// below is unchanged. No behavior change: pure getter.
+    pub fn surface(&self) -> Option<Arc<SharedSurface>> {
+        self.surface.clone()
+    }
 }
 
 /// **Before the draw**: take this frame's surface and point the View at it.
