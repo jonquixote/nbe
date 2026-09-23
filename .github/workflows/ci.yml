@@ -383,8 +383,9 @@ jobs:
       - name: the stream commands suite actually ran (Prompt 10 WU4)
         # Same two-floor shape. Ten of the thirteen tests open a stream and
         # gate on the encoder + chain (loud SKIP without either); the other
-        # three (not-running refusal, no-endpoint refusal, stop-while-idle
-        # refusal) run everywhere and are the floor skipping cannot satisfy.
+        # four (not-running refusal, no-endpoint refusal, stop-while-idle
+        # refusal, srt-scheme refusal) run everywhere and are the floor
+        # skipping cannot satisfy.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1)
@@ -395,20 +396,20 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=13 exercised>=3)"
-          if [ "$ran" -lt 13 ]; then
-            echo "FAIL prompt10_stream_cmds: expected at least 13 tests to run, got $ran"; exit 1
+          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=4)"
+          if [ "$ran" -lt 20 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 20 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 3 ]; then
-            echo "FAIL prompt10_stream_cmds: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the RTMP transport suite actually ran (Prompt 10 WU5)
-        # Same two-floor shape. Eleven of the twelve tests publish against the
+        # Same two-floor shape. Twelve of the thirteen tests publish against
+        # the
         # in-process double and gate on the encoder + chain (loud SKIP without
         # either; the MediaMTX proof skips loudly on its absent binary first).
-        # The twelfth (error-kind tokens) runs everywhere and is the floor
-        # that skipping cannot satisfy. The loopback double is the fast CI
-        # path by design; real WAN loss is the soak's, not this step's.
+        # The thirteenth (error-kind tokens, including the srt:// refusal)
+        # runs everywhere and is the floor skipping cannot satisfy.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1)
@@ -419,7 +420,7 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=12 exercised>=1)"
+          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=13 exercised>=1)"
           if [ "$ran" -lt 12 ]; then
             echo "FAIL prompt10_rtmp: expected at least 12 tests to run, got $ran"; exit 1
           fi

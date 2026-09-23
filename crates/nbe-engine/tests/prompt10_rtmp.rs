@@ -1715,6 +1715,8 @@ async fn mediamtx_proof_real_server_receives_h264_aac() {
     // sequence headers into tracks; `is publishing to path` proves the
     // session. (The v3 API lags the log — it still reads ready:false DURING
     // a live ffmpeg publish — so the log, not the API, is authoritative.)
+    // MediaMTX version is pinned at download; if the log wording drifts,
+    // bump the pin and the string together, never silently tune the grep.
     let mut tracks_line: Option<String> = None;
     let mut publishing_line: Option<String> = None;
     for _ in 0..100 {

@@ -880,9 +880,10 @@ restricted take builds no surface pool. Proven by
 `crates/nbe-engine/tests/zerocopy_override.rs` (RED: a cpuReadback manifest
 ran `zeroCopy`/`Table` before the wiring) with the absent-field, no-conjure,
 and refusal pins alongside. **The stream side (`outputs.stream.tapPath`) is
-still owed — no stream take path exists yet to carry it; WU4 (stream.start)
-wires it when the path lands.** The owed-lines above stand as the debt's
-history; this line scopes the closure.*
+wired (`directive.rs` stream-start path reads it into `select_with_override`);
+the field never conjures — it restricts (a stream on the chain refuses rather
+than downgrading to readback).** The owed-lines above stand as the debt's
+history; both sides are now closed.*
 
 ## Status
 

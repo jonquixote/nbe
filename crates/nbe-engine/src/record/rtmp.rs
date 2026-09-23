@@ -254,21 +254,35 @@ impl PublisherHandle {
         // sequence header, and it must survive shedding during a redial so
         // the task can replay it after the next dialog.
         if frame.kind == MSG_VIDEO {
-            let mut guard = self
-                .cached_video_seq
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if guard.is_none() {
-                *guard = Some((frame.kind, frame.payload.clone()));
+            // Cache ONLY a real sequence header (`0x17 0x00` = AVC keyframe
+            // config): a bare NALU cached here would be replayed as if it
+            // were one on every redial for the stream's whole life.
+            let is_seq =
+                frame.payload.len() >= 2 && frame.payload[0] == 0x17 && frame.payload[1] == 0x00;
+            if is_seq {
+                let mut guard = self
+                    .cached_video_seq
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if guard.is_none() {
+                    *guard = Some((frame.kind, frame.payload.clone()));
+                }
             }
         }
         if frame.kind == MSG_AUDIO {
-            let mut guard = self
-                .cached_audio_seq
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if guard.is_none() {
-                *guard = Some((frame.kind, frame.payload.clone()));
+            // Same staleness rule as video: cache only a real AAC sequence
+            // header (`0xAF 0x00`), never a bare frame — or the replayed
+            // "header" on every redial is junk the peer cannot decode.
+            let is_seq =
+                frame.payload.len() >= 2 && frame.payload[0] == 0xAF && frame.payload[1] == 0x00;
+            if is_seq {
+                let mut guard = self
+                    .cached_audio_seq
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if guard.is_none() {
+                    *guard = Some((frame.kind, frame.payload.clone()));
+                }
             }
         }
         let len = frame.payload.len();
