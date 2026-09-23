@@ -336,9 +336,9 @@ impl DirectiveHandler {
     /// `force` defaults false), per live output (record take and/or stream
     /// session — WU4 mirrors the record arms for the stream):
     /// * `(true, false)` with a live output: graceful internal `record.stop` /
-    ///   `stream.stop` (record's bounded 1.5 s wait — headroom inside the
-    ///   §16.1 2 s window for the ack pump + WS flush; the stream close is
-    ///   synchronous bookkeeping until WU5 lands the transport). Finish errors
+    ///   `stream.stop` (record's bounded 1.5 s finish on the blocking pool
+    ///   beside the stream's bounded 800 ms close — concurrent, inside the
+    ///   §16.1 2 s window for the ack pump + WS flush). Finish errors
     ///   propagate — the show still stops but the ack is withheld, never a
     ///   silent ack. With both outputs live both are stopped; the first
     ///   failure wins the withheld ack.
@@ -362,10 +362,21 @@ impl DirectiveHandler {
     /// await the transport without blocking the executor; the record half is
     /// byte-identical behavior — no record-path change).
     async fn on_show_stop_inner(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        let record_active = *self.state.record_state.lock().unwrap() == RecordState::Recording
-            && self.state.record_session.lock().unwrap().is_some();
-        let stream_active = *self.state.stream_state.lock().unwrap() == StreamState::Live
-            && self.state.stream_session.lock().unwrap().is_some();
+        // Single-scope liveness read (TOCTOU note): each output's state +
+        // session are read under one scope, session-then-state (the single lock
+        // order — see `on_stream_stop`), so the pair cannot describe different
+        // takes. A take landing after this still cannot corrupt: every quiesce
+        // arm re-checks by taking the session (`None` = already gone = `Ok`).
+        let (record_active, stream_active) = {
+            let record_session = self.state.record_session.lock().unwrap();
+            let record_state = self.state.record_state.lock().unwrap();
+            let stream_session = self.state.stream_session.lock().unwrap();
+            let stream_state = self.state.stream_state.lock().unwrap();
+            (
+                *record_state == RecordState::Recording && record_session.is_some(),
+                *stream_state == StreamState::Live && stream_session.is_some(),
+            )
+        };
         if record_active || stream_active {
             let quiesce = payload_bool(&d.payload, "quiesceOutputs", true);
             let force = payload_bool(&d.payload, "force", false);
@@ -393,42 +404,20 @@ impl DirectiveHandler {
                         }
                         tracing::warn!("show.stop: force stop, stream abandoned as-is (no close)");
                         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
+                        *self.state.stream_tap_selection.lock().unwrap() = None;
                     }
                 }
                 (true, false) => {
-                    let record_result = if record_active {
-                        *self.state.record_tap.lock().unwrap() = None;
-                        let mut session = self.state.record_session.lock().unwrap().take();
-                        let result = match session.as_mut() {
-                            Some(s) => s
-                                .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
-                                .map(|_| ())
-                                .map_err(session_err),
-                            None => {
-                                crate::record::markers::clear();
-                                Ok(())
-                            }
-                        };
-                        *self.state.record_state.lock().unwrap() = RecordState::Idle;
-                        match &result {
-                            Ok(()) => {
-                                crate::record::markers::clear();
-                                info!("show.stop: recording quiesced");
-                            }
-                            Err(DirectiveError::Timeout(_)) => {
-                                tracing::warn!(
-                                    "show.stop: graceful record shutdown timed out; take force-abandoned, file kept as-is"
-                                );
-                            }
-                            Err(e) => {
-                                crate::record::markers::clear();
-                                tracing::warn!(err = %e, "show.stop: recording finalize failed");
-                            }
-                        }
-                        Some(result)
-                    } else {
-                        None
-                    };
+                    // Concurrent teardowns: the sequential worst case (1500 ms
+                    // record + 800 ms stream = 2.3 s) exceeds the §16.1 2 s
+                    // window, so the record finish runs on the blocking pool
+                    // while the stream close awaits — first failure still wins
+                    // the withheld ack, both arms still warn. The record body
+                    // is byte-identical behavior, moved verbatim.
+                    let handler = self.clone();
+                    let record_join = tokio::task::spawn_blocking(move || {
+                        handler.quiesce_record_for_show_stop(record_active)
+                    });
                     let stream_result = if stream_active {
                         let mut session = self.state.stream_session.lock().unwrap().take();
                         let result = match session.as_mut() {
@@ -436,6 +425,9 @@ impl DirectiveHandler {
                             None => Ok(()),
                         };
                         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
+                        // A stopped stream publishes no selection; the next
+                        // start publishes fresh (see `on_stream_start`).
+                        *self.state.stream_tap_selection.lock().unwrap() = None;
                         match &result {
                             Ok(()) => {
                                 info!("show.stop: stream quiesced");
@@ -447,6 +439,19 @@ impl DirectiveHandler {
                         Some(result)
                     } else {
                         None
+                    };
+                    let record_result = match record_join.await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // A panicked/join-failed task is still a failure:
+                            // route it through the shared cleanup path (stop
+                            // clock, release sessions, clear transition) below
+                            // rather than short-circuiting past it. Holds the
+                            // error, does not return early.
+                            Some(Err(DirectiveError::Invalid(format!(
+                                "show.stop: record quiesce task failed: {e}"
+                            ))))
+                        }
                     };
                     // First failure wins. The show still stops, but the ack is
                     // withheld: a window with no graceful shutdown behind it.
@@ -482,6 +487,50 @@ impl DirectiveHandler {
         *self.state.transition.lock().unwrap() = None;
         // Outputs are stubs in this prompt; the protocol shape is the point.
         Ok(())
+    }
+
+    /// The record half of `show.stop` graceful quiescence, on the blocking pool
+    /// (see the concurrent-teardowns note in `on_show_stop_inner`): the bounded
+    /// 1.5 s `stop_and_finish` wait never stalls the executor while the stream
+    /// close awaits beside it. Body is the old sequential arm verbatim —
+    /// `None` (take landed after the liveness read, or already gone) quiesces
+    /// to `Ok`, exactly as before.
+    fn quiesce_record_for_show_stop(
+        &self,
+        record_active: bool,
+    ) -> Option<Result<(), DirectiveError>> {
+        if !record_active {
+            return None;
+        }
+        *self.state.record_tap.lock().unwrap() = None;
+        let mut session = self.state.record_session.lock().unwrap().take();
+        let result = match session.as_mut() {
+            Some(s) => s
+                .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
+                .map(|_| ())
+                .map_err(session_err),
+            None => {
+                crate::record::markers::clear();
+                Ok(())
+            }
+        };
+        *self.state.record_state.lock().unwrap() = RecordState::Idle;
+        match &result {
+            Ok(()) => {
+                crate::record::markers::clear();
+                info!("show.stop: recording quiesced");
+            }
+            Err(DirectiveError::Timeout(_)) => {
+                tracing::warn!(
+                    "show.stop: graceful record shutdown timed out; take force-abandoned, file kept as-is"
+                );
+            }
+            Err(e) => {
+                crate::record::markers::clear();
+                tracing::warn!(err = %e, "show.stop: recording finalize failed");
+            }
+        }
+        Some(result)
     }
 
     fn on_take(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
@@ -799,16 +848,22 @@ impl DirectiveHandler {
         // WU2 — the manifest's `outputs.record.tapPath` override (SPEC
         // v0.4.5). `auto` (or an absent/unreadable field) leaves the table
         // speaking; `cpuReadback` restricts the take to CPU and reports
-        // `Override`. A restricted take builds no pool: the chain it must not
-        // use costs ~25 MiB of VRAM. `None` here is exactly `select`'s
-        // behavior, so takes without the field are bit-identical to before.
+        // `Override`. A restricted take builds no pool: the shared take pool
+        // (G1 sizing — record bound + stream bound + drawn, five 1080p
+        // surfaces) is VRAM the take must not use. Alone that saves the pool;
+        // alongside a live stream the loop still holds the stream's own
+        // same-sized pool (the stream leg falls back to its own surface when
+        // the CPU take has none to share), so the restriction redirects who
+        // the surfaces serve rather than saving them. `None` here is exactly
+        // `select`'s behavior, so takes without the field are bit-identical
+        // to before.
         let override_path = record_tap_override(&self.state);
         let device = self.state.render_device();
         let pool = if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
             None
         } else {
             device.and_then(|d| {
-                match crate::record::zerocopy_pool(&d, VIEW_W, VIEW_H) {
+                match crate::record::shared_zerocopy_pool(&d) {
                     Ok(p) => Some(Arc::new(p)),
                     Err(e) => {
                         // Loud, because a silent fallback to the readback path is
@@ -961,7 +1016,18 @@ impl DirectiveHandler {
                 "stream.start while already live".into(),
             ));
         }
-        let command_url = d.payload.get("url").and_then(|v| v.as_str());
+        // A non-string `url` is a malformed endpoint (E_BAD_PAYLOAD), never
+        // silent: falling back to the manifest would publish somewhere the
+        // operator did not name. Missing/null/empty stays silent per WU3.
+        let command_url = match d.payload.get("url") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(s)) => Some(s.as_str()),
+            Some(_) => {
+                return Err(DirectiveError::Invalid(
+                    "E_BAD_PAYLOAD: stream.start url must be a string".into(),
+                ));
+            }
+        };
         // WU3 call site: the manifest answers when the command is silent.
         let manifest_url = stream_manifest_url(&self.state);
         let endpoint = resolve_stream_url(manifest_url.as_deref(), command_url)?;
@@ -987,8 +1053,21 @@ impl DirectiveHandler {
         // B2 stream side — the manifest's `outputs.stream.tapPath` override
         // (SPEC v0.4.5), record-WU2 shape. `capable` is true here (the gate
         // above refused otherwise), so the table speaks unless the operator
-        // restricted the take, which reports `Override`.
+        // restricted the take, which reports `Override`. A `cpuReadback`
+        // restriction is unlawful for streaming (no readback allowance covers
+        // this output) and is refused on the `E_NO_ZEROCOPY` path — never an
+        // Override-live selection (see `tap_path::select_with_override`).
         let override_path = stream_tap_override(&self.state);
+        if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
+            tracing::warn!("stream.start: cpuReadback override refused (no lawful readback path for streaming)");
+            return Err(stream_err(
+                crate::record::stream::StreamError::NoChain(
+                    "stream.start refused: cpuReadback tapPath is unlawful for streaming; \
+                     streaming shares frames with the encoder without CPU readback (§0.1 assumption 24)"
+                        .into(),
+                ),
+            ));
+        }
         let selection = crate::record::tap_path::select_with_override(
             capable,
             VIEW_H,
@@ -1001,9 +1080,15 @@ impl DirectiveHandler {
             "stream.start: frame path selected"
         );
         // Published for the §10.1 tick's stream side (WU5 wires the field; the
-        // shape is the record `record_tap_selection` one). Not cleared at
-        // stop: the field reads as the path the LAST stream used.
+        // shape is the record `record_tap_selection` one). Cleared on every
+        // stop path: a stopped stream publishes no selection, and the next
+        // start publishes fresh.
         *self.state.stream_tap_selection.lock().unwrap() = Some(selection);
+        // Fresh counters per stream: the loop accumulates into these for the
+        // stream's lifetime, so a new stream starts from zero (set before the
+        // state flip, while the loop still sees Idle) — the record-start shape.
+        *self.state.stream_tap_ms.lock().unwrap() = 0.0;
+        self.state.skipped_stream_frames.store(0, Ordering::SeqCst);
         *self.state.stream_session.lock().unwrap() = Some(
             crate::record::stream::StreamSession::open(endpoint, selection),
         );
@@ -1029,6 +1114,12 @@ impl DirectiveHandler {
         // atomically, so concurrent stops cannot interleave); the guard is
         // dropped BEFORE the await below, so this future stays Send and the
         // executor never blocks on a std MutexGuard.
+        //
+        // Lock order (global, session before state — never state-then-session):
+        // the session guard is acquired first and the state read nests inside
+        // it. The feed leg (`main.rs`) holds the session only across bounded
+        // `try_send`s and never nests a state lock inside, so a stop racing
+        // the feed waits boundedly instead of deadlocking.
         let mut session = {
             let mut session_guard = self.state.stream_session.lock().unwrap();
             if *self.state.stream_state.lock().unwrap() != StreamState::Live {
@@ -1045,6 +1136,7 @@ impl DirectiveHandler {
             None => Ok(()),
         };
         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
+        *self.state.stream_tap_selection.lock().unwrap() = None;
         match &result {
             Ok(()) => {
                 info!("stream.stop: session closed");
@@ -1447,18 +1539,22 @@ fn stream_manifest_url(state: &SharedEngineState) -> Option<String> {
 /// `url` counts as SILENT, never as an endpoint — an empty string must not
 /// become a valid publish target. Returned urls are trimmed.
 ///
+/// Scheme rule: the winner must be an `rtmp://` publish target
+/// (case-insensitive match) — anything else is refused `E_BAD_PAYLOAD`-shaped
+/// here, so garbage never goes Live with `publisher=None`. A non-string `url`
+/// never reaches this resolver: `on_stream_start` refuses it first.
+///
 /// The refusal is `E_BAD_PAYLOAD`-shaped: the engine has no dedicated
 /// `BadPayload` variant, so — like `marker.add`'s missing name and
 /// `record.start`'s missing record directory — it surfaces as
 /// [`DirectiveError::Invalid`], with the `E_BAD_PAYLOAD` token in the message.
 ///
-/// WU4 CALL SITE (no `stream.*` arm exists yet — this resolver is wired by
-/// WU4, not here): the new `"stream.start"` arm in
-/// [`DirectiveHandler::apply`]'s match must call
+/// Wired at [`DirectiveHandler::apply`]'s `"stream.start"` arm, which calls
 /// `resolve_stream_url(manifest_url, command_url)` where `manifest_url` is
-/// the loaded package's `show.outputs.stream.url` and `command_url` is
-/// `d.payload.get("url").and_then(|v| v.as_str())`, and propagate the `Err`
-/// (which withholds the ack, like every other failed handler).
+/// the loaded package's `show.outputs.stream.url` and `command_url` is the
+/// command's string `url` (or `None` when silent/non-string-refused), and
+/// propagates the `Err` (which withholds the ack, like every other failed
+/// handler).
 pub fn resolve_stream_url(
     manifest_url: Option<&str>,
     command_url: Option<&str>,
@@ -1467,17 +1563,23 @@ pub fn resolve_stream_url(
         let t = s.trim();
         (!t.is_empty()).then(|| t.to_string())
     };
-    if let Some(url) = command_url.and_then(present) {
-        return Ok(url);
+    let winner = if let Some(url) = command_url.and_then(present) {
+        url
+    } else if let Some(url) = manifest_url.and_then(present) {
+        url
+    } else {
+        return Err(DirectiveError::Invalid(
+            "E_BAD_PAYLOAD: stream.start needs a publish target: neither \
+             outputs.stream.url nor the command's url supplied one"
+                .into(),
+        ));
+    };
+    if !winner.to_ascii_lowercase().starts_with("rtmp://") {
+        return Err(DirectiveError::Invalid(format!(
+            "E_BAD_PAYLOAD: stream.start url is not an rtmp:// publish target: {winner}"
+        )));
     }
-    if let Some(url) = manifest_url.and_then(present) {
-        return Ok(url);
-    }
-    Err(DirectiveError::Invalid(
-        "E_BAD_PAYLOAD: stream.start needs a publish target: neither \
-         outputs.stream.url nor the command's url supplied one"
-            .into(),
-    ))
+    Ok(winner)
 }
 
 /// Ceiling for the record path: 1920x1080. Refusing above it is deliberate —

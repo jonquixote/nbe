@@ -66,9 +66,9 @@ async fn main() -> anyhow::Result<()> {
         // Stream live feed (WU5 FIX, additive only): Surface path, zero-copy,
         // NEVER readback/rgba here. Locals live on this LocalSet task (the
         // encoder is !Send, like the record thread's): the pool is built
-        // lazily on first Live frame at View geometry (record-sized —
-        // over-provisioned for a stream-only take, never under), the encoder
-        // opens lazily inside `feed_stream_surface`. Costs accumulate into
+        // lazily on the first Live frame needing its own surface, shared-sized
+        // (G1 `shared_pool_size` — over-provisioned for a stream-only take,
+        // never under), the encoder opens lazily inside `feed_stream_surface`. Costs accumulate into
         // `stream_tap_ms`, drops into `skipped_stream_frames` — never into
         // record skips nor View drops (G1). The render budget/deadline path
         // below is UNTOUCHED.
@@ -155,13 +155,13 @@ async fn main() -> anyhow::Result<()> {
                     Default::default()
                 }
             };
-            // Stream take (BEFORE draw, stream-only takes only): when the
-            // record take already retargeted, the stream shares that loan
-            // (cloned AFTER draw — one composite, N holders, G1). When only
-            // the stream is live, it needs its own surface to draw into:
-            // acquire here; on empty pool count ONE stream drop now and draw
-            // to built-in (View draws regardless — drop-Arc, not skip-draw).
-            // NEVER readback on this path.
+            // Stream take (BEFORE draw): the stream shares the record loan
+            // whenever it holds a surface (G1: one composite, N holders — the
+            // clone happens post-draw below) and takes its own surface only
+            // when the loan has none: stream-only takes, cpuReadback record
+            // takes (which draw built-in), and zero-copy takes that skipped
+            // pre-draw. When the loan holds, the record retarget is never
+            // disturbed. NEVER readback on this path.
             let streaming =
                 *render_state.stream_state.lock().unwrap() == nbe_engine::state::StreamState::Live;
             // Start/stop edge: reset per-stream feed state (finding 1). The
@@ -170,18 +170,13 @@ async fn main() -> anyhow::Result<()> {
             let mut stream_only_surface: Option<
                 std::sync::Arc<nbe_decode::zerocopy::SharedSurface>,
             > = None;
-            let mut stream_pre_dropped = false;
-            if streaming && !recording {
+            if streaming && loan.surface().is_none() {
                 if stream_pool.is_none() {
                     if let Some(dev) = render_state.render_device() {
-                        // Record-sized (over-provisioned for stream-only, never
-                        // under): reuses the one sizing rule rather than
-                        // inventing a second pool geometry.
-                        if let Ok(p) = nbe_engine::record::zerocopy_pool(
-                            &dev,
-                            nbe_engine::render::VIEW_W,
-                            nbe_engine::render::VIEW_H,
-                        ) {
+                        // ONE sizing rule (G1 `shared_pool_size`): the stream's
+                        // own pool is shared-sized — over-provisioned for a
+                        // stream-only take, never under.
+                        if let Ok(p) = nbe_engine::record::shared_zerocopy_pool(&dev) {
                             stream_pool = Some(p);
                         }
                     }
@@ -197,14 +192,12 @@ async fn main() -> anyhow::Result<()> {
                             render_state
                                 .skipped_stream_frames
                                 .fetch_add(1, Ordering::SeqCst);
-                            stream_pre_dropped = true;
                         }
                     }
                 } else {
                     render_state
                         .skipped_stream_frames
                         .fetch_add(1, Ordering::SeqCst);
-                    stream_pre_dropped = true;
                 }
             }
 
@@ -261,38 +254,21 @@ async fn main() -> anyhow::Result<()> {
             // never waits on the encoder (finding 3). Feed cost lands in
             // `stream_tap_ms`, never the render budget.
             if streaming {
-                if recording {
-                    match shared_surface {
-                        Some(surf) => {
-                            // Both-live (finding 2): share the record loan —
-                            // the stream holds the Arc only across encode +
-                            // bounded publish, then drops it (never blocks
-                            // the draw, never becomes a record skip or a View
-                            // drop; transient pressure surfaces as honest
-                            // record pre-draw skips, never network-dependent).
-                            feed_stream_leg(
-                                &render_state,
-                                &mut stream_encoder,
-                                &mut stream_leg,
-                                surf,
-                            );
-                        }
-                        None => {
-                            // No record surface to share (pre-draw skip, or a
-                            // CPU take that drew built-in): ONE honest stream
-                            // drop — record and View untouched.
-                            render_state
-                                .skipped_stream_frames
-                                .fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                } else if !stream_pre_dropped {
-                    if let Some(surf) = stream_only_surface {
-                        feed_stream_leg(&render_state, &mut stream_encoder, &mut stream_leg, surf);
-                    }
-                    // (stream_pre_dropped frames already counted ONE drop at
-                    // acquire; nothing more to do — the View drew regardless.)
+                if let Some(surf) = shared_surface {
+                    // Both-live share (finding 2): the record loan — the
+                    // stream holds the Arc only across encode + bounded
+                    // publish, then drops it (never blocks the draw, never
+                    // becomes a record skip or a View drop; transient pressure
+                    // surfaces as honest record pre-draw skips, never
+                    // network-dependent).
+                    feed_stream_leg(&render_state, &mut stream_encoder, &mut stream_leg, surf);
+                } else if let Some(surf) = stream_only_surface {
+                    // No record surface to share (stream-only take, CPU take,
+                    // or pre-draw skip): the stream's own surface, drawn above.
+                    feed_stream_leg(&render_state, &mut stream_encoder, &mut stream_leg, surf);
                 }
+                // (pre-dropped frames already counted ONE drop at acquire;
+                // nothing more to do — the View drew regardless.)
             }
             next_boundary += frame_budget;
             // If we fell far behind, resynchronize rather than spiral.
@@ -356,7 +332,10 @@ impl StreamLoopState {
 /// loan) call this — one composite, one helper. `encode_stream_frame` takes
 /// no session and no lock, so `stream.stop` (which takes `stream_session`)
 /// never waits on the encoder; the guard below spans only bounded
-/// `try_send`s. Cost lands in `stream_tap_ms`, never the render budget.
+/// `try_send`s. Lock order: the session guard never nests a state lock
+/// (session-before-state everywhere — see directive `on_stream_stop`), so a
+/// stop racing the feed waits boundedly instead of deadlocking. Cost lands in
+/// `stream_tap_ms`, never the render budget.
 fn feed_stream_leg(
     render_state: &nbe_engine::state::EngineState,
     stream_encoder: &mut Option<nbe_decode::encode::EncodeSession>,

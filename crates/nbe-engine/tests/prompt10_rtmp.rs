@@ -46,7 +46,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nbe_engine::directive::DirectiveHandler;
-use nbe_engine::record::rtmp::{audio_sequence_header, video_sequence_header, PublisherState};
+use nbe_engine::record::rtmp::{
+    audio_sequence_header, video_sequence_header, PublisherState, ENVELOPE_BITRATE_BPS,
+};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, OutgoingQueue, RecordState, StreamState};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
@@ -1235,8 +1237,14 @@ async fn stream_buffer_ms_moves_with_load_not_a_constant() {
         "buffered bytes must be nonzero under stall"
     );
     // Honest, not a guess: the ms value IS the byte count through the
-    // envelope bitrate (8 Mbps video + 192 kbps audio, §9.4).
-    let expected_ms = loaded_bytes as f64 * 8000.0 / 8_192_000.0;
+    // §9.4 envelope bitrate — pinned to the production constant, with the
+    // literal envelope derived here (8 Mbps video + 192 kbps audio).
+    assert_eq!(
+        ENVELOPE_BITRATE_BPS,
+        8_000_000 + 192_000,
+        "§9.4 envelope must be 8 Mbps video + 192 kbps audio = 8_192_000 bps"
+    );
+    let expected_ms = loaded_bytes as f64 * 8000.0 / ENVELOPE_BITRATE_BPS as f64;
     assert!(
         (loaded_ms - expected_ms).abs() < 1.0,
         "streamBufferMs ({loaded_ms}) must equal bytes→ms ({expected_ms}), not a constant"
@@ -1523,6 +1531,25 @@ async fn error_kinds_carry_stable_tokens() {
     assert!(
         parse.to_string().contains("E_BAD_PAYLOAD"),
         "parse refusal must carry E_BAD_PAYLOAD, got: {parse}"
+    );
+    // … the scheme matches case-insensitively, and anything else refuses …
+    let upper = nbe_engine::record::rtmp::parse_rtmp_url("RTMP://127.0.0.1:1935/live/key")
+        .expect("uppercase RTMP:// must parse");
+    assert_eq!(upper.host, "127.0.0.1");
+    assert_eq!(upper.port, 1935);
+    assert_eq!(upper.app, "live");
+    assert_eq!(upper.key, "key");
+    let scheme = nbe_engine::record::rtmp::parse_rtmp_url("http://host/live/key")
+        .expect_err("non-rtmp scheme must refuse");
+    assert!(
+        scheme.to_string().contains("E_BAD_PAYLOAD"),
+        "scheme refusal must carry E_BAD_PAYLOAD, got: {scheme}"
+    );
+    let srt = nbe_engine::record::rtmp::parse_rtmp_url("srt://host/live")
+        .expect_err("srt:// must refuse (SRT deferred by v0.4.5's narrowing)");
+    assert!(
+        srt.to_string().contains("E_BAD_PAYLOAD"),
+        "srt refusal must carry E_BAD_PAYLOAD, got: {srt}"
     );
     // … and teardown failures are E_NETWORK (withheld-ack path).
     nbe_engine::record::stream::set_force_close_error(true);
@@ -1949,6 +1976,16 @@ async fn both_live_stream_receives_frames_from_shared_record_surface() {
             .ok();
         return;
     };
+    // Gate G1 wiring: `record.start` builds the ONE shared pool sized
+    // record-bound + stream-bound + drawn — the pool both legs use.
+    assert_eq!(
+        pool.len(),
+        nbe_engine::record::pool::shared_pool_size(
+            nbe_engine::record::RECORD_CHANNEL_BOUND,
+            nbe_engine::record::stream::STREAM_SURFACE_BOUND,
+        ),
+        "record.start must build the shared G1 pool, not the record-only size"
+    );
     handler
         .apply(&directive("stream.start", 4, serde_json::json!({})))
         .await
@@ -2054,6 +2091,153 @@ async fn both_live_stream_receives_frames_from_shared_record_surface() {
         .apply(&directive("record.stop", 6, serde_json::json!({})))
         .await
         .expect("record cleanup stop must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// FIX round item 2 — joint live: a cpuReadback record take alongside a live
+// stream. The record leg draws built-in (no loan to share); the stream leg
+// falls back to its own same-sized pool surface and still feeds real frames.
+// The override restricts RECORD's use, not pool existence: the take stays CPU
+// while the stream flows — a cpuReadback record alone saves the pool, beside
+// a live stream the loop still pays it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn joint_live_cpu_record_beside_live_stream_still_feeds() {
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, _outgoing) = harness();
+    let _render = RenderLoop::new(state.clone()).await.ok();
+    let device = state.render_device();
+    if !nbe_engine::record::stream::chain_available(&device) {
+        eprintln!("SKIP: no zero-copy chain on this machine (§0.1 assumption 24)");
+        return;
+    }
+    let device = device.expect("chain_available proved a device");
+    let dbl = TestDouble::start();
+    let (_pkg, pkg_path, _rec) = write_record_package(&dbl.url("live", "joint-cpu-key"));
+    // Restrict the RECORD take to CPU readback (record-WU2 override).
+    {
+        let manifest_path = pkg_path.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["show"]["outputs"]["record"]["tapPath"] = serde_json::json!("cpuReadback");
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    }
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("record.start", 3, serde_json::json!({})))
+        .await
+        .expect("record.start must open");
+    // The CPU take: Override selection, NO pool — nothing to share.
+    assert!(
+        matches!(
+            *state.record_tap_selection.lock().unwrap(),
+            Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::CpuReadback
+        ),
+        "the record take must run the cpuReadback override path"
+    );
+    assert!(
+        state
+            .record_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("record session must be live")
+            .surface_pool()
+            .is_none(),
+        "a cpuReadback take builds no pool"
+    );
+    handler
+        .apply(&directive("stream.start", 4, serde_json::json!({})))
+        .await
+        .expect("stream.start must open alongside the CPU take");
+    assert!(
+        poll_until(Duration::from_secs(5), || publisher_state_of(&state)
+            == PublisherState::Live)
+        .await,
+        "publisher must be Live before the joint ticks"
+    );
+
+    // The loop's fallback leg: no loan to share, so the stream's own
+    // same-sized pool surface carries real encoder units to the double.
+    let pool = nbe_engine::record::shared_zerocopy_pool(&device)
+        .expect("stream pool must build on a chained machine");
+    let mut encoder: Option<nbe_decode::encode::EncodeSession> = None;
+    let mut seq_sent = false;
+    let record_skips_before = state.skipped_record_frames.load(Ordering::SeqCst);
+    let stream_drops_before = state.skipped_stream_frames.load(Ordering::SeqCst);
+    for _ in 0..30 {
+        let surface = pool.acquire().expect("stream pool must yield a Surface");
+        let (encode_ms, payload) = nbe_engine::record::stream::encode_stream_frame(
+            &surface,
+            &mut encoder,
+            !seq_sent,
+            &state.skipped_stream_frames,
+        );
+        let _ = encode_ms;
+        if let Some(payload) = payload {
+            let guard = state.stream_session.lock().unwrap();
+            let sess = guard.as_ref().expect("stream must stay live");
+            let _ = nbe_engine::record::stream::publish_stream_frame(
+                sess,
+                payload.seq_header,
+                &mut seq_sent,
+                &payload.units,
+                &state.skipped_stream_frames,
+            );
+        }
+        drop(surface);
+        tokio::task::yield_now().await;
+        if seq_sent && dbl.received.lock().unwrap().video_frames >= 1 {
+            break;
+        }
+    }
+    assert_eq!(
+        state.skipped_record_frames.load(Ordering::SeqCst) - record_skips_before,
+        0,
+        "the CPU take counts no skips for the stream's own-surface frames"
+    );
+    assert_eq!(
+        state.skipped_stream_frames.load(Ordering::SeqCst) - stream_drops_before,
+        0,
+        "the stream feeds beside a CPU take with zero drops"
+    );
+    assert!(seq_sent, "joint leg sends the header");
+    assert!(
+        poll_until(Duration::from_secs(10), || {
+            let r = dbl.received.lock().unwrap();
+            r.video_frames >= 1 && r.video_seq
+        })
+        .await,
+        "double must receive joint-leg video with seq: {:?}",
+        dbl.received.lock().unwrap(),
+    );
+    // The restriction held for the whole run: record still CPU, no pool.
+    assert!(
+        matches!(
+            *state.record_tap_selection.lock().unwrap(),
+            Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::CpuReadback
+        ),
+        "the record take must stay on the cpuReadback path"
+    );
+
+    handler
+        .apply(&directive("stream.stop", 5, serde_json::json!({})))
+        .await
+        .expect("stream cleanup stop must succeed");
+    // The CPU take was never fed: nothing to finalize (empty-take refusal),
+    // but the state still returns to Idle.
+    let _ = handler
+        .apply(&directive("record.stop", 6, serde_json::json!({})))
+        .await;
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        RecordState::Idle,
+        "record cleanup must return the state machine to Idle"
+    );
 }
 
 // ---------------------------------------------------------------------------

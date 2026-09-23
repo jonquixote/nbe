@@ -22,9 +22,11 @@
 //! Session bookkeeping ONLY — no transport, no publisher, no encoder session.
 //! The live streaming objects arrive in WU5; this side holds only the publish
 //! target + the published selection, all `Send`, so engine state can hold it.
-//! The stream holds no surface pool: pool ownership (one pool or two, who
-//! sizes it) is WU5's G1 decision, and a pool built here with nothing to draw
-//! into it would be ~25 MiB of VRAM held for no take.
+//! The session holds no surface pool: the loop shares the record take's
+//! G1-sized pool whenever one exists (one composite, N `Arc` holders) and
+//! falls back to its own same-sized pool otherwise (stream-only, CPU, and
+//! pre-draw-skip frames) — every pool built per [`STREAM_SURFACE_BOUND`] +
+//! [`super::pool::shared_pool_size`], never ad hoc.
 //!
 //! ## Defined behavior
 //!
@@ -48,6 +50,13 @@ use std::sync::Arc;
 
 use super::rtmp::{parse_rtmp_url, spawn_publisher, PublisherHandle, PublisherState};
 use crate::record::tap_path::Selection;
+
+/// The stream leg's in-flight surface bound (G1 sizing input): one surface
+/// being drawn plus one held across encode + bounded publish. The loop holds
+/// at most one own-surface plus the shared loan transiently, so this covers
+/// the worst case; the shared pool is
+/// `record bound + STREAM_SURFACE_BOUND + drawn` (see [`super::pool`]).
+pub const STREAM_SURFACE_BOUND: usize = 2;
 
 /// Forced-unavailable seam (tests only): when set, [`chain_available`]
 /// reports no chain without touching the GPU — the mirror of record's
@@ -205,7 +214,10 @@ impl StreamSession {
 
     /// Close the session gracefully: the transport is gone BEFORE this returns
     /// (WU5) — so the ack that follows is honest. With the close-error seam
-    /// armed this reports [`StreamError::Teardown`] and closes nothing.
+    /// armed this reports [`StreamError::Teardown`] and closes nothing: the
+    /// session stays `!closed` (consumed-but-unclosed — the caller still takes
+    /// it out of state and ends `Live`, since no pipeline remains to continue
+    /// with, but `closed` reports the transport truth: no graceful close ran).
     ///
     /// Async by construction: awaits the publisher's `shutdown_and_wait`
     /// (tokio sleep, never blocking) so the directive path never stalls the
@@ -503,7 +515,10 @@ mod tests {
         set_force_close_error(true);
         let err = s.stop_and_close().await.expect_err("armed seam must fail");
         assert!(err.to_string().contains("E_NETWORK"));
-        assert!(!s.is_closed(), "failed close closes nothing");
+        assert!(
+            !s.is_closed(),
+            "consumed-but-unclosed: a failed close closes nothing (the caller still ends Live)"
+        );
         set_force_close_error(false);
         s.stop_and_close().await.expect("released seam must close");
         assert!(s.is_closed());

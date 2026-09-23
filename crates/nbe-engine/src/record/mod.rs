@@ -54,6 +54,25 @@ pub fn zerocopy_pool(
 ) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
     nbe_decode::zerocopy::SurfacePool::new(device, width, height, thread::RECORD_CHANNEL_BOUND + 1)
 }
+
+/// Build a take's SHARED surface pool at View geometry (Gate G1).
+///
+/// Sized [`pool::shared_pool_size`] (`record bound + stream bound + drawn`):
+/// the both-live stream holds the shared loan across encode + bounded publish,
+/// so record's bound plus the drawn frame no longer fit in a record-sized pool
+/// and record skips would rise. Record's shed-before-draw discipline is
+/// untouched — same take path, bigger pool. Used by `record.start` and by the
+/// loop's stream leg (one sizing rule, never ad hoc).
+pub fn shared_zerocopy_pool(
+    device: &wgpu::Device,
+) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
+    nbe_decode::zerocopy::SurfacePool::new(
+        device,
+        crate::render::VIEW_W,
+        crate::render::VIEW_H,
+        pool::shared_pool_size(thread::RECORD_CHANNEL_BOUND, stream::STREAM_SURFACE_BOUND),
+    )
+}
 pub use session::{encoder_available, set_force_no_encoder, RecordSession, SessionError};
 pub use thread::{
     await_done, ControlMsg, RecordMsg, SessionResult, ThreadArgs, RECORD_CHANNEL_BOUND,

@@ -21,16 +21,28 @@
 //! 4. `show.stop` quiescence: graceful (active stream stops, ack after
 //!    teardown), force path (warns + stops anyway), `quiesceOutputs=false` +
 //!    no force refused — the record quiescence table shape.
-//! 5. The stream `tapPath` manifest field flows into the selection via
-//!    `select_with_override` (the stream side of B2).
+//! 5. The stream `tapPath` manifest field is READ but `cpuReadback` for
+//!    streaming is refused `E_NO_ZEROCOPY` (no lawful readback path — never an
+//!    Override-live selection).
 //! 6. A second `stream.start` while live → `E_FORBIDDEN_STATE` (ceiling:
 //!    exactly one live stream, §9.1).
+//! 7. `url` validation: garbage-scheme and non-string urls refuse
+//!    `E_BAD_PAYLOAD` (hardware-free); an uppercase `RTMP://` scheme resolves.
+//! 8. Fresh counters per stream (`skipped_stream_frames` + `stream_tap_ms`
+//!    zeroed at start, the record-start shape) and the selection clears on
+//!    every stop path.
+//! 9. `show.stop` with both outputs live quiesces inside the §16.1 2 s window
+//!    (concurrent teardowns, first failure wins) and a failing stream alone
+//!    withholds the ack.
+//! 10. A `stream.stop` racing the feed leg's session lock returns boundedly
+//!     (session-before-state order — never a deadlock).
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use nbe_engine::directive::{DirectiveError, DirectiveHandler};
 use nbe_engine::record::stream as stream_glue;
-use nbe_engine::record::tap_path::{Consumer, TapPath};
+use nbe_engine::record::tap_path::TapPath;
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, OutgoingQueue, StreamState};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
@@ -166,6 +178,24 @@ fn write_package(
     .unwrap();
     let pkg_path = pkg.path().to_path_buf();
     (pkg, pkg_path)
+}
+
+/// Package variant with a record target (absolute tempdir path) so
+/// `record.start` with `{}` opens a take there. Returns the package tempdir
+/// (kept alive), the package path, and the record dir tempdir (kept alive).
+fn write_record_package(
+    stream_url: Option<&str>,
+    tap: Option<&str>,
+) -> (tempfile::TempDir, std::path::PathBuf, tempfile::TempDir) {
+    let rec = tempfile::tempdir().expect("record tempdir must succeed");
+    let (pkg, pkg_path) = write_package(stream_url, tap);
+    let manifest_path = pkg_path.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["show"]["outputs"]["record"] =
+        serde_json::json!({ "directory": rec.path().to_string_lossy() });
+    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    (pkg, pkg_path, rec)
 }
 
 async fn load_and_start(handler: &DirectiveHandler, pkg_path: &std::path::Path) {
@@ -653,50 +683,37 @@ async fn show_stop_with_quiesce_outputs_false_and_force_stops_immediately() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn stream_tap_path_cpu_readback_flows_into_selection() {
-    // Record-side precedent (WU2): the manifest's tapPath override reaches the
-    // session via select_with_override and reports Override.
+async fn stream_tap_path_cpu_readback_is_refused_no_zerocopy() {
+    // Recording's v0.4.2 readback allowance does not extend to streaming
+    // (§0.1 assumption 24): a `cpuReadback` stream take has no lawful path,
+    // so `stream.start` refuses on the E_NO_ZEROCOPY path — never an
+    // Override-live selection. Hardware-free: the refusal precedes the
+    // encoder and chain probes.
     let _serial = SERIAL.lock().await;
-    if !hw_or_skip() {
-        return;
-    }
-    let (state, handler, _) = harness();
-    if !chain_or_skip(&state).await {
-        return;
-    }
+    let (state, handler, outgoing) = harness();
     let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), Some("cpuReadback"));
     load_and_start(&handler, &pkg_path).await;
 
-    handler
+    let err = handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
         .await
-        .expect("stream.start must open");
-    assert_live(&state);
+        .expect_err("a cpuReadback stream take must be refused");
 
-    let sel = selection_of(&state);
-    assert_eq!(
-        sel.path,
-        TapPath::CpuReadback,
-        "a cpuReadback stream take runs the override path"
+    assert!(
+        is_no_zerocopy(&err),
+        "expected E_NO_ZEROCOPY token in the refusal, got: {err}"
     );
     assert_eq!(
-        sel.reason,
-        nbe_engine::record::tap_path::Reason::Override,
-        "the restriction must say Override: an operator action, not the table"
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "refused start must leave the state machine Idle"
     );
-    // The override consulted the stream consumer row, not the record one.
-    let expected = nbe_engine::record::tap_path::select_with_override(
-        true,
-        nbe_engine::render::VIEW_H,
-        Consumer::Stream,
-        Some(TapPath::CpuReadback),
+    assert!(state.stream_session.lock().unwrap().is_none());
+    assert!(
+        state.stream_tap_selection.lock().unwrap().is_none(),
+        "refused start publishes no selection"
     );
-    assert_eq!(sel, expected);
-
-    handler
-        .apply(&directive("stream.stop", 4, serde_json::json!({})))
-        .await
-        .expect("cleanup stop must succeed");
+    assert!(!acked(&outgoing, 3), "refused start must not ack");
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +760,395 @@ async fn second_stream_start_while_live_is_forbidden() {
     );
 
     handler
-        .apply(&directive("stream.stop", 5, serde_json::json!({})))
+        .apply(&directive("stream.stop", 4, serde_json::json!({})))
         .await
         .expect("cleanup stop must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// 7. `url` validation: garbage-scheme and non-string urls refuse E_BAD_PAYLOAD
+// (hardware-free — the endpoint check precedes the probes); an uppercase
+// RTMP:// scheme resolves (case-insensitive match, parsed by rtmp.rs).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn stream_start_with_garbage_url_refuses_bad_payload() {
+    // Garbage must never go Live with publisher=None: the scheme is validated
+    // at resolve time, not discovered later by a missing transport.
+    let _serial = SERIAL.lock().await;
+    let (state, handler, outgoing) = harness();
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+
+    let err = handler
+        .apply(&directive(
+            "stream.start",
+            3,
+            serde_json::json!({"url": "notaurl"}),
+        ))
+        .await
+        .expect_err("a non-rtmp url must refuse");
+
+    assert!(
+        is_bad_payload(&err),
+        "expected E_BAD_PAYLOAD-shaped refusal, got: {err}"
+    );
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "refused start must leave the state machine Idle"
+    );
+    assert!(state.stream_session.lock().unwrap().is_none());
+    assert!(!acked(&outgoing, 3), "refused start must not ack");
+}
+
+#[tokio::test]
+async fn stream_start_with_non_string_url_refuses_bad_payload() {
+    // A present-but-non-string `url` is a malformed endpoint, never silent:
+    // silently falling back to the manifest would publish somewhere the
+    // operator did not name.
+    let _serial = SERIAL.lock().await;
+    let (state, handler, outgoing) = harness();
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+
+    let err = handler
+        .apply(&directive(
+            "stream.start",
+            3,
+            serde_json::json!({"url": 42}),
+        ))
+        .await
+        .expect_err("a non-string url must refuse");
+
+    assert!(
+        is_bad_payload(&err),
+        "expected E_BAD_PAYLOAD-shaped refusal, got: {err}"
+    );
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "refused start must leave the state machine Idle"
+    );
+    assert!(state.stream_session.lock().unwrap().is_none());
+    assert!(!acked(&outgoing, 3), "refused start must not ack");
+}
+
+#[tokio::test]
+async fn stream_start_with_uppercase_scheme_resolves() {
+    // Case-insensitive `rtmp://` match at resolve time (parsed by rtmp.rs):
+    // the endpoint is kept verbatim and the stream opens.
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, _) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+
+    handler
+        .apply(&directive(
+            "stream.start",
+            3,
+            serde_json::json!({"url": "RTMP://127.0.0.1:9/live/key"}),
+        ))
+        .await
+        .expect("an uppercase RTMP:// url must resolve and open");
+    assert_live(&state);
+    assert_eq!(
+        endpoint_of(&state),
+        "RTMP://127.0.0.1:9/live/key",
+        "the resolved endpoint is kept verbatim"
+    );
+
+    // Settle: let a failing transport's first dial complete so its publisher
+    // has a live-loop bunker before teardown (the immediate-stop case races
+    // the dial: shutdown then time-outs while the task is still connecting on
+    // a listenerless port).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    handler
+        .apply(&directive("stream.stop", 4, serde_json::json!({})))
+        .await
+        .expect("cleanup stop must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// 8. Fresh counters per stream + selection cleared on every stop path.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, _) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .expect("stream.start must open");
+    assert_live(&state);
+
+    // Dirty the stream counters through the public counting hook (no state
+    // writes): three dropped frames into the live stream's own counter.
+    {
+        let guard = state.stream_session.lock().unwrap();
+        let sess = guard.as_ref().expect("stream session must be live");
+        let mut encoder = None;
+        let mut seq_sent = false;
+        for _ in 0..3 {
+            let ms = stream_glue::feed_stream_surface(
+                None,
+                &mut encoder,
+                &mut seq_sent,
+                sess,
+                &state.skipped_stream_frames,
+            );
+            assert_eq!(ms, 0.0);
+        }
+    }
+    assert_eq!(
+        state
+            .skipped_stream_frames
+            .load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "three dropped frames must be counted"
+    );
+
+    handler
+        .apply(&directive("stream.stop", 4, serde_json::json!({})))
+        .await
+        .expect("stop must succeed");
+    assert!(
+        state.stream_tap_selection.lock().unwrap().is_none(),
+        "a stopped stream publishes no selection"
+    );
+
+    handler
+        .apply(&directive("stream.start", 5, serde_json::json!({})))
+        .await
+        .expect("second stream.start must open");
+    assert_eq!(
+        state
+            .skipped_stream_frames
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a new stream starts its drop counter from zero (record-start shape)"
+    );
+    assert_eq!(
+        *state.stream_tap_ms.lock().unwrap(),
+        0.0,
+        "a new stream starts its tap-ms counter from zero"
+    );
+    assert!(
+        state.stream_tap_selection.lock().unwrap().is_some(),
+        "a new stream publishes a fresh selection"
+    );
+
+    handler
+        .apply(&directive("stream.stop", 6, serde_json::json!({})))
+        .await
+        .expect("cleanup stop must succeed");
+    assert!(
+        state.stream_tap_selection.lock().unwrap().is_none(),
+        "stop clears the selection again"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. `show.stop` with both outputs live: concurrent teardowns stay inside the
+// §16.1 2 s window with first-failure-wins; a failing stream alone withholds
+// the ack through the same concurrent path.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn show_stop_with_both_live_quiesces_inside_two_seconds_first_failure_wins() {
+    // Both outputs live (record take empty, stream transport-less): the record
+    // quiesce fails E_RECORD_INPUT (nothing to finalize) while the stream
+    // closes cleanly — the record error wins (ordered first), the ack is
+    // withheld, both outputs are consumed, and the whole stop fits the window
+    // the sequential worst case (1500 ms + 800 ms) would exceed.
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, outgoing) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path, _rec) = write_record_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("record.start", 3, serde_json::json!({})))
+        .await
+        .expect("record.start must open");
+    handler
+        .apply(&directive("stream.start", 4, serde_json::json!({})))
+        .await
+        .expect("stream.start must open alongside the take");
+
+    let start = Instant::now();
+    let err = handler
+        .apply(&directive("show.stop", 5, serde_json::json!({})))
+        .await
+        .expect_err("an empty take cannot finalize: the record error must surface");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "both-live quiesce must fit the §16.1 2 s window, took {elapsed:?}"
+    );
+    assert!(
+        err.to_string().contains("E_RECORD_INPUT"),
+        "first failure wins (record ordered first), got: {err}"
+    );
+    assert_ne!(
+        state.last_applied(),
+        5,
+        "failed quiesce must not advance applied"
+    );
+    assert!(!acked(&outgoing, 5), "failed quiesce must not ack");
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        nbe_engine::state::RecordState::Idle,
+        "record quiesce consumes the take even on failure"
+    );
+    assert!(state.record_session.lock().unwrap().is_none());
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "stream quiesce runs beside the failing record"
+    );
+    assert!(state.stream_session.lock().unwrap().is_none());
+    assert!(
+        state.stream_tap_selection.lock().unwrap().is_none(),
+        "quiesced stream publishes no selection"
+    );
+    assert!(
+        !state.is_running(),
+        "failed quiesce still stops the show clock"
+    );
+}
+
+#[tokio::test]
+async fn show_stop_with_failing_stream_withholds_ack() {
+    // Stream-only failure through the concurrent path: the teardown error
+    // surfaces (no ack, applied frozen) and the live state still ends.
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, outgoing) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .expect("stream.start must open");
+    assert_live(&state);
+
+    let _force = ForceCloseErrorGuard::set();
+    let start = Instant::now();
+    let err = handler
+        .apply(&directive("show.stop", 4, serde_json::json!({})))
+        .await
+        .expect_err("a failed stream teardown must surface, never ack");
+    let elapsed = start.elapsed();
+
+    assert!(
+        err.to_string().contains("E_NETWORK"),
+        "expected E_NETWORK, got: {err}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "failed quiesce must fit the §16.1 2 s window, took {elapsed:?}"
+    );
+    assert_ne!(
+        state.last_applied(),
+        4,
+        "failed quiesce must not advance applied"
+    );
+    assert!(!acked(&outgoing, 4), "failed quiesce must not ack");
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "failed teardown still ends the live state"
+    );
+    assert!(state.stream_session.lock().unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 10. A `stream.stop` racing the feed leg's session lock returns boundedly:
+// session-before-state order means wait, never deadlock. The holder is a real
+// OS thread (the feed leg holds the guard only across bounded `try_send`s);
+// the stop must proceed once it releases.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_stop_during_feed_lock_returns_boundedly() {
+    let _serial = SERIAL.lock().await;
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, outgoing) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .expect("stream.start must open");
+    assert_live(&state);
+
+    let feed_state = state.clone();
+    let (taken_tx, taken_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _held = feed_state.stream_session.lock().unwrap();
+        // Signal UNDER the guard, so the stop below provably waits on it
+        // rather than winning the race uncontended.
+        let _ = taken_tx.send(());
+        std::thread::sleep(Duration::from_millis(300));
+    });
+    taken_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("holder must take the feed lock");
+    let start = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        handler.apply(&directive("stream.stop", 4, serde_json::json!({}))),
+    )
+    .await
+    .expect("stream.stop must return boundedly, never deadlock")
+    .expect("stop after the feed lock releases must close cleanly");
+    let elapsed = start.elapsed();
+    holder.join().expect("holder thread must exit");
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stop-during-feed took {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "stop must have waited on the feed lock, took {elapsed:?}"
+    );
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Idle,
+        "stop must return the state machine to Idle"
+    );
+    assert!(state.stream_session.lock().unwrap().is_none());
+    assert!(acked(&outgoing, 4));
 }

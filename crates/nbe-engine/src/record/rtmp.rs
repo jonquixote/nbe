@@ -94,9 +94,10 @@ pub struct RtmpUrl {
 }
 
 /// Parse an RTMP publish URL. Empty segments refuse loudly, never silently.
+/// The scheme matches case-insensitively (`RTMP://` is the same target).
 pub fn parse_rtmp_url(url: &str) -> Result<RtmpUrl, RtmpError> {
-    let rest = url
-        .strip_prefix("rtmp://")
+    let rest = (url.len() >= 7 && url[..7].eq_ignore_ascii_case("rtmp://"))
+        .then(|| &url[7..])
         .ok_or_else(|| RtmpError::Parse(format!("not an rtmp:// URL: {url}")))?;
     let (host_port, path) = rest
         .split_once('/')
@@ -444,12 +445,20 @@ async fn publisher_task(
             break;
         }
         set_state(PublisherState::Reconnecting);
-        let stream = match tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio::net::TcpStream::connect((url.host.as_str(), url.port)),
-        )
-        .await
-        {
+        let stream = match tokio::select! {
+            res = tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect((url.host.as_str(), url.port)),
+            ) => res,
+            // A task mid-dial on a listenerless port must still answer a stop:
+            // stop empties the bunker, and the teardown window (800 ms) sits
+            // inside CONNECT_TIMEOUT, so without this arm the wait times the
+            // dial out — never the shutdown.
+            _ = shutdown.notified() => Ok(Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "shutdown during dial",
+            ))),
+        } {
             Ok(Ok(s)) => s,
             _ => {
                 sleep_or_shutdown(&shutdown, pause).await;

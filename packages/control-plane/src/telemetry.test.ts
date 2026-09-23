@@ -95,14 +95,15 @@ test("engine telemetry requires streamBufferMs and parses a distinctive value", 
 
 test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfully", () => {
   // Idle pre-start: no engine report yet. Both keys present, stubbed —
-  // streamState "idle" (as commanded), streamBufferMs 0 (nothing to measure).
+  // streamState "idle" (as commanded), streamBufferMs -1 (NO-SESSION sentinel:
+  // no engine frame to measure from; 0 is the drained-live live value).
   {
     const state = new ControlPlaneState();
     const tick = buildTick(state, newWorldTelemetry(), Date.now());
     assert.ok("streamState" in tick, "pre-start tick must carry streamState, never omit it");
     assert.ok("streamBufferMs" in tick, "pre-start tick must carry streamBufferMs, never omit it");
     assert.equal(tick.streamState, "idle");
-    assert.equal(tick.streamBufferMs, 0);
+    assert.equal(tick.streamBufferMs, -1);
     assert.equal(tick.engineConnected, false);
   }
 
@@ -136,7 +137,7 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
     const tick = buildTick(state, world, Date.now());
     assert.ok("streamState" in tick && "streamBufferMs" in tick, "stale ticks stay complete");
     assert.equal(tick.streamState, "live", "engine loss must not rewrite the commanded state");
-    assert.equal(tick.streamBufferMs, 0, "a stale engine report stubs the buffer to 0");
+    assert.equal(tick.streamBufferMs, -1, "a stale engine report stubs the buffer to -1 (no fresh data)");
     assert.equal(tick.engineConnected, false);
   }
 });

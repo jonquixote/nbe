@@ -391,8 +391,11 @@ async fn the_pool_is_built_at_start_sized_to_the_channel_and_gone_after_stop() {
         .expect("a zero-copy take has a pool");
     assert_eq!(
         pool.len(),
-        nbe_engine::record::RECORD_CHANNEL_BOUND + 1,
-        "one surface in flight per channel slot, plus the one being drawn"
+        nbe_engine::record::pool::shared_pool_size(
+            nbe_engine::record::RECORD_CHANNEL_BOUND,
+            nbe_engine::record::stream::STREAM_SURFACE_BOUND,
+        ),
+        "G1 sized: record bound + stream bound + drawn (stream's slot stays headroom until it is live)"
     );
     assert_eq!(
         pool.dimensions(),
