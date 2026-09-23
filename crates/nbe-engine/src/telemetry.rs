@@ -30,15 +30,18 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     let tap = *state.record_tap_selection.lock().unwrap();
     // streamBufferMs: the live session's admitted-but-unwritten bytes through
     // the §9.4 envelope (channel backlog INCLUDED — see rtmp module docs).
-    // 0.0 with no session. Read under one short lock; the counter itself is
-    // atomic, so the tick never waits on the socket.
+    // -1.0 with no session: the NO-SESSION sentinel (no live session: pre-start, refused, or stopped). Negative ms is
+    // impossible, so the stub can never collide with an honest drained-live
+    // 0.0 (v0.4.4 stub rule: a stub must not be a legal value). Read under
+    // one short lock; the counter itself is atomic, so the tick never waits
+    // on the socket.
     let stream_buffer_ms = state
         .stream_session
         .lock()
         .unwrap()
         .as_ref()
         .map(|s| s.stream_buffer_ms())
-        .unwrap_or(0.0);
+        .unwrap_or(-1.0);
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
