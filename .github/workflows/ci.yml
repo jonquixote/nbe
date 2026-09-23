@@ -316,6 +316,138 @@ jobs:
           else
             echo "No skips: this runner ran a take on both frame paths."
           fi
+      - name: the G1 shared-pool suite actually ran (Prompt 10 WU1)
+        # Hermetic by design (Arc slots under the pool's free rule, no GPU):
+        # all 3 run everywhere, so the floors are equal — and the exercised
+        # floor is what keeps that true: the next hardware-touching test added
+        # here either runs on the runner or fails this step.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_g1 -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
+          if [ "$ran" -lt 3 ]; then
+            echo "FAIL zerocopy_g1: expected at least 3 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 3 ]; then
+            echo "FAIL zerocopy_g1: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the tapPath override suite actually ran (Prompt 10 WU2)
+        # Same two-floor shape. Three of the five tests open a take and gate on
+        # the hardware encoder (loud SKIP without one); the other two
+        # (refusal paths, typed-model law) run everywhere and are the floor
+        # that skipping cannot satisfy.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_override -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_override: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=2)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL zerocopy_override: expected at least 5 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL zerocopy_override: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream url precedence suite actually ran (Prompt 10 WU3)
+        # Pure logic over resolve_stream_url (no engine state, no encoder):
+        # all 10 run everywhere, floors equal, same reason as the G1 block.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test stream_url_precedence -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "stream_url_precedence: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=10)"
+          if [ "$ran" -lt 10 ]; then
+            echo "FAIL stream_url_precedence: expected at least 10 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 10 ]; then
+            echo "FAIL stream_url_precedence: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream commands suite actually ran (Prompt 10 WU4)
+        # Same two-floor shape. Ten of the thirteen tests open a stream and
+        # gate on the encoder + chain (loud SKIP without either); the other
+        # three (not-running refusal, no-endpoint refusal, stop-while-idle
+        # refusal) run everywhere and are the floor skipping cannot satisfy.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=13 exercised>=3)"
+          if [ "$ran" -lt 13 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 13 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 3 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the RTMP transport suite actually ran (Prompt 10 WU5)
+        # Same two-floor shape. Eleven of the twelve tests publish against the
+        # in-process double and gate on the encoder + chain (loud SKIP without
+        # either; the MediaMTX proof skips loudly on its absent binary first).
+        # The twelfth (error-kind tokens) runs everywhere and is the floor
+        # that skipping cannot satisfy. The loopback double is the fast CI
+        # path by design; real WAN loss is the soak's, not this step's.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=12 exercised>=1)"
+          if [ "$ran" -lt 12 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 12 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 1 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream telemetry suite actually ran (Prompt 10 WU6)
+        # Same two-floor shape. One of the three tests goes live and gates on
+        # the encoder + chain (loud SKIP without either); the other two
+        # (pre-start stub, refused-start stub) run everywhere and are the floor
+        # that skipping cannot satisfy.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_telemetry -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_telemetry: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=2)"
+          if [ "$ran" -lt 3 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 3 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
