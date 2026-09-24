@@ -904,3 +904,227 @@ Superseded text kept per §2c:
 > separate word.
 
 The word was given.
+
+
+---
+
+# Prompt 10 — Streaming, measured (PR #30 repair round, 2026-09-23)
+
+Normative machine (`docs/hardware-baseline.txt`: i7-9750H, MacBookPro15,1),
+debug build (`cargo test` profile), the dress-shaped test package at 1080p30.
+Every number below is a **measurement, not a threshold**: thresholds belong to
+the soak (`docs/soak-protocol.md`). Loads are pasted per run.
+
+## Outcome
+
+The stream encodes on its own thread and the render loop's share of a live
+stream is a surface loan plus one bounded `try_send`. The encoder open that
+PR #30 put on the first live tick — **35.6–39.9 ms, over the 33.3 ms budget in
+10 of 11 starts** — now happens on the stream thread. `stream.start` on the
+directive path went from **37.2 ms to 4.3 ms**. The stream carries the show's
+audio. One defect found on the way is in merged code: the zero-copy pool
+handed out surfaces VideoToolbox was still reading.
+
+## The loop's timed region, before and after
+
+`tick total` is the loop's timed region per frame (the tick without the sleep
+to the next boundary); 300 frames per configuration, after 60 warm-up frames,
+same package, same double as the ingest. **Before** is PR #30 at `bf0274c`,
+its `main.rs` loop body copied verbatim into a measurement test (the loop was
+in the binary, where nothing else could run it); **after** is
+`tick::run_loop`, the function `main` now calls
+(`prompt10_rtmp::measure_loop_timed_region_by_output`, `#[ignore]`).
+
+| config | before: tick total mean / p95 / max / over 33.3 ms | after: tick total mean / p95 / max / over | after: stream share mean / max | after: record share mean / max |
+|---|---|---|---|---|
+| none | 1.465 / 1.861 / 2.107 / 0 | 1.498 / 1.881 / 2.233 / 0 | 0.001 / 0.012 | — |
+| record alone | 1.570 / 1.879 / 2.022 / 0 | 1.424 / 1.807 / 2.068 / 0 | — | 0.016 / 0.050 |
+| stream alone | 1.727 / 1.937 / **39.881 / 1** | 1.440 / 1.825 / 3.223 / 0 | **0.019 / 0.054** | — |
+| both | 1.582 / 1.992 / 2.262 / 0 | 1.454 / 1.829 / 3.400 / 0 | 0.008 / 0.029 | 0.016 / 0.108 |
+| first live tick after `stream.start` (10 cycles) | **35.6–39.0 ms in 9 of 10** (+ the 39.9 ms above: 10 of 11) | inside the rows above (max 3.4 ms) | | |
+
+Loads (1 m): before 2.28–2.33 across the run; after 2.37–2.75. Both under the
+soak's 3.0 ceiling. An earlier after-run at 2.96–3.35 (above the ceiling for
+three of four configurations) gave the same shape and is not the one quoted.
+Skips and View drops: 0 in every row, before and after.
+
+What the delta is shaped like: **before**, the per-frame cost of a live stream
+was small on average (VideoToolbox encodes asynchronously) but the encoder
+open landed on the first live tick — the one frame over budget in the
+`stream` row is that tick, and the ten `stream.start` cycles reproduced it
+nine times (35.6–39.0 ms; the first reused the previous stream's warm
+encoder — the edge defect below). **After**,
+the stream's share of a tick is 0.019 ms mean and 0.054 ms worst (stream alone) — a send, not an encode — and
+the encoder opens on the thread (43–60 ms there, off both the loop and the directive path; mean encode call on the thread 0.05–0.11 ms).
+
+**A second PR #30 defect the measurement exposed.** The old loop reset its
+per-stream state (encoder, sequence-header flag) only when a tick *observed*
+a stop→start edge. A `stream.stop` and `stream.start` with no tick between
+them — which the measurement does between configurations — reused the previous
+stream's encoder and its "sequence header already sent" flag, so the second
+stream would have opened with no AVC sequence header. Per-stream state now
+lives and dies with the stream thread, so there is no edge to miss.
+
+## §9.7 — record alone, stream alone, both
+
+§9.7: one composite, no recomposite, no CPU load beyond the encoder
+sessions'. Process CPU (all threads: loop, audio driver, record and stream
+threads, publisher) over each 10 s window, same run as the table above:
+
+| config | before (`bf0274c`) | after | after, increment over none |
+|---|---:|---:|---:|
+| none | 9.3 % | 9.3 % | — |
+| record alone | 14.6 % | 13.1 % | +3.8 |
+| stream alone | 13.3 % | 15.1 % | +5.8 |
+| both | 17.0 % | 19.6 % | +10.3 (record + stream = +9.6) |
+
+(% of one core, whole process.) The stream's increment rose from before to
+after because the stream now carries audio — AAC encode on the stream thread —
+which PR #30's did not.
+
+The increments add: record's plus stream's is both's to within a point,
+which is what one composite shared by two encoders looks like — a
+recomposite per consumer would show in the loop's timed region, and that is
+flat across all four rows. The stream's increment is not only
+VideoToolbox: it includes AAC encode and the RTMP publisher. Debug build,
+so absolute CPU is high; the comparison between rows is the claim.
+
+## `stream.start` / `stream.stop` on the directive path
+
+| | before (`bf0274c`) | after |
+|---|---:|---:|
+| `stream.start`, 10 cycles | mean 37.2 ms, p95 37.7, **10/10 over 33.3 ms** | mean 4.3 ms, p95 4.8, 0/10 over |
+| `stream.stop` | 6.1–6.3 ms (then the loop dropped the encoder on its next tick) | 26–37 ms (thread exits, VideoToolbox invalidated, transport closed — all before the ack) |
+
+Where `stream.start`'s time went, measured in isolation (debug): the stream
+pool build **1.2 ms**; `encoder_available()` **36–38 ms per call, 187 ms the
+first** — it opened and closed a real VideoToolbox session every time, on
+every `record.start` too; a 5 s `AudioTap` **12.6 ms**. The probe now caches
+a positive answer for the process (warmed at boot); the stream tap is a 1 s
+ring. `stream.stop` got slower because the encoder teardown moved from the
+render loop onto the stop path, where the ack waits for it.
+
+## G1 — the shared pool, on real surfaces
+
+`zerocopy_g1::a_stalled_stream_costs_record_nothing`: the real GPU pool from
+`shared_zerocopy_pool`, a real `RenderLoop` drawing through record's
+`begin_tap_frame` / `end_tap_frame`, the real `hand_off_stream_surface`,
+record driven deterministically at its bound (full queue + one encoding every
+tick), a stream thread stalled holding its in-encode surface and a full queue:
+
+```
+G1 guard: pool 7 surfaces, 60 frames: record encoded 58, record skips 0, stream sheds 57, worst stream handoff 8.874µs, View drops 0
+```
+
+The sizing is `(record queue + 1) + (stream queue + 1) + drawn = 7`; PR #30's
+was `record + stream + 1 = 5`, which omitted each consumer's in-encode
+surface — at 5 this guard fails (`a stalled stream must never cost record a
+frame`). The first version of this guard did **not** fail at 5: its record
+consumer drained faster than the loop and never reached its worst hold. Its
+own falsification found that (`f7d6c08`).
+
+On the production loop with both outputs live
+(`both_live_stream_shares_the_record_composite`):
+`BOTH LIVE: 60 ticks, record skips 0, stream skips 4, video 53`. The stream's
+four are its first frames, shed while its encoder opened on the thread (a
+2-frame channel against a ~40 ms open) — the cost PR #30 paid as a stalled
+View frame, now paid as counted stream drops.
+
+## The zero-copy free rule — a defect in merged code
+
+VideoToolbox retains the `CVPixelBuffer` handed to
+`VTCompressionSessionEncodeFrame` and encodes asynchronously. Probe (8 frames,
+1080p):
+
+```
+PROBE frame 0: retain before=1 after-return=2 units-returned=0 released-after=17.53ms still-held=false
+PROBE frame 1: retain before=1 after-return=2 units-returned=0 released-after=1.79ms still-held=false
+...
+PROBE frame 7: retain before=1 after-return=2 units-returned=1 released-after=3.71ms still-held=false
+```
+
+Released 1.6–17.5 ms after the call returned. The record thread (merged,
+ZERO-COPY Phase 3b) drops its `Arc` as soon as the call returns, and the
+pool's rule was `Arc::strong_count == 1` alone — so it called a surface free
+while VideoToolbox was reading it, and the compositor could draw the next
+frame into it. At 30 fps the window is usually shorter than a frame; at
+60 fps the measured worst case exceeds one. **The record path shipped this
+first; PR #30 added a second encoder reading the same surfaces.** The rule now
+also requires the buffer back at its baseline retain count (`87f93b2`):
+
+```
+VT retain guard: 12 encodes; VideoToolbox still held the buffer when the call returned 12 times; the pool handed it out while held 0 times
+```
+
+With the old rule restored the guard fails: `the pool must never hand out a
+surface VideoToolbox still reads`.
+
+## The stream in the real binary
+
+Dress rehearsal step 9, reference machine:
+
+```
+STREAM: 19927 bytes in 4 s over 1 connection(s): video 149 messages (1 sequence header, 5 keyframes), audio 233 messages (1 sequence header); stream.stop applied in 54 ms; span drops 0, underruns 0
+```
+
+149 video messages in ~5 s is the show's 30 fps; 233 AAC messages is
+46.9/s. The byte count is small because at that point in the show the View
+holds a finished clip's last frame and the mix is silent — identical on two
+runs. On CI the engine refuses (`E_NO_HARDWARE_ENCODER`) and the step skips
+loudly.
+
+Real ingest (`mediamtx_proof_engine_pipeline_publishes_h264_and_aac`), the
+engine's own pipeline including the audio driver:
+
+```
+MEDIAMTX-PROOF 2026/09/23 20:33:21 INF [path live/nbe-proof] stream is available and online, 2 tracks (H264, MPEG-4 Audio)
+MEDIAMTX-PROOF 2026/09/23 20:33:21 INF [RTMP] [conn 127.0.0.1:57029] is publishing to path 'live/nbe-proof'
+```
+
+## Transport defects found and fixed
+
+| PR #30 behaviour | Why it is wrong | Fixed by | Guard |
+|---|---|---|---|
+| Adopted the server's announced chunk size for its OWN sends, announcing nothing | RTMP §5.4.1: chunk size is per direction. A server that announced 4096 (nginx-rtmp) kept reading the client at 128; every message over 128 bytes misparsed | the client announces 4096 and sends at it | `publisher_dialog_and_media_reach_a_conforming_server` |
+| Type 3 continuations omitted the extended timestamp | §5.3.1.3; past 0xFFFFFF ms (4 h 39 m on one connection) every chunked frame desynchronised a conforming reader | the 4 bytes repeat | `extended_timestamp_repeats_on_every_type3_chunk` |
+| RTMP timestamp = wall clock at socket write | a stalled-then-drained backlog went out with near-identical timestamps | video PTS on the show clock; audio sample count | `media_timestamps_are_the_feeders_not_the_sockets` |
+| Pings unanswered; incoming bytes discarded by one raw `try_read` | nginx-rtmp drops a publisher that does not answer (`ping_timeout`) | the dialog's chunk reader runs for the connection's life; PingRequest → PingResponse | `ping_requests_are_answered` |
+| Static AAC header `0x12 0x10` under a "48 kHz" comment | frequency index 4 = 44.1 kHz | `0x11 0x90`; the live stream sends the codec's own ASC | `static_audio_sequence_header_is_48k`, `aac::tests::bare_asc_is_aac_lc_48k_stereo_from_the_codecs_own_cookie` |
+| Encoder at a hardcoded 30 fps / 8 Mbps, AAC at 192 kbps | the show's rate and the manifest's `videoBitrateKbps` / `audioBitrateKbps` never reached the codecs | `StreamParams` from the show and `outputs.stream` | `sixty_fps_show_streams_at_sixty_with_its_bitrates`, `manifest_audio_bitrate_reaches_the_aac_codec` |
+
+**MediaMTX does not discriminate the chunk-size bug.** With PR #30's
+chunk-size behaviour restored, the MediaMTX proof still passes — MediaMTX
+evidently treats chunk size symmetrically. The fix stands on the RTMP
+specification and the conforming double; a per-direction server (nginx-rtmp)
+is the missing real-world witness, and is not in this tree.
+
+## Falsifications
+
+Each applied to the committed tree, the named test run, the file restored
+with `git checkout`; the suites green after.
+
+| # | Behaviour removed | Test(s) that failed | Failure message |
+|---|---|---|---|
+| F1 | refusal order: encoder probe before chain (PR #30's order) | `stream_start_refusal_order_is_config_then_chain_then_encoder` | `chain refusal must precede the encoder probe, got: E_NO_HARDWARE_ENCODER: stream.start: no hardware H.264 encoder available` |
+| F2 | chunk size: adopt the server's, announce nothing (PR #30) | `publisher_dialog_and_media_reach_a_conforming_server` | `a conforming server could not parse the client (server announces Some(4096))` |
+| F2b | chunk size (same sabotage) against REAL MediaMTX | **none — `test result: ok. 1 passed`** | MediaMTX accepted the sabotaged client: it does not discriminate this bug (see above) |
+| F3 | ext-ts: Type 3 continuation omits the extended timestamp (PR #30) | `extended_timestamp_repeats_on_every_type3_chunk` | `extended-timestamp chunks must parse` |
+| F4 | timestamps: socket wall clock at write (PR #30) | `media_timestamps_are_the_feeders_not_the_sockets` | `timestamps are media time, unchanged by the stall` |
+| F5 | pings go unanswered (PR #30) | `ping_requests_are_answered` | `a PingRequest must be answered` |
+| F6 | free rule by Arc count alone (merged Phase 3b rule) | `the_pool_never_hands_out_a_surface_videotoolbox_still_reads` | `the pool must never hand out a surface VideoToolbox still reads` |
+| F7 | pool sizing without the in-encode surface (PR #30's r+s+1) | `sizing_counts_each_consumers_queue_and_encoder_plus_the_drawn_one`, `shared_pool_fits_both_consumers_worst_case_plus_the_draw`, `a_stalled_stream_costs_record_nothing` | `(assert_eq)`; `a stalled stream's worst-case hold fits`; `a stalled stream must never cost record a frame` |
+| F8 | a full stream channel holds the surface hostage instead of dropping it | `a_stalled_stream_costs_record_nothing` | `a stalled stream must never cost record a frame` |
+| F10 | the audio graph never pushes to the stream tap | `stream_thread_publishes_engine_audio` | `engine audio must reach the wire (got 0)` |
+| F11 | stream fps hardcoded to 30 (PR #30) | `sixty_fps_show_streams_at_sixty_with_its_bitrates` | `the stream runs at the show's rate` |
+| F12 | manifest bitrates ignored (PR #30) | `manifest_audio_bitrate_reaches_the_aac_codec` | `AudioToolbox must report the manifest's 128 kbps, not the 192 kbps default` |
+| F13 | streamBufferMs idle back to the -1 sentinel | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub` | `pre-start streamBufferMs is 0.0: nothing is buffered`; `a refused start leaves 0.0 on the wire, never an absent field`; `stopped tick returns to 0.0 with the key still present` |
+| F16 | static AAC header 44.1 kHz (PR #30) | `static_audio_sequence_header_is_48k` | `(assert_eq)` |
+
+F6–F8 are from the re-run after `f7d6c08`. Their first run (at `200816f`) found two guards that did not discriminate: with F7 applied, only the sizing assertion failed (the worst-case test derived its holds from the constant under test, and the stall test's record consumer never reached its worst hold); with F6 applied, the VT guard tripped its own "hazard not observed" assertion rather than the violation, because it inferred VideoToolbox's hold from the pool it was testing. Both guards were rewritten, then re-falsified.
+
+The thread migration's falsification is the loop table above (the stream's share of a tick, before and after), per the work order: the delta must be send-shaped, not encode-shaped.
+
+## Status
+
+Measured on the normative machine, debug build, loads pasted. The merge word
+remains the user's.

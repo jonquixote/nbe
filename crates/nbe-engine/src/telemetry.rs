@@ -39,7 +39,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // PR #30 first shipped -1.0 here as a "NO-SESSION sentinel". That changed
     // the meaning of a ratified field inside a feature PR, which is the
     // user's change to make, not ours; it is reverted and drafted as an
-    // UNRATIFIED candidate in `docs/v0.5-outline.md` §4 instead.
+    // UNRATIFIED candidate in `docs/v0.5-outline.md` §7 instead.
     //
     // Read under one short lock; the counter itself is atomic, so the tick
     // never waits on the socket.

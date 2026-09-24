@@ -19,7 +19,7 @@
 //! ~~`-1.0` with no session (the NO-SESSION sentinel)~~ — PR #30's first
 //! version. It changed the meaning of a ratified field inside a feature PR;
 //! reverted in the repair round and drafted as an UNRATIFIED candidate in
-//! `docs/v0.5-outline.md` §4. Idle vs drained-live is `streamState`'s to say.
+//! `docs/v0.5-outline.md` §7. Idle vs drained-live is `streamState`'s to say.
 //!
 //! Rule 7: every test that enters the streaming path drives a REAL command
 //! through `DirectiveHandler` (`show.load` → `show.start` → `stream.start` /

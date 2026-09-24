@@ -1221,6 +1221,7 @@ async fn reconnect_kill_midstream_then_live_again_without_operator_action() {
         .await
     );
 
+    let killed = Instant::now();
     dbl.kill();
     assert!(
         poll_until(Duration::from_secs(3), || {
@@ -1229,17 +1230,20 @@ async fn reconnect_kill_midstream_then_live_again_without_operator_action() {
         .await,
         "transport loss must read Reconnecting"
     );
+    let noticed = killed.elapsed();
     // Publishing while the peer is gone never blocks and never errors out
     // of the stream: it sheds, counted.
     for i in 10..20u32 {
         let _ = p.try_publish_video(patterned(&[0x27, 0x01, 0, 0, 0], 800, i), i * 33);
     }
 
+    let returned = Instant::now();
     let dbl2 = TestDouble::start_on(port);
     assert!(
         wait_publisher_live(&p).await,
         "the publisher must redial and go Live again on its own"
     );
+    let redialed = returned.elapsed();
     for i in 20..25u32 {
         admit(&p, true, patterned(&[0x27, 0x01, 0, 0, 0], 800, i), i * 33).await;
     }
@@ -1259,6 +1263,10 @@ async fn reconnect_kill_midstream_then_live_again_without_operator_action() {
         assert!(
             *seq_ts >= 19 * 33,
             "the replayed header continues the media timeline (ts {seq_ts}), never restarts it"
+        );
+        eprintln!(
+            "RECONNECT: kill noticed (Reconnecting) in {noticed:?}; Live again {redialed:?} after \
+             the ingest returned, no operator action; codecs re-announced first at media ts {seq_ts}"
         );
     });
     assert!(p.shutdown_and_wait(Duration::from_secs(2)).await);

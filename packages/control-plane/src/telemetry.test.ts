@@ -146,7 +146,7 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
 // streamBufferMs is 0 in both — nothing is buffered in either — and
 // streamState ("as commanded") says which. PR #30 first invented a -1
 // sentinel for this; that changed a ratified field inside a feature PR and is
-// reverted (drafted as an UNRATIFIED candidate in docs/v0.5-outline.md §4).
+// reverted (drafted as an UNRATIFIED candidate in docs/v0.5-outline.md §7).
 // ---------------------------------------------------------------------------
 
 test("idle and drained-live both report 0 and differ by streamState", () => {

@@ -678,6 +678,33 @@ the user rather than to an executor.
 
 ---
 
+## 13. Status — executed (PR #30), repaired before merge (2026-09-23)
+
+Executed as PR #30. Its first two-key pass declared it mergeable; an
+independent review did not, and a repair round (`87f93b2`..`251b405`) closed
+what that review and the repair itself found. The record is in
+`docs/prompt-map-07-13.md` (§ 10, "Executed as PR #30 — and repaired before
+merge") and the numbers in `docs/09-measurements.md` (Prompt 10 section).
+
+Against this prompt's own lines:
+
+- **§6's "no streaming work on the render thread"** — PR #30 violated it (the
+  encoder opened and ran on the loop). It holds now: the loop's stream share is
+  one `try_send`, measured.
+- **§5's telemetry obligation** — PR #30 changed `streamBufferMs`'s idle value
+  (law) inside the feature PR; reverted. Two wire candidates are drafted
+  UNRATIFIED in `docs/v0.5-outline.md` §7. No new field ships.
+- **§4 rule 7** — the loop is now in the library and the tests drive it; the
+  rehearsal starts a stream.
+- **§4 rule 8** — `prompt10_rtmp` exercises 13 of 20 on the CI runner (PR #30:
+  1 of 13); `zerocopy_g1` exercises 3 of 4 on real GPU surfaces.
+- **Gate G1** — decided as the prompt asked (drop the `Arc`, count the stream
+  drop), but its sizing omitted each consumer's in-encode surface and its guard
+  tested a model. Both fixed; the guard's own falsification is what found that
+  its first version did not discriminate.
+
+The merge word remains the user's.
+
 ## Report (what the executor's done-message must contain)
 
 1. **The blockers**, each with its resolution or its still-blocked status:
