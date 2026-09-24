@@ -11,11 +11,15 @@
 //!
 //! Ownership (§10.1's table, §10.1.1): the engine NEVER emits `streamState` —
 //! it is control-plane state, "as commanded". What the engine owes the wire
-//! is `streamBufferMs` on every tick: `-1.0` with no session (the NO-SESSION
-//! sentinel — negative ms is impossible, so it never collides with an honest
-//! drained-live `0.0`), the session's transport counter while live, `-1.0`
-//! again after stop. No new wire field is introduced here (zero new fields
-//! preferred); a missing key below fails rather than skips.
+//! is `streamBufferMs` on every tick: `0.0` with no session (nothing is
+//! buffered — §10.1's meaning, measured rather than stubbed), the session's
+//! transport counter while live, `0.0` again after stop. No new wire field is
+//! introduced here; a missing key below fails rather than skips.
+//!
+//! ~~`-1.0` with no session (the NO-SESSION sentinel)~~ — PR #30's first
+//! version. It changed the meaning of a ratified field inside a feature PR;
+//! reverted in the repair round and drafted as an UNRATIFIED candidate in
+//! `docs/v0.5-outline.md` §4. Idle vs drained-live is `streamState`'s to say.
 //!
 //! Rule 7: every test that enters the streaming path drives a REAL command
 //! through `DirectiveHandler` (`show.load` → `show.start` → `stream.start` /
@@ -159,10 +163,9 @@ fn is_bad_payload(err: &DirectiveError) -> bool {
 
 #[tokio::test]
 async fn prestart_tick_carries_stream_buffer_ms_stub_not_absence() {
-    // Fresh engine, no show, no session: the tick must still carry the key,
-    // stubbed at -1.0 — an absent field and a stubbed field are different
-    // failures and only one of them is diagnosable (§10.1.1). The sentinel is
-    // negative because 0.0 is a legal drained-live value (v0.4.4 stub rule).
+    // Fresh engine, no show, no session: the tick must still carry the key
+    // (§10.1.1: an absent field and a stubbed field are different failures
+    // and only one of them is diagnosable), at 0.0 — no buffer holds nothing.
     let (state, _handler, _) = harness();
     assert_eq!(
         *state.stream_state.lock().unwrap(),
@@ -174,34 +177,13 @@ async fn prestart_tick_carries_stream_buffer_ms_stub_not_absence() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, -1.0,
-        "pre-start streamBufferMs must stub at -1.0 (no session to measure)"
+        ms, 0.0,
+        "pre-start streamBufferMs is 0.0: nothing is buffered"
     );
     assert_eq!(
         value.get("streamBufferMs").and_then(|v| v.as_f64()),
-        Some(-1.0),
-        "the -1.0 sentinel must be distinguishable on the wire, not just in the struct"
-    );
-
-    // A drained-live session honestly reports 0.0 — the two wire values must
-    // differ. Standalone session (never inserted into EngineState, per Rule 7):
-    // a non-RTMP endpoint spawns no publisher, so the counter reads drained.
-    let drained = nbe_engine::record::stream::StreamSession::open(
-        "not-a-publish-target",
-        nbe_engine::record::tap_path::Selection {
-            path: nbe_engine::record::tap_path::TapPath::ZeroCopy,
-            reason: nbe_engine::record::tap_path::Reason::Table,
-        },
-    );
-    assert_eq!(
-        drained.stream_buffer_ms(),
-        0.0,
-        "a transport-less (drained) session reports an honest 0.0"
-    );
-    assert_ne!(
-        ms,
-        drained.stream_buffer_ms(),
-        "NO-SESSION (-1.0) and drained-live (0.0) must be distinguishable on the wire"
+        Some(0.0),
+        "the value must reach the wire, not just the struct"
     );
 }
 
@@ -238,8 +220,8 @@ async fn refused_start_leaves_a_lawful_stub_tick() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, -1.0,
-        "a refused start must leave the -1.0 sentinel, never an absent field"
+        ms, 0.0,
+        "a refused start leaves 0.0 on the wire, never an absent field"
     );
 }
 
@@ -301,7 +283,7 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, -1.0,
-        "stopped tick must return to the -1.0 sentinel with the key still present"
+        ms, 0.0,
+        "stopped tick returns to 0.0 with the key still present"
     );
 }

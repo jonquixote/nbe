@@ -94,16 +94,15 @@ test("engine telemetry requires streamBufferMs and parses a distinctive value", 
 // ---------------------------------------------------------------------------
 
 test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfully", () => {
-  // Idle pre-start: no engine report yet. Both keys present, stubbed —
-  // streamState "idle" (as commanded), streamBufferMs -1 (NO-SESSION sentinel:
-  // no engine frame to measure from; 0 is the drained-live live value).
+  // Idle pre-start: no engine report yet. Both keys present — streamState
+  // "idle" (as commanded), streamBufferMs 0 (§10.1: nothing buffered).
   {
     const state = new ControlPlaneState();
     const tick = buildTick(state, newWorldTelemetry(), Date.now());
     assert.ok("streamState" in tick, "pre-start tick must carry streamState, never omit it");
     assert.ok("streamBufferMs" in tick, "pre-start tick must carry streamBufferMs, never omit it");
     assert.equal(tick.streamState, "idle");
-    assert.equal(tick.streamBufferMs, -1);
+    assert.equal(tick.streamBufferMs, 0);
     assert.equal(tick.engineConnected, false);
   }
 
@@ -137,45 +136,35 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
     const tick = buildTick(state, world, Date.now());
     assert.ok("streamState" in tick && "streamBufferMs" in tick, "stale ticks stay complete");
     assert.equal(tick.streamState, "live", "engine loss must not rewrite the commanded state");
-    assert.equal(tick.streamBufferMs, -1, "a stale engine report stubs the buffer to -1 (no fresh data)");
+    assert.equal(tick.streamBufferMs, 0, "a stale engine report stubs the buffer to 0 (no fresh data)");
     assert.equal(tick.engineConnected, false);
   }
 });
 
 // ---------------------------------------------------------------------------
-// Stub collision (v0.4.4 stub rule): the engine's NEVER-RAN sentinel is -1.0 —
-// negative ms is impossible — so it never collides with an honest drained-live
-// 0.0. Both must survive the parse-and-forward wire intact and differ there.
-// (The `?? 0` missing-field default for old engines is a distinct concern and
-// stays; this pins the sentinel's readability, not the default.)
+// Idle vs drained-live: the law already distinguishes them, on the same tick.
+// streamBufferMs is 0 in both — nothing is buffered in either — and
+// streamState ("as commanded") says which. PR #30 first invented a -1
+// sentinel for this; that changed a ratified field inside a feature PR and is
+// reverted (drafted as an UNRATIFIED candidate in docs/v0.5-outline.md §4).
 // ---------------------------------------------------------------------------
 
-test("engine stub -1.0 forwards intact and differs from drained 0.0 on the wire", () => {
-  const state = new ControlPlaneState();
-  state.streamState = "live";
+test("idle and drained-live both report 0 and differ by streamState", () => {
   const now = Date.now();
 
-  const worldStub = newWorldTelemetry();
-  ingestEngineFrame(worldStub, EngineTelemetryFrameSchema.parse(engineFrame(-1)), now);
-  const stubTick = buildTick(state, worldStub, now);
-  assert.equal(
-    stubTick.streamBufferMs,
-    -1,
-    "the NEVER-RAN sentinel must survive the wire intact",
-  );
+  const idle = new ControlPlaneState();
+  const idleWorld = newWorldTelemetry();
+  ingestEngineFrame(idleWorld, EngineTelemetryFrameSchema.parse(engineFrame(0)), now);
+  const idleTick = buildTick(idle, idleWorld, now);
 
-  const worldDrained = newWorldTelemetry();
-  ingestEngineFrame(worldDrained, EngineTelemetryFrameSchema.parse(engineFrame(0)), now);
-  const drainedTick = buildTick(state, worldDrained, now);
-  assert.equal(
-    drainedTick.streamBufferMs,
-    0,
-    "a drained-live session honestly reports 0.0",
-  );
+  const live = new ControlPlaneState();
+  live.streamState = "live";
+  const liveWorld = newWorldTelemetry();
+  ingestEngineFrame(liveWorld, EngineTelemetryFrameSchema.parse(engineFrame(0)), now);
+  const liveTick = buildTick(live, liveWorld, now);
 
-  assert.notEqual(
-    stubTick.streamBufferMs,
-    drainedTick.streamBufferMs,
-    "stub (-1.0) and drained-live (0.0) must be distinguishable on the wire",
-  );
+  assert.equal(idleTick.streamBufferMs, 0, "an idle engine buffers nothing");
+  assert.equal(liveTick.streamBufferMs, 0, "a drained-live session honestly reports 0");
+  assert.equal(idleTick.streamState, "idle");
+  assert.equal(liveTick.streamState, "live");
 });

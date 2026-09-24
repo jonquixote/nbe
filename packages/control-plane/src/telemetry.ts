@@ -79,11 +79,9 @@ export function buildTick(
     decodeSessions: f?.decodeSessions ?? 0,
     vramUsedMib: f?.vramUsedMib ?? 0,
     textureCacheUsedMib: f?.textureCacheUsedMib ?? 0,
-    // NO-SESSION sentinel, matching the engine tick: pre-start / stale reports
-    // carry -1 (never 0 — 0.0 is an honest drained-live value). The `??`
-    // missing-field default below is for OLD engines whose frames predate the
-    // key (absent field), distinct from a drained-live 0.0 the engine measured.
-    streamBufferMs: f?.streamBufferMs ?? -1,
+    // §10.1 law: buffered ms, 0 when nothing is buffered or no report is
+    // fresh. Idle vs drained-live is `streamState`'s to say, on this tick.
+    streamBufferMs: f?.streamBufferMs ?? 0,
     recordSpaceMib: f?.recordSpaceMib ?? 0,
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,
