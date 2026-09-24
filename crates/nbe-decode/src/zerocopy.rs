@@ -413,8 +413,40 @@ impl SurfacePool {
     /// is back at [`PIXEL_BUFFER_BASELINE_RETAIN`]. Still one-sided — a
     /// release that lands a microsecond after the check costs a skip, never a
     /// corrupted frame.
+    ///
+    /// **Why the fence, and why it is proof rather than hope** (construction
+    /// argument, written because no test on the normative x86 machine can
+    /// flip on its removal — see below):
+    ///
+    /// * A consumer thread C calls `VTCompressionSessionEncodeFrame`, which
+    ///   retains the buffer (R) before it returns: the header lets the client
+    ///   release its own reference the moment the call returns, so the
+    ///   session's retain must already be in place. C then drops its `Arc`:
+    ///   `strong.fetch_sub(1, Release)` (D). R is sequenced before D.
+    /// * This thread reads `Arc::strong_count` — a `Relaxed` load (L) in std —
+    ///   and sees 1, the value D wrote (with two consumers, D is the later of
+    ///   two RMW decrements, which is in the first one's release sequence).
+    /// * `fence(Acquire)` (F) after L: by the fence rule, D synchronizes-with
+    ///   F because L, sequenced before F, read the value D wrote. So R
+    ///   happens-before the retain-count read below (G), and G returns R's
+    ///   increment or a later value — never the pre-encode baseline while
+    ///   VideoToolbox still holds the buffer. A release that lands after G
+    ///   costs a skip, never a corrupted frame.
+    /// * Without F, L's `Relaxed` load orders nothing: on a weakly ordered CPU
+    ///   (arm64 — Apple Silicon, the spec's primary target) G may observe the
+    ///   retain count's older value after L observed 1, and hand out a
+    ///   surface VideoToolbox is reading. On x86-64 loads are not reordered
+    ///   with older loads, so the hazard cannot manifest there; LLVM lowers
+    ///   `fence acquire` to no instruction on x86-64 and to `dmb ishld` on
+    ///   arm64, which is why removing it cannot flip a test on this machine.
+    ///   (PR #30's first version of this rule had no fence; found by its
+    ///   own-author pass.)
     fn is_free(s: &std::sync::Arc<SharedSurface>) -> bool {
-        std::sync::Arc::strong_count(s) == 1 && s.encoder_released()
+        if std::sync::Arc::strong_count(s) != 1 {
+            return false;
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        s.encoder_released()
     }
 
     /// Take a free surface, or `None` when every one is still in flight.
