@@ -78,11 +78,13 @@ async fn shared_pool_fits_both_consumers_worst_case_plus_the_draw() {
     let Some((_state, _render, pool)) = chain_or_skip().await else {
         return;
     };
+    // Written out, not derived from `IN_ENCODER`: the constant is what is
+    // under test. Each consumer: its full queue plus the one in its encoder.
     let mut held: Vec<Arc<SharedSurface>> = Vec::new();
-    for _ in 0..(RECORD_CHANNEL_BOUND + IN_ENCODER) {
+    for _ in 0..(RECORD_CHANNEL_BOUND + 1) {
         held.push(pool.acquire().expect("record's worst-case hold fits"));
     }
-    for _ in 0..(STREAM_CHANNEL_BOUND + IN_ENCODER) {
+    for _ in 0..(STREAM_CHANNEL_BOUND + 1) {
         held.push(
             pool.acquire()
                 .expect("a stalled stream's worst-case hold fits"),
@@ -96,20 +98,30 @@ async fn shared_pool_fits_both_consumers_worst_case_plus_the_draw() {
     );
 }
 
-/// A consumer standing in for the record thread: drains the real record
-/// channel, holds each surface for `encode` (the encoder's hold), drops it.
-fn record_consumer(rx: Receiver<RecordMsg>, encode: Duration) -> std::thread::JoinHandle<u64> {
-    std::thread::spawn(move || {
-        let mut n = 0;
-        while let Ok(msg) = rx.recv() {
-            if let RecordMsg::Surface { surface } = msg {
-                std::thread::sleep(encode);
-                drop(surface);
-                n += 1;
-            }
+/// The record thread at its worst, driven deterministically: every frame
+/// handed off is received into a local queue, and only when that queue
+/// exceeds the channel bound does the oldest move into the "encoder" (whose
+/// previous frame is then done and dropped). Record therefore holds its full
+/// queue plus one in its encoder at every tick — the case the sizing must
+/// fit — without its channel ever shedding (which would be a record skip of
+/// record's own making, not the stream's).
+struct RecordAtItsBound {
+    rx: Receiver<RecordMsg>,
+    queue: std::collections::VecDeque<Arc<SharedSurface>>,
+    encoding: Option<Arc<SharedSurface>>,
+    encoded: u64,
+}
+
+impl RecordAtItsBound {
+    fn tick(&mut self) {
+        while let Ok(RecordMsg::Surface { surface }) = self.rx.try_recv() {
+            self.queue.push_back(surface);
         }
-        n
-    })
+        while self.queue.len() > RECORD_CHANNEL_BOUND {
+            self.encoding = self.queue.pop_front();
+            self.encoded += 1;
+        }
+    }
 }
 
 /// A stalled stream thread: takes ONE surface into its "encoder" and never
@@ -145,7 +157,12 @@ async fn a_stalled_stream_costs_record_nothing() {
     let (record_tx, record_rx): (SyncSender<RecordMsg>, _) =
         std::sync::mpsc::sync_channel(RECORD_CHANNEL_BOUND);
     let (stream_tx, stream_rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
-    let record = record_consumer(record_rx, Duration::from_millis(8));
+    let mut record = RecordAtItsBound {
+        rx: record_rx,
+        queue: Default::default(),
+        encoding: None,
+        encoded: 0,
+    };
     let stream = stalled_stream(stream_rx);
     let record_skips = AtomicU64::new(0);
     let stream_skips = AtomicU64::new(0);
@@ -175,14 +192,14 @@ async fn a_stalled_stream_costs_record_nothing() {
             hand_off_stream_surface(&stream_tx, surface, frame, &stream_skips);
             worst_handoff = worst_handoff.max(t.elapsed());
         }
-        tokio::time::sleep(Duration::from_millis(12)).await;
+        record.tick();
     }
     let (r, s) = (
         record_skips.load(Ordering::SeqCst),
         stream_skips.load(Ordering::SeqCst),
     );
     drop(record_tx);
-    let recorded = record.join().unwrap();
+    let recorded = record.encoded;
     STOP.store(true, Ordering::SeqCst);
     stream.join().unwrap();
     drop(stream_tx);
@@ -234,25 +251,32 @@ async fn the_pool_never_hands_out_a_surface_videotoolbox_still_reads() {
         let surface = pool.acquire().expect("a free surface");
         let id = surface.surface_id();
         let _ = enc.encode_pixel_buffer(surface.pixel_buffer());
-        drop(surface); // exactly what the record thread does
-                       // Ask for every free surface while VideoToolbox may still hold ours.
+        // VideoToolbox's hold, observed directly (not inferred from the pool).
+        let vt_held = !surface.encoder_released();
+        // Exactly what the record thread does next.
+        drop(surface);
+        // Ask for every free surface while VideoToolbox may still hold ours.
         let mut taken = Vec::new();
         while let Some(s) = pool.acquire() {
             taken.push(s);
         }
-        let ours = taken.iter().find(|s| s.surface_id() == id);
-        match ours {
-            Some(s) if !s.encoder_released() => handed_out_while_held += 1,
-            None => observed_held += 1,
-            Some(_) => {}
+        if vt_held {
+            observed_held += 1;
+            // A hand-out is a violation only if VideoToolbox STILL holds the
+            // buffer now that the compositor has it.
+            if let Some(s) = taken.iter().find(|s| s.surface_id() == id) {
+                if !s.encoder_released() {
+                    handed_out_while_held += 1;
+                }
+            }
         }
         drop(taken);
         std::thread::sleep(Duration::from_millis(40)); // let VT finish before the next round
     }
     println!(
-        "VT retain guard: 12 encodes; surface still held by VideoToolbox right after the \
-         call returned (and so withheld by the pool) {observed_held} times; handed out while \
-         held {handed_out_while_held} times"
+        "VT retain guard: 12 encodes; VideoToolbox still held the buffer when the call \
+         returned {observed_held} times; the pool handed it out while held \
+         {handed_out_while_held} times"
     );
     assert!(
         observed_held > 0,
