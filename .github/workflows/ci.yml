@@ -317,10 +317,17 @@ jobs:
             echo "No skips: this runner ran a take on both frame paths."
           fi
       - name: the G1 shared-pool suite actually ran (Prompt 10 WU1)
-        # Hermetic by design (Arc slots under the pool's free rule, no GPU):
-        # all 3 run everywhere, so the floors are equal — and the exercised
-        # floor is what keeps that true: the next hardware-touching test added
-        # here either runs on the runner or fails this step.
+        # On the production seams since the PR #30 repair round: the real GPU
+        # SurfacePool, a real RenderLoop drawing through record's
+        # begin/end_tap_frame, the real stream handoff. The runner has a
+        # zero-copy chain (Metal + IOSurface) and no encoder, so three of the
+        # four run here and the VideoToolbox retain guard skips loudly. The
+        # exercised floor is the chain: if the runner ever loses it, this step
+        # fails instead of going green on skips.
+        # ~~Hermetic by design (Arc slots under the pool's free rule, no GPU):
+        # all 3 run everywhere~~ — PR #30's guard modelled the pool with
+        # SharedPool<()> and could not see the rule or the sizing it was
+        # guarding were wrong (§2c).
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test zerocopy_g1 -- --nocapture 2>&1)
@@ -331,9 +338,9 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
-          if [ "$ran" -lt 3 ]; then
-            echo "FAIL zerocopy_g1: expected at least 3 tests to run, got $ran"; exit 1
+          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=3)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL zerocopy_g1: expected at least 4 tests to run, got $ran"; exit 1
           fi
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL zerocopy_g1: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
@@ -404,12 +411,19 @@ jobs:
             echo "FAIL prompt10_stream_cmds: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the RTMP transport suite actually ran (Prompt 10 WU5)
-        # Same two-floor shape. Twelve of the thirteen tests publish against
-        # the
-        # in-process double and gate on the encoder + chain (loud SKIP without
-        # either; the MediaMTX proof skips loudly on its absent binary first).
-        # The thirteenth (error-kind tokens, including the srt:// refusal)
-        # runs everywhere and is the floor skipping cannot satisfy.
+        # Two layers since the PR #30 repair round. Thirteen tests drive the
+        # real transport (and, for audio and the stop path, the real stream
+        # session and thread) with synthetic payloads against a conforming
+        # in-process double: handshake, dialog, chunking at the announced
+        # size, the extended timestamp, media-time timestamps, pings,
+        # reconnect, backpressure, buffer accounting, engine audio, the
+        # manifest's AAC bitrate, the bounded stop, the telemetry tick, error
+        # tokens, the 48 kHz header. They run everywhere; exercised >= 13 is
+        # the floor skipping cannot satisfy. Seven drive the production loop
+        # with a live encoder (loud SKIP without encoder + chain; the MediaMTX
+        # proof also skips on its absent binary). One measurement is #[ignore].
+        # ~~Twelve of the thirteen tests ... gate on the encoder + chain~~ —
+        # PR #30 exercised 1 of 13 here (§2c).
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1)
@@ -420,12 +434,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=13 exercised>=1)"
-          if [ "$ran" -lt 12 ]; then
-            echo "FAIL prompt10_rtmp: expected at least 12 tests to run, got $ran"; exit 1
+          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=13)"
+          if [ "$ran" -lt 20 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 20 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 1 ]; then
-            echo "FAIL prompt10_rtmp: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 13 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 13 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the stream telemetry suite actually ran (Prompt 10 WU6)
         # Same two-floor shape. One of the three tests goes live and gates on

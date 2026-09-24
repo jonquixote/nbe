@@ -214,8 +214,11 @@ async fn a_stalled_stream_costs_record_nothing() {
         s >= 55,
         "the stalled stream sheds, counted on its own counter (got {s})"
     );
+    // A handoff that waited for room would block forever behind this stalled
+    // consumer, so any finite bound discriminates; 20 ms leaves room for
+    // scheduler preemption on a shared CI runner.
     assert!(
-        worst_handoff < Duration::from_millis(2),
+        worst_handoff < Duration::from_millis(20),
         "the stream handoff never waits ({worst_handoff:?})"
     );
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);

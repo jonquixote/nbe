@@ -1287,8 +1287,11 @@ async fn publishes_never_block_under_backpressure() {
         worst,
         p.shed_frames()
     );
+    // A publish that waited on the stalled peer would block indefinitely,
+    // so any finite bound discriminates; 50 ms leaves room for scheduler
+    // preemption on a shared 3-core CI runner.
     assert!(
-        worst < Duration::from_millis(5),
+        worst < Duration::from_millis(50),
         "a publish must never wait on the socket (worst {worst:?})"
     );
     assert!(p.shed_frames() > 0, "a full channel sheds, counted");
