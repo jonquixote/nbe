@@ -342,6 +342,9 @@ pub struct EncodeSession {
     height: u32,
     fps: u32,
     frame_index: u64,
+    /// The last caller-supplied PTS index ([`Self::encode_pixel_buffer_at`]),
+    /// so a non-increasing one is refused before VideoToolbox sees it.
+    last_pts_index: Option<u64>,
 }
 
 impl EncodeSession {
@@ -482,6 +485,7 @@ impl EncodeSession {
                 height,
                 fps,
                 frame_index: 0,
+                last_pts_index: None,
             })
         }
     }
@@ -547,24 +551,48 @@ impl EncodeSession {
             return Err(no_hardware("encode session is already finished"));
         };
         unsafe {
-            if CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA {
-                return Err(no_hardware(
-                    "zero-copy buffer is not 32BGRA; refusing to reinterpret its planes",
-                ));
-            }
-            let (w, h) = (
-                CVPixelBufferGetWidth(buffer),
-                CVPixelBufferGetHeight(buffer),
-            );
-            if w != self.width as usize || h != self.height as usize {
-                return Err(no_hardware(format!(
-                    "zero-copy buffer is {w}x{h}, session is {}x{}",
-                    self.width, self.height
-                )));
-            }
+            check_zero_copy_buffer(buffer, self.width, self.height)?;
             submit_frame(session, buffer, self.frame_index, self.fps)?;
         }
         self.frame_index += 1;
+        Ok(take_new_units(&self.state))
+    }
+
+    /// [`Self::encode_pixel_buffer`] with the PTS supplied by the caller:
+    /// `pts_index / fps` seconds instead of the session's own submit count.
+    ///
+    /// For a live output whose frames can be shed before they reach the
+    /// encoder. Counting submissions (the record path's timeline) makes every
+    /// shed frame pull the video timeline one frame period behind the audio
+    /// timeline, which counts samples the audio driver actually rendered; over
+    /// a long stream that is unbounded A/V drift. Stamping each frame with its
+    /// position on the show clock leaves a gap where a frame was shed —
+    /// which is what happened — and keeps video and audio on one clock.
+    ///
+    /// `pts_index` must strictly increase across calls (VideoToolbox refuses
+    /// a non-increasing PTS); a violation is refused here, loudly, before the
+    /// encoder sees it. The first submission is still the forced IDR.
+    pub fn encode_pixel_buffer_at(
+        &mut self,
+        buffer: &CVPixelBuffer,
+        pts_index: u64,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if let Some(last) = self.last_pts_index {
+            if pts_index <= last {
+                return Err(no_hardware(format!(
+                    "pts index {pts_index} does not follow {last}; refusing a non-increasing timeline"
+                )));
+            }
+        }
+        let Some(session) = self.session.as_ref() else {
+            return Err(no_hardware("encode session is already finished"));
+        };
+        unsafe {
+            check_zero_copy_buffer(buffer, self.width, self.height)?;
+            submit_frame_at(session, buffer, pts_index, self.fps, self.frame_index == 0)?;
+        }
+        self.frame_index += 1;
+        self.last_pts_index = Some(pts_index);
         Ok(take_new_units(&self.state))
     }
 
@@ -812,12 +840,48 @@ unsafe fn submit_frame(
     frame_index: u64,
     fps: u32,
 ) -> Result<(), EncodeError> {
+    // Frame 0 is a forced IDR so the stream always opens with a keyframe;
+    // the per-second keyframe interval keeps them coming.
+    unsafe { submit_frame_at(session, buffer, frame_index, fps, frame_index == 0) }
+}
+
+/// The zero-copy entry points' shared refusal: a buffer of the wrong shape
+/// would be *interpreted* rather than rejected.
+fn check_zero_copy_buffer(
+    buffer: &CVPixelBuffer,
+    width: u32,
+    height: u32,
+) -> Result<(), EncodeError> {
+    if CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA {
+        return Err(no_hardware(
+            "zero-copy buffer is not 32BGRA; refusing to reinterpret its planes",
+        ));
+    }
+    let (w, h) = (
+        CVPixelBufferGetWidth(buffer),
+        CVPixelBufferGetHeight(buffer),
+    );
+    if w != width as usize || h != height as usize {
+        return Err(no_hardware(format!(
+            "zero-copy buffer is {w}x{h}, session is {width}x{height}"
+        )));
+    }
+    Ok(())
+}
+
+/// Submit one frame at PTS `pts_index / fps`, forcing an IDR when asked.
+unsafe fn submit_frame_at(
+    session: &CFRetained<VTCompressionSession>,
+    buffer: &CVPixelBuffer,
+    pts_index: u64,
+    fps: u32,
+    force_keyframe: bool,
+) -> Result<(), EncodeError> {
+    let frame_index = pts_index;
     unsafe {
-        let pts = CMTime::new(frame_index as i64, fps as i32);
+        let pts = CMTime::new(pts_index as i64, fps as i32);
         let duration = CMTime::new(1, fps as i32);
-        // Frame 0 is a forced IDR so the stream always opens with a
-        // keyframe; the per-second keyframe interval keeps them coming.
-        let frame_props = if frame_index == 0 {
+        let frame_props = if force_keyframe {
             let key: &CFString = kVTEncodeFrameOptionKey_ForceKeyFrame;
             let value: &CFType = CFBoolean::new(true);
             Some(CFDictionary::<CFString, CFType>::from_slices(

@@ -177,8 +177,17 @@ pub struct AacEncoder {
 }
 
 impl AacEncoder {
-    /// Open the PCM→AAC converter and read back the magic cookie.
+    /// Open the PCM→AAC converter at SPEC §9.4's 192 kbps and read back the
+    /// magic cookie.
     pub fn new() -> Result<Self, AacError> {
+        Self::with_bitrate(ENCODE_BIT_RATE)
+    }
+
+    /// Open at `bits_per_second` (a stream's `outputs.stream.audioBitrateKbps`;
+    /// the schema bounds it to 96–320 kbps). The bitrate is requested, not
+    /// validated here: AudioToolbox rounds to the rates it supports, and a
+    /// refusal keeps the codec default with a warning, exactly as for 192k.
+    pub fn with_bitrate(bits_per_second: u32) -> Result<Self, AacError> {
         let mut input = input_asbd();
         let mut output = output_asbd();
         let mut converter: AudioConverterRef = std::ptr::null_mut();
@@ -202,7 +211,7 @@ impl AacEncoder {
         };
         // Bitrate is best-effort flavor, not validity: a refusal here must
         // not fail the encode, so it is deliberately unchecked beyond record.
-        let mut rate = ENCODE_BIT_RATE;
+        let mut rate = bits_per_second;
         let rate_status = unsafe {
             AudioConverterSetProperty(
                 converter,
@@ -268,6 +277,40 @@ impl AacEncoder {
         es.extend_from_slice(&[0, 2, 0]);
         es.extend_from_slice(&config);
         es
+    }
+
+    /// The bare `AudioSpecificConfig` (ISO 14496-3 §1.6.2.1) — what an FLV
+    /// AAC sequence header carries after `0xAF 0x00`.
+    ///
+    /// The magic cookie is the whole ES_Descriptor hierarchy (see
+    /// [`Self::audio_specific_config`]); the ASC is the payload of its
+    /// DecoderSpecificInfo (tag `0x05`). Taken from the codec's own cookie
+    /// rather than written from constants, so the header describes what this
+    /// encoder actually emits. `None` when the cookie holds no tag `0x05`.
+    pub fn bare_audio_specific_config(&self) -> Option<Vec<u8>> {
+        if self.cookie.first() != Some(&0x03) {
+            // Already bare (the fallback shape `esds_content` wraps).
+            return (!self.cookie.is_empty()).then(|| self.cookie.clone());
+        }
+        find_descriptor(&self.cookie, 0x05).map(<[u8]>::to_vec)
+    }
+
+    /// The bitrate the converter is actually using (read back from
+    /// AudioToolbox, not echoed from the request), or `None` when it will not
+    /// say.
+    pub fn encode_bit_rate(&self) -> Option<u32> {
+        let mut rate: u32 = 0;
+        let mut size: u32 = 4;
+        let status = unsafe {
+            AudioConverterGetProperty(
+                self.converter,
+                kAudioConverterEncodeBitRate,
+                NonNull::from(&mut size),
+                NonNull::new(&mut rate as *mut u32 as *mut c_void)
+                    .expect("a stack rate is non-null"),
+            )
+        };
+        (status == 0).then_some(rate)
     }
 
     /// Frames fed so far (input timeline, pre-priming).
@@ -450,6 +493,55 @@ unsafe fn read_cookie(converter: AudioConverterRef) -> Result<Vec<u8>, AacError>
     }
 }
 
+/// Find the first MPEG-4 descriptor with `tag` inside an ES_Descriptor
+/// hierarchy and return its payload. Walks nested descriptors the way the
+/// cookie nests them (0x03 ES → 0x04 DecoderConfig → 0x05 DecoderSpecificInfo),
+/// skipping each container's fixed fields. Lengths use the expandable
+/// encoding (7 bits per byte, high bit = more).
+fn find_descriptor(buf: &[u8], tag: u8) -> Option<&[u8]> {
+    fn read_len(buf: &[u8], mut pos: usize) -> Option<(usize, usize)> {
+        let mut len = 0usize;
+        for _ in 0..4 {
+            let b = *buf.get(pos)?;
+            pos += 1;
+            len = (len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                return Some((len, pos));
+            }
+        }
+        None
+    }
+    let mut pos = 0usize;
+    while pos < buf.len() {
+        let t = buf[pos];
+        let (len, body) = read_len(buf, pos + 1)?;
+        let end = body.checked_add(len)?.min(buf.len());
+        if t == tag {
+            return buf.get(body..end);
+        }
+        // Descend into the containers; skip anything else whole.
+        let skip = match t {
+            // ES_ID(2) + flags(1), assuming no dependsOn/URL/OCR flags (the
+            // codec writes none; a flagged cookie is refused, not guessed).
+            0x03 => {
+                let flags = *buf.get(body + 2)?;
+                if flags & 0xE0 != 0 {
+                    return None;
+                }
+                3
+            }
+            // objectType(1) + streamType(1) + bufferSize(3) + max(4) + avg(4).
+            0x04 => 13,
+            _ => {
+                pos = end;
+                continue;
+            }
+        };
+        pos = body + skip;
+    }
+    None
+}
+
 impl Drop for AacEncoder {
     fn drop(&mut self) {
         unsafe {
@@ -500,6 +592,32 @@ mod tests {
         frames.extend(enc.flush().expect("flush must succeed"));
         assert!(!frames.is_empty(), "a packet in must yield packets out");
         assert!(frames.iter().all(|f| !f.data.is_empty()));
+    }
+
+    #[test]
+    fn bare_asc_is_aac_lc_48k_stereo_from_the_codecs_own_cookie() {
+        // ISO 14496-3 AudioSpecificConfig: objectType 2 (LC, 5 bits),
+        // frequency index 3 (48 kHz, 4 bits), channel config 2 (stereo, 4
+        // bits), 3 zero bits → 0001 0001 1001 0000 = 0x11 0x90. PR #30's
+        // hand-written header was 0x12 0x10 — frequency index 4, 44.1 kHz —
+        // announcing the wrong sample rate for every 48 kHz packet after it.
+        let enc = AacEncoder::new().expect("open must succeed");
+        assert_eq!(
+            enc.bare_audio_specific_config().as_deref(),
+            Some(&[0x11u8, 0x90][..]),
+            "cookie {:02x?}",
+            enc.audio_specific_config()
+        );
+    }
+
+    #[test]
+    fn bitrate_is_a_parameter_not_a_constant() {
+        // 128k and 256k both open (inside the schema's 96–320 band); the
+        // converter answers with the rate it actually uses.
+        for kbps in [128u32, 256] {
+            let enc = AacEncoder::with_bitrate(kbps * 1000).expect("open must succeed");
+            assert_eq!(enc.encode_bit_rate(), Some(kbps * 1000));
+        }
     }
 
     #[test]
