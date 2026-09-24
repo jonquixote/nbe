@@ -93,6 +93,14 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// the §16.1 2 s window beside record's parallel 1.5 s.
 pub const STREAM_THREAD_STOP_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// The stream tap's ring: one second of 48 kHz stereo. The stream thread
+/// drains it at least every [`AUDIO_POLL`]; the ring only fills if the thread
+/// stalls, and then a live stream wants the present, not five seconds of the
+/// past (record's tap keeps 5 s for a writer that must not lose content).
+/// Also the directive-path cost: the ring is allocated in `stream.start`,
+/// and a 5 s ring measured 12.6 ms there (debug build).
+pub const STREAM_TAP_CAPACITY_SAMPLES: usize = 48_000 * 2;
+
 /// The thread's wake quantum when no video arrives: audio drains at least
 /// this often (one AAC packet is 21.3 ms).
 const AUDIO_POLL: Duration = Duration::from_millis(10);
@@ -279,7 +287,7 @@ impl StreamSession {
     ) -> Self {
         let endpoint = endpoint.into();
         let publisher = maybe_spawn_publisher(&endpoint, params.envelope_bps()).map(Arc::new);
-        let tap = Arc::new(AudioTap::new());
+        let tap = Arc::new(AudioTap::with_capacity(STREAM_TAP_CAPACITY_SAMPLES));
         let stats = Arc::new(StreamStats::default());
         let mut session = Self {
             endpoint,

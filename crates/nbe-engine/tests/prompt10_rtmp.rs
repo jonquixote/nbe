@@ -2138,3 +2138,155 @@ async fn mediamtx_proof_engine_pipeline_publishes_h264_and_aac() {
         problems.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// MEASUREMENT, not a gate (`--ignored`): the loop's timed region with and
+// without live outputs, and `stream.start` / `stream.stop` on the directive
+// path. Thresholds belong to the soak (quiescent reference machine); this
+// prints the numbers docs/09-measurements.md records, with the load.
+// ---------------------------------------------------------------------------
+
+fn load_1m() -> String {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .expect("sysctl must run");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// This process's cumulative CPU time (user + system), from `ps`.
+fn cpu_seconds() -> f64 {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "time=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps must run");
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // [[hh:]mm:]ss.xx
+    t.split(':').fold(0.0, |acc, part| {
+        acc * 60.0 + part.parse::<f64>().unwrap_or(0.0)
+    })
+}
+
+fn summarize(label: &str, xs: &[Duration], budget: Duration) -> String {
+    let mut ms: Vec<f64> = xs.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
+    ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = ms.len();
+    let mean = ms.iter().sum::<f64>() / n as f64;
+    let pct = |p: f64| ms[((n as f64 * p).ceil() as usize).clamp(1, n) - 1];
+    let over = xs.iter().filter(|d| **d > budget).count();
+    format!(
+        "{label}: n={n} mean={mean:.3} p50={:.3} p95={:.3} max={:.3} over_budget={over}",
+        pct(0.50),
+        pct(0.95),
+        ms[n - 1]
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement: run with --ignored --nocapture on a quiescent machine"]
+async fn measure_loop_timed_region_by_output() {
+    let _serial = SERIAL.lock().await;
+    let (state, handler, _) = harness();
+    let Some(mut render) = live_rig_or_skip(&state).await else {
+        return;
+    };
+    let audio = nbe_engine::audio_driver::spawn(state.clone(), 30);
+    let dbl = TestDouble::start();
+    let (_pkg, pkg_path, _rec) =
+        write_record_package(&dbl.url("live", "measure"), serde_json::json!({}));
+    load_and_start(&handler, &pkg_path).await;
+    let budget = Duration::from_secs_f64(1.0 / 30.0);
+    let mut sv = 10u64;
+    let mut apply = |cmd: &'static str| {
+        sv += 1;
+        (directive(cmd, sv, serde_json::json!({})), cmd)
+    };
+    // Warm the loop (first-frame shader/pipeline costs are not the outputs').
+    let _ = run_frames(&mut render, &state, 30, 60).await;
+    for config in ["none", "record", "stream", "both"] {
+        if matches!(config, "record" | "both") {
+            let (d, _) = apply("record.start");
+            handler.apply(&d).await.expect("record.start");
+        }
+        if matches!(config, "stream" | "both") {
+            let (d, _) = apply("stream.start");
+            let t = Instant::now();
+            handler.apply(&d).await.expect("stream.start");
+            println!(
+                "MEASURE [{config}] stream.start directive: {:?}",
+                t.elapsed()
+            );
+        }
+        let skipped_r0 = state.skipped_record_frames.load(Ordering::SeqCst);
+        let skipped_s0 = state.skipped_stream_frames.load(Ordering::SeqCst);
+        let dropped0 = dropped(&state);
+        let load_before = load_1m();
+        let cpu0 = cpu_seconds();
+        let wall0 = Instant::now();
+        let reports = run_frames(&mut render, &state, 30, 300).await;
+        let wall = wall0.elapsed().as_secs_f64();
+        let cpu = cpu_seconds() - cpu0;
+        let load_after = load_1m();
+        let totals: Vec<Duration> = reports.iter().map(|r| r.total).collect();
+        let streams: Vec<Duration> = reports.iter().map(|r| r.stream).collect();
+        let records: Vec<Duration> = reports.iter().map(|r| r.record).collect();
+        println!("MEASURE [{config}] load before {load_before} after {load_after}");
+        println!(
+            "MEASURE [{config}] {}",
+            summarize("tick total ms", &totals, budget)
+        );
+        println!(
+            "MEASURE [{config}] {}",
+            summarize("stream share ms", &streams, budget)
+        );
+        println!(
+            "MEASURE [{config}] {}",
+            summarize("record share ms", &records, budget)
+        );
+        println!(
+            "MEASURE [{config}] process CPU {:.1}% of one core over {wall:.1} s; record skips {}; stream skips {}; View drops {}",
+            cpu / wall * 100.0,
+            state.skipped_record_frames.load(Ordering::SeqCst) - skipped_r0,
+            state.skipped_stream_frames.load(Ordering::SeqCst) - skipped_s0,
+            dropped(&state) - dropped0
+        );
+        if let Some(s) = state.stream_session.lock().unwrap().as_ref() {
+            let st = s.stats();
+            let frames = st.video_frames_encoded.load(Ordering::SeqCst).max(1);
+            println!(
+                "MEASURE [{config}] stream thread: encoder open {} µs (on the thread), {} frames encoded, mean encode call {:.3} ms (on the thread)",
+                st.encoder_open_us.load(Ordering::SeqCst),
+                frames,
+                st.encode_us_total.load(Ordering::SeqCst) as f64 / frames as f64 / 1000.0
+            );
+        }
+        if matches!(config, "stream" | "both") {
+            let (d, _) = apply("stream.stop");
+            let t = Instant::now();
+            handler.apply(&d).await.expect("stream.stop");
+            println!(
+                "MEASURE [{config}] stream.stop directive: {:?}",
+                t.elapsed()
+            );
+        }
+        if matches!(config, "record" | "both") {
+            let (d, _) = apply("record.stop");
+            let _ = handler.apply(&d).await;
+        }
+    }
+    // stream.start on the directive path, ten cycles.
+    let mut starts = Vec::new();
+    for _ in 0..10 {
+        let (d, _) = apply("stream.start");
+        let t = Instant::now();
+        handler.apply(&d).await.expect("stream.start");
+        starts.push(t.elapsed());
+        let (d, _) = apply("stream.stop");
+        handler.apply(&d).await.expect("stream.stop");
+    }
+    println!(
+        "MEASURE {}",
+        summarize("stream.start directive ms (10 cycles)", &starts, budget)
+    );
+    audio.stop();
+}

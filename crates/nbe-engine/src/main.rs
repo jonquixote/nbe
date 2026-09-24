@@ -48,6 +48,11 @@ async fn main() -> anyhow::Result<()> {
     // boundaries — not a spin. It renders even while the clock is STOPPED so
     // the operator always has a picture (the fallback slate).
     let mut render = RenderLoop::new(state.clone()).await?;
+    // Warm the hardware-encoder probe off the directive path: the first
+    // answer opens a real VideoToolbox session (~190 ms), and a positive one
+    // is cached for the process (see `record::session::encoder_available`),
+    // so `record.start` / `stream.start` never pay it.
+    tokio::task::spawn_blocking(nbe_engine::record::encoder_available);
     let render_state = state.clone();
     // The render/record loop below hands frames to the dedicated record
     // thread over a bounded channel; the thread owns the hardware encoder
