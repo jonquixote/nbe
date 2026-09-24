@@ -84,6 +84,25 @@ fn is_no_zerocopy(err: &DirectiveError) -> bool {
     err.to_string().contains("E_NO_ZEROCOPY")
 }
 
+fn is_no_encoder(err: &DirectiveError) -> bool {
+    err.to_string().contains("E_NO_HARDWARE_ENCODER")
+}
+
+/// Resets the force-no-encoder seam on drop (the prompt09_session shape), so a
+/// panicking test cannot leave the process believing it has no encoder.
+struct ForceNoEncoderGuard;
+impl ForceNoEncoderGuard {
+    fn set() -> Self {
+        nbe_engine::record::session::set_force_no_encoder(true);
+        Self
+    }
+}
+impl Drop for ForceNoEncoderGuard {
+    fn drop(&mut self) {
+        nbe_engine::record::session::set_force_no_encoder(false);
+    }
+}
+
 fn acked(outgoing: &OutgoingQueue, sv: u64) -> bool {
     outgoing.drain().into_iter().any(|f| match f {
         EngineFrame::AppliedStateVersion { state_version, .. } => state_version == sv,
@@ -373,10 +392,12 @@ async fn stream_start_on_chain_less_machine_refuses_no_zerocopy_loudly() {
     // refused with E_NO_ZEROCOPY in the message (loud, never silent), with no
     // session and no ack. v0.4.2's readback allowance is recording-only, so
     // there is no CPU fallback here.
+    //
+    // UNGATED (PR #30 repair round): the chain refusal now precedes the
+    // encoder probe, so this runs on the encoder-less CI runner too. It used to
+    // `hw_or_skip()` first — which meant CI reported it `ok` while never
+    // exercising it (§2a rule 8).
     let _serial = SERIAL.lock().await;
-    if !hw_or_skip() {
-        return;
-    }
     let _force = ForceNoChainGuard::set();
     let (state, handler, outgoing) = harness();
     let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
@@ -402,6 +423,76 @@ async fn stream_start_on_chain_less_machine_refuses_no_zerocopy_loudly() {
         "refused start publishes no selection"
     );
     assert!(!acked(&outgoing, 3), "refused start must not ack");
+}
+
+/// The refusal ORDER is part of the contract, so it is pinned (PR #30 repair
+/// round): configuration, then the SPEC's chain refusal, then this build's
+/// encoder. The first version probed the encoder first; on the macos-14 runner
+/// (Metal adapter, no H.264 encoder) that made every chain and configuration
+/// refusal unreachable, and CI run 35878301689 failed on exactly that.
+///
+/// The three legs, each isolating one layer with the force seams:
+/// * no encoder AND no chain -> `E_NO_ZEROCOPY` (chain before encoder);
+/// * no encoder AND a `cpuReadback` manifest -> `E_NO_ZEROCOPY` naming
+///   `cpuReadback` (configuration before both probes);
+/// * no encoder, real chain -> `E_NO_HARDWARE_ENCODER` (the encoder is still
+///   refused when it is the only thing missing). This leg needs a real chain
+///   and skips loudly without one; the macos-14 runner has one.
+#[tokio::test]
+async fn stream_start_refusal_order_is_config_then_chain_then_encoder() {
+    let _serial = SERIAL.lock().await;
+    let _no_encoder = ForceNoEncoderGuard::set();
+
+    // Leg 1: both probes would refuse; the chain's answer wins.
+    {
+        let _no_chain = ForceNoChainGuard::set();
+        let (_state, handler, _) = harness();
+        let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+        load_and_start(&handler, &pkg_path).await;
+        let err = handler
+            .apply(&directive("stream.start", 3, serde_json::json!({})))
+            .await
+            .expect_err("no chain and no encoder must refuse");
+        assert!(
+            is_no_zerocopy(&err) && !is_no_encoder(&err),
+            "chain refusal must precede the encoder probe, got: {err}"
+        );
+    }
+
+    // Leg 2: a cpuReadback stream is refused before either probe.
+    {
+        let (_state, handler, _) = harness();
+        let (_pkg, pkg_path) =
+            write_package(Some("rtmp://manifest.example/live"), Some("cpuReadback"));
+        load_and_start(&handler, &pkg_path).await;
+        let err = handler
+            .apply(&directive("stream.start", 3, serde_json::json!({})))
+            .await
+            .expect_err("a cpuReadback stream must refuse");
+        let msg = err.to_string();
+        assert!(
+            is_no_zerocopy(&err) && msg.contains("cpuReadback"),
+            "the configuration refusal must precede both probes and name the setting, got: {msg}"
+        );
+    }
+
+    // Leg 3: the encoder is refused when it is the only thing missing.
+    let (state, handler, _) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    load_and_start(&handler, &pkg_path).await;
+    let err = handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .expect_err("no encoder must refuse even with a chain");
+    assert!(
+        is_no_encoder(&err),
+        "with a chain present, a missing encoder answers E_NO_HARDWARE_ENCODER, got: {err}"
+    );
+    assert_eq!(*state.stream_state.lock().unwrap(), StreamState::Idle);
+    assert!(state.stream_session.lock().unwrap().is_none());
 }
 
 // ---------------------------------------------------------------------------

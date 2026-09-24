@@ -990,13 +990,29 @@ impl DirectiveHandler {
     /// `E_BAD_PAYLOAD`-shaped (before the encoder and chain probes, so that
     /// refusal is hardware-free).
     ///
-    /// Preconditions, in order: show RUNNING (`E_FORBIDDEN_STATE` otherwise);
-    /// no live stream already (`E_FORBIDDEN_STATE` — §9.1's exactly-one-live
-    /// ceiling, and the live session is preserved); endpoint resolved
-    /// (`E_BAD_PAYLOAD`); hardware encoder answers the SPEC probe, no stream
-    /// opened (`E_NO_HARDWARE_ENCODER` — the record start shape); a zero-copy
-    /// chain is available (`E_NO_ZEROCOPY`, loudly — v0.4.2's readback
-    /// allowance is recording-only, so there is no CPU fallback here).
+    /// Preconditions, in order — **decided deliberately (PR #30 repair round)
+    /// and pinned by `stream_start_refusal_order_is_config_then_chain_then_encoder`**:
+    ///
+    /// 1. show RUNNING (`E_FORBIDDEN_STATE`);
+    /// 2. no live stream already (`E_FORBIDDEN_STATE` — §9.1's exactly-one-live
+    ///    ceiling; the live session is preserved);
+    /// 3. endpoint resolved (`E_BAD_PAYLOAD`);
+    /// 4. the manifest's `outputs.stream.tapPath` is not `cpuReadback`
+    ///    (`E_NO_ZEROCOPY`) — a configuration refusal, so it is decided before
+    ///    any probe and is the same answer on every machine;
+    /// 5. a zero-copy chain is available (`E_NO_ZEROCOPY`, loudly — v0.4.4's
+    ///    ratified rescope gives the readback allowance to recording only);
+    /// 6. a hardware encoder answers the SPEC probe (`E_NO_HARDWARE_ENCODER`).
+    ///
+    /// **Why chain before encoder.** The chain refusal is the SPEC's claim —
+    /// "this output has no lawful path on this machine" — and the encoder
+    /// refusal is this build's. The law's answer is reported first. It is also
+    /// the order CI can actually exercise: the macos-14 runner has a Metal
+    /// adapter and no H.264 encoder, so with the encoder probe first every
+    /// chain and configuration refusal was unreachable there — the first
+    /// version of this function shipped that way and `stream_tap_path_cpu_readback_is_refused_no_zerocopy`
+    /// failed on CI (run 35878301689) while passing on a machine with an
+    /// encoder.
     ///
     /// A successful start opens the [`crate::record::stream::StreamSession`],
     /// publishes the selection (`select_stream`'s gate, then
@@ -1031,14 +1047,26 @@ impl DirectiveHandler {
         // WU3 call site: the manifest answers when the command is silent.
         let manifest_url = stream_manifest_url(&self.state);
         let endpoint = resolve_stream_url(manifest_url.as_deref(), command_url)?;
-        // SPEC §16.14 precondition, wired (no dead variant): probe, no stream.
-        if !crate::record::session::encoder_available() {
-            return Err(DirectiveError::NoHardwareEncoder(
-                "stream.start: no hardware H.264 encoder available".into(),
+        // (4) B2 stream side — the manifest's `outputs.stream.tapPath` override
+        // (SPEC v0.4.5). A `cpuReadback` restriction is unlawful for streaming
+        // (no readback allowance covers this output) and is refused on the
+        // `E_NO_ZEROCOPY` path — never an Override-live selection. A
+        // CONFIGURATION refusal: decided before any probe, identical on every
+        // machine.
+        let override_path = stream_tap_override(&self.state);
+        if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
+            tracing::warn!("stream.start: cpuReadback override refused (no lawful readback path for streaming)");
+            return Err(stream_err(
+                crate::record::stream::StreamError::NoChain(
+                    "stream.start refused: cpuReadback tapPath is unlawful for streaming; \
+                     streaming shares frames with the encoder without CPU readback (§0.1 assumption 24)"
+                        .into(),
+                ),
             ));
         }
-        // The refusal row: no chain, no lawful path (never a silent fallback
-        // to the readback the spec forbids this output).
+        // (5) The refusal row: no chain, no lawful path (never a silent
+        // fallback to the readback the spec forbids this output). The SPEC's
+        // claim, so it is answered before this build's encoder probe.
         let capable = crate::record::stream::chain_available(&self.state.render_device());
         if crate::record::tap_path::select_stream(capable).is_none() {
             tracing::warn!("stream.start: zero-copy chain unavailable, refusing (no readback fallback for streaming)");
@@ -1050,22 +1078,10 @@ impl DirectiveHandler {
                 ),
             ));
         }
-        // B2 stream side — the manifest's `outputs.stream.tapPath` override
-        // (SPEC v0.4.5), record-WU2 shape. `capable` is true here (the gate
-        // above refused otherwise), so the table speaks unless the operator
-        // restricted the take, which reports `Override`. A `cpuReadback`
-        // restriction is unlawful for streaming (no readback allowance covers
-        // this output) and is refused on the `E_NO_ZEROCOPY` path — never an
-        // Override-live selection (see `tap_path::select_with_override`).
-        let override_path = stream_tap_override(&self.state);
-        if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
-            tracing::warn!("stream.start: cpuReadback override refused (no lawful readback path for streaming)");
-            return Err(stream_err(
-                crate::record::stream::StreamError::NoChain(
-                    "stream.start refused: cpuReadback tapPath is unlawful for streaming; \
-                     streaming shares frames with the encoder without CPU readback (§0.1 assumption 24)"
-                        .into(),
-                ),
+        // (6) SPEC §16.14 precondition, wired: this build's hardware encoder.
+        if !crate::record::session::encoder_available() {
+            return Err(DirectiveError::NoHardwareEncoder(
+                "stream.start: no hardware H.264 encoder available".into(),
             ));
         }
         let selection = crate::record::tap_path::select_with_override(
