@@ -1006,15 +1006,22 @@ impl DirectiveHandler {
     ///    ratified rescope gives the readback allowance to recording only);
     /// 6. a hardware encoder answers the SPEC probe (`E_NO_HARDWARE_ENCODER`).
     ///
-    /// **Why chain before encoder.** The chain refusal is the SPEC's claim —
-    /// "this output has no lawful path on this machine" — and the encoder
-    /// refusal is this build's. The law's answer is reported first. It is also
-    /// the order CI can actually exercise: the macos-14 runner has a Metal
-    /// adapter and no H.264 encoder, so with the encoder probe first every
-    /// chain and configuration refusal was unreachable there — the first
-    /// version of this function shipped that way and `stream_tap_path_cpu_readback_is_refused_no_zerocopy`
-    /// failed on CI (run 35878301689) while passing on a machine with an
-    /// encoder.
+    /// **Why this order.** ~~The chain refusal is the SPEC's claim — "this
+    /// output has no lawful path on this machine" — and the encoder refusal
+    /// is this build's. The law's answer is reported first.~~ That was wrong
+    /// (§2c): §9.2's hardware-only encode is spec law too, so both refusals
+    /// come from the spec, and §16.14 lists its preconditions without an
+    /// evaluation order (encoder first, as it happens). The order rests on
+    /// two honest grounds instead. A configuration refusal (`cpuReadback`) is
+    /// the same answer on every machine, so it is decided before any probe.
+    /// And config → chain → encoder is the only order the CI runner — a Metal
+    /// adapter, no H.264 encoder — can observe: with the encoder probe first,
+    /// every chain and configuration refusal was unreachable there; the first
+    /// version of this function shipped that way and
+    /// `stream_tap_path_cpu_readback_is_refused_no_zerocopy` failed on CI (run
+    /// 35878301689) while passing on a machine with an encoder. Because a test
+    /// now pins an order §16.14 never states, the order is drafted as an
+    /// UNRATIFIED candidate in `docs/v0.5-outline.md` §7.
     ///
     /// A successful start opens the [`crate::record::stream::StreamSession`],
     /// publishes the selection (`select_stream`'s gate, then
@@ -1069,9 +1076,11 @@ impl DirectiveHandler {
             ));
         }
         // (5) The refusal row: no chain, no lawful path (never a silent
-        // fallback to the readback the spec forbids this output). The SPEC's
-        // claim, so it is answered before this build's encoder probe. The
-        // probe IS the stream's pool: kept on success, owned by the session.
+        // fallback to the readback the spec forbids this output). Answered
+        // before the encoder probe for the reasons in the doc comment above
+        // (~~"the SPEC's claim, so it is answered before this build's encoder
+        // probe"~~ — both are the spec's). The probe IS the stream's pool:
+        // kept on success, owned by the session.
         let pool = crate::record::stream::probe_stream_pool(&self.state.render_device());
         let capable = pool.is_some();
         if crate::record::tap_path::select_stream(capable).is_none() {

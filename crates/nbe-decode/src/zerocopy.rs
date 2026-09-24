@@ -404,9 +404,16 @@ impl SurfacePool {
     /// 1 between 1.6 ms and 17.5 ms later. The record thread drops its `Arc`
     /// as soon as `encode_pixel_buffer` returns, so a count-only rule marked
     /// the surface free while VideoToolbox was still reading its pixels — and
-    /// the compositor could draw the next frame into it. At 30 fps that window
-    /// is usually shorter than a frame; at 60 fps (16.7 ms) the measured
-    /// worst case already exceeds it.
+    /// the compositor could draw the next frame into it. ~~At 30 fps that
+    /// window is usually shorter than a frame; at 60 fps (16.7 ms) the measured
+    /// worst case already exceeds it.~~ Precisely: a frame is overwritten while
+    /// VideoToolbox reads it exactly when the gap between the consumer's drop
+    /// and the loop's next acquire is shorter than VideoToolbox's hold
+    /// (1.6–3.7 ms steady, 17.5 ms on the first frame). A keeping-pace thread
+    /// at 30 fps leaves ~31 ms; the window opens when the thread runs late, and
+    /// at 60 fps the ~15 ms steady gap does not cover the first-frame hold. The
+    /// result is a torn frame in the file. No shipped recording has been
+    /// audited (`docs/09-measurements.md`, Prompt 10).
     ///
     /// The retain chain is VideoToolbox's own statement of when it is done,
     /// so the rule reads it: a surface is free only when its `CVPixelBuffer`

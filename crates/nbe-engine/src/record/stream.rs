@@ -20,10 +20,13 @@
 //! The render loop's only stream work is one bounded `try_send` of an `Arc`:
 //! a full channel is a stream drop (`skipped_stream_frames`), never a wait.
 //! PR #30's first version opened the encoder and encoded every frame inline
-//! on the render loop — measured on the reference machine at 39.3 ms mean
-//! per open (10 of 10 over the 33.3 ms budget, on every `stream.start`) and
-//! 3.6 ms mean per frame — in a codebase whose record path already encoded on
-//! its own thread.
+//! on the render loop — the open measured on the reference machine at
+//! 35–40 ms, over the 33.3 ms budget on nearly every `stream.start` — in a
+//! codebase whose record path already encoded on its own thread.
+//! ~~"and 3.6 ms mean per frame"~~ — that figure is real but
+//! throughput-limited (300 unpaced back-to-back encode calls, so VideoToolbox's
+//! backpressure blocked each one); at the show's paced rate the call costs
+//! 0.05–0.11 ms. Both methods are in `docs/09-measurements.md`, Prompt 10.
 //!
 //! The stream thread owns the `!Send` handles (the VideoToolbox session and
 //! the AudioToolbox AAC converter) as thread-locals, opens them eagerly off

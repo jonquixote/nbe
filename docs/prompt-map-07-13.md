@@ -1180,10 +1180,15 @@ are in `docs/09-measurements.md`, Prompt 10 section.
 **What the repair round changed.**
 
 1. **Refusal order is config → chain → encoder**, decided and pinned
-   (`stream_start_refusal_order_is_config_then_chain_then_encoder`). The chain
-   refusal is the SPEC's claim; the encoder refusal is this build's. It is also
-   the only order the CI runner (chain, no encoder) can see — PR #30's
-   encoder-first order failed there in run 35878301689.
+   (`stream_start_refusal_order_is_config_then_chain_then_encoder`).
+   ~~The chain refusal is the SPEC's claim; the encoder refusal is this
+   build's.~~ Corrected by the own-author pass (§2c): §9.2's hardware-only
+   encode is spec law too — both refusals come from the spec, and §16.14 states
+   no evaluation order. The honest grounds: a configuration refusal is the same
+   on every machine, and config → chain → encoder is the only order the CI
+   runner (chain, no encoder) can observe — PR #30's encoder-first order failed
+   there in run 35878301689. The pinned order is drafted as an UNRATIFIED
+   candidate in `docs/v0.5-outline.md` §7.
 2. **The stream has its own thread** (`nbe-stream`), owning the VideoToolbox
    session and the AAC converter; the render loop's whole stream cost is one
    bounded `try_send`. PR #30 opened the encoder on the first live tick
@@ -1202,7 +1207,10 @@ are in `docs/09-measurements.md`, Prompt 10 section.
    retains the `CVPixelBuffer` after `encode_pixel_buffer` returns (1.6–17.5 ms
    measured); the pool called the surface free on `Arc::strong_count == 1`
    alone. **The record path shipped this first**, in ZERO-COPY Phase 3b; the
-   rule now waits for VideoToolbox's release.
+   rule now waits for VideoToolbox's release — read after an `Acquire` fence
+   (`7c57ccf`), without which the rule was sound on x86-64 but unproven on
+   arm64. The precise exposure and "no shipped recording has been audited" are
+   in `docs/09-measurements.md`; the guard's soak row makes the soak its home.
 7. **The loop is in the library** (`tick::run_tick`, `tick::run_loop`), so
    tests drive the production loop; the dress rehearsal streams (step 9); G1's
    guard runs on real surfaces instead of `SharedPool<()>`.
@@ -1222,10 +1230,19 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   is the missing witness.
 - **The client never sends Acknowledgement messages** (it receives almost
   nothing, so a server's window is never reached); recorded, not built.
-- **Audio-tap eviction is per sample.** A consumer stalled past the ring's
+- ~~**Audio-tap eviction is per sample.** A consumer stalled past the ring's
   capacity can lose an odd number of samples and swap stereo channels — the
   record tap has the same property. The stream thread keeps drains paired, but
-  cannot repair an eviction.
+  cannot repair an eviction.~~ Wrong about both paths (own-author pass, §2c).
+  The hazard: with the ring full, a drain racing an eviction mid-push returned
+  an odd count starting on a right-channel sample (probe: 177 of 907 drains).
+  **Stream:** the thread's carry re-paired from the shifted start — L and R
+  swapped silently until the next odd drain (new with PR #30). **Record:** the
+  writer refused the odd push ("audio must be whole stereo frames") and the
+  take ended (pre-existing, merged). **Fixed** (`909f89d`): `AudioTap` stores
+  and evicts whole stereo frames, so every drain starts on a left sample and
+  holds whole frames; the guard `drains_racing_eviction_stay_stereo_aligned`
+  reads 0 odd of 8,833 drains (104 of 598 with the old eviction).
 - **Transport state is not on the wire** — see the v0.5 §7 candidate.
 
 ## 11 — Watchdog

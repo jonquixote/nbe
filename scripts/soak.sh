@@ -136,6 +136,7 @@ LAST_STREAM_LINE=""
 LAST_SURVIVAL_LINE=""
 LAST_RECONNECT_LINE=""
 LAST_G1_LINE=""
+LAST_VT_LINE=""
 LAST_MEDIAMTX=""
 
 for i in $(seq 1 "$ITERATIONS"); do
@@ -184,12 +185,16 @@ for i in $(seq 1 "$ITERATIONS"); do
   LAST_SURVIVAL_LINE="$(grep -h '^SURVIVAL:' "$ITER/stream-evidence.txt" | head -1)"
   LAST_RECONNECT_LINE="$(grep -h '^RECONNECT:' "$ITER/stream-evidence.txt" | head -1)"
   LAST_G1_LINE="$(grep -h '^G1 guard:' "$ITER/stream-evidence.txt" | head -1)"
+  LAST_VT_LINE="$(grep -h '^VT retain guard:' "$ITER/stream-evidence.txt" | head -1)"
   if grep -q '^MEDIAMTX-PROOF .*2 tracks (H264, MPEG-4 Audio)' "$ITER/stream-evidence.txt"; then
     LAST_MEDIAMTX="proved"
   else
     LAST_MEDIAMTX="skipped (binary absent) or not proved — see $ITER/prompt10_rtmp.log"
   fi
-  for need in SURVIVAL RECONNECT 'G1 guard' 'LIVE LOOP' 'BOTH LIVE'; do
+  # 'VT retain guard' is required, not merely grepped: the guard skips on CI
+  # (no encoder), so this is its only home, and a row whose capture is
+  # optional is the tense defect PR #24's pass named.
+  for need in SURVIVAL RECONNECT 'G1 guard' 'LIVE LOOP' 'BOTH LIVE' 'VT retain guard'; do
     grep -q "^$need" "$ITER/stream-evidence.txt" \
       || { say "  stream evidence missing: '$need' — the row it backs has no record this iteration"; FAILED=1; }
   done
@@ -294,6 +299,7 @@ cat >"$OUT/soak.json" <<JSON
     "survival_last_iteration": "${LAST_SURVIVAL_LINE:-}",
     "reconnect_last_iteration": "${LAST_RECONNECT_LINE:-}",
     "g1_last_iteration": "${LAST_G1_LINE:-}",
+    "vt_retain_last_iteration": "${LAST_VT_LINE:-}",
     "mediamtx": "${LAST_MEDIAMTX:-}"
   },
   "outcome": "$([ "$FAILED" -eq 0 ] && echo PASS || echo FAIL)"

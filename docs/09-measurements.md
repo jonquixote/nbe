@@ -930,7 +930,9 @@ handed out surfaces VideoToolbox was still reading.
 `tick total` is the loop's timed region per frame (the tick without the sleep
 to the next boundary); 300 frames per configuration, after 60 warm-up frames,
 same package, same double as the ingest. **Before** is PR #30 at `bf0274c`,
-its `main.rs` loop body copied verbatim into a measurement test (the loop was
+its `main.rs` loop body copied verbatim into a measurement test — 160 lines,
+6 changed, every change mechanical (`&mut local` → a parameter, since the body
+became a function); no logic changed (the loop was
 in the binary, where nothing else could run it); **after** is
 `tick::run_loop`, the function `main` now calls
 (`prompt10_rtmp::measure_loop_timed_region_by_output`, `#[ignore]`).
@@ -964,6 +966,26 @@ them — which the measurement does between configurations — reused the previo
 stream's encoder and its "sequence header already sent" flag, so the second
 stream would have opened with no AVC sequence header. Per-stream state now
 lives and dies with the stream thread, so there is no edge to miss.
+
+### Two numbers for one encode call — both honest, different shapes
+
+The independent review measured PR #30's per-frame encode at **3.6 ms mean**;
+this round's before-measurement puts PR #30's per-frame stream cost at
+**~0.2–0.3 ms** of the tick. They disagree because they measure different
+things, and a future reader comparing them should know which is which.
+
+| | review (2026-09-24, load 2.59 → 2.71) | repair round (loads 2.07–2.83) |
+|---|---|---|
+| What was timed | each `encode_pixel_buffer` call | the loop's whole tick (stream share), and each encode call on the stream thread |
+| Pacing | **none** — 300 calls back to back in a temporary test (`zz_review_probe`: one 1080p30 8 Mbps session, a 4-surface pool, never drawn into) | **the show's rate** — the production loop at 30 fps |
+| Result | mean 3.6, p95 6.1, max 20.3 ms, 0 of 300 over budget | tick +0.25 ms mean with the stream live (before: 1.729 vs 1.484 ms); call on the thread 0.05–0.11 ms mean |
+| What it is | **throughput-limited**: unpaced submission outruns the encoder, and VideoToolbox's backpressure blocks each call until it has room | **steady state**: the encoder is idle when each frame arrives |
+
+Both are true of the same code. The steady-state number is what PR #30's loop
+paid per frame while VideoToolbox kept up; the throughput number is what it
+would pay whenever the encoder fell behind (a burst, a keyframe run, a busy
+media engine). Either one argues for the thread; neither is the other's
+error.
 
 ## §9.7 — record alone, stream alone, both
 
@@ -1047,10 +1069,32 @@ Released 1.6–17.5 ms after the call returned. The record thread (merged,
 ZERO-COPY Phase 3b) drops its `Arc` as soon as the call returns, and the
 pool's rule was `Arc::strong_count == 1` alone — so it called a surface free
 while VideoToolbox was reading it, and the compositor could draw the next
-frame into it. At 30 fps the window is usually shorter than a frame; at
-60 fps the measured worst case exceeds one. **The record path shipped this
-first; PR #30 added a second encoder reading the same surfaces.** The rule now
-also requires the buffer back at its baseline retain count (`87f93b2`):
+frame into it. ~~At 30 fps the window is usually shorter than a frame; at
+60 fps the measured worst case exceeds one.~~ (The wrong comparison, and a
+hedge — corrected by the own-author pass, §2c.)
+
+**The exposure, precisely.** On `main` the record pool holds 3 surfaces,
+`acquire` takes the first free one, and the record thread drops its `Arc` the
+moment the encode call returns — so in steady state the same surface is
+re-acquired every frame. A recorded frame is overwritten while VideoToolbox
+reads it **exactly when the gap between that drop and the loop's next acquire
+is shorter than VideoToolbox's hold** (measured 1.6–3.7 ms in steady state,
+17.5 ms on the first frame). At 30 fps with a record thread keeping pace the
+gap is ~31 ms and covers every measured hold. The window opens whenever the
+record thread runs late — a writer flush, an audio backlog, a queued frame —
+because its drop can then land just before a tick; and at 60 fps the ~15 ms
+steady gap does not cover the 17.5 ms first-frame hold. The consequence is a
+torn frame in the file: frame N encoded with some of frame N+k drawn over it.
+Whether VideoToolbox actually reads for its whole hold cannot be seen from
+outside; its contract says to assume so. **No shipped recording has been
+audited.** `main` stays exposed until PR #30 merges; the fix is `87f93b2` plus
+the fence `7c57ccf`, both in `nbe-decode` only and cherry-pickable.
+
+**The record path shipped this first; PR #30 added a second encoder reading
+the same surfaces.** The rule now also requires the buffer back at its
+baseline retain count (`87f93b2`), read after an `Acquire` fence (`7c57ccf`:
+without it the rule is sound on x86-64 but not on arm64 — the construction
+argument is in `SurfacePool::is_free`):
 
 ```
 VT retain guard: 12 encodes; VideoToolbox still held the buffer when the call returned 12 times; the pool handed it out while held 0 times
@@ -1119,6 +1163,13 @@ with `git checkout`; the suites green after.
 | F12 | manifest bitrates ignored (PR #30) | `manifest_audio_bitrate_reaches_the_aac_codec` | `AudioToolbox must report the manifest's 128 kbps, not the 192 kbps default` |
 | F13 | streamBufferMs idle back to the -1 sentinel | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub` | `pre-start streamBufferMs is 0.0: nothing is buffered`; `a refused start leaves 0.0 on the wire, never an absent field`; `stopped tick returns to 0.0 with the key still present` |
 | F16 | static AAC header 44.1 kHz (PR #30) | `static_audio_sequence_header_is_48k` | `(assert_eq)` |
+
+**Final repair round (after the own-author pass):**
+
+| # | Behaviour removed | Result |
+|---|---|---|
+| F17 | the `Acquire` fence in `SurfacePool::is_free` | **cannot flip a test on this machine** — the VT guard still passes (12/12 held, 0 handed out): LLVM lowers `fence acquire` to no instruction on x86-64. Proved by construction instead (the happens-before argument in `is_free`), with the toolchain evidence: Rust's IR carries `fence acquire` in `SurfacePool::acquire` and `SurfacePool::free` and loses it when the fence is removed; the same fence lowered by Apple clang 17 is `ldr [strong]; dmb ishld; ldr [retain]` on arm64 and no instruction (`##MEMBARRIER`) on x86-64 |
+| S1 | whole-frame eviction (per-sample restored) | `drains_racing_eviction_stay_stereo_aligned`: `STEREO GUARD: 598 drains racing 11894998 evicted samples: 104 odd-length, 104 starting on a right-channel sample` → `a drain must hold whole stereo frames` (left 104, right 0). With the fix: 0 odd-length, 0 right-start over 8,833 drains |
 
 F6–F8 are from the re-run after `f7d6c08`. Their first run (at `200816f`) found two guards that did not discriminate: with F7 applied, only the sizing assertion failed (the worst-case test derived its holds from the constant under test, and the stall test's record consumer never reached its worst hold); with F6 applied, the VT guard tripped its own "hazard not observed" assertion rather than the violation, because it inferred VideoToolbox's hold from the pool it was testing. Both guards were rewritten, then re-falsified.
 
