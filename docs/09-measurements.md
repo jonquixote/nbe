@@ -1069,8 +1069,8 @@ STREAM: 19927 bytes in 4 s over 1 connection(s): video 149 messages (1 sequence 
 
 149 video messages in ~5 s is the show's 30 fps; 233 AAC messages is
 46.9/s. The byte count is small because at that point in the show the View
-holds a finished clip's last frame and the mix is silent — identical on two
-runs. On CI the engine refuses (`E_NO_HARDWARE_ENCODER`) and the step skips
+holds a finished clip's last frame and the mix is silent — 19,927, 19,927
+and 19,709 bytes on three runs (147–149 video, 231–233 audio messages). On CI the engine refuses (`E_NO_HARDWARE_ENCODER`) and the step skips
 loudly.
 
 Real ingest (`mediamtx_proof_engine_pipeline_publishes_h264_and_aac`), the
