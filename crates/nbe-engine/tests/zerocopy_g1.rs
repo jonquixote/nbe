@@ -1,202 +1,266 @@
-//! WU1 Gate G1 — backpressure: who owns the surfaces when record and stream
-//! share one composite.
+//! Gate G1 — who owns the surfaces when record and stream share one
+//! composite (`agents/prompts/10-streaming.md` §2), on the production seams.
 //!
-//! Spec: `agents/prompts/10-streaming.md` §2 Gate G1. One composite into one
-//! surface per frame, N consumers holding references (`Arc`). When one
-//! consumer falls indefinitely behind, it gives up its frame (drops its `Arc`)
-//! without holding the allocation hostage. Pool sized for the sum of consumers'
-//! in-flight bounds plus the one being drawn. Record's shed-before-draw stays
-//! exactly as is; streaming must not change it.
+//! One composite into one surface per frame, N consumers holding `Arc`s.
+//! A consumer that falls behind gives its frame up (drops its `Arc`) rather
+//! than holding the allocation hostage; the pool is sized for every
+//! consumer's worst-case hold plus the one being drawn; record's
+//! shed-before-draw is untouched.
 //!
-//! Hermetic by design: this models the ownership discipline with plain `Arc<()>`
-//! slots under the same `Arc::strong_count == 1` free rule `SurfacePool` uses
-//! (`nbe-decode/src/zerocopy.rs`), so CI exercises it with no GPU. The GPU pool
-//! is unchanged; record's `RECORD_CHANNEL_BOUND + 1` sizing is untouched.
+//! PR #30's first guard modelled this with `SharedPool<()>` — plain `Arc<()>`
+//! slots under the free rule the real pool used — so it ran hermetically and
+//! proved the model. It could not see that the real rule was wrong (a
+//! surface VideoToolbox still reads looked free) or that the real sizing
+//! left out each consumer's in-encode surface. These tests use what the loop
+//! uses: the GPU `SurfacePool` from `shared_zerocopy_pool`, a real
+//! `RenderLoop` drawing into it through `begin_tap_frame` / `restore_view` /
+//! `end_tap_frame` (record) and `hand_off_stream_surface` (stream), and a
+//! real VideoToolbox session for the free rule. The composition of these
+//! seams inside `tick::run_tick` is exercised by `prompt10_rtmp`'s live
+//! tests on a machine with an encoder.
+//!
+//! The CI runner has a zero-copy chain (Metal + IOSurface) and no encoder:
+//! the pool guards run there; the VideoToolbox guard skips loudly.
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
+use std::time::Duration;
 
-use nbe_engine::record::pool::{
-    record_take_or_skip, shared_pool_size, stream_take_or_drop, SharedPool,
-};
-use nbe_engine::record::RECORD_CHANNEL_BOUND;
+use nbe_decode::zerocopy::{SharedSurface, SurfacePool};
+use nbe_engine::record::pool::{shared_pool_size, stream_pool_size, IN_ENCODER};
+use nbe_engine::record::stream::{hand_off_stream_surface, StreamMsg, STREAM_CHANNEL_BOUND};
+use nbe_engine::record::{RecordMsg, RECORD_CHANNEL_BOUND};
+use nbe_engine::render::RenderLoop;
+use nbe_engine::state::EngineState;
 
-const STREAM_BOUND: usize = 2;
-
-fn load_1m() -> f64 {
-    let out = std::process::Command::new("sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .expect("sysctl must run");
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .trim_matches(|c| c == '{' || c == '}' || c == ' ')
-        .split_whitespace()
-        .next()
-        .expect("a load average")
-        .parse()
-        .expect("a number")
+/// A render loop plus the shared pool, or a loud skip.
+async fn chain_or_skip() -> Option<(Arc<EngineState>, RenderLoop, SurfacePool)> {
+    let state = Arc::new(EngineState::new(30));
+    let render = RenderLoop::new(state.clone()).await.ok()?;
+    let Some(device) = state.render_device() else {
+        eprintln!("SKIP: no render device on this machine");
+        return None;
+    };
+    match nbe_engine::record::shared_zerocopy_pool(&device) {
+        Ok(pool) => Some((state, render, pool)),
+        Err(e) => {
+            eprintln!("SKIP: no zero-copy chain on this machine ({e})");
+            None
+        }
+    }
 }
 
-/// Failure-mode demo under TODAY's single-consumer pool.
-///
-/// A pool sized `RECORD_CHANNEL_BOUND + 1` (record's answer) with a second
-/// consumer that stalls holding one surface: record's in-flight bound plus the
-/// drawn frame no longer fit, so `skipped_record_frames` rises. This is the RED
-/// that motivates the shared sizing rule — it must PASS (the exhaustion is
-/// real), and the guard below must still hold on the shared pool.
+/// The sizing rule, pinned against the bounds it is built from.
 #[test]
-fn single_consumer_pool_exhausts_when_a_second_consumer_stalls() {
-    let pool = SharedPool::from_items(vec![(), (), ()]);
-    assert_eq!(pool.len(), RECORD_CHANNEL_BOUND + 1);
-    let skipped = AtomicU64::new(0);
-
-    // The stalled consumer takes one surface and never gives it back.
-    let _stalled: Arc<()> = pool.acquire().expect("a fresh pool is free");
-
-    // Record needs its full bound in flight plus the one being drawn.
-    let _in_flight_1 = record_take_or_skip(&pool, &skipped).expect("slot 1 of 2 free");
-    let _in_flight_2 = record_take_or_skip(&pool, &skipped).expect("slot 2 of 2 free");
-    let drawn = record_take_or_skip(&pool, &skipped);
-
-    assert!(
-        drawn.is_none(),
-        "with one surface held hostage, record's bound + drawn (3) cannot fit in a pool of 3"
+fn sizing_counts_each_consumers_queue_and_encoder_plus_the_drawn_one() {
+    assert_eq!(IN_ENCODER, 1);
+    assert_eq!(
+        shared_pool_size(RECORD_CHANNEL_BOUND, STREAM_CHANNEL_BOUND),
+        (RECORD_CHANNEL_BOUND + 1) + (STREAM_CHANNEL_BOUND + 1) + 1
     );
     assert_eq!(
-        skipped.load(Ordering::SeqCst),
-        1,
-        "the refusal must count exactly one record skip"
+        stream_pool_size(STREAM_CHANNEL_BOUND),
+        STREAM_CHANNEL_BOUND + 1 + 1
     );
 }
 
-/// THE GUARD: a stalled stream raises neither `skipped_record_frames` nor
-/// `droppedFramesTotal`.
+/// Worst case, on real surfaces: record holds its whole queue plus the one
+/// it is encoding, a stalled stream holds ITS whole queue plus its
+/// in-encode surface — on frames disjoint from record's, which is possible
+/// because either consumer may shed a frame the other keeps — and the next
+/// draw still gets a surface.
 ///
-/// Shared pool (`record bound + stream bound + drawn`), stream sheds by
-/// releasing its reference (counted as a stream drop), record and View clean.
-/// Falsified by breaking the drop path — hold the stalled allocation instead
-/// of dropping it — whereupon record skips rise.
-#[test]
-fn a_stalled_stream_raises_neither_skipped_record_frames_nor_dropped_frames_total() {
-    let load_before = load_1m();
-    let pool = SharedPool::from_items(vec![
-        ();
-        shared_pool_size(RECORD_CHANNEL_BOUND, STREAM_BOUND)
-    ]);
-    assert_eq!(pool.len(), RECORD_CHANNEL_BOUND + STREAM_BOUND + 1);
-
-    let skipped = AtomicU64::new(0);
-    let view_drops = AtomicU64::new(0);
-    let stream_drops = AtomicU64::new(0);
-
-    // Test-side accounting: the second derivation of both counters.
-    let mut test_record_skips = 0u64;
-    let mut test_stream_drops = 0u64;
-    let test_view_drops = 0u64;
-
-    // One stream frame stalls and is given up per the discipline: dropped, so
-    // it holds nothing after this line.
-    let stalled = stream_take_or_drop(&pool, &stream_drops);
-    assert!(stalled.is_some(), "a fresh shared pool has room");
-    if stream_drops.load(Ordering::SeqCst) == 0 {
-        // Take succeeded: the stall gives the frame up by releasing it.
-        drop(stalled);
-    } else {
-        test_stream_drops += 1;
+/// Falsifies the sizing fix: PR #30's `record bound + stream bound + 1` (5)
+/// runs out here.
+#[tokio::test]
+async fn shared_pool_fits_both_consumers_worst_case_plus_the_draw() {
+    let Some((_state, _render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    let mut held: Vec<Arc<SharedSurface>> = Vec::new();
+    for _ in 0..(RECORD_CHANNEL_BOUND + IN_ENCODER) {
+        held.push(pool.acquire().expect("record's worst-case hold fits"));
     }
-
-    // In-flight windows, capped at each consumer's bound (the encoder drains).
-    let mut record_inflight: VecDeque<Arc<()>> = VecDeque::new();
-    let mut stream_inflight: VecDeque<Arc<()>> = VecDeque::new();
-
-    for _frame in 0..40 {
-        // Record: shed-before-draw shape, counted on `skipped_record_frames`.
-        match record_take_or_skip(&pool, &skipped) {
-            Some(s) => {
-                record_inflight.push_back(s);
-                if record_inflight.len() > RECORD_CHANNEL_BOUND {
-                    record_inflight.pop_front();
-                }
-            }
-            None => test_record_skips += 1,
-        }
-        // Stream: cannot take => stream drop, never a record skip, never a
-        // View drop. Holds at most its bound; the drain releases the oldest.
-        match stream_take_or_drop(&pool, &stream_drops) {
-            Some(s) => {
-                stream_inflight.push_back(s);
-                if stream_inflight.len() > STREAM_BOUND {
-                    stream_inflight.pop_front();
-                }
-            }
-            None => test_stream_drops += 1,
-        }
-        // The View is always drawn regardless: no View drop is ever counted
-        // here, and the test-side ledger agrees.
-        let _view_drawn = true;
-        assert_eq!(view_drops.load(Ordering::SeqCst), test_view_drops);
+    for _ in 0..(STREAM_CHANNEL_BOUND + IN_ENCODER) {
+        held.push(
+            pool.acquire()
+                .expect("a stalled stream's worst-case hold fits"),
+        );
     }
-
-    let load_after = load_1m();
-    let skipped_state = skipped.load(Ordering::SeqCst);
-
-    // Forced-exhaustion phase: fill every slot, then prove the next stream
-    // take counts exactly one stream drop while record and View stay clean.
-    // This exercises the counted-drop path the loop above never needed.
-    drop((record_inflight, stream_inflight));
-    assert_eq!(
-        pool.free(),
-        pool.len(),
-        "the loop's drains return every slot"
-    );
-    let _r1 = record_take_or_skip(&pool, &skipped).expect("slot for record in-flight 1");
-    let _r2 = record_take_or_skip(&pool, &skipped).expect("slot for record in-flight 2");
-    let _s1 = stream_take_or_drop(&pool, &stream_drops).expect("slot for stream in-flight 1");
-    let _s2 = stream_take_or_drop(&pool, &stream_drops).expect("slot for stream in-flight 2");
-    let _drawn = record_take_or_skip(&pool, &skipped).expect("slot for the drawn frame");
-    assert_eq!(pool.free(), 0, "all five slots are now held");
-    let shed = stream_take_or_drop(&pool, &stream_drops);
-    assert!(shed.is_none(), "a full pool refuses the stream take");
-    test_stream_drops += 1;
-    // The stream gives up its frames: releasing returns every slot.
-    drop((_r1, _r2, _s1, _s2, _drawn));
-    assert_eq!(pool.free(), pool.len(), "release returns every slot");
     assert!(
-        record_take_or_skip(&pool, &skipped).is_some(),
-        "record takes cleanly once the stream released"
+        pool.acquire().is_some(),
+        "with both consumers at their worst, the compositor still has a surface to draw into \
+         (pool of {})",
+        pool.len()
     );
-    let stream_state = stream_drops.load(Ordering::SeqCst);
-    let view_state = view_drops.load(Ordering::SeqCst);
-    println!("G1 guard: load(1m) before {load_before:.2} after {load_after:.2} (counts are load-independent: no wall-clock assertion)");
+}
+
+/// A consumer standing in for the record thread: drains the real record
+/// channel, holds each surface for `encode` (the encoder's hold), drops it.
+fn record_consumer(rx: Receiver<RecordMsg>, encode: Duration) -> std::thread::JoinHandle<u64> {
+    std::thread::spawn(move || {
+        let mut n = 0;
+        while let Ok(msg) = rx.recv() {
+            if let RecordMsg::Surface { surface } = msg {
+                std::thread::sleep(encode);
+                drop(surface);
+                n += 1;
+            }
+        }
+        n
+    })
+}
+
+/// A stalled stream thread: takes ONE surface into its "encoder" and never
+/// finishes it, and never reads its channel again — so the channel fills and
+/// every later handoff is shed. Holds everything until `STOP`.
+fn stalled_stream(rx: Receiver<StreamMsg>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let in_encoder = rx.recv();
+        while !STOP.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop((in_encoder, rx));
+    })
+}
+
+static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// THE GUARD: a stalled stream costs record nothing. Sixty frames drawn into
+/// the shared pool by the real render loop through record's production
+/// seams, each shared with a stream whose thread has stalled: the stream's
+/// sheds are counted on the stream counter; record never skips a frame; the
+/// stream handoff never waits.
+///
+/// Falsified by (a) shrinking the pool to PR #30's size — record skips rise
+/// — and (b) a handoff that waits for room instead of shedding — the tick
+/// blocks on the stalled stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_stream_costs_record_nothing() {
+    let Some((state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    STOP.store(false, Ordering::SeqCst);
+    let (record_tx, record_rx): (SyncSender<RecordMsg>, _) =
+        std::sync::mpsc::sync_channel(RECORD_CHANNEL_BOUND);
+    let (stream_tx, stream_rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
+    let record = record_consumer(record_rx, Duration::from_millis(8));
+    let stream = stalled_stream(stream_rx);
+    let record_skips = AtomicU64::new(0);
+    let stream_skips = AtomicU64::new(0);
+    let mut worst_handoff = Duration::ZERO;
+
+    for frame in 0..60u64 {
+        let loan =
+            nbe_engine::record::begin_tap_frame(&mut render, Some(&pool), true, &record_skips)
+                .expect("the pool exists: no chain loss");
+        let started = std::time::Instant::now();
+        let _ = render.render_frame(frame, None);
+        let render_elapsed = started.elapsed();
+        nbe_engine::record::restore_view(&mut render, &loan);
+        let shared = loan.surface();
+        let _ = nbe_engine::record::end_tap_frame(
+            loan,
+            render_elapsed,
+            None,
+            &record_tx,
+            &record_skips,
+            // A zero-copy take never reads back; the closure is never called.
+            || async { (Vec::new(), Duration::ZERO) },
+        )
+        .await;
+        if let Some(surface) = shared {
+            let t = std::time::Instant::now();
+            hand_off_stream_surface(&stream_tx, surface, frame, &stream_skips);
+            worst_handoff = worst_handoff.max(t.elapsed());
+        }
+        tokio::time::sleep(Duration::from_millis(12)).await;
+    }
+    let (r, s) = (
+        record_skips.load(Ordering::SeqCst),
+        stream_skips.load(Ordering::SeqCst),
+    );
+    drop(record_tx);
+    let recorded = record.join().unwrap();
+    STOP.store(true, Ordering::SeqCst);
+    stream.join().unwrap();
+    drop(stream_tx);
     println!(
-        "G1 guard: skipped_record_frames state {skipped_state} vs test-side {test_record_skips}"
+        "G1 guard: pool {} surfaces, 60 frames: record encoded {recorded}, record skips {r}, \
+         stream sheds {s}, worst stream handoff {worst_handoff:?}, View drops {}",
+        pool.len(),
+        state.dropped_frames_total.load(Ordering::SeqCst)
     );
-    println!("G1 guard: stream_drops state {stream_state} vs test-side {test_stream_drops}");
-    println!("G1 guard: droppedFramesTotal state {view_state} vs test-side {test_view_drops}");
-
-    assert_eq!(
-        skipped_state, test_record_skips,
-        "counts derived two ways must agree"
+    assert_eq!(r, 0, "a stalled stream must never cost record a frame");
+    assert!(
+        s >= 55,
+        "the stalled stream sheds, counted on its own counter (got {s})"
     );
-    assert_eq!(
-        stream_state, test_stream_drops,
-        "counts derived two ways must agree"
+    assert!(
+        worst_handoff < Duration::from_millis(2),
+        "the stream handoff never waits ({worst_handoff:?})"
     );
-    assert_eq!(
-        skipped_state, 0,
-        "a stalled stream must not raise record skips"
-    );
-    assert_eq!(view_state, 0, "a stalled stream must not raise View drops");
-    assert_eq!(test_view_drops, 0);
+    assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);
 }
 
-/// The sizing rule, pinned: sum of in-flight bounds plus the one being drawn.
-/// Record's own answer (`RECORD_CHANNEL_BOUND + 1`) is unchanged — this only
-/// names the shared-pool generalisation beside it.
-#[test]
-fn sizing_rule_is_sum_of_bounds_plus_drawn() {
-    assert_eq!(shared_pool_size(RECORD_CHANNEL_BOUND, STREAM_BOUND), 5);
-    assert_eq!(shared_pool_size(2, 0), RECORD_CHANNEL_BOUND + 1);
+/// The free rule waits for VideoToolbox, not just for Rust.
+///
+/// `VTCompressionSessionEncodeFrame` retains the `CVPixelBuffer` and encodes
+/// asynchronously: after `encode_pixel_buffer` returns, the buffer's retain
+/// count reads 2 until the encoder finishes (measured 1.6–17.5 ms). The
+/// record thread — merged in ZERO-COPY Phase 3b — drops its `Arc` the moment
+/// the call returns, and the pool's old rule (`Arc::strong_count == 1`) then
+/// called the surface free while the encoder was still reading it: the
+/// compositor could draw the next frame into pixels being encoded.
+///
+/// Falsified by reverting `SurfacePool`'s rule to the count alone: the pool
+/// hands back a surface VideoToolbox still holds.
+#[tokio::test]
+async fn the_pool_never_hands_out_a_surface_videotoolbox_still_reads() {
+    if !nbe_engine::record::encoder_available() {
+        eprintln!("SKIP: no hardware H.264 encoder on this machine (SPEC §9.2)");
+        return;
+    }
+    let Some((_state, _render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    let (w, h) = pool.dimensions();
+    let mut enc = nbe_decode::encode::EncodeSession::open(w, h, 30, 8_000_000)
+        .expect("the encoder opens at pool geometry");
+    let mut observed_held = 0;
+    let mut handed_out_while_held = 0;
+    for _ in 0..12 {
+        let surface = pool.acquire().expect("a free surface");
+        let id = surface.surface_id();
+        let _ = enc.encode_pixel_buffer(surface.pixel_buffer());
+        drop(surface); // exactly what the record thread does
+                       // Ask for every free surface while VideoToolbox may still hold ours.
+        let mut taken = Vec::new();
+        while let Some(s) = pool.acquire() {
+            taken.push(s);
+        }
+        let ours = taken.iter().find(|s| s.surface_id() == id);
+        match ours {
+            Some(s) if !s.encoder_released() => handed_out_while_held += 1,
+            None => observed_held += 1,
+            Some(_) => {}
+        }
+        drop(taken);
+        std::thread::sleep(Duration::from_millis(40)); // let VT finish before the next round
+    }
+    println!(
+        "VT retain guard: 12 encodes; surface still held by VideoToolbox right after the \
+         call returned (and so withheld by the pool) {observed_held} times; handed out while \
+         held {handed_out_while_held} times"
+    );
+    assert!(
+        observed_held > 0,
+        "VideoToolbox released every buffer synchronously: the hazard was not observed, so \
+         this run proves nothing — investigate before trusting it"
+    );
+    assert_eq!(
+        handed_out_while_held, 0,
+        "the pool must never hand out a surface VideoToolbox still reads"
+    );
 }

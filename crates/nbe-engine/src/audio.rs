@@ -298,6 +298,10 @@ pub struct AudioGraph {
     /// file I/O, no allocation on the audio thread). No deadline change: the
     /// steady-state cost is one bounded memcpy.
     record_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
+    /// Master-bus stream tap (Prompt 10 repair round): the record tap's
+    /// discipline, for the live stream. Same post-master mix, same lock-free
+    /// push; a take and a stream each drain their own ring.
+    stream_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
 }
 
 impl AudioGraph {
@@ -320,6 +324,7 @@ impl AudioGraph {
             scratch: vec![0.0; 8192],
             guest_scratch: BTreeMap::new(),
             record_tap: None,
+            stream_tap: None,
         }
     }
 
@@ -333,6 +338,17 @@ impl AudioGraph {
     /// Detach the record tap.
     pub fn clear_record_tap(&mut self) {
         self.record_tap = None;
+    }
+
+    /// Attach the master-bus stream tap. Control thread only, like
+    /// [`Self::set_record_tap`].
+    pub fn set_stream_tap(&mut self, tap: std::sync::Arc<crate::record::AudioTap>) {
+        self.stream_tap = Some(tap);
+    }
+
+    /// Detach the stream tap.
+    pub fn clear_stream_tap(&mut self) {
+        self.stream_tap = None;
     }
 
     pub fn house_frame_rate(&self) -> u32 {
@@ -568,6 +584,7 @@ impl AudioGraph {
             house_frame_rate,
             rendered_samples,
             record_tap,
+            stream_tap,
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
@@ -669,6 +686,9 @@ impl AudioGraph {
         // the old try_lock shed whole blocks under contention), so the
         // render-loop deadline does not change.
         if let Some(tap) = record_tap {
+            tap.push(out);
+        }
+        if let Some(tap) = stream_tap {
             tap.push(out);
         }
 

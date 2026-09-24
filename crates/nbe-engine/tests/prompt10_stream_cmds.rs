@@ -988,22 +988,25 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
         .expect("stream.start must open");
     assert_live(&state);
 
-    // Dirty the stream counters through the public counting hook (no state
-    // writes): three dropped frames into the live stream's own counter.
+    // Dirty the stream counters through the loop's own handoff (no state
+    // writes): three surfaces offered to a channel with no room are three
+    // stream drops on the live stream's counter.
     {
         let guard = state.stream_session.lock().unwrap();
         let sess = guard.as_ref().expect("stream session must be live");
-        let mut encoder = None;
-        let mut seq_sent = false;
-        for _ in 0..3 {
-            let ms = stream_glue::feed_stream_surface(
-                None,
-                &mut encoder,
-                &mut seq_sent,
-                sess,
+        let surface = sess
+            .surface_pool()
+            .expect("a live zero-copy stream owns a pool")
+            .acquire()
+            .expect("a fresh pool has a free surface");
+        let (full, _held) = std::sync::mpsc::sync_channel(0);
+        for frame in 0..3 {
+            assert!(!stream_glue::hand_off_stream_surface(
+                &full,
+                surface.clone(),
+                frame,
                 &state.skipped_stream_frames,
-            );
-            assert_eq!(ms, 0.0);
+            ));
         }
     }
     assert_eq!(

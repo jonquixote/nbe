@@ -1,66 +1,109 @@
-//! Stream session glue (Prompt 10 WU4+WU5, SPEC §16.14).
+//! Stream session + stream thread (Prompt 10 WU4/WU5, SPEC §9.4, §16.14).
 //!
-//! Lifecycle owner between the directive path and the (WU5) publisher:
-//! `stream.start` opens a [`StreamSession`], `stream.stop` / `show.stop`
-//! quiescence closes it BEFORE `apply()` emits the ack (SPEC §5.9.5: the ack
-//! is honest only after the effect is real) — the `record.stop`
-//! `stop_and_finish` shape, mirrored.
+//! Lifecycle owner between the directive path, the render loop and the
+//! publisher: `stream.start` opens a [`StreamSession`], `stream.stop` /
+//! `show.stop` quiescence closes it BEFORE `apply()` emits the ack (SPEC
+//! §5.9.5: the ack is honest only after the effect is real) — the
+//! `record.stop` `stop_and_finish` shape, mirrored.
 //!
-//! ## Live feed (WU5 FIX round)
+//! ## Shape (PR #30 repair round: the record thread's shape, for the stream)
 //!
-//! The render loop feeds the session via [`feed_stream_surface`]: Surface
-//! path, zero-copy, NEVER readback/rgba on this path. G1 discipline: the
-//! View draws regardless; the stream takes the drawn surface (`Arc` clone,
-//! shared with record when both are live) or drops it (counts
-//! `skipped_stream_frames`, never `skipped_record_frames` nor View drops).
-//! Encoding is `encode_pixel_buffer` (the zero-copy seam); units become FLV
-//! video tags via [`flv_video_tag`] then `publish_video` (bounded try_send,
-//! shed counted in the publisher AND the stream counter).
+//! ```text
+//! loop:    draw → hand_off_stream_surface (try_send Arc, never waits) ──╮
+//!                                                                      ▼
+//! thread:  Surface → encode_pixel_buffer_at (VideoToolbox, zero-copy) → FLV ─┐
+//!          tap.drain() → AacEncoder → FLV ───────────────────────────────────┤
+//!                                                                            ▼
+//! task:                                          PublisherHandle (RTMP, tokio)
+//! ```
 //!
-//! ## Scope (WU4)
+//! The render loop's only stream work is one bounded `try_send` of an `Arc`:
+//! a full channel is a stream drop (`skipped_stream_frames`), never a wait.
+//! PR #30's first version opened the encoder and encoded every frame inline
+//! on the render loop — measured on the reference machine at 39.3 ms mean
+//! per open (10 of 10 over the 33.3 ms budget, on every `stream.start`) and
+//! 3.6 ms mean per frame — in a codebase whose record path already encoded on
+//! its own thread.
 //!
-//! Session bookkeeping ONLY — no transport, no publisher, no encoder session.
-//! The live streaming objects arrive in WU5; this side holds only the publish
-//! target + the published selection, all `Send`, so engine state can hold it.
-//! The session holds no surface pool: the loop shares the record take's
-//! G1-sized pool whenever one exists (one composite, N `Arc` holders) and
-//! falls back to its own same-sized pool otherwise (stream-only, CPU, and
-//! pre-draw-skip frames) — every pool built per [`STREAM_SURFACE_BOUND`] +
-//! [`super::pool::shared_pool_size`], never ad hoc.
+//! The stream thread owns the `!Send` handles (the VideoToolbox session and
+//! the AudioToolbox AAC converter) as thread-locals, opens them eagerly off
+//! both the loop and the directive path, and publishes through the
+//! transport's bounded channel.
+//!
+//! ## Timeline
+//!
+//! Every media timestamp is media time. Video: the frame's position on the
+//! show clock (the master frame the loop drew, relative to the stream's first
+//! frame) becomes the encoder's PTS
+//! ([`nbe_decode::encode::EncodeSession::encode_pixel_buffer_at`]), and the
+//! RTMP timestamp is that PTS in ms — a shed frame leaves a gap rather than
+//! pulling the video timeline behind the audio. Audio: retained AAC packets ×
+//! 1024 samples at 48 kHz, after the same priming trim the record writer
+//! applies. Both timelines start at the stream's first frame / first drained
+//! sample, which the audio driver attaches within one audio cycle of
+//! `stream.start` — alignment is within a frame, stated rather than measured
+//! finer.
+//!
+//! ## Audio
+//!
+//! The stream has its own [`AudioTap`] (the record discipline: SPSC ring,
+//! lock-free push on the audio thread, drained here). `stream.start`
+//! publishes it in `state.stream_tap`; the audio driver attaches it beside
+//! the record tap; every stop path clears it.
 //!
 //! ## Defined behavior
 //!
 //! * [`set_force_no_chain`] forces the chain-less path exactly as a machine
 //!   with no zero-copy chain behaves — the mirror of record's
-//!   `set_force_no_encoder`. There is deliberately no force-*available* seam:
-//!   a test that needs a chain uses a machine with one (or skips loudly).
+//!   `set_force_no_encoder`.
 //! * [`set_force_close_error`] injects a teardown failure so the
-//!   stop-withholds-ack path is testable without a real transport (record's
-//!   equivalent sabotages the sidecar on disk; a stub session has no disk
-//!   surface to sabotage).
+//!   stop-withholds-ack path is testable without a real transport.
 //! * A second `stream.start` while `Live` is refused upstream with
-//!   `E_FORBIDDEN_STATE` and preserves the live session (§9.1: exactly one
-//!   live stream).
-//! * Closing with the force seam armed fails loudly (`E_NETWORK`) and still
-//!   ends the live state — the record shape (no pipeline remains to continue
-//!   with) — but the ack is withheld: `apply()` only acks on `Ok`.
+//!   `E_FORBIDDEN_STATE` and preserves the live session (§9.1).
+//! * An encoder that fails to open on the thread (or the forced-unavailable
+//!   seam) leaves the stream audio-only, every video frame counted in
+//!   `skipped_stream_frames`; an AAC converter that fails leaves it
+//!   video-only. Both are logged loudly; neither ends the stream (the start
+//!   probe already answered; a thread-side failure is a degraded stream, not
+//!   a refused one).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use super::rtmp::{parse_rtmp_url, spawn_publisher, PublisherHandle, PublisherState};
+use nbe_decode::encode::{EncodeSession, EncodedUnit};
+use nbe_decode::zerocopy::{SharedSurface, SurfacePool};
+
+use super::rtmp::{
+    parse_rtmp_url, spawn_publisher_with_envelope, PublisherHandle, PublisherState,
+    AUDIO_BITRATE_BPS, VIDEO_BITRATE_BPS,
+};
 use crate::record::tap_path::Selection;
+use crate::record::AudioTap;
 
-/// The stream leg's in-flight surface bound (G1 sizing input): one surface
-/// being drawn plus one held across encode + bounded publish. The loop holds
-/// at most one own-surface plus the shared loan transiently, so this covers
-/// the worst case; the shared pool is
-/// `record bound + STREAM_SURFACE_BOUND + drawn` (see [`super::pool`]).
-pub const STREAM_SURFACE_BOUND: usize = 2;
+/// Frames in flight between the loop and the stream thread (the record
+/// `RECORD_CHANNEL_BOUND` shape). Beyond it the handoff sheds and counts a
+/// stream drop; a deep queue would be stale airtime.
+pub const STREAM_CHANNEL_BOUND: usize = 2;
 
-/// Forced-unavailable seam (tests only): when set, [`chain_available`]
-/// reports no chain without touching the GPU — the mirror of record's
-/// `FORCE_NO_ENCODER`.
+/// Bounded wait for the stream thread to exit inside `stop_and_close`. The
+/// thread drops its encoder on the way out (VideoToolbox invalidation), so
+/// this is short-but-not-instant; with the transport's 800 ms it stays inside
+/// the §16.1 2 s window beside record's parallel 1.5 s.
+pub const STREAM_THREAD_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The thread's wake quantum when no video arrives: audio drains at least
+/// this often (one AAC packet is 21.3 ms).
+const AUDIO_POLL: Duration = Duration::from_millis(10);
+
+/// AAC-LC encoder priming trimmed at the head of the stream, as the record
+/// writer trims it (`writer::AAC_PRIMING_TRIM_PACKETS`): the first packets
+/// are codec delay, not content.
+const AAC_PRIMING_TRIM_PACKETS: u64 = crate::record::writer::AAC_PRIMING_TRIM_PACKETS;
+
+/// Forced-unavailable seam (tests only): when set, [`probe_stream_pool`]
+/// reports no chain without touching the GPU.
 static FORCE_NO_CHAIN: AtomicBool = AtomicBool::new(false);
 
 /// Force (or release) the chain-less path. Test seam only.
@@ -82,23 +125,25 @@ pub fn set_force_close_error(force: bool) {
     FORCE_CLOSE_ERROR.store(force, Ordering::SeqCst);
 }
 
-/// Whether this machine has a lawful streaming chain (SPEC §0.1 assumption 24
-/// as rescoped by v0.4.2: recording alone holds the readback allowance, so a
-/// streaming consumer with no zero-copy chain has no lawful path and
-/// [`crate::record::tap_path::select_stream`] answers `None`).
+/// Build the stream's own surface pool, or `None` when this machine has no
+/// lawful streaming chain (SPEC §0.1 assumption 24 as rescoped by v0.4.2:
+/// recording alone holds the readback allowance, so no chain = no path).
 ///
-/// The probe is honest: it builds the take geometry's pool against the device
-/// the render loop published and keeps nothing (WU5 owns the take's pool —
-/// see the module docs). A `None` device — a headless engine, or a build
-/// where the render loop has not run — is a machine with no chain.
-pub fn chain_available(device: &Option<Arc<wgpu::Device>>) -> bool {
+/// The probe IS the pool: `stream.start` keeps what it built (the record
+/// `record.start` shape) instead of building one to answer a yes/no, dropping
+/// it, and letting the render loop build another on its first live frame —
+/// which is what PR #30 first did, putting a VRAM allocation on the loop.
+/// A `None` device (headless, or the loop has not run) is no chain.
+pub fn probe_stream_pool(device: &Option<Arc<wgpu::Device>>) -> Option<SurfacePool> {
     if FORCE_NO_CHAIN.load(Ordering::SeqCst) {
-        return false;
+        return None;
     }
-    let Some(d) = device else {
-        return false;
-    };
-    crate::record::zerocopy_pool(d, crate::render::VIEW_W, crate::render::VIEW_H).is_ok()
+    crate::record::stream_zerocopy_pool(device.as_ref()?).ok()
+}
+
+/// Yes/no form of [`probe_stream_pool`] (tests and diagnostics).
+pub fn chain_available(device: &Option<Arc<wgpu::Device>>) -> bool {
+    probe_stream_pool(device).is_some()
 }
 
 /// Opening or closing a stream fails loudly, with stable tokens.
@@ -107,40 +152,173 @@ pub enum StreamError {
     /// No zero-copy chain (seam-forced or genuinely absent): `E_NO_ZEROCOPY`.
     #[error("E_NO_ZEROCOPY: {0}")]
     NoChain(String),
-    /// Teardown failed (seam-injected until the WU5 transport lands):
-    /// `E_NETWORK`.
+    /// Teardown did not confirm (thread or transport): `E_NETWORK`.
     #[error("E_NETWORK: {0}")]
     Teardown(String),
 }
 
-/// A live stream: the publish target and the published frame-path selection.
-/// Deliberately `Send` (plain data + a `Send` publisher handle) so engine
-/// state can hold it; the `!Send` half (when WU5 lands it) lives on the
-/// publisher task.
+/// What the stream encodes at: geometry, rate, and the §9.4 envelope as the
+/// manifest sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamParams {
+    pub width: u32,
+    pub height: u32,
+    /// The show's frame rate (`show.video.frameRate`, the house rate): the
+    /// encoder's timebase and keyframe interval, and the rate the stream's
+    /// timestamps advance at.
+    pub fps: u32,
+    pub video_bitrate_bps: u32,
+    pub audio_bitrate_bps: u32,
+}
+
+impl StreamParams {
+    /// §9.4 defaults at this geometry and rate: 8 Mbps video (inside the
+    /// 6–12 Mbps recommendation), 192 kbps AAC.
+    pub fn new(width: u32, height: u32, fps: u32) -> Self {
+        Self {
+            width,
+            height,
+            fps: fps.max(1),
+            video_bitrate_bps: VIDEO_BITRATE_BPS as u32,
+            audio_bitrate_bps: AUDIO_BITRATE_BPS as u32,
+        }
+    }
+
+    /// Apply the manifest's `outputs.stream.videoBitrateKbps` /
+    /// `audioBitrateKbps` where present (the schema bounds them).
+    pub fn with_output(mut self, output: Option<&nbe_core::manifest::StreamOutput>) -> Self {
+        if let Some(o) = output {
+            if let Some(kbps) = o.video_bitrate_kbps {
+                self.video_bitrate_bps = kbps.saturating_mul(1000);
+            }
+            if let Some(kbps) = o.audio_bitrate_kbps {
+                self.audio_bitrate_bps = kbps.saturating_mul(1000);
+            }
+        }
+        self
+    }
+
+    /// Video + audio bits per second: what `streamBufferMs` divides by.
+    pub fn envelope_bps(&self) -> u64 {
+        self.video_bitrate_bps as u64 + self.audio_bitrate_bps as u64
+    }
+}
+
+/// One unit of stream work from the loop.
+#[derive(Debug)]
+pub enum StreamMsg {
+    /// A surface the compositor drew, loaned without a copy, with the master
+    /// frame it was drawn for (the stream's video timeline).
+    Surface {
+        surface: Arc<SharedSurface>,
+        frame: u64,
+    },
+}
+
+#[derive(Debug)]
+enum StreamControl {
+    Stop,
+}
+
+/// What the stream thread has done — observable to tests and measurements,
+/// never on the wire.
+#[derive(Debug, Default)]
+pub struct StreamStats {
+    /// The encoder opened on the thread (eagerly, at spawn).
+    pub encoder_ready: AtomicBool,
+    /// Time the encoder open took on the thread, µs (off the loop and off
+    /// the directive path by construction).
+    pub encoder_open_us: AtomicU64,
+    /// The AAC converter opened and the audio sequence header was queued.
+    pub aac_ready: AtomicBool,
+    /// The bitrate the AAC converter reports it is using (read back from
+    /// AudioToolbox, not echoed from the request): proof the manifest's
+    /// `audioBitrateKbps` reached the codec.
+    pub aac_bit_rate: AtomicU64,
+    pub video_frames_encoded: AtomicU64,
+    /// Total encode-call time on the thread, µs.
+    pub encode_us_total: AtomicU64,
+    pub video_units_published: AtomicU64,
+    pub audio_packets_published: AtomicU64,
+}
+
+/// A live stream: the publish target, the selection, the publisher, and the
+/// stream thread's endpoints. Deliberately `Send` so engine state can hold
+/// it; the `!Send` half lives on the stream thread.
 pub struct StreamSession {
     endpoint: String,
     selection: Selection,
+    params: StreamParams,
     closed: bool,
-    /// The WU5 RTMP publisher: spawned at open (background dial, never
-    /// blocking the directive path), fed off-thread over a bounded channel.
+    /// The RTMP publisher: spawned at open (background dial, never blocking
+    /// the directive path). Shared with the stream thread, which feeds it.
     /// `None` when there is no runtime (sync unit tests) or the endpoint is
-    /// not an RTMP publish target — the WU4 bookkeeping shape is unchanged.
-    publisher: Option<PublisherHandle>,
+    /// not an RTMP publish target.
+    publisher: Option<Arc<PublisherHandle>>,
+    tap: Arc<AudioTap>,
+    frame_tx: Option<SyncSender<StreamMsg>>,
+    control_tx: Option<Sender<StreamControl>>,
+    done_rx: Option<Receiver<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// The stream's own surfaces (stream-only frames). Lives and dies with
+    /// the session, like the record take's pool — so no teardown path can
+    /// forget it.
+    surface_pool: Option<Arc<SurfacePool>>,
+    stats: Arc<StreamStats>,
 }
 
 impl StreamSession {
-    /// Open a session on `endpoint` with the probed `selection`. No I/O on the
-    /// caller: the publisher task dials in the background (WU5); WU4 owns the
-    /// bookkeeping the ack must wait for.
-    pub fn open(endpoint: impl Into<String>, selection: Selection) -> Self {
+    /// Open a session on `endpoint`: spawns the publisher (it dials in the
+    /// background) and, when there is a publisher to feed, the stream thread
+    /// (which opens its encoders on itself). Nothing here waits.
+    pub fn open(
+        endpoint: impl Into<String>,
+        selection: Selection,
+        params: StreamParams,
+        skipped: Arc<AtomicU64>,
+    ) -> Self {
         let endpoint = endpoint.into();
-        let publisher = maybe_spawn_publisher(&endpoint);
-        Self {
+        let publisher = maybe_spawn_publisher(&endpoint, params.envelope_bps()).map(Arc::new);
+        let tap = Arc::new(AudioTap::new());
+        let stats = Arc::new(StreamStats::default());
+        let mut session = Self {
             endpoint,
             selection,
+            params,
             closed: false,
             publisher,
+            tap,
+            frame_tx: None,
+            control_tx: None,
+            done_rx: None,
+            handle: None,
+            surface_pool: None,
+            stats,
+        };
+        if let Some(publisher) = session.publisher.clone() {
+            let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
+            let (control_tx, control_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let args = StreamThreadArgs {
+                params,
+                publisher,
+                tap: session.tap.clone(),
+                frame_rx,
+                control_rx,
+                done_tx,
+                skipped,
+                stats: session.stats.clone(),
+            };
+            let handle = std::thread::Builder::new()
+                .name("nbe-stream".into())
+                .spawn(move || run_stream_thread(args))
+                .expect("the stream thread must start");
+            session.frame_tx = Some(frame_tx);
+            session.control_tx = Some(control_tx);
+            session.done_rx = Some(done_rx);
+            session.handle = Some(handle);
         }
+        session
     }
 
     /// The publish target this session was opened on.
@@ -153,38 +331,53 @@ impl StreamSession {
         self.selection
     }
 
-    /// True once the engine closed the session (graceful close ran, or the
-    /// force path dropped it).
+    /// What the stream encodes at.
+    pub fn params(&self) -> StreamParams {
+        self.params
+    }
+
+    /// True once the engine closed the session.
     pub fn is_closed(&self) -> bool {
         self.closed
     }
 
-    /// True while the session owns a live publisher task.
+    /// True while the session owns a live publisher.
     pub fn has_publisher(&self) -> bool {
         self.publisher.is_some()
     }
 
-    /// Queue H.264 bytes for publish. Never blocks (bounded `try_send` — the
-    /// render loop can never wait on the socket); false = shed or no
-    /// transport. A dead transport sheds; local playout never follows it.
-    pub fn publish_video(&self, payload: Vec<u8>) -> bool {
-        self.publisher
-            .as_ref()
-            .map(|p| p.try_publish_video(payload))
-            .unwrap_or(false)
+    /// The transport (tests drive it directly with synthetic payloads).
+    pub fn publisher(&self) -> Option<&PublisherHandle> {
+        self.publisher.as_deref()
     }
 
-    /// Queue AAC bytes for publish. Never blocks; false = shed or no
-    /// transport.
-    pub fn publish_audio(&self, payload: Vec<u8>) -> bool {
-        self.publisher
-            .as_ref()
-            .map(|p| p.try_publish_audio(payload))
-            .unwrap_or(false)
+    /// The stream's audio tap (published to the audio driver at start).
+    pub fn tap(&self) -> Arc<AudioTap> {
+        self.tap.clone()
     }
 
-    /// Bytes the transport currently holds (accepted, unwritten) — the live
-    /// counter behind [`StreamSession::stream_buffer_ms`].
+    /// The stream thread's counters.
+    pub fn stats(&self) -> Arc<StreamStats> {
+        self.stats.clone()
+    }
+
+    /// The loop's handoff endpoint (`try_send` only), or `None` when there is
+    /// no stream thread to feed.
+    pub fn frame_sender(&self) -> Option<SyncSender<StreamMsg>> {
+        self.frame_tx.clone()
+    }
+
+    /// The stream's own surface pool, when it runs zero-copy.
+    pub fn surface_pool(&self) -> Option<Arc<SurfacePool>> {
+        self.surface_pool.clone()
+    }
+
+    /// Attach the pool `stream.start` probed with.
+    pub fn set_surface_pool(&mut self, pool: Arc<SurfacePool>) {
+        self.surface_pool = Some(pool);
+    }
+
+    /// Bytes the transport currently holds (accepted, unwritten).
     pub fn buffered_bytes(&self) -> usize {
         self.publisher
             .as_ref()
@@ -192,9 +385,8 @@ impl StreamSession {
             .unwrap_or(0)
     }
 
-    /// `streamBufferMs`, honest: the transport's actual buffered bytes through
-    /// the §9.4 envelope bitrate. Moves with load by construction (it divides
-    /// the live counter); 0.0 with no transport.
+    /// `streamBufferMs`, honest: the transport's buffered bytes through this
+    /// stream's envelope bitrate; 0.0 with no transport.
     pub fn stream_buffer_ms(&self) -> f64 {
         self.publisher
             .as_ref()
@@ -204,7 +396,7 @@ impl StreamSession {
 
     /// Transport liveness (`Live` / `Reconnecting` / `Closed`). The engine's
     /// `StreamState` stays `Live` while this reads `Reconnecting` — that
-    /// split IS the survival guarantee (§9.5). `Closed` with no transport.
+    /// split IS the survival guarantee (§9.5).
     pub fn publisher_state(&self) -> PublisherState {
         self.publisher
             .as_ref()
@@ -212,173 +404,375 @@ impl StreamSession {
             .unwrap_or(PublisherState::Closed)
     }
 
-    /// Close the session gracefully: the transport is gone BEFORE this returns
-    /// (WU5) — so the ack that follows is honest. With the close-error seam
-    /// armed this reports [`StreamError::Teardown`] and closes nothing: the
-    /// session stays `!closed` (consumed-but-unclosed — the caller still takes
-    /// it out of state and ends `Live`, since no pipeline remains to continue
-    /// with, but `closed` reports the transport truth: no graceful close ran).
+    /// Close gracefully: the stream thread has exited and the transport is
+    /// gone BEFORE this returns, so the ack that follows is honest. Both
+    /// waits are bounded and async (tokio sleep, never blocking the
+    /// executor); either one expiring is a withheld ack.
     ///
-    /// Async by construction: awaits the publisher's `shutdown_and_wait`
-    /// (tokio sleep, never blocking) so the directive path never stalls the
-    /// executor — `stream.stop` carries a bounded-wait assertion proving it.
+    /// With the close-error seam armed this reports [`StreamError::Teardown`]
+    /// and closes nothing (the caller still ends `Live`; dropping the session
+    /// then abandons it).
     pub async fn stop_and_close(&mut self) -> Result<(), StreamError> {
         if FORCE_CLOSE_ERROR.load(Ordering::SeqCst) {
             return Err(StreamError::Teardown(
                 "stream teardown failed (injected): transport did not confirm shutdown".into(),
             ));
         }
-        if let Some(publisher) = self.publisher.take() {
-            // Bounded wait for the socket to close (the record
-            // `stop_and_finish` shape): past it the publisher is abandoned
-            // as-is but the ack is still withheld — a window with no graceful
-            // shutdown behind it must not ack.
-            if !publisher
-                .shutdown_and_wait(PublisherHandle::stop_timeout())
-                .await
-            {
-                self.closed = true;
-                return Err(StreamError::Teardown(
-                    "E_NETWORK: stream teardown timed out: transport did not confirm shutdown"
-                        .into(),
-                ));
-            }
-        }
+        // Thread first, so nothing is published into a closing transport.
+        let thread_exited = self.stop_thread().await;
+        let transport_closed = match self.publisher.take() {
+            Some(p) => p.shutdown_and_wait(PublisherHandle::stop_timeout()).await,
+            None => true,
+        };
         self.closed = true;
+        self.surface_pool = None;
+        if !thread_exited {
+            return Err(StreamError::Teardown(format!(
+                "stream thread did not exit within {} ms",
+                STREAM_THREAD_STOP_TIMEOUT.as_millis()
+            )));
+        }
+        if !transport_closed {
+            return Err(StreamError::Teardown(
+                "stream teardown timed out: transport did not confirm shutdown".into(),
+            ));
+        }
         Ok(())
     }
 
-    /// Drop the session WITHOUT a graceful close (`force=true` immediate
-    /// stop): the transport is abandoned as-is, the session over.
+    /// Drop the session WITHOUT a graceful close (`force=true`): signal the
+    /// thread and the transport, wait for neither.
     pub fn abandon(&mut self) {
-        if let Some(publisher) = self.publisher.take() {
-            // Fire-and-forget: signal only, never wait — the task exits on
-            // its own; the show stops now (and never blocks the executor).
-            publisher.shutdown_signal();
+        self.frame_tx.take();
+        if let Some(c) = self.control_tx.take() {
+            let _ = c.send(StreamControl::Stop);
         }
+        self.done_rx.take();
+        // Dropping the handle detaches: the thread exits on the signal.
+        self.handle.take();
+        if let Some(p) = self.publisher.take() {
+            p.shutdown_signal();
+        }
+        self.surface_pool = None;
         self.closed = true;
+    }
+
+    async fn stop_thread(&mut self) -> bool {
+        self.frame_tx.take();
+        if let Some(c) = self.control_tx.take() {
+            let _ = c.send(StreamControl::Stop);
+        }
+        let Some(rx) = self.done_rx.take() else {
+            return true;
+        };
+        let start = Instant::now();
+        loop {
+            match rx.try_recv() {
+                // Reported, or gone without reporting (a panicked thread has
+                // exited too): either way it is no longer running.
+                Ok(()) | Err(TryRecvError::Disconnected) => {
+                    if let Some(h) = self.handle.take() {
+                        let _ = h.join();
+                    }
+                    return true;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+            if start.elapsed() >= STREAM_THREAD_STOP_TIMEOUT {
+                self.handle.take();
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 }
 
-/// Spawn the WU5 publisher for `endpoint`, if one can exist here: a tokio
-/// runtime must be running (the directive path always has one; sync unit
-/// tests do not) and the endpoint must parse as an RTMP publish target
-/// (anything else keeps the WU4 transport-less shape).
-fn maybe_spawn_publisher(endpoint: &str) -> Option<PublisherHandle> {
+impl Drop for StreamSession {
+    /// A session dropped without a close (a failed teardown the caller still
+    /// ends `Live` on, or a test) is abandoned: the thread and the transport
+    /// are signalled rather than left running.
+    fn drop(&mut self) {
+        if !self.closed {
+            self.abandon();
+        }
+    }
+}
+
+/// Spawn the publisher for `endpoint`, if one can exist here: a tokio runtime
+/// must be running (the directive path always has one; sync unit tests do
+/// not) and the endpoint must parse as an RTMP publish target.
+fn maybe_spawn_publisher(endpoint: &str, envelope_bps: u64) -> Option<PublisherHandle> {
     if tokio::runtime::Handle::try_current().is_err() {
         return None;
     }
     let url = parse_rtmp_url(endpoint).ok()?;
-    Some(spawn_publisher(url))
+    Some(spawn_publisher_with_envelope(url, envelope_bps))
+}
+
+/// The loop's whole stream cost: one bounded `try_send` of the drawn
+/// surface's `Arc`. Never waits, never encodes.
+///
+/// A full channel is a stream drop — counted on `skipped_stream_frames`,
+/// never a record skip or a View drop (G1); the `Arc` is dropped here, which
+/// is the frame given up. A disconnected channel means the stream thread
+/// already stopped (a `stream.stop` landed mid-tick): the stream is over, not
+/// dropping frames, so nothing is counted. Returns whether the frame went.
+pub fn hand_off_stream_surface(
+    tx: &SyncSender<StreamMsg>,
+    surface: Arc<SharedSurface>,
+    frame: u64,
+    skipped: &AtomicU64,
+) -> bool {
+    match tx.try_send(StreamMsg::Surface { surface, frame }) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            skipped.fetch_add(1, Ordering::SeqCst);
+            false
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Live feed (WU5 FIX round 2): lock-free encode + bounded publish.
+// The stream thread.
 // ---------------------------------------------------------------------------
-//
-// Finding 3 (session lock held across encode): the loop must never hold the
-// `stream_session` Mutex across `encode_pixel_buffer` — `stream.stop` takes
-// that same lock, so a slow encode stalls the ack. The split below is the
-// fix: [`encode_stream_frame`] touches NO session state (surface +
-// loop-owned encoder only — provably lock-free: it takes no lock at all, so
-// calling it while holding `stream_session` cannot block), and
-// [`publish_stream_frame`] holds the session only across bounded `try_send`s.
-// [`feed_stream_surface`] is the same two phases back to back (identical
-// counting) for the stream-only path and existing tests.
 
-/// One encoded stream frame, ready to publish (no session touched).
-pub struct EncodedStreamPayload {
-    /// FLV-ready access units (still length-prefixed; [`flv_video_tag`] wraps).
-    pub units: Vec<nbe_decode::encode::EncodedUnit>,
-    /// AVC sequence header, `Some` only when the caller still needs one
-    /// (`need_seq`) AND the encoder has parameter sets. `None` keeps the
-    /// caller's `seq_sent` false so the next frame retries (no keyframe yet).
-    pub seq_header: Option<Vec<u8>>,
+struct StreamThreadArgs {
+    params: StreamParams,
+    publisher: Arc<PublisherHandle>,
+    tap: Arc<AudioTap>,
+    frame_rx: Receiver<StreamMsg>,
+    control_rx: Receiver<StreamControl>,
+    done_tx: Sender<()>,
+    /// The engine-state `skipped_stream_frames`: thread-side drops (no
+    /// encoder, refused encodes, publish sheds) land beside the loop's.
+    skipped: Arc<AtomicU64>,
+    stats: Arc<StreamStats>,
 }
 
-/// Encode one drawn Surface WITHOUT touching the session: opens the
-/// loop-owned encoder lazily (surface geometry), encodes zero-copy, snapshots
-/// the parameter sets. Returns `(encode_ms, payload)` — `payload=None` is the
-/// G1 drop (open/encode failure counts ONE stream drop, never record nor
-/// View). Lock-free by construction: no session, no lock, no await.
-pub fn encode_stream_frame(
-    surface: &std::sync::Arc<nbe_decode::zerocopy::SharedSurface>,
-    encoder: &mut Option<nbe_decode::encode::EncodeSession>,
-    need_seq: bool,
-    stream_drops: &std::sync::atomic::AtomicU64,
-) -> (f64, Option<EncodedStreamPayload>) {
-    use std::sync::atomic::Ordering;
-    let started = std::time::Instant::now();
-    let ms = || started.elapsed().as_secs_f64() * 1000.0;
-    if encoder.is_none() {
-        let (w, h) = surface.dimensions();
-        match nbe_decode::encode::EncodeSession::open(w, h, 30, 8_000_000) {
-            Ok(enc) => *encoder = Some(enc),
-            Err(_) => {
-                stream_drops.fetch_add(1, Ordering::SeqCst);
-                return (0.0, None);
+fn run_stream_thread(args: StreamThreadArgs) {
+    {
+        let mut t = StreamThread::open(&args);
+        t.run(&args);
+        // `t` drops here: the VideoToolbox session is invalidated, which
+        // releases any buffer it still retains — before `done` says the
+        // thread is finished with the pool's surfaces.
+    }
+    let _ = args.done_tx.send(());
+}
+
+struct StreamThread {
+    encoder: Option<EncodeSession>,
+    aac: Option<nbe_decode::aac::AacEncoder>,
+    /// The master frame of the stream's first video frame: PTS 0.
+    base_frame: Option<u64>,
+    /// The AVC sequence header went out (once per stream; the transport
+    /// replays its send-time cache after every redial).
+    seq_sent: bool,
+    priming_to_skip: u64,
+    audio_packets: u64,
+    /// An odd trailing sample held for the next drain, so stereo pairs never
+    /// split across drains.
+    carry: Option<f32>,
+}
+
+impl StreamThread {
+    fn open(a: &StreamThreadArgs) -> Self {
+        let p = &a.params;
+        let encoder = if crate::record::session::force_no_encoder() {
+            tracing::error!("stream thread: hardware encoder forced unavailable (test seam); video frames will be dropped");
+            None
+        } else {
+            let started = Instant::now();
+            match EncodeSession::open(p.width, p.height, p.fps, p.video_bitrate_bps) {
+                Ok(enc) => {
+                    a.stats
+                        .encoder_open_us
+                        .store(started.elapsed().as_micros() as u64, Ordering::SeqCst);
+                    a.stats.encoder_ready.store(true, Ordering::SeqCst);
+                    Some(enc)
+                }
+                Err(e) => {
+                    tracing::error!(err = %e, "stream thread: encoder open failed; video frames will be dropped");
+                    None
+                }
+            }
+        };
+        let aac = match nbe_decode::aac::AacEncoder::with_bitrate(p.audio_bitrate_bps) {
+            Ok(enc) => match enc.bare_audio_specific_config() {
+                Some(asc) => {
+                    a.stats
+                        .aac_bit_rate
+                        .store(enc.encode_bit_rate().unwrap_or(0) as u64, Ordering::SeqCst);
+                    // The codec's own ASC, at the head of the audio timeline.
+                    let mut seq = vec![0xAF, 0x00];
+                    seq.extend_from_slice(&asc);
+                    let _ = a.publisher.try_publish_audio(seq, 0);
+                    a.stats.aac_ready.store(true, Ordering::SeqCst);
+                    Some(enc)
+                }
+                None => {
+                    tracing::error!("stream thread: AAC cookie holds no AudioSpecificConfig; stream is video-only");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::error!(err = %e, "stream thread: AAC unavailable; stream is video-only");
+                None
+            }
+        };
+        Self {
+            encoder,
+            aac,
+            base_frame: None,
+            seq_sent: false,
+            priming_to_skip: AAC_PRIMING_TRIM_PACKETS,
+            audio_packets: 0,
+            carry: None,
+        }
+    }
+
+    fn run(&mut self, a: &StreamThreadArgs) {
+        loop {
+            match a.control_rx.try_recv() {
+                Ok(StreamControl::Stop) | Err(TryRecvError::Disconnected) => return,
+                Err(TryRecvError::Empty) => {}
+            }
+            match a.frame_rx.recv_timeout(AUDIO_POLL) {
+                Ok(StreamMsg::Surface { surface, frame }) => self.encode_video(a, surface, frame),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            self.drain_audio(a);
+        }
+    }
+
+    fn drop_frame(a: &StreamThreadArgs, n: u64) {
+        a.skipped.fetch_add(n, Ordering::SeqCst);
+    }
+
+    fn encode_video(&mut self, a: &StreamThreadArgs, surface: Arc<SharedSurface>, frame: u64) {
+        let Some(enc) = self.encoder.as_mut() else {
+            Self::drop_frame(a, 1);
+            return;
+        };
+        let base = *self.base_frame.get_or_insert(frame);
+        let Some(pts_index) = frame.checked_sub(base) else {
+            Self::drop_frame(a, 1);
+            return;
+        };
+        let started = Instant::now();
+        let result = enc.encode_pixel_buffer_at(surface.pixel_buffer(), pts_index);
+        a.stats
+            .encode_us_total
+            .fetch_add(started.elapsed().as_micros() as u64, Ordering::SeqCst);
+        // Our hold ends here, before publishing. VideoToolbox may still hold
+        // the buffer; the pool's free rule waits for that release, so this
+        // drop is the Rust half of the loan's return, not the whole of it.
+        drop(surface);
+        let units = match result {
+            Ok(units) => units,
+            Err(e) => {
+                tracing::debug!(err = %e, frame, "stream thread: encode refused; frame dropped");
+                Self::drop_frame(a, 1);
+                return;
+            }
+        };
+        a.stats.video_frames_encoded.fetch_add(1, Ordering::SeqCst);
+        if units.is_empty() {
+            return;
+        }
+        if !self.seq_sent {
+            // The first unit is the forced IDR, and the parameter sets are
+            // captured from its format description — so they exist now. A
+            // stream must never carry NALUs its peer has no avcC for.
+            let seq = enc
+                .parameter_sets()
+                .and_then(|(sps, pps)| avc_sequence_header(&sps, &pps));
+            let Some(seq) = seq else {
+                Self::drop_frame(a, units.len() as u64);
+                return;
+            };
+            // Cached at send time even if shed, so a redial re-announces it.
+            if !a
+                .publisher
+                .try_publish_video(seq, media_ts_ms(units[0].pts_seconds))
+            {
+                Self::drop_frame(a, 1);
+            }
+            self.seq_sent = true;
+        }
+        for u in &units {
+            if a.publisher
+                .try_publish_video(flv_video_tag(u), media_ts_ms(u.pts_seconds))
+            {
+                a.stats.video_units_published.fetch_add(1, Ordering::SeqCst);
+            } else {
+                Self::drop_frame(a, 1);
             }
         }
     }
-    let enc = encoder.as_mut().expect("encoder opened above");
-    let units = match enc.encode_pixel_buffer(surface.pixel_buffer()) {
-        Ok(u) => u,
-        Err(_) => {
-            stream_drops.fetch_add(1, Ordering::SeqCst);
-            return (ms(), None);
+
+    fn drain_audio(&mut self, a: &StreamThreadArgs) {
+        let drained = a.tap.drain();
+        if drained.is_empty() {
+            return;
         }
-    };
-    let seq_header = if need_seq {
-        match enc.parameter_sets() {
-            Some((sps, pps)) => avc_sequence_header(&sps, &pps),
-            None => None,
+        let Some(aac) = self.aac.as_mut() else {
+            return;
+        };
+        let mut pcm = Vec::with_capacity(drained.len() + 1);
+        pcm.extend(self.carry.take());
+        pcm.extend_from_slice(&drained);
+        if pcm.len() % 2 == 1 {
+            self.carry = pcm.pop();
         }
-    } else {
-        None
-    };
-    (ms(), Some(EncodedStreamPayload { units, seq_header }))
+        match aac.encode_interleaved_f32(&pcm) {
+            Ok(packets) => {
+                for f in packets {
+                    if self.priming_to_skip > 0 {
+                        self.priming_to_skip -= 1;
+                        continue;
+                    }
+                    let ts = audio_ts_ms(self.audio_packets);
+                    self.audio_packets += 1;
+                    let mut tag = Vec::with_capacity(2 + f.data.len());
+                    tag.extend_from_slice(&[0xAF, 0x01]);
+                    tag.extend_from_slice(&f.data);
+                    if a.publisher.try_publish_audio(tag, ts) {
+                        a.stats
+                            .audio_packets_published
+                            .fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(err = %e, "stream thread: AAC encode failed; stream continues video-only");
+                self.aac = None;
+            }
+        }
+    }
 }
 
-/// Publish one encoded frame through the session. Holds NOTHING but the
-/// caller's `&StreamSession` across bounded `try_send`s — never encodes, never
-/// blocks. A sequence-header shed counts ONE stream drop like any shed unit;
-/// attempting it marks `seq_sent` either way (the transport's send-time cache
-/// replays the header after every redial without feeder help). Per-unit sheds
-/// count per unit. Returns the publish cost in ms for `stream_tap_ms`.
-pub fn publish_stream_frame(
-    session: &StreamSession,
-    seq_header: Option<Vec<u8>>,
-    seq_sent: &mut bool,
-    units: &[nbe_decode::encode::EncodedUnit],
-    stream_drops: &std::sync::atomic::AtomicU64,
-) -> f64 {
-    use std::sync::atomic::Ordering;
-    let started = std::time::Instant::now();
-    if let Some(seq) = seq_header {
-        if !session.publish_video(seq) {
-            stream_drops.fetch_add(1, Ordering::SeqCst);
-        }
-        *seq_sent = true;
-    }
-    let mut shed = 0usize;
-    for u in units {
-        if !session.publish_video(flv_video_tag(u)) {
-            shed += 1;
-        }
-    }
-    if shed > 0 {
-        stream_drops.fetch_add(shed as u64, Ordering::SeqCst);
-    }
-    started.elapsed().as_secs_f64() * 1000.0
+/// A video unit's RTMP timestamp: its PTS in whole milliseconds.
+pub fn media_ts_ms(pts_seconds: f64) -> u32 {
+    (pts_seconds * 1000.0).round().max(0.0) as u32
+}
+
+/// The `n`th retained AAC packet's RTMP timestamp: `n × 1024` samples at
+/// 48 kHz, in whole milliseconds (exact in integer arithmetic).
+pub fn audio_ts_ms(n: u64) -> u32 {
+    (n * nbe_decode::aac::FRAMES_PER_PACKET as u64 * 1000
+        / nbe_decode::aac::INPUT_SAMPLE_RATE as u64) as u32
 }
 
 /// Convert one encoder access unit (AVCC length-prefixed NALs) to an FLV
-/// video tag payload: `[frame|codec, avc-type, cts×3] + NALs`. Keyframes
-/// (`is_keyframe`) ride `0x17`, inter frames `0x27`; `avc-type` is always
-/// `0x01` (NALU, never sequence — sequence headers ride separately at
-/// connect). CTS is zero: the transport timestamps at the RTMP layer, so the
-/// FLV composition offset stays neutral rather than double-counting.
-pub fn flv_video_tag(unit: &nbe_decode::encode::EncodedUnit) -> Vec<u8> {
+/// video tag payload: `[frame|codec, avc-type, cts×3] + NALs`. Keyframes ride
+/// `0x17`, inter frames `0x27`; `avc-type` is always `0x01` (NALU — sequence
+/// headers ride separately). CTS is zero because frame reordering is off
+/// (`AllowFrameReordering = false`): decode order is presentation order, so
+/// the RTMP timestamp (the PTS) is also the DTS.
+pub fn flv_video_tag(unit: &EncodedUnit) -> Vec<u8> {
     let mut out = Vec::with_capacity(5 + unit.data.len());
     out.push(if unit.is_keyframe { 0x17 } else { 0x27 });
     out.push(0x01);
@@ -387,49 +781,19 @@ pub fn flv_video_tag(unit: &nbe_decode::encode::EncodedUnit) -> Vec<u8> {
     out
 }
 
-/// Publish already-encoded units through the session (bounded try_send —
-/// never blocks). Returns `(admitted, shed)`: shed frames were dropped by
-/// the transport (channel full / no transport) and the caller counts them
-/// on the stream counter. Pure publish path — no Surface, no encode — shared
-/// by the Surface feed below and by deterministic synthetic e2e coverage.
-pub fn publish_units(
-    session: &StreamSession,
-    units: &[nbe_decode::encode::EncodedUnit],
-) -> (usize, usize) {
-    let mut admitted = 0usize;
-    let mut shed = 0usize;
-    for u in units {
-        if session.publish_video(flv_video_tag(u)) {
-            admitted += 1;
-        } else {
-            shed += 1;
-        }
-    }
-    (admitted, shed)
-}
-
 /// Build an FLV AVC sequence header (`0x17 0x00` + avcC) from REAL parameter
-/// sets (the encoder's own SPS/PPS via [`nbe_decode::encode::EncodeSession::parameter_sets`]).
-/// Profile/compat/level are copied from the SPS (`sps[1..4]`), never
-/// hardcoded — a hardcoded triple that disagrees with the sets fails a real
-/// ingest's avcC parse. Refuses empty or mistyped sets loudly (`None`): a
-/// sequence header with no parameters is worse than none (it poisons the
-/// peer's track setup). The transport's static
-/// [`super::rtmp::video_sequence_header`] covers synthetically-fed sessions;
-/// THIS covers the live encoder.
+/// sets (the encoder's own SPS/PPS). Profile/compat/level are copied from the
+/// SPS (`sps[1..4]`), never hardcoded. Refuses empty or mistyped sets loudly
+/// (`None`): a sequence header with no parameters is worse than none.
 pub fn avc_sequence_header(sps: &[u8], pps: &[u8]) -> Option<Vec<u8>> {
     if sps.len() < 4 || pps.is_empty() {
         return None;
     }
     // NAL validation by type, not by exact header byte: real VideoToolbox
-    // SPS NALs arrive with nal_ref_idc != 3 (0x27 observed on hardware — a
-    // strict `== 0x67` check rejects them and no live stream ever emits its
-    // sequence header). forbidden_zero_bit must be 0, type must be 7 (SPS).
+    // SPS NALs arrive with nal_ref_idc != 3 (0x27 observed on hardware).
     if sps[0] & 0x80 != 0 || sps[0] & 0x1F != 7 {
         return None;
     }
-    // PPS likewise by type (the capture already selects type 8; this keeps
-    // the constructor honest on its own).
     if pps[0] & 0x80 != 0 || pps[0] & 0x1F != 8 {
         return None;
     }
@@ -446,60 +810,13 @@ pub fn avc_sequence_header(sps: &[u8], pps: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Feed one drawn Surface to the stream: encode zero-copy, publish, measure.
-///
-/// Same two phases as [`encode_stream_frame`] + [`publish_stream_frame`] back
-/// to back (identical counting) — the deterministic hook tests call this; the
-/// loop calls the phases separately so the session lock spans only the publish.
-///
-/// * `surface=None` is the G1 drop: the View drew regardless (to built-in),
-///   the stream takes nothing — counts ONE stream drop, returns `0.0`, never
-///   touches `skipped_record_frames` nor View drops, never blocks.
-/// * `Some` encodes via `encode_pixel_buffer` (no readback/rgba anywhere on
-///   this path — the signature cannot express one), converts to FLV, and
-///   publishes bounded. Encode failure counts ONE stream drop (the frame, not
-///   the take); per-unit publish sheds count per unit.
-/// * The FIRST frame whose encoder has parameter sets emits the AVC sequence
-///   header ahead of the media (a real ingest establishes the H.264 track
-///   from avcC — without it the video is unparseable). `seq_sent` tracks
-///   that; a seq-header shed counts ONE stream drop like any shed unit. The
-///   header is the session's first video payload, so the transport's
-///   send-time cache replays it after every redial without feeder help.
-/// * Returns the feed cost in ms (encode + publish) for the loop's
-///   `stream_tap_ms` — kept OFF the render budget by construction (measured
-///   here, only ever added to the stream counter).
-/// * `encoder` is `Option` so the loop owns it lazily (opened at View
-///   geometry on first Live frame): `None` opens, open failure counts ONE
-///   drop rather than failing the take.
-pub fn feed_stream_surface(
-    surface: Option<std::sync::Arc<nbe_decode::zerocopy::SharedSurface>>,
-    encoder: &mut Option<nbe_decode::encode::EncodeSession>,
-    seq_sent: &mut bool,
-    session: &StreamSession,
-    stream_drops: &std::sync::atomic::AtomicU64,
-) -> f64 {
-    use std::sync::atomic::Ordering;
-    let Some(surface) = surface else {
-        stream_drops.fetch_add(1, Ordering::SeqCst);
-        return 0.0;
-    };
-    let (encode_ms, payload) = encode_stream_frame(&surface, encoder, !*seq_sent, stream_drops);
-    let Some(payload) = payload else {
-        return encode_ms;
-    };
-    encode_ms
-        + publish_stream_frame(
-            session,
-            payload.seq_header,
-            seq_sent,
-            &payload.units,
-            stream_drops,
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn params() -> StreamParams {
+        StreamParams::new(640, 360, 30)
+    }
 
     #[test]
     fn force_seam_reports_chain_less_without_touching_hardware() {
@@ -511,75 +828,69 @@ mod tests {
     #[tokio::test]
     async fn close_error_seam_fails_loudly_with_the_network_token() {
         let sel = crate::record::tap_path::select_stream(true).unwrap();
-        let mut s = StreamSession::open("rtmp://example/live", sel);
+        let mut s = StreamSession::open(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+        );
         set_force_close_error(true);
         let err = s.stop_and_close().await.expect_err("armed seam must fail");
-        assert!(err.to_string().contains("E_NETWORK"));
-        assert!(
-            !s.is_closed(),
-            "consumed-but-unclosed: a failed close closes nothing (the caller still ends Live)"
-        );
+        assert!(err.to_string().starts_with("E_NETWORK: "));
+        assert!(!s.is_closed(), "a failed close closes nothing");
         set_force_close_error(false);
         s.stop_and_close().await.expect("released seam must close");
         assert!(s.is_closed());
     }
 
     #[test]
-    fn publish_attempts_seq_first_and_counts_every_shed() {
-        // Transport-less session (non-RTMP endpoint → no publisher): every
-        // publish sheds. Deterministic, no hardware: pins that the seq header
-        // is attempted (marks sent) and every shed unit — header + media —
-        // counts exactly one stream drop each.
-        use std::sync::atomic::AtomicU64;
+    fn a_transportless_session_has_no_thread_to_feed() {
+        // No runtime → no publisher → no thread: the loop's handoff finds no
+        // sender and hands nothing off.
         let sel = crate::record::tap_path::select_stream(true).unwrap();
-        let s = StreamSession::open("not-a-publish-target", sel);
+        let s = StreamSession::open(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+        );
         assert!(!s.has_publisher());
-        let drops = AtomicU64::new(0);
-        let mut seq_sent = false;
-        let units = vec![
-            nbe_decode::encode::EncodedUnit {
-                data: vec![0x65, 0x01],
-                is_keyframe: true,
-                pts_seconds: 0.0,
-            },
-            nbe_decode::encode::EncodedUnit {
-                data: vec![0x41, 0x02],
-                is_keyframe: false,
-                pts_seconds: 1.0 / 30.0,
-            },
-        ];
-        let ms = publish_stream_frame(
-            &s,
-            Some(vec![0x17, 0x00, 0x00, 0x00, 0x00]),
-            &mut seq_sent,
-            &units,
-            &drops,
-        );
-        assert!(
-            seq_sent,
-            "attempting the header marks it sent (shed or not)"
-        );
-        assert_eq!(
-            drops.load(Ordering::SeqCst),
-            3,
-            "header shed + 2 unit sheds count one drop each"
-        );
-        assert!(ms >= 0.0);
+        assert!(s.frame_sender().is_none());
     }
 
     #[test]
-    fn feed_with_no_surface_is_one_stream_drop_not_a_record_skip() {
-        use std::sync::atomic::AtomicU64;
-        let sel = crate::record::tap_path::select_stream(true).unwrap();
-        let s = StreamSession::open("not-a-publish-target", sel);
-        let drops = AtomicU64::new(0);
-        let mut encoder = None;
-        let mut seq_sent = false;
-        let ms = feed_stream_surface(None, &mut encoder, &mut seq_sent, &s, &drops);
-        assert_eq!(ms, 0.0);
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
-        assert!(!seq_sent, "a dropped frame sends nothing");
-        assert!(encoder.is_none(), "a dropped frame opens nothing");
+    fn params_take_the_manifest_bitrates() {
+        let out: nbe_core::manifest::StreamOutput = serde_json::from_value(serde_json::json!({
+            "url": "rtmp://h/a/k", "videoBitrateKbps": 6000, "audioBitrateKbps": 128
+        }))
+        .unwrap();
+        let p = StreamParams::new(1920, 1080, 60).with_output(Some(&out));
+        assert_eq!(p.video_bitrate_bps, 6_000_000);
+        assert_eq!(p.audio_bitrate_bps, 128_000);
+        assert_eq!(p.fps, 60);
+        assert_eq!(p.envelope_bps(), 6_128_000);
+        let d = StreamParams::new(1920, 1080, 30).with_output(None);
+        assert_eq!(d.envelope_bps(), VIDEO_BITRATE_BPS + AUDIO_BITRATE_BPS);
+    }
+
+    #[test]
+    fn timestamps_are_media_time() {
+        // Video: PTS in ms. At 60 fps successive frames are 16–17 ms apart,
+        // at 30 fps 33–34 ms: the timeline advances at the show's rate.
+        let at = |fps: u32, i: u64| media_ts_ms(i as f64 / fps as f64);
+        assert_eq!(
+            (0..4).map(|i| at(60, i)).collect::<Vec<_>>(),
+            [0, 17, 33, 50]
+        );
+        assert_eq!(
+            (0..4).map(|i| at(30, i)).collect::<Vec<_>>(),
+            [0, 33, 67, 100]
+        );
+        assert_eq!(at(60, 60), 1000);
+        // Audio: 1024 samples at 48 kHz = 21.333 ms per packet.
+        assert_eq!(audio_ts_ms(0), 0);
+        assert_eq!(audio_ts_ms(3), 64);
+        assert_eq!(audio_ts_ms(375), 8000);
     }
 
     #[test]
@@ -587,13 +898,11 @@ mod tests {
         assert!(avc_sequence_header(&[], &[]).is_none());
         assert!(avc_sequence_header(&[0x67, 0x64], &[0x68]).is_none());
         assert!(avc_sequence_header(&[0x65, 0x64, 0x00, 0x1F], &[0x68]).is_none());
-        // PPS mistyped (type 7 in the PPS slot) is refused too.
         assert!(avc_sequence_header(&[0x67, 0x64, 0x00, 0x1F], &[0x67]).is_none());
         let sps = vec![0x67, 0x64, 0x00, 0x1F, 0xAA, 0xBB];
         let pps = vec![0x68, 0xCC];
         let seq = avc_sequence_header(&sps, &pps).expect("valid sets build");
         assert!(seq.starts_with(&[0x17, 0x00, 0x00, 0x00, 0x00]));
-        // Profile/compat/level copied from the SPS, never hardcoded.
         assert_eq!(&seq[5..10], &[0x01, 0x64, 0x00, 0x1F, 0xFF]);
         assert!(seq.windows(sps.len()).any(|w| w == sps.as_slice()));
         assert!(seq.windows(pps.len()).any(|w| w == pps.as_slice()));
@@ -601,32 +910,26 @@ mod tests {
 
     #[test]
     fn avc_sequence_header_accepts_real_hardware_sps_shapes() {
-        // Observed on hardware: VideoToolbox emits the SPS with nal_ref_idc
-        // 1 (0x27), not 3 (0x67). A strict exact-byte check rejects every
-        // real stream's header — validation is by NAL type instead.
         let sps = vec![0x27, 0x64, 0x00, 0x28, 0xAC, 0x13];
         let pps = vec![0x28, 0xEE, 0x1F, 0x2C];
         let seq = avc_sequence_header(&sps, &pps).expect("hardware sets build");
-        assert!(seq.starts_with(&[0x17, 0x00, 0x00, 0x00, 0x00]));
         assert_eq!(&seq[5..10], &[0x01, 0x64, 0x00, 0x28, 0xFF]);
     }
 
     #[test]
     fn flv_video_tag_marks_keyframes_and_never_sequence() {
-        let key = nbe_decode::encode::EncodedUnit {
+        let key = EncodedUnit {
             data: vec![0x01, 0x02],
             is_keyframe: true,
             pts_seconds: 0.0,
         };
-        let inter = nbe_decode::encode::EncodedUnit {
+        let inter = EncodedUnit {
             data: vec![0x03],
             is_keyframe: false,
             pts_seconds: 1.0,
         };
-        let kt = flv_video_tag(&key);
-        let it = flv_video_tag(&inter);
-        assert_eq!(&kt[..5], &[0x17, 0x01, 0x00, 0x00, 0x00]);
-        assert_eq!(&it[..5], &[0x27, 0x01, 0x00, 0x00, 0x00]);
-        assert_eq!(&kt[5..], &[0x01, 0x02]);
+        assert_eq!(&flv_video_tag(&key)[..5], &[0x17, 0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(&flv_video_tag(&inter)[..5], &[0x27, 0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(&flv_video_tag(&key)[5..], &[0x01, 0x02]);
     }
 }

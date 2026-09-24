@@ -130,6 +130,10 @@ pub struct EngineState {
     /// thread. `None` while Idle. Cleared on every stop path so the driver
     /// detaches; the thread keeps its own `Arc` for the tail drain.
     pub record_tap: Mutex<Option<Arc<crate::record::AudioTap>>>,
+    /// The live stream's audio tap: published by `stream.start`, attached to
+    /// the live graph by the audio driver beside the record tap, drained by
+    /// the stream thread. `None` while Idle; cleared on every stop path.
+    pub stream_tap: Mutex<Option<Arc<crate::record::AudioTap>>>,
     /// Accumulated record-feed cost in milliseconds (loop-updated, off the
     /// render budget by construction; observable to tests, no wire/telemetry
     /// change).
@@ -215,6 +219,7 @@ impl EngineState {
             record_state: Mutex::new(RecordState::Idle),
             record_session: Mutex::new(None),
             record_tap: Mutex::new(None),
+            stream_tap: Mutex::new(None),
             record_tap_ms: Mutex::new(0.0),
             record_tap_selection: Mutex::new(None),
             skipped_record_frames: Arc::new(AtomicU64::new(0)),

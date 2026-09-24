@@ -26,5 +26,6 @@ pub mod scene;
 pub mod state;
 pub mod telemetry;
 pub mod text;
+pub mod tick;
 pub mod video;
 pub mod watchdog;

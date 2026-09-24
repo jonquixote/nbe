@@ -93,11 +93,25 @@ pub struct AudioDriver {
     /// cycle, by pointer — no audio-thread cost beyond one `Arc` clone and
     /// comparison.
     attached_tap: Option<Arc<crate::record::AudioTap>>,
+    /// The stream tap currently attached to the graph.
+    attached_stream_tap: Option<Arc<crate::record::AudioTap>>,
     /// Peaks accumulating inside the current meter window.
     window_peaks: BTreeMap<String, f64>,
     /// Blocks elapsed in the current window, and how many make one.
     window_blocks: u32,
     blocks_per_window: u32,
+}
+
+/// Whether the wanted tap differs from the attached one (by pointer).
+fn tap_changed(
+    attached: &Option<Arc<crate::record::AudioTap>>,
+    wanted: &Option<Arc<crate::record::AudioTap>>,
+) -> bool {
+    match (attached, wanted) {
+        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    }
 }
 
 impl AudioDriver {
@@ -115,6 +129,7 @@ impl AudioDriver {
             library: BTreeMap::new(),
             library_generation: u64::MAX,
             attached_tap: None,
+            attached_stream_tap: None,
             window_peaks: BTreeMap::new(),
             window_blocks: 0,
             // One telemetry interval's worth of blocks, so a published meter
@@ -150,17 +165,25 @@ impl AudioDriver {
     /// lock-free by contract — atomic publish, no contention shed).
     fn sync_record_tap(&mut self) {
         let wanted = self.state.record_tap.lock().unwrap().clone();
-        let changed = match (&self.attached_tap, &wanted) {
-            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-            (None, None) => false,
-            _ => true,
-        };
-        if changed {
+        if tap_changed(&self.attached_tap, &wanted) {
             match &wanted {
                 Some(tap) => self.graph.set_record_tap(tap.clone()),
                 None => self.graph.clear_record_tap(),
             }
             self.attached_tap = wanted;
+        }
+    }
+
+    /// Attach/detach the live stream's tap (`state.stream_tap`), the record
+    /// tap's discipline: pointer-compared once per cycle.
+    fn sync_stream_tap(&mut self) {
+        let wanted = self.state.stream_tap.lock().unwrap().clone();
+        if tap_changed(&self.attached_stream_tap, &wanted) {
+            match &wanted {
+                Some(tap) => self.graph.set_stream_tap(tap.clone()),
+                None => self.graph.clear_stream_tap(),
+            }
+            self.attached_stream_tap = wanted;
         }
     }
 
@@ -170,6 +193,7 @@ impl AudioDriver {
     pub fn cycle(&mut self, master_frame: u64) -> usize {
         self.sync_library();
         self.sync_record_tap();
+        self.sync_stream_tap();
 
         // Drain a bounded batch of intents. The lock is held only long enough
         // to move them out — the directive thread is never blocked behind a

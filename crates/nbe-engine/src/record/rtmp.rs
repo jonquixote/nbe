@@ -36,7 +36,7 @@
 //! before the task's `recv` fires. Kernel/socket buffers are invisible by
 //! construction (documented, not hidden): what we count is what we hold.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -168,11 +168,18 @@ pub fn video_sequence_header() -> Vec<u8> {
 }
 
 /// FLV-typed AAC sequence header: 0xAF 0x00 + AudioSpecificConfig for AAC-LC
-/// 48 kHz stereo — enough to identify the audio codec.
+/// 48 kHz stereo. For synthetically fed transports only; the live stream
+/// sends the codec's own ASC (`AacEncoder::bare_audio_specific_config`).
+///
+/// ASC bits: objectType 2 (5 bits) · frequency index 3 = 48 kHz (4 bits) ·
+/// channels 2 (4 bits) · 3 zero bits = `0x11 0x90`. PR #30 shipped `0x12 0x10`
+/// (frequency index 4 = 44.1 kHz) under a comment saying 48 kHz; the codec's
+/// own cookie says `0x11 0x90` (pinned in `nbe-decode` `aac::tests`).
 pub fn audio_sequence_header() -> Vec<u8> {
     vec![
-        0xAF, 0x00, // FLV audio tag header: AAC, 48kHz, 16-bit, stereo, sequence
-        0x12, 0x10, // AudioSpecificConfig: AAC-LC, 48 kHz, stereo
+        0xAF,
+        0x00, // FLV audio tag header: AAC, 44 kHz flag (FLV's max), 16-bit, stereo, sequence
+        0x11, 0x90, // AudioSpecificConfig: AAC-LC, 48 kHz, stereo
     ]
 }
 
@@ -193,24 +200,34 @@ pub enum PublisherState {
 /// feeder-side handle (caches at send time) and the publisher task (replays
 /// after every dialog).
 type SeqCache = Arc<Mutex<Option<(u8, Vec<u8>)>>>;
-/// One media message for the publisher task.
+/// One media message for the publisher task, stamped with its MEDIA time.
+///
+/// `ts_ms` is the frame's position on the stream's own timeline — the video
+/// unit's PTS, the audio packet's sample offset — never the wall clock at the
+/// moment the socket write happened. PR #30's first transport stamped
+/// `t0.elapsed()` at write time, so a stalled-then-drained backlog went out
+/// with near-identical timestamps and played back fast, and every queueing
+/// hiccup became timestamp jitter. The timeline belongs to the media.
 #[derive(Debug)]
 struct PublishFrame {
     kind: u8,
     payload: Vec<u8>,
+    ts_ms: u32,
 }
 
-fn video_frame(payload: Vec<u8>) -> PublishFrame {
+fn video_frame(payload: Vec<u8>, ts_ms: u32) -> PublishFrame {
     PublishFrame {
         kind: MSG_VIDEO,
         payload,
+        ts_ms,
     }
 }
 
-fn audio_frame(payload: Vec<u8>) -> PublishFrame {
+fn audio_frame(payload: Vec<u8>, ts_ms: u32) -> PublishFrame {
     PublishFrame {
         kind: MSG_AUDIO,
         payload,
+        ts_ms,
     }
 }
 
@@ -226,6 +243,10 @@ pub struct PublisherHandle {
     shed: Arc<AtomicU64>,
     state: Arc<Mutex<PublisherState>>,
     shutdown: Arc<tokio::sync::Notify>,
+    /// Level-triggered shutdown, set BEFORE every notify: `Notify` only wakes
+    /// waiters registered at that instant, so a stop landing between the
+    /// task's awaits would otherwise be lost and the task would redial on.
+    closed: Arc<AtomicBool>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// First media payload of each kind, cached at SEND time (not in the
     /// task): frames fed while the transport redials shed, but the codecs
@@ -233,17 +254,27 @@ pub struct PublisherHandle {
     /// cooperation. The task replays these after each dialog.
     cached_video_seq: SeqCache,
     cached_audio_seq: SeqCache,
+    /// The media timestamp of the most recently admitted frame. Replayed
+    /// sequence headers are stamped here so a redial continues the stream's
+    /// timeline instead of restarting it at zero.
+    last_ts: Arc<AtomicU32>,
+    /// The bitrate this stream was opened at (video + audio, bits/s): what
+    /// [`Self::buffer_ms`] divides by. Per stream, because the manifest's
+    /// `videoBitrateKbps` / `audioBitrateKbps` set it.
+    envelope_bps: u64,
 }
 
 impl PublisherHandle {
-    /// Queue video bytes. Never blocks; false = shed (channel full) or shut.
-    pub fn try_publish_video(&self, payload: Vec<u8>) -> bool {
-        self.send(video_frame(payload))
+    /// Queue one FLV video payload stamped at `ts_ms` on the stream's media
+    /// timeline. Never blocks; false = shed (channel full) or shut.
+    pub fn try_publish_video(&self, payload: Vec<u8>, ts_ms: u32) -> bool {
+        self.send(video_frame(payload, ts_ms))
     }
 
-    /// Queue audio bytes. Never blocks; false = shed (channel full) or shut.
-    pub fn try_publish_audio(&self, payload: Vec<u8>) -> bool {
-        self.send(audio_frame(payload))
+    /// Queue one FLV audio payload stamped at `ts_ms`. Never blocks; false =
+    /// shed (channel full) or shut.
+    pub fn try_publish_audio(&self, payload: Vec<u8>, ts_ms: u32) -> bool {
+        self.send(audio_frame(payload, ts_ms))
     }
 
     fn send(&self, frame: PublishFrame) -> bool {
@@ -286,6 +317,7 @@ impl PublisherHandle {
             }
         }
         let len = frame.payload.len();
+        self.last_ts.fetch_max(frame.ts_ms, Ordering::SeqCst);
         match self.tx.try_send(frame) {
             Ok(()) => {
                 self.buffered.fetch_add(len, Ordering::SeqCst);
@@ -313,7 +345,7 @@ impl PublisherHandle {
     /// `buffered_bytes` through the §9.4 envelope bitrate. Moves with load by
     /// construction: it divides the live counter, it is not stored.
     pub fn buffer_ms(&self) -> f64 {
-        self.buffered.load(Ordering::SeqCst) as f64 * 8000.0 / ENVELOPE_BITRATE_BPS as f64
+        self.buffered.load(Ordering::SeqCst) as f64 * 8000.0 / self.envelope_bps.max(1) as f64
     }
 
     /// Current transport liveness.
@@ -328,8 +360,7 @@ impl PublisherHandle {
     /// — calling this from the directive path must not block the executor
     /// (the old blocking spin stalled `stream.stop`'s ack window).
     pub async fn shutdown_and_wait(&self, timeout: Duration) -> bool {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = PublisherState::Closed;
-        self.shutdown.notify_waiters();
+        self.shutdown_signal();
         let start = std::time::Instant::now();
         loop {
             let done = self
@@ -353,6 +384,7 @@ impl PublisherHandle {
     /// signals shutdown without waiting. The task exits on its own.
     pub fn shutdown_signal(&self) {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = PublisherState::Closed;
+        self.closed.store(true, Ordering::SeqCst);
         self.shutdown.notify_waiters();
     }
 
@@ -362,19 +394,35 @@ impl PublisherHandle {
     }
 }
 
+impl Drop for PublisherHandle {
+    /// The last handle gone means nobody can feed or stop the task: signal
+    /// it, or a task mid-redial would dial a dead endpoint forever.
+    fn drop(&mut self) {
+        self.shutdown_signal();
+    }
+}
+
 /// Spawn the publisher task for `url` and return its handle. Returns
 /// immediately: the task dials in the background (state starts
 /// `Reconnecting`, flips `Live` on dialog completion), so the directive path
 /// never waits on the network. Requires a tokio runtime (the directive path
 /// always has one; the caller checks).
 pub fn spawn_publisher(url: RtmpUrl) -> PublisherHandle {
+    spawn_publisher_with_envelope(url, ENVELOPE_BITRATE_BPS)
+}
+
+/// [`spawn_publisher`] for a stream opened at `envelope_bps` (video + audio
+/// bits/s) — the bitrate `streamBufferMs` converts buffered bytes through.
+pub fn spawn_publisher_with_envelope(url: RtmpUrl, envelope_bps: u64) -> PublisherHandle {
     let (tx, rx) = tokio::sync::mpsc::channel::<PublishFrame>(PUBLISH_CHANNEL_BOUND);
     let buffered = Arc::new(AtomicUsize::new(0));
     let shed = Arc::new(AtomicU64::new(0));
     let state = Arc::new(Mutex::new(PublisherState::Reconnecting));
     let shutdown = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
     let cached_video_seq: SeqCache = Arc::new(Mutex::new(None));
     let cached_audio_seq: SeqCache = Arc::new(Mutex::new(None));
+    let last_ts = Arc::new(AtomicU32::new(0));
     let args = PublisherTaskArgs {
         url,
         rx,
@@ -382,8 +430,10 @@ pub fn spawn_publisher(url: RtmpUrl) -> PublisherHandle {
         shed: shed.clone(),
         state: state.clone(),
         shutdown: shutdown.clone(),
+        closed: closed.clone(),
         cached_video_seq: cached_video_seq.clone(),
         cached_audio_seq: cached_audio_seq.clone(),
+        last_ts: last_ts.clone(),
     };
     let handle = tokio::spawn(async move { publisher_task(args).await });
     PublisherHandle {
@@ -392,9 +442,12 @@ pub fn spawn_publisher(url: RtmpUrl) -> PublisherHandle {
         shed,
         state,
         shutdown,
+        closed,
         task: Mutex::new(Some(handle)),
         cached_video_seq,
         cached_audio_seq,
+        last_ts,
+        envelope_bps,
     }
 }
 
@@ -408,15 +461,27 @@ struct PublisherTaskArgs {
     shed: Arc<AtomicU64>,
     state: Arc<Mutex<PublisherState>>,
     shutdown: Arc<tokio::sync::Notify>,
+    closed: Arc<AtomicBool>,
     cached_video_seq: SeqCache,
     cached_audio_seq: SeqCache,
+    last_ts: Arc<AtomicU32>,
 }
 
-/// RTMP default chunk payload size (§5.4.1): every message larger than this is
-/// split, first chunk fmt=0 then fmt=3 continuations. Negotiated up by the
-/// server's `Set Chunk Size` (0x01) during the dialog; mid-stream updates are
-/// applied the same way.
+/// RTMP default chunk payload size (§5.4.1): what each side assumes of the
+/// other until told otherwise by a `Set Chunk Size` (0x01).
 const DEFAULT_CHUNK_SIZE: usize = 128;
+/// The chunk size this client sends at, announced with our own `Set Chunk
+/// Size` before anything is chunked at it.
+///
+/// Chunk size is per direction (RTMP §5.4.1: the message tells the *peer*
+/// the sender's new maximum). PR #30's first client adopted the SERVER's
+/// announced size for its own sends without announcing anything, so after a
+/// server said 4096 (nginx-rtmp's default) or 65536 (MediaMTX) the client
+/// sent large chunks the server was still reading at 128 — every media
+/// message over 128 bytes misparsed. 4096 is what OBS and FFmpeg announce.
+const OUT_CHUNK_SIZE: usize = 4096;
+/// Protocol-control chunk stream id (Set Chunk Size, User Control).
+const CSID_PROTOCOL: u32 = 2;
 /// Command chunk stream id (connect / createStream / publish).
 const CSID_COMMAND: u32 = 3;
 /// Media chunk streams (video / audio). Small (<64) so the basic header stays
@@ -425,7 +490,14 @@ const CSID_VIDEO: u32 = 4;
 const CSID_AUDIO: u32 = 5;
 /// RTMP message types we send / expect.
 const MSG_SET_CHUNK_SIZE: u8 = 0x01;
+const MSG_USER_CONTROL: u8 = 0x04;
 const MSG_COMMAND: u8 = 0x14;
+/// User Control events (RTMP §7.1.7): the server's PingRequest carries a
+/// timestamp the client must echo in a PingResponse. nginx-rtmp drops a
+/// publisher that has not answered within `ping_timeout` (30 s by default,
+/// after a 3 min `ping`).
+const UC_PING_REQUEST: u16 = 6;
+const UC_PING_RESPONSE: u16 = 7;
 /// Audio / video message types (coincide with the FLV tag kinds the feeder
 /// publishes: 0x08 AAC, 0x09 H.264 — one numbering on both layers).
 const MSG_AUDIO: u8 = 0x08;
@@ -439,20 +511,19 @@ async fn publisher_task(
         shed,
         state,
         shutdown,
+        closed,
         cached_video_seq,
         cached_audio_seq,
+        last_ts,
     }: PublisherTaskArgs,
 ) {
+    // Never overwrite a Closed the handle already published: a stop that
+    // lands mid-redial must read Closed, not flicker back to Reconnecting.
     let set_state = |s: PublisherState| {
-        *state.lock().unwrap_or_else(|e| e.into_inner()) = s;
+        if !closed.load(Ordering::SeqCst) {
+            *state.lock().unwrap_or_else(|e| e.into_inner()) = s;
+        }
     };
-    let closed = Arc::new(AtomicBool::new(false));
-    let closed_c = closed.clone();
-    let shutdown_c = shutdown.clone();
-    tokio::spawn(async move {
-        shutdown_c.notified().await;
-        closed_c.store(true, Ordering::SeqCst);
-    });
     let mut pause = INITIAL_RECONNECT_PAUSE;
     loop {
         if closed.load(Ordering::SeqCst) {
@@ -468,14 +539,14 @@ async fn publisher_task(
             // stop empties the bunker, and the teardown window (800 ms) sits
             // inside CONNECT_TIMEOUT, so without this arm the wait times the
             // dial out — never the shutdown.
-            _ = shutdown.notified() => Ok(Err(std::io::Error::new(
+            _ = until_closed(&shutdown, &closed) => Ok(Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 "shutdown during dial",
             ))),
         } {
             Ok(Ok(s)) => s,
             _ => {
-                sleep_or_shutdown(&shutdown, pause).await;
+                sleep_or_shutdown(&shutdown, &closed, pause).await;
                 if closed.load(Ordering::SeqCst) {
                     break;
                 }
@@ -483,7 +554,13 @@ async fn publisher_task(
                 continue;
             }
         };
-        match dialog(stream, &url, &shutdown).await {
+        // The dialog's reads answer the notify edge; this answers the level
+        // flag too, so a stop mid-dialog never waits out the dialog timeout.
+        let dialogued = tokio::select! {
+            r = dialog(stream, &url, &shutdown) => r,
+            _ = until_closed(&shutdown, &closed) => Err(RtmpError::Io("shutting down".into())),
+        };
+        match dialogued {
             Ok(mut live) => {
                 pause = INITIAL_RECONNECT_PAUSE;
                 // Fresh live edge: stale frames queued during the outage are
@@ -503,9 +580,11 @@ async fn publisher_task(
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 let mut ok = true;
-                let t0 = std::time::Instant::now();
+                // Stamped at the stream's current media position: a redial
+                // continues the timeline rather than restarting it.
+                let replay_ts = last_ts.load(Ordering::SeqCst);
                 if let Some((kind, payload)) = &video_seq {
-                    let ts = t0.elapsed().as_millis() as u32;
+                    let ts = replay_ts;
                     if write_media(
                         &mut live.stream,
                         if *kind == 0x09 {
@@ -527,7 +606,7 @@ async fn publisher_task(
                 }
                 if ok {
                     if let Some((kind, payload)) = &audio_seq {
-                        let ts = t0.elapsed().as_millis() as u32;
+                        let ts = replay_ts;
                         if write_media(
                             &mut live.stream,
                             if *kind == 0x09 {
@@ -557,14 +636,14 @@ async fn publisher_task(
                     }
                 }
                 // Write failure or EOF: redial (backoff continues below).
-                sleep_or_shutdown(&shutdown, pause).await;
+                sleep_or_shutdown(&shutdown, &closed, pause).await;
                 if closed.load(Ordering::SeqCst) {
                     break;
                 }
                 pause = (pause * 2).min(MAX_RECONNECT_PAUSE);
             }
             Err(_) => {
-                sleep_or_shutdown(&shutdown, pause).await;
+                sleep_or_shutdown(&shutdown, &closed, pause).await;
                 if closed.load(Ordering::SeqCst) {
                     break;
                 }
@@ -572,13 +651,31 @@ async fn publisher_task(
             }
         }
     }
-    set_state(PublisherState::Closed);
+    *state.lock().unwrap_or_else(|e| e.into_inner()) = PublisherState::Closed;
 }
 
-async fn sleep_or_shutdown(shutdown: &Arc<tokio::sync::Notify>, pause: Duration) {
+async fn sleep_or_shutdown(
+    shutdown: &Arc<tokio::sync::Notify>,
+    closed: &Arc<AtomicBool>,
+    pause: Duration,
+) {
     tokio::select! {
         _ = tokio::time::sleep(pause) => {}
-        _ = shutdown.notified() => {}
+        _ = until_closed(shutdown, closed) => {}
+    }
+}
+
+/// Resolves once shutdown is signalled: on the notify edge, or — if that
+/// edge landed while nobody was waiting — on the level flag within 50 ms.
+async fn until_closed(shutdown: &Arc<tokio::sync::Notify>, closed: &Arc<AtomicBool>) {
+    loop {
+        if closed.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::select! {
+            _ = shutdown.notified() => return,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
     }
 }
 
@@ -614,15 +711,52 @@ enum LoopEnd {
 /// `createStream` returned (media + publish ride on it).
 struct LiveTransport {
     stream: tokio::net::TcpStream,
+    /// The dialog's reader, carried into the live loop: the server's chunk
+    /// streams continue (fmt 1–3 headers lean on this history, and its
+    /// announced chunk size stays in force).
+    reader: ChunkReader,
     out_chunk_size: usize,
     stream_id: u32,
 }
 
+/// What the live loop must act on from the server's side of the socket.
+#[derive(Debug)]
+enum PeerControl {
+    /// User Control PingRequest: echo the timestamp in a PingResponse.
+    Ping(u32),
+}
+
+/// Classify one complete inbound message. Everything the live loop need not
+/// act on — acknowledgements, window sizes, onStatus — is `None`. (Set Chunk
+/// Size is applied inside [`ChunkReader`], where it governs parsing.)
+fn peer_control(msg: &InMessage) -> Option<PeerControl> {
+    if msg.msg_type == MSG_USER_CONTROL && msg.payload.len() >= 6 {
+        let event = u16::from_be_bytes([msg.payload[0], msg.payload[1]]);
+        if event == UC_PING_REQUEST {
+            let ts = u32::from_be_bytes([
+                msg.payload[2],
+                msg.payload[3],
+                msg.payload[4],
+                msg.payload[5],
+            ]);
+            return Some(PeerControl::Ping(ts));
+        }
+    }
+    None
+}
+
 /// Pump queued frames onto the socket until the peer goes away or shutdown
 /// fires. Debits `buffered` on every write (credited at send) so the counter
-/// is admitted-but-unwritten, exact. Incoming control (Set Chunk Size, pings,
-/// onStatus) is drained — never treated as EOF unless the socket reads 0.
-/// EOF while idle surfaces via `readable()`.
+/// is admitted-but-unwritten, exact.
+///
+/// The socket is split: the read half runs the dialog's [`ChunkReader`] for
+/// the connection's whole life, so the server's messages are parsed as
+/// messages — chunk history, chunk size and all — rather than guessed at from
+/// raw reads. Pings are answered (nginx-rtmp drops a publisher that does
+/// not); EOF or a parse failure ends the connection and the task redials.
+/// PR #30's first loop discarded whatever one `try_read` returned, answered
+/// nothing, and adopted any 16-byte read that looked like Set Chunk Size as
+/// its own OUTBOUND size.
 async fn live_loop(
     live: &mut LiveTransport,
     rx: &mut tokio::sync::mpsc::Receiver<PublishFrame>,
@@ -630,7 +764,32 @@ async fn live_loop(
     shutdown: &Arc<tokio::sync::Notify>,
     closed: &Arc<AtomicBool>,
 ) -> LoopEnd {
-    let t0 = std::time::Instant::now();
+    let LiveTransport {
+        stream,
+        reader,
+        out_chunk_size,
+        stream_id,
+    } = live;
+    let (out_chunk_size, stream_id) = (*out_chunk_size, *stream_id);
+    let (mut rd, mut wr) = stream.split();
+    let (ctl_tx, mut ctl_rx) = tokio::sync::mpsc::unbounded_channel::<PeerControl>();
+    // The read side: one future for the connection's life (never recreated
+    // per select iteration, so no partially read chunk is ever dropped).
+    let read_side = async {
+        loop {
+            match reader.next_message(&mut rd, shutdown).await {
+                Ok(msg) => {
+                    if let Some(c) = peer_control(&msg) {
+                        if ctl_tx.send(c).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    };
+    tokio::pin!(read_side);
     // Level-triggered shutdown: `Notify` is edge-triggered (a notify that
     // lands between select iterations is lost), while the `closed` flag set
     // by the shutdown watcher is level state. The sleep branch re-checks it
@@ -643,22 +802,51 @@ async fn live_loop(
         }
         tokio::select! {
             _ = shutdown.notified() => return LoopEnd::Shutdown,
+            // The read side ends only on EOF, a read error or a parse
+            // failure: the connection is over either way.
+            _ = &mut read_side => {
+                return if closed.load(Ordering::SeqCst) {
+                    LoopEnd::Shutdown
+                } else {
+                    LoopEnd::Transport
+                };
+            }
+            Some(PeerControl::Ping(ts)) = ctl_rx.recv() => {
+                let mut pong = UC_PING_RESPONSE.to_be_bytes().to_vec();
+                pong.extend_from_slice(&ts.to_be_bytes());
+                let write = tokio::select! {
+                    res = write_chunked(
+                        &mut wr,
+                        CSID_PROTOCOL,
+                        0,
+                        MSG_USER_CONTROL,
+                        0,
+                        &pong,
+                        out_chunk_size,
+                    ) => Some(res),
+                    _ = shutdown.notified() => None,
+                };
+                match write {
+                    None => return LoopEnd::Shutdown,
+                    Some(Err(_)) => return LoopEnd::Transport,
+                    Some(Ok(())) => {}
+                }
+            }
             res = rx.recv() => {
                 let Some(frame) = res else {
                     return LoopEnd::Shutdown;
                 };
                 let len = frame.payload.len();
-                let csid = if frame.kind == 0x09 { CSID_VIDEO } else { CSID_AUDIO };
-                let ts = t0.elapsed().as_millis() as u32;
+                let csid = if frame.kind == MSG_VIDEO { CSID_VIDEO } else { CSID_AUDIO };
                 let write = tokio::select! {
                     res = write_media(
-                        &mut live.stream,
+                        &mut wr,
                         csid,
-                        ts,
+                        frame.ts_ms,
                         frame.kind,
-                        live.stream_id,
+                        stream_id,
                         &frame.payload,
-                        live.out_chunk_size,
+                        out_chunk_size,
                     ) => Some(res),
                     _ = shutdown.notified() => None,
                 };
@@ -676,20 +864,6 @@ async fn live_loop(
                     Some(Ok(())) => {}
                 }
             }
-            _ = live.stream.readable() => {
-                if closed.load(Ordering::SeqCst) {
-                    return LoopEnd::Shutdown;
-                }
-                // Drain one available chunk message (updates out_chunk_size
-                // on Set Chunk Size); EOF (0 bytes) is the transport dying.
-                // Anything else — pings, acks, onStatus — is control, not
-                // media, and is discarded here (short-lived publish proof
-                // needs no pong; a long-lived session would answer pings).
-                match try_drain_one_message(&mut live.stream, &mut live.out_chunk_size).await {
-                    DrainOutcome::Eof => return LoopEnd::Transport,
-                    DrainOutcome::Ok | DrainOutcome::WouldBlock => continue,
-                }
-            }
             // Level-triggered backstop: if the edge notify above was lost
             // between iterations, this re-checks the flag the shutdown
             // watcher sets — bounded 50 ms granularity, far inside the stop
@@ -703,46 +877,10 @@ async fn live_loop(
     }
 }
 
-enum DrainOutcome {
-    Ok,
-    WouldBlock,
-    Eof,
-}
-
-async fn try_drain_one_message(
-    stream: &mut tokio::net::TcpStream,
-    out_chunk_size: &mut usize,
-) -> DrainOutcome {
-    let mut tmp = [0u8; 4096];
-    match stream.try_read(&mut tmp) {
-        Ok(0) => DrainOutcome::Eof,
-        Ok(n) => {
-            // Minimal parse: if this looks like a Set Chunk Size control
-            // (csid 2, fmt 0, type 0x01, len 4), adopt it for OUR sends.
-            // Full reassembly lives in the dialog reader; mid-stream we only
-            // need the size update, everything else is discardable control.
-            // Layout: basic(1) + header(11) + payload(4) = 16 bytes for the
-            // canonical encoding (csid 2, stream 0).
-            if n >= 16 && tmp[0] == 0x02 {
-                let msg_type = tmp[7];
-                if msg_type == MSG_SET_CHUNK_SIZE {
-                    let size = u32::from_be_bytes([tmp[12], tmp[13], tmp[14], tmp[15]]) as usize;
-                    if (128..=65536).contains(&size) {
-                        *out_chunk_size = size;
-                    }
-                }
-            }
-            DrainOutcome::Ok
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => DrainOutcome::WouldBlock,
-        Err(_) => DrainOutcome::Eof,
-    }
-}
-
 /// Write one RTMP message, chunked at `chunk_size`: first chunk fmt=0 with
 /// the full message header, continuations fmt=3 (basic header only).
-async fn write_chunked(
-    stream: &mut tokio::net::TcpStream,
+async fn write_chunked<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
     csid: u32,
     timestamp: u32,
     msg_type: u8,
@@ -773,7 +911,17 @@ async fn write_chunked(
             stream.write_all(&hdr).await?;
             first = false;
         } else {
-            stream.write_all(&encode_basic_header(3, csid)).await?;
+            // RTMP §5.3.1.3: when the message header carried the 0xFFFFFF
+            // escape, EVERY Type 3 continuation of that message repeats the
+            // 4-byte extended timestamp. PR #30's first writer omitted it, so
+            // past 0xFFFFFF ms (4 h 39 m 37 s on one connection) every
+            // chunked frame was malformed: a conforming reader took the next
+            // four payload bytes as the timestamp and desynchronised.
+            let mut hdr = encode_basic_header(3, csid);
+            if timestamp >= 0xFF_FF_FF {
+                hdr.extend_from_slice(&timestamp.to_be_bytes());
+            }
+            stream.write_all(&hdr).await?;
         }
         if take > 0 {
             stream.write_all(&payload[offset..offset + take]).await?;
@@ -796,8 +944,8 @@ fn encode_basic_header(fmt: u8, csid: u32) -> Vec<u8> {
     }
 }
 
-async fn write_media(
-    stream: &mut tokio::net::TcpStream,
+async fn write_media<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
     csid: u32,
     timestamp: u32,
     kind: u8,
@@ -988,6 +1136,9 @@ struct LastHeader {
     msg_len: usize,
     msg_type: u8,
     stream_id: u32,
+    /// The header used the 0xFFFFFF escape, so Type 3 chunks on this chunk
+    /// stream carry the 4-byte extended timestamp (RTMP §5.3.1.3).
+    ext: bool,
 }
 
 struct ChunkReader {
@@ -1016,9 +1167,9 @@ impl ChunkReader {
         }
     }
 
-    async fn next_message(
+    async fn next_message<R: tokio::io::AsyncRead + Unpin>(
         &mut self,
-        stream: &mut tokio::net::TcpStream,
+        stream: &mut R,
         shutdown: &Arc<tokio::sync::Notify>,
     ) -> Result<InMessage, RtmpError> {
         loop {
@@ -1039,7 +1190,8 @@ impl ChunkReader {
                     let len = read_u24(stream, shutdown).await? as usize;
                     let typ = read_byte(stream, shutdown).await?;
                     let sid = read_u32_le(stream, shutdown).await?;
-                    let ts = if ts == 0xFF_FF_FF {
+                    let ext = ts == 0xFF_FF_FF;
+                    let ts = if ext {
                         read_u32_be(stream, shutdown).await?
                     } else {
                         ts
@@ -1051,6 +1203,7 @@ impl ChunkReader {
                             msg_len: len,
                             msg_type: typ,
                             stream_id: sid,
+                            ext,
                         },
                     );
                     (ts, len, typ, sid)
@@ -1061,7 +1214,8 @@ impl ChunkReader {
                     let typ = read_byte(stream, shutdown).await?;
                     let p =
                         prev.ok_or_else(|| RtmpError::Protocol("fmt=1 with no history".into()))?;
-                    let ts = if delta == 0xFF_FF_FF {
+                    let ext = delta == 0xFF_FF_FF;
+                    let ts = if ext {
                         read_u32_be(stream, shutdown).await?
                     } else {
                         p.timestamp.wrapping_add(delta)
@@ -1073,6 +1227,7 @@ impl ChunkReader {
                             msg_len: len,
                             msg_type: typ,
                             stream_id: p.stream_id,
+                            ext,
                         },
                     );
                     (ts, len, typ, p.stream_id)
@@ -1081,7 +1236,8 @@ impl ChunkReader {
                     let delta = read_u24(stream, shutdown).await?;
                     let p =
                         prev.ok_or_else(|| RtmpError::Protocol("fmt=2 with no history".into()))?;
-                    let ts = if delta == 0xFF_FF_FF {
+                    let ext = delta == 0xFF_FF_FF;
+                    let ts = if ext {
                         read_u32_be(stream, shutdown).await?
                     } else {
                         p.timestamp.wrapping_add(delta)
@@ -1093,6 +1249,7 @@ impl ChunkReader {
                             msg_len: p.msg_len,
                             msg_type: p.msg_type,
                             stream_id: p.stream_id,
+                            ext,
                         },
                     );
                     (ts, p.msg_len, p.msg_type, p.stream_id)
@@ -1100,6 +1257,10 @@ impl ChunkReader {
                 3 => {
                     let p =
                         prev.ok_or_else(|| RtmpError::Protocol("fmt=3 with no history".into()))?;
+                    if p.ext {
+                        // The repeated extended timestamp (RTMP §5.3.1.3).
+                        let _ = read_u32_be(stream, shutdown).await?;
+                    }
                     (p.timestamp, p.msg_len, p.msg_type, p.stream_id)
                 }
                 _ => return Err(RtmpError::Protocol("bad fmt".into())),
@@ -1129,6 +1290,7 @@ impl ChunkReader {
                     msg_len,
                     msg_type,
                     stream_id,
+                    ext: false,
                 });
                 self.partial.insert(csid, (hdr, buf));
                 continue;
@@ -1152,8 +1314,8 @@ impl ChunkReader {
     }
 }
 
-async fn read_byte(
-    stream: &mut tokio::net::TcpStream,
+async fn read_byte<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
 ) -> Result<u8, RtmpError> {
     let mut b = [0u8; 1];
@@ -1161,8 +1323,8 @@ async fn read_byte(
     Ok(b[0])
 }
 
-async fn read_u24(
-    stream: &mut tokio::net::TcpStream,
+async fn read_u24<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
 ) -> Result<u32, RtmpError> {
     let mut b = [0u8; 3];
@@ -1170,8 +1332,8 @@ async fn read_u24(
     Ok(((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32)
 }
 
-async fn read_u32_be(
-    stream: &mut tokio::net::TcpStream,
+async fn read_u32_be<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
 ) -> Result<u32, RtmpError> {
     let mut b = [0u8; 4];
@@ -1179,8 +1341,8 @@ async fn read_u32_be(
     Ok(u32::from_be_bytes(b))
 }
 
-async fn read_u32_le(
-    stream: &mut tokio::net::TcpStream,
+async fn read_u32_le<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
 ) -> Result<u32, RtmpError> {
     let mut b = [0u8; 4];
@@ -1229,7 +1391,20 @@ async fn dialog(
     write_or_shutdown(&mut stream, shutdown, &s1).await?;
 
     let mut reader = ChunkReader::new();
-    let mut out_chunk_size = DEFAULT_CHUNK_SIZE;
+    // Announce our outbound chunk size before anything is chunked at it
+    // (see `OUT_CHUNK_SIZE`): the one place it changes, never from the peer.
+    write_chunked(
+        &mut stream,
+        CSID_PROTOCOL,
+        0,
+        MSG_SET_CHUNK_SIZE,
+        0,
+        &(OUT_CHUNK_SIZE as u32).to_be_bytes(),
+        DEFAULT_CHUNK_SIZE,
+    )
+    .await
+    .map_err(|e| RtmpError::Io(e.to_string()))?;
+    let out_chunk_size = OUT_CHUNK_SIZE;
 
     // connect(app): tcUrl carries host+port+app; the key is a credential —
     // written inside publish args, never logged.
@@ -1271,7 +1446,6 @@ async fn dialog(
             r = reader.next_message(&mut stream, shutdown) => r?,
             _ = shutdown.notified() => return Err(RtmpError::Io("shutting down".into())),
         };
-        out_chunk_size = reader.in_chunk_size.clamp(DEFAULT_CHUNK_SIZE, 65536);
         if msg.msg_type != MSG_COMMAND {
             continue;
         }
@@ -1327,7 +1501,6 @@ async fn dialog(
             r = reader.next_message(&mut stream, shutdown) => r?,
             _ = shutdown.notified() => return Err(RtmpError::Io("shutting down".into())),
         };
-        out_chunk_size = reader.in_chunk_size.clamp(DEFAULT_CHUNK_SIZE, 65536);
         if msg.msg_type != MSG_COMMAND {
             continue;
         }
@@ -1376,7 +1549,6 @@ async fn dialog(
             _ = shutdown.notified() => return Err(RtmpError::Io("shutting down".into())),
             _ = tokio::time::sleep(Duration::from_millis(50)) => break,
         };
-        out_chunk_size = reader.in_chunk_size.clamp(DEFAULT_CHUNK_SIZE, 65536);
         if msg.msg_type != MSG_COMMAND {
             continue;
         }
@@ -1398,6 +1570,7 @@ async fn dialog(
 
     Ok(LiveTransport {
         stream,
+        reader,
         out_chunk_size,
         stream_id,
     })
@@ -1473,8 +1646,8 @@ async fn write_or_shutdown(
     }
 }
 
-async fn read_or_shutdown(
-    stream: &mut tokio::net::TcpStream,
+async fn read_or_shutdown<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
     buf: &mut [u8],
 ) -> Result<(), RtmpError> {
@@ -1487,8 +1660,8 @@ async fn read_or_shutdown(
     }
 }
 
-async fn read_exact(
-    stream: &mut tokio::net::TcpStream,
+async fn read_exact<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     shutdown: &Arc<tokio::sync::Notify>,
     buf: &mut [u8],
 ) -> Result<(), RtmpError> {

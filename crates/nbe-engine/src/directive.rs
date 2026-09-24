@@ -405,6 +405,7 @@ impl DirectiveHandler {
                         tracing::warn!("show.stop: force stop, stream abandoned as-is (no close)");
                         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
                         *self.state.stream_tap_selection.lock().unwrap() = None;
+                        *self.state.stream_tap.lock().unwrap() = None;
                     }
                 }
                 (true, false) => {
@@ -428,6 +429,7 @@ impl DirectiveHandler {
                         // A stopped stream publishes no selection; the next
                         // start publishes fresh (see `on_stream_start`).
                         *self.state.stream_tap_selection.lock().unwrap() = None;
+                        *self.state.stream_tap.lock().unwrap() = None;
                         match &result {
                             Ok(()) => {
                                 info!("show.stop: stream quiesced");
@@ -1044,16 +1046,18 @@ impl DirectiveHandler {
                 ));
             }
         };
+        // One manifest read for the whole start: url, tapPath, bitrates.
+        let output = stream_manifest_output(&self.state);
         // WU3 call site: the manifest answers when the command is silent.
-        let manifest_url = stream_manifest_url(&self.state);
-        let endpoint = resolve_stream_url(manifest_url.as_deref(), command_url)?;
+        let manifest_url = output.as_ref().and_then(|o| o.url.as_deref());
+        let endpoint = resolve_stream_url(manifest_url, command_url)?;
         // (4) B2 stream side — the manifest's `outputs.stream.tapPath` override
         // (SPEC v0.4.5). A `cpuReadback` restriction is unlawful for streaming
         // (no readback allowance covers this output) and is refused on the
         // `E_NO_ZEROCOPY` path — never an Override-live selection. A
         // CONFIGURATION refusal: decided before any probe, identical on every
         // machine.
-        let override_path = stream_tap_override(&self.state);
+        let override_path = stream_tap_override(output.as_ref());
         if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
             tracing::warn!("stream.start: cpuReadback override refused (no lawful readback path for streaming)");
             return Err(stream_err(
@@ -1066,8 +1070,10 @@ impl DirectiveHandler {
         }
         // (5) The refusal row: no chain, no lawful path (never a silent
         // fallback to the readback the spec forbids this output). The SPEC's
-        // claim, so it is answered before this build's encoder probe.
-        let capable = crate::record::stream::chain_available(&self.state.render_device());
+        // claim, so it is answered before this build's encoder probe. The
+        // probe IS the stream's pool: kept on success, owned by the session.
+        let pool = crate::record::stream::probe_stream_pool(&self.state.render_device());
+        let capable = pool.is_some();
         if crate::record::tap_path::select_stream(capable).is_none() {
             tracing::warn!("stream.start: zero-copy chain unavailable, refusing (no readback fallback for streaming)");
             return Err(stream_err(
@@ -1105,9 +1111,28 @@ impl DirectiveHandler {
         // state flip, while the loop still sees Idle) — the record-start shape.
         *self.state.stream_tap_ms.lock().unwrap() = 0.0;
         self.state.skipped_stream_frames.store(0, Ordering::SeqCst);
-        *self.state.stream_session.lock().unwrap() = Some(
-            crate::record::stream::StreamSession::open(endpoint, selection),
+        // §9.4 at the show's geometry and rate, with the manifest's bitrates.
+        let params = crate::record::stream::StreamParams::new(
+            crate::render::VIEW_W,
+            VIEW_H,
+            self.state.house_rate(),
+        )
+        .with_output(output.as_ref());
+        // Spawns the publisher (it dials in the background) and the stream
+        // thread (it opens the encoders on itself) — nothing here waits on
+        // either.
+        let mut session = crate::record::stream::StreamSession::open(
+            endpoint,
+            selection,
+            params,
+            self.state.skipped_stream_frames.clone(),
         );
+        if let Some(pool) = pool {
+            session.set_surface_pool(Arc::new(pool));
+        }
+        // The audio driver attaches the stream's tap on its next cycle.
+        *self.state.stream_tap.lock().unwrap() = Some(session.tap());
+        *self.state.stream_session.lock().unwrap() = Some(session);
         *self.state.stream_state.lock().unwrap() = StreamState::Live;
         Ok(())
     }
@@ -1153,6 +1178,7 @@ impl DirectiveHandler {
         };
         *self.state.stream_state.lock().unwrap() = StreamState::Idle;
         *self.state.stream_tap_selection.lock().unwrap() = None;
+        *self.state.stream_tap.lock().unwrap() = None;
         match &result {
             Ok(()) => {
                 info!("stream.stop: session closed");
@@ -1510,40 +1536,31 @@ fn record_tap_override(state: &SharedEngineState) -> Option<crate::record::tap_p
     }
 }
 
-/// WU4 — the stream output's frame-path preference (`show.outputs.stream`
-/// `tapPath`, SPEC v0.4.5): `auto` (or an absent/unreadable field) defers to
-/// the published selection table, `cpuReadback` restricts the stream to CPU.
-/// Read at start time (not cached at load) so `show.load` stays untouched —
-/// the [`record_tap_override`] shape, B2 stream side.
-fn stream_tap_override(state: &SharedEngineState) -> Option<crate::record::tap_path::TapPath> {
+/// WU4 — the loaded package's stream output (`show.outputs.stream`), read
+/// once per `stream.start` (not cached at load, so `show.load` stays untouched
+/// by streaming concerns — the [`record_show_name`] shape). `None` when no
+/// package is loaded or it declares no stream output.
+fn stream_manifest_output(state: &SharedEngineState) -> Option<nbe_core::manifest::StreamOutput> {
     let path = state.package_path.lock().unwrap().clone()?;
     let bytes = std::fs::read(std::path::Path::new(&path).join("manifest.json")).ok()?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let outputs: nbe_core::manifest::OutputDefaults =
         serde_json::from_value(manifest.get("show")?.get("outputs")?.clone()).ok()?;
-    match outputs.stream?.tap_path {
+    outputs.stream
+}
+
+/// WU4 — the stream output's frame-path preference (`tapPath`, SPEC v0.4.5):
+/// `auto` (or no stream output) defers to the published selection table,
+/// `cpuReadback` restricts the stream to CPU — which `stream.start` refuses.
+fn stream_tap_override(
+    output: Option<&nbe_core::manifest::StreamOutput>,
+) -> Option<crate::record::tap_path::TapPath> {
+    match output?.tap_path {
         nbe_core::manifest::TapPathPreference::CpuReadback => {
             Some(crate::record::tap_path::TapPath::CpuReadback)
         }
         nbe_core::manifest::TapPathPreference::Auto => None,
     }
-}
-
-/// WU4 — the loaded package's stream endpoint (`show.outputs.stream.url`).
-/// Read at start time (not cached at load) so `show.load` stays untouched by
-/// streaming concerns — the [`record_show_name`] shape. Returns the trimmed
-/// url, or `None` when the package declares none (the WU3 [`resolve_stream_url`]
-/// call site treats that as silent and refuses only when the command is
-/// silent too).
-fn stream_manifest_url(state: &SharedEngineState) -> Option<String> {
-    let path = state.package_path.lock().unwrap().clone()?;
-    let bytes = std::fs::read(std::path::Path::new(&path).join("manifest.json")).ok()?;
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let outputs: nbe_core::manifest::OutputDefaults =
-        serde_json::from_value(manifest.get("show")?.get("outputs")?.clone()).ok()?;
-    let url = outputs.stream?.url?;
-    let trimmed = url.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// WU3 — `stream.start` url precedence (SPEC v0.4.5 §9.4, §16.14): the
