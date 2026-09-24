@@ -579,9 +579,6 @@ struct StreamThread {
     seq_sent: bool,
     priming_to_skip: u64,
     audio_packets: u64,
-    /// An odd trailing sample held for the next drain, so stereo pairs never
-    /// split across drains.
-    carry: Option<f32>,
 }
 
 impl StreamThread {
@@ -636,7 +633,6 @@ impl StreamThread {
             seq_sent: false,
             priming_to_skip: AAC_PRIMING_TRIM_PACKETS,
             audio_packets: 0,
-            carry: None,
         }
     }
 
@@ -722,19 +718,17 @@ impl StreamThread {
     }
 
     fn drain_audio(&mut self, a: &StreamThreadArgs) {
-        let drained = a.tap.drain();
-        if drained.is_empty() {
+        // Whole stereo frames, starting on a left sample, by the tap's
+        // contract. ~~A carry re-paired odd drains~~ — PR #30's first version
+        // held an odd trailing sample for the next drain; after an odd drain
+        // (possible then, not now) that carry kept L and R swapped silently.
+        let pcm = a.tap.drain();
+        if pcm.is_empty() {
             return;
         }
         let Some(aac) = self.aac.as_mut() else {
             return;
         };
-        let mut pcm = Vec::with_capacity(drained.len() + 1);
-        pcm.extend(self.carry.take());
-        pcm.extend_from_slice(&drained);
-        if pcm.len() % 2 == 1 {
-            self.carry = pcm.pop();
-        }
         match aac.encode_interleaved_f32(&pcm) {
             Ok(packets) => {
                 for f in packets {

@@ -15,6 +15,22 @@
 //!   state: producer and consumer never contend on a lock.
 //! - Otherwise the copy lands, and any excess over capacity evicts the OLDEST
 //!   samples first (a late writer loses the past, never the present).
+//! - **Eviction is in whole stereo frames, so a drain never re-pairs the
+//!   channels.** The ring holds interleaved stereo ([`CHANNELS`] samples per
+//!   frame); its capacity is a whole number of frames, `push` stores and
+//!   evicts only whole frames, so `head` and `tail` only ever move by whole
+//!   frames and every drain starts on a left sample and holds whole frames. A
+//!   stalled consumer loses its oldest frames, never its L/R pairing. A
+//!   trailing odd sample handed to `push` is not stored (it would shift every
+//!   later frame) and is counted dropped.
+//!
+//!   ~~(no such line)~~ — before PR #30's final repair, eviction was per
+//!   sample: a drain racing an eviction mid-push could return an odd count
+//!   starting on a right sample (a two-key-pass probe measured 177 of 907
+//!   drains under a constantly full ring). The record writer refused such a
+//!   drain as "audio must be whole stereo frames" and the take ended; the
+//!   stream thread re-paired it from the shifted start and swapped L and R
+//!   silently until the next odd drain.
 //! - Every dropped sample is counted in `dropped()` (lock-free `AtomicU64`);
 //!   drops are telemetry, never errors.
 //!
@@ -28,6 +44,9 @@
 //! calls may overwrite each other's slots.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+/// Samples per frame: the master mix is interleaved stereo.
+pub const CHANNELS: usize = 2;
 
 /// 5 s of stereo 48 kHz mix: the record thread drains far faster than this
 /// fills, so the bound only engages on writer stalls, not in steady state.
@@ -53,8 +72,10 @@ impl AudioTap {
         Self::with_capacity(DEFAULT_CAPACITY_SAMPLES)
     }
 
+    /// A ring of `capacity_samples`, rounded down to whole stereo frames
+    /// (at least one frame).
     pub fn with_capacity(capacity_samples: usize) -> Self {
-        let capacity = capacity_samples.max(1);
+        let capacity = (capacity_samples - capacity_samples % CHANNELS).max(CHANNELS);
         // Safe construction without MaybeUninit: one bulk fill at birth,
         // never reallocated afterwards.
         let mut buf = Vec::with_capacity(capacity);
@@ -85,37 +106,52 @@ impl AudioTap {
     /// drained sample is fully written. `dropped` is `Relaxed` telemetry, as
     /// before.
     pub fn push(&self, samples: &[f32]) {
-        if samples.is_empty() {
+        // Whole frames only (see the module contract): a trailing odd sample
+        // is counted dropped, never stored.
+        let whole = samples.len() - samples.len() % CHANNELS;
+        if whole < samples.len() {
+            self.dropped
+                .fetch_add((samples.len() - whole) as u64, Ordering::Relaxed);
+        }
+        if whole == 0 {
             return;
         }
         // Producer-owned: no other thread stores `head`, so one load at entry
         // plus one publish at exit brackets the whole block.
         let mut head = self.head.load(Ordering::Relaxed);
-        for &s in samples {
-            // Make room: while full, evict the oldest (advance `tail`, count
-            // it). The CAS retries only if the consumer advanced `tail`
-            // concurrently — forward progress either way.
+        for frame in samples[..whole].as_chunks::<CHANNELS>().0 {
+            // Make room for one whole frame: while full, evict the oldest whole
+            // frame (advance `tail` by CHANNELS, count it). The CAS retries
+            // only if the consumer advanced `tail` concurrently — forward
+            // progress either way. `head` and `tail` stay multiples of
+            // CHANNELS, so no drain can start mid-frame.
             loop {
                 let tail = self.tail.load(Ordering::Acquire);
-                if head.wrapping_sub(tail) < self.capacity {
+                // `capacity - CHANNELS`, never `occupancy + CHANNELS`: under
+                // multi-producer misuse a stale `head` wraps the occupancy to a
+                // huge value, and adding to it would overflow (a debug panic on
+                // the audio thread). Capacity is at least one frame.
+                if head.wrapping_sub(tail) <= self.capacity - CHANNELS {
                     break;
                 }
                 if self
                     .tail
                     .compare_exchange_weak(
                         tail,
-                        tail.wrapping_add(1),
+                        tail.wrapping_add(CHANNELS),
                         Ordering::Release,
                         Ordering::Relaxed,
                     )
                     .is_ok()
                 {
-                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.dropped.fetch_add(CHANNELS as u64, Ordering::Relaxed);
                     break;
                 }
             }
-            self.buf[head % self.capacity].store(s.to_bits(), Ordering::Relaxed);
-            head = head.wrapping_add(1);
+            for &s in frame {
+                self.buf[head % self.capacity].store(s.to_bits(), Ordering::Relaxed);
+                head = head.wrapping_add(1);
+            }
         }
         self.head.store(head, Ordering::Release);
     }
@@ -208,14 +244,22 @@ impl Default for AudioTap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    // ~~`push(&[1.0, 2.0, 3.0])` into a capacity-4 ring~~ — these two tests
+    // pushed 3-sample (half-frame) blocks, a shape the stereo mix never
+    // produces and whole-frame eviction no longer stores. Same properties,
+    // in frames.
 
     #[test]
-    fn overfill_drops_oldest_and_counts() {
+    fn overfill_drops_oldest_frames_and_counts() {
         let tap = AudioTap::with_capacity(4);
-        tap.push(&[1.0, 2.0, 3.0]);
+        tap.push(&[1.0, 2.0]);
         assert_eq!(tap.dropped(), 0);
-        tap.push(&[4.0, 5.0, 6.0]);
-        assert_eq!(tap.dropped(), 2);
+        tap.push(&[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(tap.dropped(), 2, "one whole frame evicted");
         assert_eq!(tap.drain(), vec![3.0, 4.0, 5.0, 6.0]);
     }
 
@@ -225,5 +269,65 @@ mod tests {
         tap.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(tap.dropped(), 2);
         assert_eq!(tap.drain(), vec![3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn capacity_is_whole_frames_and_odd_trailers_are_counted_not_stored() {
+        assert_eq!(AudioTap::with_capacity(5).capacity(), 4);
+        assert_eq!(AudioTap::with_capacity(1).capacity(), CHANNELS);
+        let tap = AudioTap::with_capacity(8);
+        tap.push(&[1.0, 2.0, 3.0]);
+        assert_eq!(tap.dropped(), 1, "the trailing half-frame is counted");
+        assert_eq!(tap.drain(), vec![1.0, 2.0]);
+    }
+
+    /// The two-key pass's probe, kept as the guard: a producer pushing
+    /// stereo frames (L = +1.0, R = -1.0) into a constantly full ring while a
+    /// consumer drains concurrently. Every drain must hold whole frames and
+    /// start on a left sample. With per-sample eviction this measured 177
+    /// odd-length drains of 907, all starting on a right sample.
+    #[test]
+    fn drains_racing_eviction_stay_stereo_aligned() {
+        let tap = Arc::new(AudioTap::with_capacity(64));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (t2, s2) = (tap.clone(), stop.clone());
+        let producer = std::thread::spawn(move || {
+            let mut block = [0.0f32; 16];
+            for (i, s) in block.iter_mut().enumerate() {
+                *s = if i % 2 == 0 { 1.0 } else { -1.0 };
+            }
+            while !s2.load(Ordering::SeqCst) {
+                t2.push(&block);
+            }
+        });
+        let (mut drains, mut odd, mut starts_on_r) = (0u64, 0u64, 0u64);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(1500) {
+            let d = tap.drain();
+            if !d.is_empty() {
+                drains += 1;
+                odd += (d.len() % 2) as u64;
+                starts_on_r += u64::from(d[0] < 0.0);
+            }
+            if drains % 64 == 0 {
+                std::thread::sleep(Duration::from_micros(20));
+            }
+        }
+        stop.store(true, Ordering::SeqCst);
+        producer.join().unwrap();
+        eprintln!(
+            "STEREO GUARD: {drains} drains racing {} evicted samples: {odd} odd-length, \
+             {starts_on_r} starting on a right-channel sample",
+            tap.dropped()
+        );
+        assert!(
+            drains > 0 && tap.dropped() > 0,
+            "the ring must have been full and drained"
+        );
+        assert_eq!(odd, 0, "a drain must hold whole stereo frames");
+        assert_eq!(
+            starts_on_r, 0,
+            "a drain must start on a left-channel sample"
+        );
     }
 }
