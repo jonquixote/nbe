@@ -50,6 +50,26 @@ flipped:
 | Row | Section | Guard | Landing commit | Result |
 |---|---|---|---|---|
 | 1 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` (all three legs ran; the encoder-only leg needs a real chain and did not skip) | `724e35f` | ok. 1 passed; 0 failed |
+| 2 | 10.1 | `transport_tokens_are_stable` | `f15b617` | ok. 1 passed; 0 failed |
+| 2 | 10.1.1 | `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts` | `f15b617` | ok. 1 passed; 0 failed |
+| 2 | 10.1 | `live_tick_carries_the_transport_state_and_stop_reads_closed` (hardware-gated; ran, no SKIP) | `f15b617` | ok. 1 passed; 0 failed |
+| 2 | 10.1, 9.5 | `transport_death_leaves_the_loop_untouched` (the redial on the wire; ran, no SKIP) | `f15b617` | ok. 1 passed; 0 failed |
+| 2 | 10.1 | `rust_and_typescript_agree_on_the_engine_telemetry_fields` (fixture samples `"reconnecting"`) | `f15b617` | ok. 1 passed; 0 failed |
+| 2 | 10.1 | `an engineTelemetry tick carrying streamTransportState parses and the field is readable` | `f15b617` | ok 1; # pass 1; # fail 0 |
+
+Row 2's guards were falsified at the same commit, each mutation restored before
+the next:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| suppress the field (`skip_serializing`) | the completeness assertion | `§10.1.1: every engine tick must carry streamTransportState; keys were [...]` |
+| respell a token (`"reconnecting"` → `"redialing"`) | `transport_tokens_are_stable` | `left: "redialing"` / `right: "reconnecting"` |
+| suppress the forwarding (`streamTransportState: TAP_NONE`) | the readability test | `a redial must be readable by an operator, not merely accepted` — `+ 'none'` / `- 'reconnecting'` |
+
+Renaming the Rust *identifier* (`Reconnecting` → `Redialing`) cannot change the
+wire: the tokens come from an explicit map, so the rename is 5 × `error[E0599]`
+and nothing compiles. The token test guards the spelling, which is the only
+thing a variant rename could have changed under a `Debug`-rendered token.
 
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
