@@ -22,13 +22,16 @@ v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wir
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
 (`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting
 phase: the words predate the text, so each ratified row is ratified on landing,
-lands with its mechanism, and had its guard run at its landing commit.
+lands with its mechanism, and had its guard run at its landing commit. One row
+is not ratified: row 4 is drafted as an UNRATIFIED candidate, because its
+mechanism is Prompt 11's to build.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
 | 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
 | 2 | **`streamTransportState` on the wire** (B2). The engine publishes its stream transport's `PublisherState` on the §10.1 tick as exactly `"live"` / `"reconnecting"` / `"closed"`, always emitted and stubbed `"none"` before any stream has started (the `recordTapPath` precedent), `"closed"` after a stream stops. It is split from the commanded `streamState` by §9.5's survival shape: `streamState` stays `live` through a redial, and this field says what the socket is doing. Before it, a redial was visible to no telemetry consumer and no soak. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 10.1 (field block, new note), 10.1.1 (ownership) | `transport_tokens_are_stable`, `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts`, `an engineTelemetry tick carrying streamTransportState parses and the field is readable`, and `transport_death_leaves_the_loop_untouched` (the redial, on the wire) |
 | 3 | **`streamBufferMs` is `-1` with no session** — the NO-SESSION sentinel, on the engine AND the control plane (which also emits it with no fresh engine report). `streamState` on the same tick carries idle vs live, but it is commanded, not measured; the sentinel exists so that "no measurement exists" is diagnosable from "the buffer is empty". PR #30 shipped it inside its feature PR, the repair round reverted it (`f8ff895`) as a ratified field's meaning changed without the user's word, and it was drafted UNRATIFIED in `docs/v0.5-outline.md` §7. The code flip reverts the revert; the three engine tests and two control-plane tests that pinned `0.0` are rewritten to pin the `-1.0` / `0.0` distinction, the retired pins kept visible (§2c). §10.1 had never stated a no-session value — the repair round's "§10.1 law: 0" was code-comment inference — so this row writes the sentence rather than amending one | 10.1 (new note) | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub`, `idle reports -1 and drained-live reports 0: the field alone distinguishes them` |
+| 4 | **The command → trigger effect table — drafted UNRATIFIED** (B4). §13.4 wants *transitive* cycle rejection at preflight and no section said which commands can cause which §13.2 triggers. §13.4.1 derives it from the tree by enumerating all 55 §16 commands; every row cites the §16 cell, handler and engine route it was read from. **A candidate, not law:** its mechanism is Prompt 11's WU5, and the user ratifies it separately, never inside that feature PR. It records two things for WU3/WU5 rather than deciding them: `item.stop` has no engine effect (a stopped timed item keeps its scheduled `end`; the `mediaEnd` reading keyed on `markDone` is what drops it), and a *deferred* edge — a take of a timed item causing `mediaEnd` one duration later — is an edge whose static verdict is WU5's | 13.4.1 (new, UNRATIFIED) | — (no guard until WU5 ships the check it serves; a candidate is guarded when its mechanism lands) |
 
 **Row 2's two control-plane choices, and the rule each followed.** The schema
 takes the field `.optional()` — the `recordTapPath` landing's *final* shape
@@ -80,6 +83,14 @@ Row 3's flip was falsified the same way at `00d8b46`, once per side:
 |---|---|---|
 | engine no-session value back to `0.0` | all three rewritten engine tests | `pre-start streamBufferMs is -1.0: no session, so no measurement exists` (`left: 0.0` / `right: -1.0`); `a refused start opened no session: -1.0 on the wire, …`; `stopped tick returns to the -1.0 sentinel with the key still present …` — `2 passed; 3 failed` |
 | control-plane stub back to `?? 0` | `ticks carry streamState and streamBufferMs in every phase, stubbed lawfully` | `no engine report: no measurement exists` — `0 !== -1` |
+
+Rows 1–3 are ratified as their own change, not inside a feature PR (§4's
+counter-precedent). **Row 4 is not ratified**: §13.4.1 carries its UNRATIFIED
+mark until the user ratifies it, after Prompt 11's WU5 gives it a guard. B1 (the
+engine level-crossing event) is also a candidate, but its mechanism is Prompt
+11's to build and it ships there, so it has no row here; C1, B3 and B5 are
+decisions for Prompt 11's executor, recorded in `docs/prompt-map-07-13.md`, and
+change no spec text.
 
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
@@ -2740,6 +2751,82 @@ The command is any command-bus command. Automation actions face the same precond
 ## 13.4 Cycle detection
 
 Preflight MUST statically reject rules whose action can re-trigger themselves directly or transitively. The runtime MUST also suppress a rule that fires itself.
+
+### 13.4.1 Command → trigger effects — **UNRATIFIED** (candidate, drafted in v0.4.6)
+
+*Not normative. Drafted 2026-09-25 from the user's decision B4 on Prompt 11
+(`agents/prompts/11-watchdog.md` §3). It is a **candidate**: its mechanism —
+preflight's transitive cycle check — is Prompt 11's WU5, and it is ratified by
+the user as its own change, never inside that feature PR (§4's
+counter-precedent). Until then it is a derivation, not law.*
+
+The rule above asks preflight to reject *transitive* re-triggers, which needs to
+know which commands can cause which §13.2 triggers. No section said. This table
+is derived from the tree by enumerating §16's 55 commands — the set
+`nbe-protocol`'s mirror test parses from §16's tables — and reading each one's
+§16 transition cell, its control-plane handler (`packages/control-plane/src/
+commands/`), and its engine directive route (`crates/nbe-engine/src/
+directive.rs`, `apply`'s match — a command absent from it is "directive ignored
+(no engine effect)").
+
+**Reading it.** A cell says whether executing the command can cause the trigger
+to fire. *Same dispatch* means within the command's own application; *deferred*
+means later, as its consequence. Where the tree is ambiguous the cell says
+*can*: for a static cycle check, over-approximation is the safe direction — a
+spurious edge rejects a rule that would not loop, a missing edge admits one that
+does. The trigger readings the cells assume:
+
+- **`stateChange`** — "yes" means the command performs a transition §16 names on
+  control-plane state. Separately, the tree broadcasts a `stateChange` push frame
+  for **every** accepted command, read-only ones included (`dispatch.ts`, step 7:
+  "exactly one bump per accepted command"; `server.ts`, "exactly one stateChange
+  per accepted command"). An evaluator matching rules on that frame rather than
+  on a named transition would make all 55 commands `stateChange` sources; "frame
+  only" marks the commands where that is the only effect.
+- **`mediaStart`** — B3's definition: control-plane-side, the take whose item
+  goes on air applied.
+- **`mediaEnd`** — "a timed item completes", read as the control plane's
+  `PLAYING → DONE` transition (`state.ts` `markDone`). That is the only point at
+  which completion is true in the tree: the engine's raw `itemEvent end` also
+  arrives for an item that was stopped, and `markDone` drops it.
+- **`timeOfDay`, `hotkey`** — no command causes them (the wall clock; operator
+  input). **`rssKeyword`** — no command causes it today (no RSS fetch exists; see
+  `ticker.refreshRss`).
+
+| Commands | `stateChange` | `mediaStart` | `mediaEnd` | Other triggers | Derived from |
+|---|---|---|---|---|---|
+| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel` — the take swaps the clip bus's source | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
+| `item.stop` | yes — `PLAYING → READY` | no | **no** — a stop is not a completion: the item leaves `PLAYING` for `READY`, never `DONE` | — | §16.4 cell; `state.ts` `stopItem`, `markDone` (accepts only `PLAYING`); `directive.rs` routing (`item.stop` is not routed) |
+| `show.start` | yes — show `LOADED → RUNNING`, clock `STOPPED → RUNNING` | no | no | `timer`, deferred — the show clock starts | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_start` |
+| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth` — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1) | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
+| `show.load`, `show.unload`, `show.preflight` | yes — `→ LOADED` / `→ UNLOADED` with item and scene states cleared; preflight state set | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
+| `preview.set`, `item.arm`, `item.unarm`, `item.reset` | yes — the §17 item transitions their cells name | no — nothing goes on air | no | — | §16.2, §16.4 cells; `commands/view.ts`, `commands/sequence.ts`; `state.ts` `armItem`, `unarmItem`, `resetItem` |
+| `scene.arm`, `scene.apply` | yes — scene `ARMED`, or applied to its target bus | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene`, `applyScene` (scene states only) |
+| `snapshot.recall` | yes — view state, item states, overlays and `automationHold` restored wholesale | **no under B3** — it is not a take; but it can set `viewItem` without one, so an evaluator that keys `mediaStart` on `viewItem` would put it in this column | no | — | §16.11 cell; `state.ts` `recallSnapshot`; `directive.rs` routing (not routed) |
+| `view.fallback` | yes — `fallbackActive` | no — the fallback slate is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_fallback` |
+| `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`; stop takes it to `closed` | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
+| `record.start`, `record.stop` | yes — `recordState` | no | no | — | §16.14 cells; `commands/output.ts` |
+| `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | yes — the playback, bus, duck and mute changes their cells name | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel` — each moves a bus's level, up or down | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
+| `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | yes — visibility and property changes | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
+| `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | yes — ticker source and queue | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
+| `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`) |
+| `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | yes — the guest source and configuration changes their cells name | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
+| `automation.enable`, `automation.disable`, `automation.hold` | yes — a rule enabled or disabled; `automationHold` | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
+| `snapshot.save`, `marker.add`, `plugin.reload` | **frame only** — a store is updated (snapshots, markers) or a plugin reloaded; nothing on air and no §17, show or output transition | no | no | — | §16.11, §16.12 cells; `commands/state.ts` |
+| `guest.getTurn`, `system.status`, `system.telemetry.subscribe`, `system.telemetry.unsubscribe` | **frame only** — "none", or per-connection | no | no | — | §16.9, §16.15 cells; `commands/guest.ts`, `commands/system.ts`; `dispatch.ts` `READ_ONLY` |
+
+55 commands, each in exactly one row. Two things the derivation turned up, both
+recorded rather than decided here:
+
+- **`item.stop` has no engine effect.** The engine does not route it, so a
+  stopped timed item keeps its scheduled `end`. The `mediaEnd` reading above —
+  keyed on `markDone`, which drops the late end — is what keeps a stopped item
+  from "completing". An evaluator that fired on the raw frame would be wrong.
+- **A deferred edge is still an edge.** By this table, a `mediaEnd` rule whose
+  action takes a timed item re-triggers itself one duration later — a looping
+  playlist. §13.3's once-per-frame limiter bounds it at runtime. Whether a
+  deferred edge counts for §13.4's *static* rejection is Prompt 11's to decide
+  (WU5); the table records edges and their timing, not the verdict.
 
 ## 13.5 Automation hold
 
