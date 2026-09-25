@@ -1260,7 +1260,24 @@ are in `docs/09-measurements.md`, Prompt 10 section.
 
 ## 11 — Watchdog
 
+*Upgraded 2026-09-25 — see "Prompt 11 upgraded for the tree" above; blocked on C1 and B1–B5.*
+
 The watchdog itself exists and is gated (pass 4 confirmed deadline accounting and fallback trip both fail correctly when deleted). What 11 must now add is **the automation engine runtime** (§13, AC-25), assigned by `[RI-5]`: triggers, the once-per-frame limit, runtime cycle suppression, and audit logging of every automation action. `automation.hold` exists from Prompt 02; the engine behind it does not. 11 also inherits **F3's fix** as context — the fix round adds a `fail_view` seam, so §10.3's engagement path finally has production coverage that 11's work must keep.
+
+### Prompt 11 upgraded for the tree — 2026-09-25
+
+`agents/prompts/11-watchdog.md` was written 2026-09-10 as a watchdog prompt: detect, shed, report, restore. By then the watchdog was built and gated, and this entry had already (2026-09-04) assigned the slot the **automation engine runtime**. The draft cited two prompt files that do not exist and forbade watchdog work on the render loop, which AC-7 (fallback within one frame) requires. The upgrade rewrites it around what the tree has (§0 of the prompt: watchdog on the loop, ladder rung 1 with hysteresis, the automation schema/types/commands/audit kind with no runtime, `autoFollow` normative since v0.1 and unimplemented) and names the decisions owed before an executor starts:
+
+| # | Decision | Recommendation in the prompt |
+|---|---|---|
+| **C1** | Scope: automation runtime + the watchdog remainder with a subject (§10.3 threshold question, ladder rung 2), or split 11a/11b | one prompt, two gated work units; rungs 3–4 and GPU timing out (no subject / Prompt 12) |
+| **B1** | `audioLevel` must fire within one frame; bus levels reach the control plane at 1 Hz | engine level-crossing event (wire candidate, UNRATIFIED) |
+| **B2** | `streamHealth` needs transport state, which is not on the wire | ratify `streamTransportState` (v0.5 §7) |
+| **B3** | `mediaStart` has no engine event | control-plane-side (the take applied) for v1 |
+| **B4** | §13.4 transitive cycle rejection needs a command → trigger effect table the spec lacks | draft the table as an UNRATIFIED candidate |
+| **B5** | AC-25 #2's "pending actions" — rules have no delay | fired-but-not-dispatched within the current frame |
+
+**Prompt 11 is BLOCKED on C1 and B1–B5.** They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
 
 ## 12 — Benchmark
 
