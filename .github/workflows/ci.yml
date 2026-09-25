@@ -369,7 +369,9 @@ jobs:
           fi
       - name: the stream url precedence suite actually ran (Prompt 10 WU3)
         # Pure logic over resolve_stream_url (no engine state, no encoder):
-        # all 10 run everywhere, floors equal, same reason as the G1 block.
+        # all 15 run everywhere, floors equal, same reason as the G1 block.
+        # Were 10/10 until PR #33's fix round added the complete-target
+        # guards (the keyless false-live), which must not vanish silently.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test stream_url_precedence -- --nocapture 2>&1)
@@ -380,12 +382,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "stream_url_precedence: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=10)"
-          if [ "$ran" -lt 10 ]; then
-            echo "FAIL stream_url_precedence: expected at least 10 tests to run, got $ran"; exit 1
+          echo "stream_url_precedence: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=15 exercised>=15)"
+          if [ "$ran" -lt 15 ]; then
+            echo "FAIL stream_url_precedence: expected at least 15 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 10 ]; then
-            echo "FAIL stream_url_precedence: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 15 ]; then
+            echo "FAIL stream_url_precedence: expected at least 15 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the stream commands suite actually ran (Prompt 10 WU4)
         # Twenty-one tests. Thirteen open a stream and gate on the hardware
