@@ -6,8 +6,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { AuditLog } from "./audit.js";
@@ -15,6 +14,7 @@ import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import { ControlPlaneState } from "./state.js";
 import { MockRenderBridge } from "./render-bridge.js";
 import { CpError } from "./protocol.js";
+import { tempDir } from "./test-tmp.js";
 
 const noPersist = { onDirty: () => {}, flushNow: () => {} };
 
@@ -51,7 +51,7 @@ async function d(deps: DispatchDeps, command: string, payload: Record<string, un
 }
 
 function makePackage(): string {
-  const dir = mkdtempSync(join(tmpdir(), "nbe-test-"));
+  const dir = tempDir("nbe-test-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "media", "fallback.png"), "png");
   writeFileSync(join(dir, "media", "A1.png"), "png");
@@ -291,7 +291,7 @@ test("mock bridge records directives in order with directive stateVersion", asyn
 });
 
 test("audit log records both accepted and rejected commands", async (t) => {
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-audit-"));
+  const tmp = tempDir("nbe-audit-");
   const auditPath = join(tmp, "audit.jsonl");
   const { deps } = makeDeps();
   const audit = new AuditLog(auditPath);

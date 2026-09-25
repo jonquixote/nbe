@@ -4,14 +4,14 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
 import { AuditLog } from "./audit.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
+import { tempDir } from "./test-tmp.js";
 
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
@@ -19,7 +19,7 @@ let pkgPath: string;
 const TOKEN = "op-token-1";
 
 function makePackage(): string {
-  const dir = mkdtempSync(join(tmpdir(), "nbe-srv-"));
+  const dir = tempDir("nbe-srv-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "media", "fallback.png"), "png");
   writeFileSync(join(dir, "media", "A1.png"), "png");
@@ -75,7 +75,7 @@ function send(ws: WebSocket, envelope: unknown): Promise<Record<string, unknown>
 beforeEach(async () => {
   pkgPath = makePackage();
   state = new ControlPlaneState();
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-audit-"));
+  const tmp = tempDir("nbe-audit-");
   await (async () => {
     if (server) await server.close();
   })();
