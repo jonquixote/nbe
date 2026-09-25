@@ -135,7 +135,13 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
     state.streamState = "live";
     const world = newWorldTelemetry();
     const then = Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000;
-    ingestEngineFrame(world, EngineTelemetryFrameSchema.parse(engineFrame(210)), then);
+    // The stale report CARRIES a transport state ("live"), so the assert below
+    // discriminates: forwarding stale data would read "live", not the stub.
+    ingestEngineFrame(
+      world,
+      EngineTelemetryFrameSchema.parse({ ...engineFrame(210), streamTransportState: "live" }),
+      then,
+    );
     const tick = buildTick(state, world, Date.now());
     assert.ok("streamState" in tick && "streamBufferMs" in tick, "stale ticks stay complete");
     assert.equal(tick.streamState, "live", "engine loss must not rewrite the commanded state");
@@ -146,6 +152,14 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
         '(~~"stubs the buffer to 0"~~, retired v0.4.6)',
     );
     assert.equal(tick.engineConnected, false);
+    // §10.1 (v0.4.6): with no fresh report the control plane does not know
+    // what the socket is doing — "none", never "closed" (and never the stale
+    // "live"); engineConnected: false above says why.
+    assert.equal(
+      tick.streamTransportState,
+      "none",
+      "a stale report stubs the transport state to none",
+    );
   }
 });
 
