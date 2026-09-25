@@ -1310,12 +1310,22 @@ read RATIFIED.
 **Found while landing it, recorded rather than fixed** (the order allowed no
 other behaviour):
 
-- **A keyless `rtmp://` endpoint publishes nothing and says live.**
+- ~~**A keyless `rtmp://` endpoint publishes nothing and says live.**
   `resolve_stream_url` checks only the scheme, so `rtmp://host/app` passes. Then
   `parse_rtmp_url` refuses it, the session opens with no publisher, `streamState`
   goes live, and nothing is published. `StreamSession::stream_buffer_ms` reads
   `0.0` for it, not the sentinel. The new field is how it surfaced: the tick reads
-  `streamTransportState: "closed"` beside a live stream.
+  `streamTransportState: "closed"` beside a live stream.~~ **FIXED in PR #33's
+  fix round (`40e96e6`, §2c).** The two-key pass judged a ledger line
+  insufficient: an operator sees a stream that says live and reaches no one. Now
+  `resolve_stream_url` runs the publisher's own `parse_rtmp_url`, so a keyless
+  or malformed endpoint is refused `E_BAD_PAYLOAD` at resolve time, before any
+  probe or session, naming the parser's reason. The guards are in
+  `stream_url_precedence`. The fix also exposed the tests' reliance on the
+  defect. Keyless URL literals that the tests treated as valid (15 in
+  `stream_url_precedence`, 23 in `prompt10_stream_cmds`, 1 in
+  `prompt10_telemetry`) resolved only through it. They gained a `/key`, so the
+  hardware-gated stream tests now open real publishers.
 - **`item.stop` has no engine effect.** The engine does not route it, so a
   stopped timed item keeps its scheduled `end`, which the control plane's
   `markDone` drops. §13.4.1 records it for WU3/WU5.
@@ -1326,6 +1336,28 @@ other behaviour):
   than amending one.
 - **`stream_tap_selection`'s doc comment said "not cleared at stop",** and every
   stop path clears it. It is corrected in row 2, with the old text struck.
+
+**A load flake, recorded by class (PR #33's two-key pass).**
+`record::stream::tests::close_error_seam_fails_loudly_with_the_network_token`
+failed once, at load 27.3, on its teardown-wait bound. Its second
+`stop_and_close` must see the stream thread exit within
+`STREAM_THREAD_STOP_TIMEOUT` (500 ms). The thread drops its VideoToolbox encoder
+on the way out (the constant's own doc says this is short but not instant), and
+at load 27.3 that plausibly took longer. That cause is an inference, not a
+measurement. The same test passed in this PR's workspace battery at `7346879`,
+which started at load 3.85. The class is R9's: a wall-clock bound that measures
+the machine, not the code. By doctrine a run above the quiescence ceiling is VOID for anything
+timing-shaped, so this is not a finding against the teardown. **No test changes:
+the bound is not weakened to look green.** The 500 ms, plus the transport's
+800 ms, is what keeps a stream stop inside §16.1's 2 s window beside record's
+parallel 1.5 s (`STREAM_THREAD_STOP_TIMEOUT`'s own doc). It matters on CI only if
+a loaded runner approaches it. Today's runner has no H.264 encoder, so its
+stream threads run without one and have no VideoToolbox session to invalidate on
+the way out. One consequence of the keyless fix widens the class:
+the hardware-gated `prompt10_stream_cmds` and `prompt10_telemetry` tests now
+open real publishers and stream threads, so their stops are bounded by the same
+500 ms. A loaded local run can flake them the same way, and the same doctrine
+applies.
 
 ## 12 — Benchmark
 
