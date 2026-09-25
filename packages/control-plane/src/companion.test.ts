@@ -5,8 +5,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
@@ -27,6 +26,7 @@ import type { ControlBinding } from "./generated/manifest-schema.js";
 import { MockRenderBridge } from "./render-bridge.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
+import { tempDir } from "./test-tmp.js";
 
 const TOKEN = "op-token-1";
 const noPersist = { onDirty: () => {}, flushNow: () => {} };
@@ -38,7 +38,7 @@ function makeDeps(): { deps: DispatchDeps; state: ControlPlaneState } {
 }
 
 function makePackage(): string {
-  const dir = mkdtempSync(join(tmpdir(), "nbe-p08-"));
+  const dir = tempDir("nbe-p08-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "media", "fallback.png"), "png");
   writeFileSync(join(dir, "media", "A1.png"), "png");
@@ -117,7 +117,7 @@ let auditRecords: AuditRecord[];
 
 beforeEach(async () => {
   state = new ControlPlaneState();
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-p08-audit-"));
+  const tmp = tempDir("nbe-p08-audit-");
   const audit = new AuditLog(join(tmp, "audit.jsonl"));
   auditRecords = [];
   const orig = audit.record.bind(audit);

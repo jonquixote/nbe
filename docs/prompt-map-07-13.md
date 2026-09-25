@@ -1221,6 +1221,8 @@ are in `docs/09-measurements.md`, Prompt 10 section.
    opened a real VideoToolbox session on every call (36–38 ms); a positive
    answer is now cached and warmed at boot. 37.2 ms → 4.3 ms per start.
 
+**First soak with the stream rows: PASS** (2026-09-25, `main` `57dd4b9`, normative machine, load 2.68): 3/3 clean iterations, zero skips; every required stream capture present — `RECONNECT`, `SURVIVAL`, `G1 guard`, `LIVE LOOP`, `BOTH LIVE`, `VT retain guard` (12/12 held, 0 handed out) — and the rehearsal's `STREAM` line each iteration (148–149 video, 233–234 audio messages, 0 drops, 0 underruns); MediaMTX interop `proved`. Artifacts: `target/soak/20260925T061156Z/`.
+
 **Still owed, named rather than hidden.**
 
 - **nginx-rtmp is untested.** The chunk-size and ping fixes stand on RTMP
@@ -1281,7 +1283,7 @@ The watchdog itself exists and is gated (pass 4 confirmed deadline accounting an
 
 ## 12 — Benchmark
 
-**Reframed by H1.** The reference machine is Intel with discrete AMD graphics; the spec declares Apple Silicon the primary target. Every performance number to date — quality-profile capping, the 8 ms render budget, the degradation ladder's thresholds — is unvalidated on the declared target. 12 must state which architecture each measurement was taken on, and AC-5's 30-minute zero-drop soak must not be reported as met on an architecture the spec does not target. S1 is 12's problem too: `renderGpuTimeMs` is always 0, and it is the ladder's input, so the ladder is currently deciding on a constant. A benchmark prompt that inherits a stubbed GPU timer measures nothing.
+**Reframed by H1.** The reference machine is Intel with discrete AMD graphics; ~~the spec declares Apple Silicon the primary target~~ — that was v0.3; SPEC v0.4 §0.1 assumption 2 names the Intel reference machine and says Apple Silicon "is welcome and supported, but MUST NOT be assumed" (corrected 2026-09-25, §2c). Every performance number to date — quality-profile capping, the 8 ms render budget, the degradation ladder's thresholds — is unvalidated on the declared target. 12 must state which architecture each measurement was taken on, and AC-5's 30-minute zero-drop soak must not be reported as met on an architecture the spec does not target. S1 is 12's problem too: `renderGpuTimeMs` is always 0, and it is the ladder's input, so the ladder is currently deciding on a constant. A benchmark prompt that inherits a stubbed GPU timer measures nothing.
 
 ## 13 — Operator shell
 

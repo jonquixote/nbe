@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 
 import { ControlPlaneState, type PackageInfo } from "./state.js";
 import { buildTick, newWorldTelemetry } from "./telemetry.js";
+import { tempDir } from "./test-tmp.js";
 
 function pkg(houseRate = 30): PackageInfo {
   return {
@@ -84,12 +85,11 @@ test("§7.15: show.load rejects a house-rate mismatch, and the check is reachabl
   // This drives the dispatcher the way the server does, with the rate set.
   const { buildRegistry, dispatch } = await import("./dispatch.js");
   const { AuditLog } = await import("./audit.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { randomUUID } = await import("node:crypto");
 
-  const dir = mkdtempSync(join(tmpdir(), "nbe-hr-"));
+  const dir = tempDir("nbe-hr-");
   mkdirSync(join(dir, "media"), { recursive: true });
   // A real 1x1 PNG: preflight reads image headers now, and the point of this
   // test is the house-rate check, not an unreadable asset.
@@ -123,7 +123,7 @@ test("§7.15: show.load rejects a house-rate mismatch, and the check is reachabl
   );
 
   const state = new ControlPlaneState();
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-hr-audit-"));
+  const tmp = tempDir("nbe-hr-audit-");
   const deps = {
     state,
     bridge: { send: () => {}, droppedCount: () => 0, pending: () => 0 },
@@ -193,12 +193,11 @@ test("§7.15: the rejection is reachable through the SERVER, not only the dispat
   const WebSocket = (await import("ws")).default;
   const { createControlPlaneServer } = await import("./server.js");
   const { AuditLog } = await import("./audit.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { randomUUID } = await import("node:crypto");
 
-  const dir = mkdtempSync(join(tmpdir(), "nbe-hr-srv-"));
+  const dir = tempDir("nbe-hr-srv-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(
     join(dir, "media", "slate.png"),
@@ -228,7 +227,7 @@ test("§7.15: the rejection is reachable through the SERVER, not only the dispat
   );
 
   const state = new ControlPlaneState();
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-hr-srv-audit-"));
+  const tmp = tempDir("nbe-hr-srv-audit-");
   const server = await createControlPlaneServer({
     port: 0,
     auth: { tokens: { "hr-token": "admin" } },
@@ -277,15 +276,14 @@ test("the recovery record carries the LOADED package's manifest version, not a c
   // an operator and a crash recovery both read to answer "what is actually
   // loaded", and a constant there is a lie with an audience.
   const { StatePersistence } = await import("./persistence.js");
-  const { mkdtempSync, readFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
 
   const state = new ControlPlaneState();
   state.loadPackage({ ...pkg(), manifestVersion: "0.4" });
   assert.equal(state.manifestIdentity()?.manifestVersion, "0.4");
 
-  const file = join(mkdtempSync(join(tmpdir(), "nbe-ident-")), "state.json");
+  const file = join(tempDir("nbe-ident-"), "state.json");
   const persistence = new StatePersistence(state, file);
   persistence.onDirty();
   persistence.flushNow();
@@ -313,21 +311,20 @@ test("a wedged preflight fails show.load by name instead of never answering", as
   const WebSocket = (await import("ws")).default;
   const { createControlPlaneServer } = await import("./server.js");
   const { AuditLog } = await import("./audit.js");
-  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { randomUUID } = await import("node:crypto");
 
   // A binary that exists, starts, and never answers.
-  const bin = join(mkdtempSync(join(tmpdir(), "nbe-wedge-")), "wedged-preflight");
+  const bin = join(tempDir("nbe-wedge-"), "wedged-preflight");
   writeFileSync(bin, "#!/bin/sh\nsleep 100000\n", { mode: 0o755 });
 
-  const dir = mkdtempSync(join(tmpdir(), "nbe-wedge-pkg-"));
+  const dir = tempDir("nbe-wedge-pkg-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "manifest.json"), "{}");
 
   const state = new ControlPlaneState();
-  const auditPath = join(mkdtempSync(join(tmpdir(), "nbe-wedge-audit-")), "audit.jsonl");
+  const auditPath = join(tempDir("nbe-wedge-audit-"), "audit.jsonl");
   const prevBin = process.env.NBE_PREFLIGHT_BIN;
   const prevTimeout = process.env.NBE_PREFLIGHT_TIMEOUT_MS;
   process.env.NBE_PREFLIGHT_BIN = bin;
@@ -418,12 +415,11 @@ test("the preflight bound is derived from the package and the binary that will r
   // exactly slow. A bound that does not scale with the package cannot be right
   // for both a slate and a bulletin.
   const { preflightBound, expectedDecodeFrames, PREFLIGHT_FLOOR_MS } = await import("./package.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
 
   const pkg = (frames: number | null): string => {
-    const dir = mkdtempSync(join(tmpdir(), "nbe-bound-"));
+    const dir = tempDir("nbe-bound-");
     mkdirSync(join(dir, "media"), { recursive: true });
     writeFileSync(
       join(dir, "manifest.json"),
@@ -511,11 +507,10 @@ test("preflightBin prefers the release build, because it is 8x cheaper", async (
   // minute and in ten, and the root of the rehearsal's 46 s `show.load`
   // complaint. Resolution order is behaviour, not tidiness.
   const { preflightBin } = await import("./package.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
 
-  const root = mkdtempSync(join(tmpdir(), "nbe-bin-"));
+  const root = tempDir("nbe-bin-");
   for (const profile of ["debug", "release"]) {
     mkdirSync(join(root, "target", profile), { recursive: true });
     writeFileSync(join(root, "target", profile, "nbe-preflight"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -548,14 +543,13 @@ test("the bound covers a package that declares no durations at all", async () =>
   //
   // Bytes are the input that cannot be absent.
   const { preflightBound, expectedDecodeBytes, expectedDecodeFrames } = await import("./package.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
 
   // 1200 frames of 1080p, the pass's fixture shape: 8 clips of ~100 KB each.
   const CLIP_BYTES = 100_290;
   const pkg = (declare: boolean): string => {
-    const dir = mkdtempSync(join(tmpdir(), "nbe-nodur-"));
+    const dir = tempDir("nbe-nodur-");
     mkdirSync(join(dir, "media"), { recursive: true });
     const assets: Record<string, unknown>[] = [];
     for (let i = 0; i < 8; i++) {
@@ -610,7 +604,7 @@ test("the bound covers a package that declares no durations at all", async () =>
     // the wrong reason, which is the hardest kind of green to notice. Here one
     // asset declares 100 and seven declare nothing, so the frames term is
     // 100 x 200 x 3 = 60 s, i.e. the floor, and the floor would kill it.
-    const liar = mkdtempSync(join(tmpdir(), "nbe-liar-"));
+    const liar = tempDir("nbe-liar-");
     mkdirSync(join(liar, "media"), { recursive: true });
     const liarAssets: Record<string, unknown>[] = [];
     for (let i = 0; i < 8; i++) {
@@ -639,7 +633,7 @@ test("the bound covers a package that declares no durations at all", async () =>
     );
 
     // Nothing to measure at all still gets the floor, not zero.
-    const empty = mkdtempSync(join(tmpdir(), "nbe-empty-"));
+    const empty = tempDir("nbe-empty-");
     writeFileSync(join(empty, "manifest.json"), JSON.stringify({ assets: [] }));
     assert.equal(preflightBound(empty).basis, "floor");
     assert.equal(preflightBound(empty).ms, 60_000);
@@ -668,13 +662,12 @@ test("the bound has a ceiling, because one load may not mute the connection", as
   // after `show.load` got no reply in thirty. That is worse than the flat 600 s
   // this derivation replaced, which capped the stall at ten minutes.
   const { preflightBound, PREFLIGHT_CEILING_MS, PREFLIGHT_FLOOR_MS } = await import("./package.js");
-  const { mkdtempSync, mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
+  const { mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
     await import("node:fs");
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
 
   const bigPkg = (megabytes: number): string => {
-    const dir = mkdtempSync(join(tmpdir(), "nbe-ceil-"));
+    const dir = tempDir("nbe-ceil-");
     mkdirSync(join(dir, "media"), { recursive: true });
     const f = join(dir, "media", "big.mp4");
     closeSync(openSync(f, "w"));
@@ -736,11 +729,10 @@ test("the bound has a ceiling, because one load may not mute the connection", as
 
 /** A package big enough that its derived bound exceeds the ceiling. */
 async function overCeilingPackage(): Promise<string> {
-  const { mkdtempSync, mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
+  const { mkdirSync, writeFileSync, truncateSync, openSync, closeSync } =
     await import("node:fs");
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const dir = mkdtempSync(join(tmpdir(), "nbe-dec-"));
+  const dir = tempDir("nbe-dec-");
   mkdirSync(join(dir, "media"), { recursive: true });
   const f = join(dir, "media", "big.mp4");
   closeSync(openSync(f, "w"));
@@ -754,10 +746,9 @@ async function overCeilingPackage(): Promise<string> {
 
 /** A preflight stand-in that never answers. */
 async function wedgedBinary(): Promise<string> {
-  const { mkdtempSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const bin = join(mkdtempSync(join(tmpdir(), "nbe-wedge-")), "wedged");
+  const bin = join(tempDir("nbe-wedge-"), "wedged");
   writeFileSync(bin, "#!/bin/sh\nexec sleep 100000\n", { mode: 0o755 });
   return bin;
 }
@@ -854,10 +845,9 @@ test("override_records_decision", async () => {
     // The flag turns on `derivedMs > ceilingMs`, not on the override's own
     // value: a package whose derivation stays under the ceiling reads false
     // even with an override set, because there was no ceiling to override.
-    const { mkdtempSync, writeFileSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
+    const { writeFileSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const small = mkdtempSync(join(tmpdir(), "nbe-small-"));
+    const small = tempDir("nbe-small-");
     writeFileSync(join(small, "manifest.json"), JSON.stringify({ assets: [] }));
     process.env.NBE_PREFLIGHT_TIMEOUT_MS = "5000";
     const smallDecision = boundDecision(small, preflightBound(small), "ran");
@@ -876,11 +866,10 @@ test("normal_records_decision", async () => {
   // The always-present contract: a conformant package records a decision too.
   // A log that only holds refusals cannot answer "how often does this happen".
   const { loadPackage } = await import("./package.js");
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
 
-  const dir = mkdtempSync(join(tmpdir(), "nbe-norm-"));
+  const dir = tempDir("nbe-norm-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(
     join(dir, "media", "slate.png"),

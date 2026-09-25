@@ -10,8 +10,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 
@@ -22,6 +21,7 @@ import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import { MockRenderBridge } from "./render-bridge.js";
 import { CpError, RESYNC_COMMAND } from "./protocol.js";
 import { preflightBin } from "./package.js";
+import { tempDir } from "./test-tmp.js";
 
 const ADMIN = "admin-token";
 const RENDER = "render-token";
@@ -42,7 +42,7 @@ let pkgPath: string;
 let warnings: string[];
 
 function makePackage(): string {
-  const dir = mkdtempSync(join(tmpdir(), "nbe-02c-"));
+  const dir = tempDir("nbe-02c-");
   mkdirSync(join(dir, "media"), { recursive: true });
   writeFileSync(join(dir, "media", "fallback.png"), "png");
   writeFileSync(join(dir, "media", "A1.png"), "png");
@@ -155,7 +155,7 @@ beforeEach(async () => {
   pkgPath = makePackage();
   state = new ControlPlaneState();
   warnings = [];
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-audit-"));
+  const tmp = tempDir("nbe-audit-");
   server = await createControlPlaneServer({
     port: 0,
     auth: {
