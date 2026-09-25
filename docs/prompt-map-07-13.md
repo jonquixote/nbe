@@ -1216,7 +1216,11 @@ are in `docs/09-measurements.md`, Prompt 10 section.
    guard runs on real surfaces instead of `SharedPool<()>`.
 8. **`streamBufferMs` is `0` with no session again** (law); PR #30's `-1`
    sentinel is an UNRATIFIED candidate in `docs/v0.5-outline.md` §7, beside a
-   drafted `streamTransportState`.
+   drafted `streamTransportState`. *(Superseded 2026-09-25, §2c: SPEC v0.4.6
+   ratified both. The sentinel is `-1` again, now as law, and
+   `streamTransportState` is on the wire — see "SPEC v0.4.6" under § 11. The
+   "(law)" above was also an inference: §10.1 stated no no-session value until
+   v0.4.6.)*
 9. **`stream.start` no longer stalls the directive path**: the encoder probe
    opened a real VideoToolbox session on every call (36–38 ms); a positive
    answer is now cached and warmed at boot. 37.2 ms → 4.3 ms per start.
@@ -1245,7 +1249,7 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   and evicts whole stereo frames, so every drain starts on a left sample and
   holds whole frames; the guard `drains_racing_eviction_stay_stereo_aligned`
   reads 0 odd of 8,833 drains (104 of 598 with the old eviction).
-- **Transport state is not on the wire** — see the v0.5 §7 candidate.
+- ~~**Transport state is not on the wire** — see the v0.5 §7 candidate.~~ **Landed 2026-09-25**: SPEC v0.4.6 row 2, `streamTransportState` (§2c).
 - **The extended-timestamp fix has no real-ingest witness past 0xFFFFFF.**
   It is guarded against the conforming double
   (`extended_timestamp_repeats_on_every_type3_chunk`, base `0x0100_0000`);
@@ -1262,7 +1266,7 @@ are in `docs/09-measurements.md`, Prompt 10 section.
 
 ## 11 — Watchdog
 
-*Upgraded 2026-09-25 UTC — see "Prompt 11 upgraded for the tree" below; blocked on C1 and B1–B5.*
+*Upgraded 2026-09-25 UTC — see "Prompt 11 upgraded for the tree" below; ~~blocked on C1 and B1–B5~~ all six decided 2026-09-25 — see "SPEC v0.4.6" below.*
 
 The watchdog itself exists and is gated (pass 4 confirmed deadline accounting and fallback trip both fail correctly when deleted). What 11 must now add is **the automation engine runtime** (§13, AC-25), assigned by `[RI-5]`: triggers, the once-per-frame limit, runtime cycle suppression, and audit logging of every automation action. `automation.hold` exists from Prompt 02; the engine behind it does not. 11 also inherits **F3's fix** as context — the fix round adds a `fail_view` seam, so §10.3's engagement path finally has production coverage that 11's work must keep.
 
@@ -1279,7 +1283,49 @@ The watchdog itself exists and is gated (pass 4 confirmed deadline accounting an
 | **B4** | §13.4 transitive cycle rejection needs a command → trigger effect table the spec lacks | draft the table as an UNRATIFIED candidate |
 | **B5** | AC-25 #2's "pending actions" — rules have no delay | fired-but-not-dispatched within the current frame |
 
-**Prompt 11 is BLOCKED on C1 and B1–B5.** They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
+~~**Prompt 11 is BLOCKED on C1 and B1–B5.**~~ *Unblocked 2026-09-25 — the user spoke all six; see the next entry.* They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
+
+### SPEC v0.4.6 — Prompt 11's six decisions, spoken 2026-09-25
+
+The user spoke Prompt 11's six decisions on **2026-09-25** (UTC and local −0700
+agree on the date). SPEC-REV-2 landed them the v0.4.5 way — the words predate
+the text, so there was no drafting phase, and each ratified row landed with its
+mechanism and had its guard run at its landing commit. Branch `spec-rev-v046`.
+
+| # | The user's word | Where it landed |
+|---|---|---|
+| **C1** | One prompt, two gated work units | **Recorded for the executor** — `agents/prompts/11-watchdog.md` §1 and §3 |
+| **B1** | The engine level-crossing event; its mechanism is Prompt 11's to build and it ships there as a candidate | **Candidate, home: Prompt 11's feature PR** — marked UNRATIFIED with its guards there, ratified by the user separately. No v0.4.6 row |
+| **B2** | Ratify `streamTransportState` | **Landed, v0.4.6 row 2** — §10.1 field, note and §10.1.1 ownership; engine, protocol, control-plane schema and `buildTick`; token, completeness, readability and redial-on-the-wire guards; the mirror fixture samples `"reconnecting"`; the soak captures distinct values. Landing `f15b617`, record `9d1dfed` |
+| **B3** | Control-plane-side `mediaStart` | **Recorded for the executor** — the take applied. §13.4.1's `mediaStart` column uses it |
+| **B4** | The command → trigger effect table, as a candidate | **Candidate, drafted UNRATIFIED in SPEC §13.4.1** (v0.4.6 row 4, `69a2b54`): all 55 §16 commands with citations. Its mechanism — WU5's transitive check — ships with Prompt 11's feature PR, and the table is ratified separately |
+| **B5** | "Pending" = fired-but-not-dispatched within the frame | **Recorded for the executor** — pinned by a test in WU2 |
+
+The same order settled two Prompt 10 candidates from `docs/v0.5-outline.md` §7:
+**row 1**, `stream.start`'s refusal order as §16.14 law (`724e35f`, record
+`0a39c29`), and **row 3**, the `streamBufferMs` NO-SESSION sentinel, `-1` on the
+engine and the control plane (`00d8b46`, record `9a5c3a2`). All three §7 rows now
+read RATIFIED.
+
+**Found while landing it, recorded rather than fixed** (the order allowed no
+other behaviour):
+
+- **A keyless `rtmp://` endpoint publishes nothing and says live.**
+  `resolve_stream_url` checks only the scheme, so `rtmp://host/app` passes. Then
+  `parse_rtmp_url` refuses it, the session opens with no publisher, `streamState`
+  goes live, and nothing is published. `StreamSession::stream_buffer_ms` reads
+  `0.0` for it, not the sentinel. The new field is how it surfaced: the tick reads
+  `streamTransportState: "closed"` beside a live stream.
+- **`item.stop` has no engine effect.** The engine does not route it, so a
+  stopped timed item keeps its scheduled `end`, which the control plane's
+  `markDone` drops. §13.4.1 records it for WU3/WU5.
+- **The control plane's `StreamState` type admits `"reconnecting"`,** and nothing
+  sets it. `stream state tokens are stable` pins the token; only tests assign it.
+- **§10.1 never stated `streamBufferMs`'s no-session value.** The repair round's
+  "§10.1 law: 0" was code-comment inference, so v0.4.6 wrote the sentence rather
+  than amending one.
+- **`stream_tap_selection`'s doc comment said "not cleared at stop",** and every
+  stop path clears it. It is corrected in row 2, with the old text struck.
 
 ## 12 — Benchmark
 
