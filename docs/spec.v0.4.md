@@ -57,6 +57,8 @@ flipped:
 | 2 | 10.1, 9.5 | `transport_death_leaves_the_loop_untouched` (the redial on the wire; ran, no SKIP) | `f15b617` | ok. 1 passed; 0 failed |
 | 2 | 10.1 | `rust_and_typescript_agree_on_the_engine_telemetry_fields` (fixture samples `"reconnecting"`) | `f15b617` | ok. 1 passed; 0 failed |
 | 2 | 10.1 | `an engineTelemetry tick carrying streamTransportState parses and the field is readable` | `f15b617` | ok 1; # pass 1; # fail 0 |
+| 3 | 10.1 | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub` (the live one hardware-gated; ran, no SKIP) | `00d8b46` | ok. 5 passed; 0 failed (whole suite) |
+| 3 | 10.1 | `ticks carry streamState and streamBufferMs in every phase, stubbed lawfully`, `idle reports -1 and drained-live reports 0: the field alone distinguishes them` | `00d8b46` | # tests 4; # pass 4; # fail 0 (whole file) |
 
 Row 2's guards were falsified at the same commit, each mutation restored before
 the next:
@@ -71,6 +73,13 @@ Renaming the Rust *identifier* (`Reconnecting` → `Redialing`) cannot change th
 wire: the tokens come from an explicit map, so the rename is 5 × `error[E0599]`
 and nothing compiles. The token test guards the spelling, which is the only
 thing a variant rename could have changed under a `Debug`-rendered token.
+
+Row 3's flip was falsified the same way at `00d8b46`, once per side:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| engine no-session value back to `0.0` | all three rewritten engine tests | `pre-start streamBufferMs is -1.0: no session, so no measurement exists` (`left: 0.0` / `right: -1.0`); `a refused start opened no session: -1.0 on the wire, …`; `stopped tick returns to the -1.0 sentinel with the key still present …` — `2 passed; 3 failed` |
+| control-plane stub back to `?? 0` | `ticks carry streamState and streamBufferMs in every phase, stubbed lawfully` | `no engine report: no measurement exists` — `0 !== -1` |
 
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
