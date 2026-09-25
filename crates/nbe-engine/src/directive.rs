@@ -1590,10 +1590,23 @@ fn stream_tap_override(
 /// `url` counts as SILENT, never as an endpoint — an empty string must not
 /// become a valid publish target. Returned urls are trimmed.
 ///
-/// Scheme rule: the winner must be an `rtmp://` publish target
+/// Publish-target rule: the winner must parse as a COMPLETE RTMP publish target
+/// — `rtmp://host[:port]/app/key`, scheme case-insensitive — by the same
+/// [`crate::record::rtmp::parse_rtmp_url`] the publisher dials with (§9.4:
+/// "the RTMP publish target, complete"). Anything else — a foreign scheme, no
+/// app/key path, no host, a bad port, a missing stream key — is refused
+/// `E_BAD_PAYLOAD`-shaped HERE, before any probe and before any session, with
+/// the parser's reason in the message. A non-string `url` never reaches this
+/// resolver: `on_stream_start` refuses it first.
+///
+/// ~~Scheme rule: the winner must be an `rtmp://` publish target
 /// (case-insensitive match) — anything else is refused `E_BAD_PAYLOAD`-shaped
-/// here, so garbage never goes Live with `publisher=None`. A non-string `url`
-/// never reaches this resolver: `on_stream_start` refuses it first.
+/// here, so garbage never goes Live with `publisher=None`.~~ Superseded in PR
+/// #33's fix round (§2c). The scheme check let `rtmp://host/app` through: the
+/// publisher's own parse then refused it at spawn, the session opened with NO
+/// publisher, and `streamState` went live on a stream that published nothing.
+/// v0.4.6's `streamTransportState` surfaced it (`"closed"` beside a live
+/// stream). One parser now decides at both sites, so they cannot disagree.
 ///
 /// The refusal is `E_BAD_PAYLOAD`-shaped: the engine has no dedicated
 /// `BadPayload` variant, so — like `marker.add`'s missing name and
@@ -1625,9 +1638,16 @@ pub fn resolve_stream_url(
                 .into(),
         ));
     };
-    if !winner.to_ascii_lowercase().starts_with("rtmp://") {
+    // The full parse, not a scheme check: the publisher dials with this same
+    // parser, so an endpoint that resolves here is one it can spawn on.
+    if let Err(e) = crate::record::rtmp::parse_rtmp_url(&winner) {
+        let reason = match e {
+            crate::record::rtmp::RtmpError::Parse(m) => m,
+            other => other.to_string(),
+        };
         return Err(DirectiveError::Invalid(format!(
-            "E_BAD_PAYLOAD: stream.start url is not an rtmp:// publish target: {winner}"
+            "E_BAD_PAYLOAD: stream.start url is not a complete rtmp://host[:port]/app/key \
+             publish target ({reason})"
         )));
     }
     Ok(winner)

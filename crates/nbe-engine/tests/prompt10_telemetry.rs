@@ -258,7 +258,10 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"));
+    // Keyed since PR #33's fix round: resolution now refuses a keyless URL
+    // (~~`rtmp://manifest.example/live`~~, which opened a publisher-less
+    // session — the false-live, §2c).
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"));
     load_and_start(&handler, &pkg_path).await;
 
     handler
@@ -375,13 +378,20 @@ async fn live_tick_carries_the_transport_state_and_stop_reads_closed() {
         return;
     }
     // `manifest.example` does not resolve, so the publisher never completes a
-    // dial: the one transport state this leg can pin without an ingest. The
-    // KEY matters: `rtmp://manifest.example/live` (the other live test's URL)
-    // is keyless, `parse_rtmp_url` refuses it, and the session opens with no
-    // publisher at all — `streamState` live, nothing published, and this field
-    // reading `"closed"`. That is a pre-existing defect (`resolve_stream_url`
-    // checks only the scheme), recorded in the prompt map's v0.4.6 entry, and
-    // exactly the kind of thing the field exists to expose.
+    // dial: the one transport state this leg can pin without an ingest.
+    //
+    // ~~The KEY matters: `rtmp://manifest.example/live` (the other live test's
+    // URL) is keyless, `parse_rtmp_url` refuses it, and the session opens with
+    // no publisher at all — `streamState` live, nothing published, and this
+    // field reading `"closed"`. That is a pre-existing defect
+    // (`resolve_stream_url` checks only the scheme), recorded in the prompt
+    // map's v0.4.6 entry, and exactly the kind of thing the field exists to
+    // expose.~~ FIXED in PR #33's fix round (§2c): `resolve_stream_url` now
+    // runs the publisher's own parse, so a keyless URL is refused
+    // `E_BAD_PAYLOAD` before any session exists
+    // (`stream_url_precedence::a_keyless_rtmp_url_refuses_bad_payload_and_names_the_key`).
+    // This field is how the defect was found: it read `"closed"` beside a
+    // live stream.
     let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"));
     load_and_start(&handler, &pkg_path).await;
     handler
