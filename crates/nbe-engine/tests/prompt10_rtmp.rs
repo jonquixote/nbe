@@ -196,6 +196,14 @@ fn tick_stream_buffer_ms(state: &Arc<EngineState>) -> f64 {
     }
 }
 
+/// `streamTransportState` as the §10.1 tick carries it (SPEC v0.4.6).
+fn tick_transport_state(state: &Arc<EngineState>) -> String {
+    match nbe_engine::telemetry::build_tick_for_dir(state, None) {
+        EngineFrame::EngineTelemetry { fields, .. } => fields.stream_transport_state,
+        _ => panic!("build_tick_for_dir must emit engineTelemetry"),
+    }
+}
+
 fn publisher_state_of(state: &Arc<EngineState>) -> PublisherState {
     state
         .stream_session
@@ -1942,6 +1950,11 @@ async fn cpu_record_beside_live_stream_still_feeds() {
 /// View never notices (no dropped frames), the loop's stream work stays a
 /// send, the transport reads Reconnecting, and when the ingest returns the
 /// stream resumes on its own — re-announcing its codecs first.
+///
+/// Since v0.4.6 the redial is also ON THE WIRE: the tick's
+/// `streamTransportState` reads `live` → `reconnecting` → `live` → `closed`
+/// across the kill, the return and the stop, while the engine's `streamState`
+/// stays Live throughout the redial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transport_death_leaves_the_loop_untouched() {
     let _serial = SERIAL.lock().await;
@@ -1963,6 +1976,11 @@ async fn transport_death_leaves_the_loop_untouched() {
             .with(|r| r.video_media().len() >= 10))
         .await
     );
+    assert_eq!(
+        tick_transport_state(&state),
+        "live",
+        "media is flowing: the tick reads live"
+    );
 
     let before = dropped(&state);
     dbl.kill();
@@ -1972,6 +1990,11 @@ async fn transport_death_leaves_the_loop_untouched() {
         publisher_state_of(&state),
         PublisherState::Reconnecting,
         "the transport reads Reconnecting"
+    );
+    assert_eq!(
+        tick_transport_state(&state),
+        "reconnecting",
+        "the redial is visible on the wire (v0.4.6), not only inside the engine"
     );
     assert_eq!(
         *state.stream_state.lock().unwrap(),
@@ -1998,10 +2021,20 @@ async fn transport_death_leaves_the_loop_untouched() {
         .await,
         "the stream resumes on the returned ingest without operator action"
     );
+    assert_eq!(
+        tick_transport_state(&state),
+        "live",
+        "the resumed transport reads live again"
+    );
     handler
         .apply(&directive("stream.stop", 4, serde_json::json!({})))
         .await
         .expect("stream.stop must succeed");
+    assert_eq!(
+        tick_transport_state(&state),
+        "closed",
+        "a stopped stream's transport reads closed"
+    );
     dbl2.with(|r| {
         let first = r.first_video_on(1).expect("video arrived");
         assert!(

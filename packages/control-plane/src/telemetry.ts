@@ -49,6 +49,12 @@ export interface TelemetryTick {
   /** Why that path was chosen, so a fallback is distinguishable from a choice.
    *  `"none"` before any take. Required, same reason. */
   recordTapReason: string;
+  /** SPEC §10.1 (v0.4.6): the stream transport's own state — `"live"`,
+   *  `"reconnecting"`, `"closed"`, or `"none"` before any stream has started.
+   *  Engine-owned; `streamState` above is the commanded one and stays `"live"`
+   *  through a redial (§9.5), so this is where a redial is visible. Required,
+   *  same reason as `recordTapPath`. */
+  streamTransportState: string;
 }
 
 /** The stub a telemetry field carries before its subsystem has run (§10.1.1).
@@ -94,6 +100,15 @@ export function buildTick(
     // same as an operator seeing it, which is what these two lines are for.
     recordTapPath: f?.recordTapPath ?? TAP_NONE,
     recordTapReason: f?.recordTapReason ?? TAP_NONE,
+    // SPEC §10.1, v0.4.6. Always forwarded, stubbed — the rule followed is
+    // §10.1.1's completeness (the `recordTapPath` FINAL shape, Phase 3b), not
+    // the F1-era one it replaced: PR #24's F1 fix forwarded the tap fields
+    // only when present, on the reasoning that absence meant "no take yet".
+    // §10.1.1 forbids that reasoning, so this is decided against it. A stale
+    // report stubs to "none" rather than "closed": with no fresh engine
+    // report the control plane does not know what the socket is doing, and
+    // `engineConnected: false` already says why.
+    streamTransportState: f?.streamTransportState ?? TAP_NONE,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),

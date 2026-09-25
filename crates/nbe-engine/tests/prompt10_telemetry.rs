@@ -287,3 +287,113 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
         "stopped tick returns to 0.0 with the key still present"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `streamTransportState` (SPEC §10.1, ratified v0.4.6): the transport's own
+// state, always on the wire. The completeness assertion runs everywhere; the
+// live leg is hardware-gated and skips loudly.
+// ---------------------------------------------------------------------------
+
+/// The tick's `streamTransportState`, read off the SERIALIZED frame: §10.1.1's
+/// "a consumer must never see a missing field" is a claim about the wire, so a
+/// `#[serde(skip_serializing)]` that left the struct intact must still fail.
+fn tick_transport_state(state: &Arc<EngineState>) -> String {
+    let frame = nbe_engine::telemetry::build_tick(state);
+    let value = serde_json::to_value(&frame).expect("telemetry frame must serialize");
+    let obj = value
+        .as_object()
+        .expect("an engineTelemetry frame is an object");
+    let token = obj.get("streamTransportState").unwrap_or_else(|| {
+        panic!(
+            "§10.1.1: every engine tick must carry streamTransportState; keys were {:?}",
+            obj.keys().collect::<Vec<_>>()
+        )
+    });
+    token
+        .as_str()
+        .unwrap_or_else(|| panic!("streamTransportState must be a string, got: {token}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts() {
+    // Fresh engine: the stub, present.
+    let (state, handler, _) = harness();
+    assert_eq!(
+        tick_transport_state(&state),
+        "none",
+        "before any stream has started the field is the stub, never absent"
+    );
+
+    // A refused start (hardware-free: E_BAD_PAYLOAD precedes both probes)
+    // opens no transport, so the stub stands.
+    let (_pkg, pkg_path) = write_package(None);
+    load_and_start(&handler, &pkg_path).await;
+    let err = handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .expect_err("stream.start with no endpoint anywhere must refuse");
+    assert!(is_bad_payload(&err), "expected E_BAD_PAYLOAD, got: {err}");
+    assert_eq!(
+        tick_transport_state(&state),
+        "none",
+        "a refused start opened no transport; the stub stands"
+    );
+}
+
+#[tokio::test]
+async fn live_tick_carries_the_transport_state_and_stop_reads_closed() {
+    if !hw_or_skip() {
+        return;
+    }
+    let (state, handler, _) = harness();
+    if !chain_or_skip(&state).await {
+        return;
+    }
+    // `manifest.example` does not resolve, so the publisher never completes a
+    // dial: the one transport state this leg can pin without an ingest. The
+    // KEY matters: `rtmp://manifest.example/live` (the other live test's URL)
+    // is keyless, `parse_rtmp_url` refuses it, and the session opens with no
+    // publisher at all — `streamState` live, nothing published, and this field
+    // reading `"closed"`. That is a pre-existing defect (`resolve_stream_url`
+    // checks only the scheme), recorded in the prompt map's v0.4.6 entry, and
+    // exactly the kind of thing the field exists to expose.
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"));
+    load_and_start(&handler, &pkg_path).await;
+    handler
+        .apply(&directive("stream.start", 3, serde_json::json!({})))
+        .await
+        .unwrap_or_else(|e| panic!("stream.start with a manifest endpoint must open, got: {e}"));
+
+    let session_token = state
+        .stream_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.publisher_state().as_str())
+        .expect("a live stream has a session");
+    assert_eq!(
+        tick_transport_state(&state),
+        session_token,
+        "the tick carries the session's own transport state"
+    );
+    assert_eq!(
+        session_token, "reconnecting",
+        "an unresolvable ingest is a dial in progress"
+    );
+    assert_eq!(
+        *state.stream_state.lock().unwrap(),
+        StreamState::Live,
+        "while the transport redials the engine's streamState stays Live (§9.5)"
+    );
+
+    handler
+        .apply(&directive("stream.stop", 4, serde_json::json!({})))
+        .await
+        .expect("stop of a live stream must succeed");
+    assert_eq!(
+        tick_transport_state(&state),
+        "closed",
+        "after stop the socket is gone: closed, not the never-started stub"
+    );
+}

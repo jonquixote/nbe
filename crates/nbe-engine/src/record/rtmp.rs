@@ -196,6 +196,19 @@ pub enum PublisherState {
     Closed,
 }
 
+impl PublisherState {
+    /// The §10.1 `streamTransportState` token (SPEC v0.4.6). These are wire
+    /// values: an explicit map, so renaming a variant cannot change the wire,
+    /// and `transport_tokens_are_stable` pins every one of them.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PublisherState::Live => "live",
+            PublisherState::Reconnecting => "reconnecting",
+            PublisherState::Closed => "closed",
+        }
+    }
+}
+
 /// First media payload of a kind + its wire type, shared between the
 /// feeder-side handle (caches at send time) and the publisher task (replays
 /// after every dialog).
@@ -1679,6 +1692,50 @@ mod tests {
         assert_eq!(u.port, 19350);
         assert_eq!(u.app, "live");
         assert_eq!(u.key, "key-one");
+    }
+
+    /// The §10.1 `streamTransportState` tokens (SPEC v0.4.6) — the sibling of
+    /// `tap_path::path_tokens_are_stable` / `reason_tokens_are_stable`.
+    ///
+    /// `"live"`, `"reconnecting"` and `"closed"` are normative wire tokens as
+    /// of v0.4.6. They come from [`PublisherState::as_str`], an explicit map,
+    /// so a variant rename is a compile error in the map rather than a silent
+    /// wire change; what this pins is the spelling, and a respelled token
+    /// fails here. The session-less arms are checked through a real tick: the
+    /// stub before any stream has opened, `"closed"` after one has.
+    #[test]
+    fn transport_tokens_are_stable() {
+        assert_eq!(PublisherState::Live.as_str(), "live");
+        assert_eq!(PublisherState::Reconnecting.as_str(), "reconnecting");
+        assert_eq!(PublisherState::Closed.as_str(), "closed");
+        // §10.1.1: the stub must not be a legal value, or "never streamed"
+        // would read as a transport state.
+        for s in [
+            PublisherState::Live,
+            PublisherState::Reconnecting,
+            PublisherState::Closed,
+        ] {
+            assert_ne!(s.as_str(), nbe_protocol::tap_none());
+        }
+
+        let tick = |state: &crate::state::EngineState| {
+            let nbe_protocol::EngineFrame::EngineTelemetry { fields, .. } =
+                crate::telemetry::build_tick(state)
+            else {
+                panic!("telemetry");
+            };
+            fields.stream_transport_state
+        };
+        let state = crate::state::EngineState::new(30);
+        assert_eq!(tick(&state), "none", "no stream has started: the stub");
+        state
+            .stream_transport_opened
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            tick(&state),
+            "closed",
+            "a stream has opened and its session is gone: the socket is closed"
+        );
     }
 
     #[test]

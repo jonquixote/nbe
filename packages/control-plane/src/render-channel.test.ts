@@ -288,6 +288,68 @@ test("an engineTelemetry tick carrying recordTapPath parses and the field is rea
   );
 });
 
+// SPEC §10.1, ratified v0.4.6: the stream transport's own state reaches an
+// operator. The same claim as the recordTapPath test above — visibility, not
+// tolerance — for the one wire field that can show a redial: `streamState` is
+// the commanded one and stays "live" through it (§9.5).
+test("an engineTelemetry tick carrying streamTransportState parses and the field is readable", async () => {
+  const ws = conn("admin", ADMIN);
+  await connect(ws);
+  const ticks = collect(ws, "telemetry");
+  const sub = await send(ws, "system.telemetry.subscribe", { intervalMs: 100 });
+  assert.equal(sub.status, "ok");
+
+  // §10.1.1: present before any engine frame, stubbed rather than missing.
+  await until(() => ticks.length >= 1, 3000);
+  const first = ticks.at(-1)!.data as Record<string, unknown>;
+  assert.equal(
+    first.streamTransportState,
+    "none",
+    "§10.1.1: the field is stubbed before any stream, never absent",
+  );
+
+  const render = conn("render", RENDER);
+  await connect(render);
+  render.send(
+    JSON.stringify({
+      v: "0.3",
+      kind: "engineTelemetry",
+      ts: Date.now(),
+      masterClockFrame: 4242,
+      droppedFramesTotal: 0,
+      renderGpuTimeMs: 4.2,
+      decodeSessions: 0,
+      vramUsedMib: 100,
+      textureCacheUsedMib: 0,
+      streamBufferMs: 0,
+      recordSpaceMib: 0,
+      masterClockDriftMs: 0,
+      fallbackActive: false,
+      degradationRung: 0,
+      streamTransportState: "reconnecting",
+    }),
+  );
+  // Wait for proof THIS engine frame was merged — its distinctive
+  // masterClockFrame — never for mere presence of the field, which the stub
+  // satisfies from the first tick (the recordTapPath lesson above). Waiting on
+  // a sibling rather than on the field itself means a dropped forward fails on
+  // the readable assertion below, not on a timeout.
+  await until(
+    () =>
+      ticks.length >= 1 &&
+      (ticks.at(-1)!.data as Record<string, unknown>).masterClockFrame === 4242,
+    3000,
+  );
+  const data = ticks.at(-1)!.data as Record<string, unknown>;
+  assert.equal(
+    data.streamTransportState,
+    "reconnecting",
+    "a redial must be readable by an operator, not merely accepted",
+  );
+  render.close();
+  ws.close();
+});
+
 // §5.9.4 show.resync
 // ---------------------------------------------------------------------------
 

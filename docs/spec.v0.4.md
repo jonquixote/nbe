@@ -27,6 +27,19 @@ lands with its mechanism, and had its guard run at its landing commit.
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
 | 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
+| 2 | **`streamTransportState` on the wire** (B2). The engine publishes its stream transport's `PublisherState` on the §10.1 tick as exactly `"live"` / `"reconnecting"` / `"closed"`, always emitted and stubbed `"none"` before any stream has started (the `recordTapPath` precedent), `"closed"` after a stream stops. It is split from the commanded `streamState` by §9.5's survival shape: `streamState` stays `live` through a redial, and this field says what the socket is doing. Before it, a redial was visible to no telemetry consumer and no soak. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 10.1 (field block, new note), 10.1.1 (ownership) | `transport_tokens_are_stable`, `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts`, `an engineTelemetry tick carrying streamTransportState parses and the field is readable`, and `transport_death_leaves_the_loop_untouched` (the redial, on the wire) |
+
+**Row 2's two control-plane choices, and the rule each followed.** The schema
+takes the field `.optional()` — the `recordTapPath` landing's *final* shape
+(ZERO-COPY Phase 3b), where optional is tolerance of an engine build that
+predates the field and never the contract; the engine always emits it.
+`buildTick` forwards it **always, stubbed `"none"`**, and that is decided
+*against* the F1-era precedent: PR #24's F1 fix forwarded the tap fields only
+when present, on the reasoning that absence meant "no take yet", which is the
+reasoning §10.1.1 forbids. The rule followed is §10.1.1's completeness. A stale
+engine report stubs to `"none"`, not `"closed"`: with no fresh report the
+control plane does not know what the socket is doing, and `engineConnected:
+false` already says why.
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.6.
 
@@ -2018,6 +2031,7 @@ Telemetry fields:
   "textureCacheUsedMib": 512,
   "streamState": "live",
   "streamBufferMs": 210,
+  "streamTransportState": "live",
   "recordState": "recording",
   "recordSpaceMib": 512000,
   "masterClockDriftMs": 0.2,
@@ -2062,6 +2076,26 @@ fields exist to expose: the machine still records, the file is still correct,
 and the only visible difference is a telemetry field. `docs/soak-protocol.md`
 §1 records their values every soak for that reason.
 
+**The stream transport's state (normative, new in v0.4.6).**
+`streamTransportState` carries what the stream's transport socket is doing:
+`"live"` when the publish dialog is complete and media is flowing,
+`"reconnecting"` while a dial or redial is in progress, `"closed"` when the
+transport is gone. It is **always emitted, stubbed `"none"` before any stream has
+started**, per §10.1.1 — the `recordTapPath` precedent: `"none"` is not a
+transport state, so an engine that has never streamed stays distinguishable
+from one whose transport closed. After a stream stops the field reads
+`"closed"`.
+
+It is a separate field from `streamState`, deliberately, and the split is
+§9.5's survival shape. `streamState` is the control plane's, *as commanded*: it
+stays `"live"` through a redial, because local playout — and the operator's
+intent — do not follow the socket. `streamTransportState` is the render node's
+and says what the socket is actually doing. Before v0.4.6 a redial existed only
+inside the engine; no telemetry consumer, and no soak, could see one. On a
+healthy stream the two read `"live"` together; a redial shows as `streamState:
+"live"` beside `streamTransportState: "reconnecting"`, and that pair is the
+event this field exists to expose.
+
 Implementation note (v0.4): `busPeakDbfs` is a **peak-hold across a meter
 window**, not an instantaneous sample. The engine's audio graph meters every
 block (~33 ms) and holds the loudest value until the window closes, so a
@@ -2080,7 +2114,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason` |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 

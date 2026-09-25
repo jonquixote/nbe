@@ -1146,6 +1146,11 @@ impl DirectiveHandler {
         // The audio driver attaches the stream's tap on its next cycle.
         *self.state.stream_tap.lock().unwrap() = Some(session.tap());
         *self.state.stream_session.lock().unwrap() = Some(session);
+        // §10.1 `streamTransportState` (v0.4.6): from here on a session-less
+        // tick reads "closed", not the never-started "none" stub.
+        self.state
+            .stream_transport_opened
+            .store(true, Ordering::SeqCst);
         *self.state.stream_state.lock().unwrap() = StreamState::Live;
         Ok(())
     }

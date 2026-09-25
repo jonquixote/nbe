@@ -451,10 +451,12 @@ jobs:
             echo "FAIL prompt10_rtmp: expected at least 13 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the stream telemetry suite actually ran (Prompt 10 WU6)
-        # Same two-floor shape. One of the three tests goes live and gates on
-        # the encoder + chain (loud SKIP without either); the other two
-        # (pre-start stub, refused-start stub) run everywhere and are the floor
-        # that skipping cannot satisfy.
+        # Same two-floor shape. Two of the five tests go live and gate on the
+        # encoder + chain (loud SKIP without either); the other three
+        # (pre-start stub, refused-start stub, and v0.4.6's streamTransportState
+        # completeness) run everywhere and are the floor that skipping cannot
+        # satisfy. Floors were ran>=3 exercised>=2 before v0.4.6 added one test
+        # of each kind.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_telemetry -- --nocapture 2>&1)
@@ -465,12 +467,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt10_telemetry: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=2)"
-          if [ "$ran" -lt 3 ]; then
-            echo "FAIL prompt10_telemetry: expected at least 3 tests to run, got $ran"; exit 1
+          echo "prompt10_telemetry: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=3)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 5 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 2 ]; then
-            echo "FAIL prompt10_telemetry: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 3 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264

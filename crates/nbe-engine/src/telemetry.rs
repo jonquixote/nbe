@@ -42,14 +42,35 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // UNRATIFIED candidate in `docs/v0.5-outline.md` §7 instead.
     //
     // Read under one short lock; the counter itself is atomic, so the tick
-    // never waits on the socket.
-    let stream_buffer_ms = state
-        .stream_session
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|s| s.stream_buffer_ms())
-        .unwrap_or(0.0);
+    // never waits on the socket. `streamTransportState` (§10.1, v0.4.6) is
+    // read in the same scope: the publisher's own view of the socket, which
+    // `streamState` ("as commanded") deliberately does not follow (§9.5).
+    let (stream_buffer_ms, transport) = {
+        let session = state.stream_session.lock().unwrap();
+        (
+            session
+                .as_ref()
+                .map(|s| s.stream_buffer_ms())
+                .unwrap_or(0.0),
+            session.as_ref().map(|s| s.publisher_state()),
+        )
+    };
+    // No session: `"closed"` once any stream has opened (the socket is gone),
+    // the `"none"` stub before one ever has — §10.1.1, the `recordTapPath`
+    // precedent. `"none"` is not a transport state, so never-streamed stays
+    // distinguishable from closed.
+    let stream_transport_state = match transport {
+        Some(p) => p.as_str().to_string(),
+        None if state
+            .stream_transport_opened
+            .load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            crate::record::rtmp::PublisherState::Closed
+                .as_str()
+                .to_string()
+        }
+        None => nbe_protocol::tap_none(),
+    };
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
@@ -95,6 +116,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         record_tap_reason: tap
             .map(|s| format!("{:?}", s.reason))
             .unwrap_or_else(nbe_protocol::tap_none),
+        stream_transport_state,
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

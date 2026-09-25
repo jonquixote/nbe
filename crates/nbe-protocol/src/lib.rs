@@ -411,6 +411,22 @@ pub struct EngineTelemetry {
     pub record_tap_path: String,
     #[serde(default = "tap_none")]
     pub record_tap_reason: String,
+    /// The stream transport's own state — `"live"`, `"reconnecting"` or
+    /// `"closed"` — so a redial is visible on the wire (SPEC §10.1, **ratified
+    /// in v0.4.6**).
+    ///
+    /// Distinct from `streamState`, which is the control plane's and "as
+    /// commanded": that one stays `live` through a redial by design (§9.5 —
+    /// local playout never follows the socket), so before this field no
+    /// telemetry consumer could see the redial at all. This one says what the
+    /// socket is doing.
+    ///
+    /// **Always emitted, stubbed `"none"` before any stream has started** —
+    /// the `record_tap_path` precedent (§10.1.1). `"none"` is not a transport
+    /// state, so an engine that never streamed stays distinguishable from one
+    /// whose transport closed. After a stream stops it reads `"closed"`.
+    #[serde(default = "tap_none")]
+    pub stream_transport_state: String,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.
