@@ -19,14 +19,14 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, cpSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, cpSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { WebSocket } from "ws";
 
 import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
+import { tempDir } from "./test-tmp.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
 
@@ -170,7 +170,7 @@ before(async () => {
   );
   assert.ok(existsSync(join(PKG, "manifest.json")), `dress package missing at ${PKG}`);
 
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-dress-"));
+  const tmp = tempDir("nbe-dress-");
   state = new ControlPlaneState();
   server = await createControlPlaneServer({
     port: 0,
@@ -991,7 +991,7 @@ function ffprobeJson(ffprobe: string, file: string, extra: string[]): Record<str
  * Returns the staged package dir and the record out dir.
  */
 function stageRecordPackage(): { pkgDir: string; recordDir: string } {
-  const tmp = mkdtempSync(join(tmpdir(), "nbe-dress-record-"));
+  const tmp = tempDir("nbe-dress-record-");
   const pkgDir = join(tmp, "dress_show");
   mkdirSync(pkgDir, { recursive: true });
   const recordDir = join(tmp, "record-out");

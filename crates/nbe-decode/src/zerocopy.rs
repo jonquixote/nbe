@@ -440,7 +440,10 @@ impl SurfacePool {
     ///   VideoToolbox still holds the buffer. A release that lands after G
     ///   costs a skip, never a corrupted frame.
     /// * Without F, L's `Relaxed` load orders nothing: on a weakly ordered CPU
-    ///   (arm64 — Apple Silicon, the spec's primary target) G may observe the
+    ///   (arm64 — Apple Silicon, which §0.1 assumption 2 supports though the
+    ///   reference target is the Intel Mac, and which the macos-14 CI runner
+    ///   is; ~~"the spec's primary target"~~ was v0.3's wording, corrected in
+    ///   v0.4) G may observe the
     ///   retain count's older value after L observed 1, and hand out a
     ///   surface VideoToolbox is reading. On x86-64 loads are not reordered
     ///   with older loads, so the hazard cannot manifest there; LLVM lowers
