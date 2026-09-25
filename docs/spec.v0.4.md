@@ -18,6 +18,18 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
+candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
+(`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting
+phase: the words predate the text, so each ratified row is ratified on landing,
+lands with its mechanism, and had its guard run at its landing commit.
+
+| # | Change | Sections | Guarded by |
+|---|---|---|---|
+| 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
+
+No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.6.
+
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
 revision lands them. Unlike every previous entry there was no drafting phase:
@@ -3132,6 +3144,30 @@ operator would have to learn both.
 command's `url` supplied a publish target. §9.4's endpoint table makes both
 optional individually; one of them is required in fact, and the command is where
 that is discovered.
+
+**`stream.start` evaluates its preconditions in order (normative, new in
+v0.4.6).** The table's precondition cell lists them without ordering them, and
+the order is observable: a machine missing two of them answers with one token.
+`stream.start` evaluates configuration first, then the zero-copy chain, then the
+encoder, and the first unmet precondition is the refusal:
+
+1. the show is running (`E_FORBIDDEN_STATE`);
+2. no stream is already live (`E_FORBIDDEN_STATE` — §9.1's one-live-stream
+   ceiling; the live session is kept);
+3. a publish target resolves (`E_BAD_PAYLOAD`);
+4. the stream output's `tapPath` is not `cpuReadback` (`E_NO_ZEROCOPY`);
+5. a zero-copy chain is available (`E_NO_ZEROCOPY`);
+6. a hardware encoder is available (`E_NO_HARDWARE_ENCODER`).
+
+The order rests on two grounds, and only these. **A configuration refusal is
+machine-independent:** `tapPath: "cpuReadback"` is the same answer on every
+machine, so it is decided before any probe. **And this is the only order the CI
+runner can observe:** that runner has a zero-copy chain and no H.264 encoder, so
+with the encoder probed first every chain and configuration refusal is
+unreachable there — the first implementation shipped that way, and CI run
+35878301689 failed on exactly that. The order is *not* grounded in the chain
+being the spec's refusal and the encoder the build's: §9.2's hardware-only
+encode is spec law as much as the chain is.
 
 ## 16.15 System commands
 
