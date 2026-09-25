@@ -28,6 +28,7 @@ lands with its mechanism, and had its guard run at its landing commit.
 |---|---|---|---|
 | 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
 | 2 | **`streamTransportState` on the wire** (B2). The engine publishes its stream transport's `PublisherState` on the §10.1 tick as exactly `"live"` / `"reconnecting"` / `"closed"`, always emitted and stubbed `"none"` before any stream has started (the `recordTapPath` precedent), `"closed"` after a stream stops. It is split from the commanded `streamState` by §9.5's survival shape: `streamState` stays `live` through a redial, and this field says what the socket is doing. Before it, a redial was visible to no telemetry consumer and no soak. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 10.1 (field block, new note), 10.1.1 (ownership) | `transport_tokens_are_stable`, `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts`, `an engineTelemetry tick carrying streamTransportState parses and the field is readable`, and `transport_death_leaves_the_loop_untouched` (the redial, on the wire) |
+| 3 | **`streamBufferMs` is `-1` with no session** — the NO-SESSION sentinel, on the engine AND the control plane (which also emits it with no fresh engine report). `streamState` on the same tick carries idle vs live, but it is commanded, not measured; the sentinel exists so that "no measurement exists" is diagnosable from "the buffer is empty". PR #30 shipped it inside its feature PR, the repair round reverted it (`f8ff895`) as a ratified field's meaning changed without the user's word, and it was drafted UNRATIFIED in `docs/v0.5-outline.md` §7. The code flip reverts the revert; the three engine tests and two control-plane tests that pinned `0.0` are rewritten to pin the `-1.0` / `0.0` distinction, the retired pins kept visible (§2c). §10.1 had never stated a no-session value — the repair round's "§10.1 law: 0" was code-comment inference — so this row writes the sentence rather than amending one | 10.1 (new note) | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub`, `idle reports -1 and drained-live reports 0: the field alone distinguishes them` |
 
 **Row 2's two control-plane choices, and the rule each followed.** The schema
 takes the field `.optional()` — the `recordTapPath` landing's *final* shape
@@ -2072,6 +2073,24 @@ audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
 missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
+
+**`streamBufferMs` and its NO-SESSION sentinel (normative, new in v0.4.6).**
+While a stream session exists, `streamBufferMs` is the stream transport's
+buffered bytes — admitted but not yet written to the socket — through the
+stream's envelope bitrate, in milliseconds: it grows while the peer stalls and
+reads `0` when the buffer is empty. **With no stream session it is `-1`: no
+measurement exists.** Negative milliseconds are impossible, so the sentinel can
+never collide with a measurement. `streamState` on the same tick carries idle
+against live, but it is the control plane's and *as commanded*, not measured;
+the sentinel exists so that "no measurement exists" is diagnosable from "the
+buffer is empty" by this field alone. A control plane with no fresh engine
+report emits `-1` too (§10.1.1's stub): it has no measurement either.
+
+Before v0.4.6 no sentence here gave the field a value with no session. PR #30
+shipped `-1` inside its feature PR; the repair round reverted it to `0`, calling
+that "§10.1 law" in code comments — but §10.1 carried only the sample above and
+the ownership row, so the law those comments cited was an inference. v0.4.6
+writes the sentence.
 
 **The record tap's frame path (normative, new in v0.4.4).** `recordTapPath`
 carries which path the recording output's frames take from the compositor to the

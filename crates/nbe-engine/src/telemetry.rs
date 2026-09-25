@@ -28,18 +28,25 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // second `lock()` runs, on a non-reentrant `Mutex`. Found by
     // `pump_tick_wires_the_loaded_record_dir` hanging rather than failing.
     let tap = *state.record_tap_selection.lock().unwrap();
-    // streamBufferMs (§10.1, law): the live session's admitted-but-unwritten
-    // bytes through the stream's envelope bitrate (channel backlog INCLUDED —
-    // see the rtmp module docs). With no session the buffer holds nothing,
-    // and 0.0 says exactly that — a measurement of an absent buffer, not a
-    // stub standing in for one. Whether the stream is idle or drained-live is
-    // `streamState`'s job (the control plane's, "as commanded"), already on
-    // the same tick.
+    // streamBufferMs (§10.1): the live session's admitted-but-unwritten bytes
+    // through the stream's envelope bitrate (channel backlog INCLUDED — see
+    // the rtmp module docs). With no session: -1.0, the NO-SESSION sentinel
+    // (`nbe_protocol::STREAM_BUFFER_NO_SESSION_MS`), **ratified in v0.4.6** —
+    // "no measurement exists", distinguishable from a live session's honest
+    // 0.0, "the buffer is empty". `streamState` on the same tick carries idle
+    // vs live, but it is commanded, not measured; the sentinel lets this
+    // field be read alone.
     //
-    // PR #30 first shipped -1.0 here as a "NO-SESSION sentinel". That changed
-    // the meaning of a ratified field inside a feature PR, which is the
-    // user's change to make, not ours; it is reverted and drafted as an
-    // UNRATIFIED candidate in `docs/v0.5-outline.md` §7 instead.
+    // History kept per §2c. PR #30 first shipped -1.0 inside the feature PR;
+    // the repair round reverted it (`f8ff895`) because changing a ratified
+    // field's meaning is the user's change, not a feature PR's:
+    //
+    // > With no session the buffer holds nothing, and 0.0 says exactly that —
+    // > a measurement of an absent buffer, not a stub standing in for one.
+    // > Whether the stream is idle or drained-live is `streamState`'s job (the
+    // > control plane's, "as commanded"), already on the same tick.
+    //
+    // The user made that change in v0.4.6, so this reverts the revert.
     //
     // Read under one short lock; the counter itself is atomic, so the tick
     // never waits on the socket. `streamTransportState` (§10.1, v0.4.6) is
@@ -51,7 +58,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
             session
                 .as_ref()
                 .map(|s| s.stream_buffer_ms())
-                .unwrap_or(0.0),
+                .unwrap_or(nbe_protocol::STREAM_BUFFER_NO_SESSION_MS),
             session.as_ref().map(|s| s.publisher_state()),
         )
     };

@@ -352,6 +352,12 @@ pub fn tap_none() -> String {
     "none".to_string()
 }
 
+/// `streamBufferMs` with no stream session: **no measurement exists** (SPEC
+/// §10.1, ratified v0.4.6). Negative milliseconds are impossible, so the
+/// sentinel can never collide with a live session's honest `0.0` — "the
+/// buffer is empty" — which is the distinction it exists to make diagnosable.
+pub const STREAM_BUFFER_NO_SESSION_MS: f64 = -1.0;
+
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

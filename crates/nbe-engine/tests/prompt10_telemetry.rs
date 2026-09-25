@@ -11,15 +11,24 @@
 //!
 //! Ownership (§10.1's table, §10.1.1): the engine NEVER emits `streamState` —
 //! it is control-plane state, "as commanded". What the engine owes the wire
-//! is `streamBufferMs` on every tick: `0.0` with no session (nothing is
-//! buffered — §10.1's meaning, measured rather than stubbed), the session's
-//! transport counter while live, `0.0` again after stop. No new wire field is
-//! introduced here; a missing key below fails rather than skips.
+//! is `streamBufferMs` on every tick: **`-1.0` with no session** — the
+//! NO-SESSION sentinel, "no measurement exists", ratified in SPEC v0.4.6 —
+//! the session's transport counter while live (`>= 0.0`; `0.0` is "the buffer
+//! is empty"), and `-1.0` again after stop. A missing key below fails rather
+//! than skips. v0.4.6 also adds `streamTransportState` (tests at the end).
 //!
-//! ~~`-1.0` with no session (the NO-SESSION sentinel)~~ — PR #30's first
-//! version. It changed the meaning of a ratified field inside a feature PR;
-//! reverted in the repair round and drafted as an UNRATIFIED candidate in
-//! `docs/v0.5-outline.md` §7. Idle vs drained-live is `streamState`'s to say.
+//! History, kept per §2c — this suite has pinned both values:
+//!
+//! * ~~`-1.0` with no session (the NO-SESSION sentinel)~~ — PR #30's first
+//!   version. It changed the meaning of a ratified field inside a feature PR;
+//!   reverted in the repair round (`f8ff895`) and drafted as an UNRATIFIED
+//!   candidate in `docs/v0.5-outline.md` §7.
+//! * ~~`0.0` with no session (nothing is buffered — §10.1's meaning, measured
+//!   rather than stubbed) … `0.0` again after stop. Idle vs drained-live is
+//!   `streamState`'s to say.~~ — the repair round's version, which these
+//!   tests pinned from `f8ff895` (the F13 falsification) until v0.4.6. §10.1
+//!   never stated a no-session value; v0.4.6 states `-1.0`, and the three
+//!   tests below now pin the `-1.0` / `0.0` distinction instead of `0.0`.
 //!
 //! Rule 7: every test that enters the streaming path drives a REAL command
 //! through `DirectiveHandler` (`show.load` → `show.start` → `stream.start` /
@@ -32,7 +41,9 @@ use std::sync::Arc;
 
 use nbe_engine::directive::{DirectiveError, DirectiveHandler};
 use nbe_engine::state::{EngineState, OutgoingQueue, StreamState};
-use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
+use nbe_protocol::{
+    DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION, STREAM_BUFFER_NO_SESSION_MS,
+};
 
 fn directive(command: &str, sv: u64, payload: serde_json::Value) -> DirectiveFrame {
     DirectiveFrame {
@@ -165,7 +176,9 @@ fn is_bad_payload(err: &DirectiveError) -> bool {
 async fn prestart_tick_carries_stream_buffer_ms_stub_not_absence() {
     // Fresh engine, no show, no session: the tick must still carry the key
     // (§10.1.1: an absent field and a stubbed field are different failures
-    // and only one of them is diagnosable), at 0.0 — no buffer holds nothing.
+    // and only one of them is diagnosable), at -1.0 — no measurement exists
+    // (v0.4.6). ~~"at 0.0 — no buffer holds nothing"~~ (the repair round's
+    // pin, retired §2c).
     let (state, _handler, _) = harness();
     assert_eq!(
         *state.stream_state.lock().unwrap(),
@@ -177,13 +190,17 @@ async fn prestart_tick_carries_stream_buffer_ms_stub_not_absence() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, 0.0,
-        "pre-start streamBufferMs is 0.0: nothing is buffered"
+        ms, STREAM_BUFFER_NO_SESSION_MS,
+        "pre-start streamBufferMs is -1.0: no session, so no measurement exists"
     );
     assert_eq!(
         value.get("streamBufferMs").and_then(|v| v.as_f64()),
-        Some(0.0),
-        "the value must reach the wire, not just the struct"
+        Some(-1.0),
+        "the sentinel must reach the wire as -1, not just the struct"
+    );
+    assert_ne!(
+        ms, 0.0,
+        "no-session must not read as a live session's empty buffer"
     );
 }
 
@@ -220,8 +237,9 @@ async fn refused_start_leaves_a_lawful_stub_tick() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, 0.0,
-        "a refused start leaves 0.0 on the wire, never an absent field"
+        ms, STREAM_BUFFER_NO_SESSION_MS,
+        "a refused start opened no session: -1.0 on the wire, never an absent \
+         field and never 0.0 (~~\"leaves 0.0 on the wire\"~~, retired v0.4.6)"
     );
 }
 
@@ -255,6 +273,7 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
 
     // The tick IS the transport counter, not a constant: whatever the session
     // reports — 0.0 drained, nonzero under load — the tick reports identically.
+    // And with a session it is a MEASUREMENT (>= 0.0), never the sentinel.
     let session_ms = state
         .stream_session
         .lock()
@@ -267,6 +286,10 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
     assert_eq!(
         tick_ms, session_ms,
         "live tick streamBufferMs must equal the session counter, not a constant"
+    );
+    assert!(
+        tick_ms >= 0.0,
+        "a live session is measured (>= 0.0), never the no-session sentinel, got {tick_ms}"
     );
 
     handler
@@ -283,8 +306,9 @@ async fn live_tick_wires_the_session_counter_and_stop_returns_to_stub() {
     let (ms, value) = tick_stream_buffer_ms(&state);
     assert_wire_key_present(&value);
     assert_eq!(
-        ms, 0.0,
-        "stopped tick returns to 0.0 with the key still present"
+        ms, STREAM_BUFFER_NO_SESSION_MS,
+        "stopped tick returns to the -1.0 sentinel with the key still present \
+         (~~\"returns to 0.0\"~~, retired v0.4.6)"
     );
 }
 

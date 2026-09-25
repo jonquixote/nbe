@@ -61,6 +61,12 @@ export interface TelemetryTick {
  *  Mirrors `nbe_protocol::tap_none`. */
 export const TAP_NONE = "none";
 
+/** `streamBufferMs` when no measurement exists — no stream session, or no
+ *  fresh engine report (SPEC §10.1, ratified v0.4.6). Negative milliseconds
+ *  are impossible, so it never collides with a live session's honest `0`,
+ *  "the buffer is empty". Mirrors `nbe_protocol::STREAM_BUFFER_NO_SESSION_MS`. */
+export const STREAM_BUFFER_NO_SESSION_MS = -1;
+
 /** How long a cached engine report stays authoritative (default 2 s). */
 export const ENGINE_TELEMETRY_TTL_MS = 2000;
 
@@ -85,9 +91,15 @@ export function buildTick(
     decodeSessions: f?.decodeSessions ?? 0,
     vramUsedMib: f?.vramUsedMib ?? 0,
     textureCacheUsedMib: f?.textureCacheUsedMib ?? 0,
-    // §10.1 law: buffered ms, 0 when nothing is buffered or no report is
-    // fresh. Idle vs drained-live is `streamState`'s to say, on this tick.
-    streamBufferMs: f?.streamBufferMs ?? 0,
+    // §10.1, ratified v0.4.6: buffered ms while a session exists; -1 when no
+    // measurement exists — the engine's no-session value forwarded, or no
+    // fresh engine report at all. A live session's 0 means "the buffer is
+    // empty" and stays distinguishable. ~~"§10.1 law: buffered ms, 0 when
+    // nothing is buffered or no report is fresh. Idle vs drained-live is
+    // `streamState`'s to say, on this tick."~~ — the repair round's wording
+    // (`f8ff895`), struck per §2c; §10.1 never carried that sentence, and
+    // v0.4.6 wrote the one it does.
+    streamBufferMs: f?.streamBufferMs ?? STREAM_BUFFER_NO_SESSION_MS,
     recordSpaceMib: f?.recordSpaceMib ?? 0,
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,

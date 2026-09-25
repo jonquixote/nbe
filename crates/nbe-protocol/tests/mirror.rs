@@ -349,7 +349,8 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         decode_sessions: 0,
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
-        stream_buffer_ms: 0.0,
+        // The v0.4.6 NO-SESSION sentinel, sampled as a value (-1.0), not 0.0.
+        stream_buffer_ms: nbe_protocol::STREAM_BUFFER_NO_SESSION_MS,
         record_space_mib: 0.0,
         master_clock_drift_ms: 0.0,
         fallback_active: false,
