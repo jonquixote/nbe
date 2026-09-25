@@ -1019,9 +1019,11 @@ impl DirectiveHandler {
     /// every chain and configuration refusal was unreachable there; the first
     /// version of this function shipped that way and
     /// `stream_tap_path_cpu_readback_is_refused_no_zerocopy` failed on CI (run
-    /// 35878301689) while passing on a machine with an encoder. Because a test
-    /// now pins an order §16.14 never states, the order is drafted as an
-    /// UNRATIFIED candidate in `docs/v0.5-outline.md` §7.
+    /// 35878301689) while passing on a machine with an encoder. ~~Because a
+    /// test now pins an order §16.14 never states, the order is drafted as an
+    /// UNRATIFIED candidate in `docs/v0.5-outline.md` §7.~~ **§16.14 states
+    /// this order as law since v0.4.6** (ratified 2026-09-25, on these two
+    /// grounds and no others); the test is its guard.
     ///
     /// A successful start opens the [`crate::record::stream::StreamSession`],
     /// publishes the selection (`select_stream`'s gate, then

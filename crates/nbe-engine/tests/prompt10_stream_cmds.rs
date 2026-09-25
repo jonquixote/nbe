@@ -426,8 +426,10 @@ async fn stream_start_on_chain_less_machine_refuses_no_zerocopy_loudly() {
 }
 
 /// The refusal ORDER is part of the contract, so it is pinned (PR #30 repair
-/// round): configuration, then the SPEC's chain refusal, then this build's
-/// encoder. The first version probed the encoder first; on the macos-14 runner
+/// round): configuration, then the chain, then the encoder — **SPEC §16.14
+/// law since v0.4.6**, and this test is its guard. (~~"then the SPEC's chain
+/// refusal, then this build's encoder"~~ — §9.2's hardware-only encode is
+/// spec law too.) The first version probed the encoder first; on the macos-14 runner
 /// (Metal adapter, no H.264 encoder) that made every chain and configuration
 /// refusal unreachable, and CI run 35878301689 failed on exactly that.
 ///

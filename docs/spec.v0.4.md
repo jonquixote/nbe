@@ -30,6 +30,14 @@ lands with its mechanism, and had its guard run at its landing commit.
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.6.
 
+**Ratification, 2026-09-25.** Each ratified row's guard ran at that row's
+landing commit, immediately before its marker in `docs/v0.5-outline.md` §7 was
+flipped:
+
+| Row | Section | Guard | Landing commit | Result |
+|---|---|---|---|---|
+| 1 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` (all three legs ran; the encoder-only leg needs a real chain and did not skip) | `724e35f` | ok. 1 passed; 0 failed |
+
 v0.4.5 — **RATIFIED 2026-09-21.** The streaming unblock. Four blockers stood
 between Prompt 10's executor and the work; the user has spoken all four and this
 revision lands them. Unlike every previous entry there was no drafting phase:
