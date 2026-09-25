@@ -498,6 +498,64 @@ tree, and passed on CI rerun. This is R7's test, not a new entry: same name, sam
 signature, same load-sensitive family, now 3 sightings across unrelated changes.
 The redelivery-vs-extra-bump question still stands — payloads still uncaught.
 
+### Finding R10 — a stream drain missed its 5 s bound once on CI (recorded 2026-09-25, PR #33)
+
+*Numbered after R9, the highest filed; R8 appears nowhere in the tree.*
+
+**Signature.** `prompt10_rtmp::telemetry_tick_wires_the_live_session_counter`
+panicked at `crates/nbe-engine/tests/prompt10_rtmp.rs:1570`: `drained reads 0 on
+the tick`, with `test result: FAILED. 19 passed; 1 failed; 1 ignored`. This was CI
+attempt 1 of run `36120910087`, at head `000159f`, in the `rust` job (job
+`108025920278`, hosted `macos-14`, runner `GitHub Actions 1000002963`). The
+re-run, attempt 2 of the same run, passed. Locally, on the normative machine,
+the test passed 10/10 at 0.37–0.46 s each (load 2.75 → 3.09 across the loop).
+It is the first recorded failure of this test. The eleven CI runs before it,
+back to `35976288284`, all contain the test (it landed in `200816f`), and all
+were green.
+
+**Not the change under review.** The test opens `StreamSession::open` directly
+and never calls `resolve_stream_url`, the only engine code PR #33's fix round
+changed.
+
+**The bound.** The test publishes 64 × 60 KB video payloads into a stalled peer.
+The bounded channel admits what it can and sheds the rest. It then un-stalls the
+peer and gives the tick 5 s (`poll_until(Duration::from_secs(5), …)`) to read
+`0.0`. Draining means the in-process test server reads and parses every message
+on one thread per connection. On the runner the test ran about 5.4 s (the
+preceding test finished at 09:54:34.90Z; this one failed at 09:54:40.28Z), which
+fits the drain poll expiring. Locally the whole test takes about 0.4 s: a gap of
+more than 13× that is not explained.
+
+**The class: R9's.** A wall-clock bound that measures the machine as well as the
+code, and VOID-shaped above the quiescence ceiling. **The unanswered question is
+the runner's load at the failure, and this run's logs cannot answer it.** The
+workflow echoes no load: `.github/workflows/ci.yml` contains no `vm.loadavg` or
+`uptime` anywhere. The job API records only the runner's name and labels.
+Answering it for a future sighting needs a `sysctl -n vm.loadavg` echoed around
+the workspace test step. That capture is owed and not made here (this entry is
+records only).
+
+**THE REFUTATION CONDITION, written before the next run rather than after it.**
+Either of these reopens R10 as a defect in the transport's drain or in the test
+server, not a load flake:
+- **a second sighting with the load recorded and under the 3.0 ceiling** — a
+  soak iteration qualifies, because the soak checks quiescence first and runs
+  `prompt10_rtmp` whole; a CI sighting qualifies only once the load capture
+  above exists;
+- **the drain approaching its bound on a quiescent run** — say, any quiescent
+  run of this test above 2.5 s, against about 0.4 s today.
+
+Until then it rides the watch list (`docs/soak-protocol.md` §5), in R7's shape.
+The re-run's green is not evidence of absence; it is the reason the entry exists.
+
+**The widened class, linked.** PR #33's keyless fix (`40e96e6`) means the
+hardware-gated stream tests now open real publishers and stream threads. Their
+stops are bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as
+`close_error_seam_fails_loudly_with_the_network_token`'s load flake, recorded
+under § 11's "SPEC v0.4.6" entry. So the stream suites now carry two wall-clock
+bounds in R9's class, this drain and that teardown, and a loaded run can trip
+either.
+
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
 The bound `nbe-preflight` runs under is derived from two measured constant
