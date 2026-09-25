@@ -1262,13 +1262,13 @@ are in `docs/09-measurements.md`, Prompt 10 section.
 
 ## 11 — Watchdog
 
-*Upgraded 2026-09-25 — see "Prompt 11 upgraded for the tree" above; blocked on C1 and B1–B5.*
+*Upgraded 2026-09-25 UTC — see "Prompt 11 upgraded for the tree" below; blocked on C1 and B1–B5.*
 
 The watchdog itself exists and is gated (pass 4 confirmed deadline accounting and fallback trip both fail correctly when deleted). What 11 must now add is **the automation engine runtime** (§13, AC-25), assigned by `[RI-5]`: triggers, the once-per-frame limit, runtime cycle suppression, and audit logging of every automation action. `automation.hold` exists from Prompt 02; the engine behind it does not. 11 also inherits **F3's fix** as context — the fix round adds a `fail_view` seam, so §10.3's engagement path finally has production coverage that 11's work must keep.
 
-### Prompt 11 upgraded for the tree — 2026-09-25
+### Prompt 11 upgraded for the tree — 2026-09-25 UTC (locally 2026-09-24 −0700)
 
-`agents/prompts/11-watchdog.md` was written 2026-09-10 as a watchdog prompt: detect, shed, report, restore. By then the watchdog was built and gated, and this entry had already (2026-09-04) assigned the slot the **automation engine runtime**. The draft cited two prompt files that do not exist and forbade watchdog work on the render loop, which AC-7 (fallback within one frame) requires. The upgrade rewrites it around what the tree has (§0 of the prompt: watchdog on the loop, ladder rung 1 with hysteresis, the automation schema/types/commands/audit kind with no runtime, `autoFollow` normative since v0.1 and unimplemented) and names the decisions owed before an executor starts:
+`agents/prompts/11-watchdog.md` was written 2026-09-10 as a watchdog prompt: detect, shed, report, restore. By then the watchdog was built and gated, and this entry had already (2026-09-04) assigned the slot the **automation engine runtime**. The draft cited two prompt files that do not exist and forbade watchdog work on the render loop, where the built watchdog lives (AC-7 states a one-frame deadline; that the loop is the only place to meet it is the prompt's inference). The upgrade rewrites it around what the tree has (§0 of the prompt: watchdog on the loop, ladder rung 1 with hysteresis, the automation schema/types/commands with no runtime — ~~and audit kind~~: `AuditRecord.kind` does not include `"automation"` yet, only a comment anticipates it (corrected in PR #32's fix round) — `autoFollow` normative since v0.1 and unimplemented) and names the decisions owed before an executor starts:
 
 | # | Decision | Recommendation in the prompt |
 |---|---|---|

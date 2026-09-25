@@ -1,8 +1,8 @@
 # Agent Prompt 11 — The Automation Engine Runtime, and the Watchdog's Remainder (crates/nbe-engine, packages/control-plane)
 
-**Targets: SPEC v0.4 at v0.4.5 (`docs/spec.v0.4.md`) — Section 13 (automation engine), AC-25 (automation), Section 10.3 (watchdog), Section 10.5 and AC-27 (degradation ladder), Section 10.1 (telemetry), Section 10.7 (audit), AC-7 (fallback latency). Prerequisites: Prompts 01–10 merged (Prompt 10 merged 2026-09-25 as PR #30, `57dd4b9`).**
+**Targets: SPEC v0.4 at v0.4.5 (`docs/spec.v0.4.md`) — Section 13 (automation engine), AC-25 (automation), Section 10.3 (watchdog), Section 10.5 and AC-27 (degradation ladder), Section 10.1 (telemetry), Section 10.7 (audit), AC-7 (fallback latency). Prerequisites: Prompts 01–10 merged (Prompt 10 merged 2026-09-25 UTC — locally 2026-09-24 21:08 −0700 — as PR #30, `57dd4b9`).**
 
-**Upgraded for the tree, 2026-09-25.** The 2026-09-10 draft (superseded text in §12) asked for a watchdog the tree already has, cited two prompt files that do not exist, and forbade the one placement AC-7 requires. The prompt map had moved this slot's real work to the automation runtime on 2026-09-04, before the draft existed (`docs/prompt-map-07-13.md` § 11: *"The watchdog itself exists and is gated … What 11 must now add is the automation engine runtime (§13, AC-25), assigned by [RI-5]"*). This upgrade makes the prompt say so, states what is already true, and names the decisions that belong to the user before an executor starts.
+**Upgraded for the tree, 2026-09-25 UTC (locally 2026-09-24 23:35 −0700).** The 2026-09-10 draft (superseded text in §12) asked for a watchdog the tree already has, cited two prompt files that do not exist, and forbade the one placement AC-7 requires. The prompt map had moved this slot's real work to the automation runtime on 2026-09-04, before the draft existed (`docs/prompt-map-07-13.md` § 11: *"The watchdog itself exists and is gated … What 11 must now add is the automation engine runtime (§13, AC-25), assigned by [RI-5]"*). This upgrade makes the prompt say so, states what is already true, and names the decisions that belong to the user before an executor starts.
 
 You are a senior engineer on `nbe`. Rust for the engine, TypeScript for the control plane. This prompt builds the runtime that turns `trigger + conditions → command` rules into commands on the command bus, and closes the small remainder of the watchdog/ladder work that has a subject in the tree today.
 
@@ -11,7 +11,7 @@ Read these first:
 - `docs/spec.v0.4.md` — §13 (the rule model, triggers, execution semantics, cycle detection, hold), AC-25, §10.3, §10.5, AC-27, AC-7.
 - `docs/implementation-standards.md` — §2a rules 1–8; rule 7 (a test must enter the path it claims) and rule 8 (floors count ran and exercised) bite hardest here.
 - `docs/prompt-map-07-13.md` § 11 and the "Still owed" list under § 10.
-- `docs/v0.5-outline.md` §7 — two UNRATIFIED wire candidates this prompt depends on.
+- `docs/v0.5-outline.md` §7 — ~~two UNRATIFIED wire candidates this prompt depends on~~ (miscounted; corrected in PR #32's fix round, §2c). §7 holds **three** UNRATIFIED rows — the `streamBufferMs` NO-SESSION sentinel, the `stream.start` refusal order, and `streamTransportState`. Of this prompt's candidates **only B2's (`streamTransportState`) lives there**; B1's level-crossing event and B4's command → trigger effect table are **new** candidates this prompt would create.
 - `VOCABULARY.md` — `View`, `Element`, `Sequence`, `Item`.
 
 ---
@@ -22,7 +22,9 @@ Read these first:
 
 `crates/nbe-engine/src/watchdog.rs`: a consecutive-miss counter; `render.rs` constructs it with threshold 2 and reports every frame — `frames_missed = ceil(late / budget)` when the View misses its deadline, `0` otherwise. Crossing the threshold logs loudly and sets `fallback_active` (the fallback slate, §7.14). Tests in `prompt03`, `prompt04`, `prompt06` and `integration` gate it; the midpoint review's pass 4 confirmed deadline accounting and the fallback trip both fail when deleted.
 
-It runs on the render loop **on purpose**: AC-7 requires the cut to the fallback slate "no later than one frame after the missed deadline", and only the loop knows the deadline was missed in time to act on the next frame. The 2026-09-10 draft's "Forbidden: any watchdog work on the render thread" contradicts AC-7 and the built code; it is struck (§12).
+It runs on the render loop **on purpose**. AC-7 requires the cut to the fallback slate "no later than one frame after the missed deadline" — it states the deadline, not the thread. That only the loop knows the deadline was missed in time to act on the next frame is **this prompt's inference**, and it matches the built code. The 2026-09-10 draft's "Forbidden: any watchdog work on the render thread" conflicts with the built, gated watchdog and — by that inference — with AC-7's deadline; it is struck (§12).
+
+**The watchdog is not the only trip.** `render.rs:360` sets `fallback_active` directly when the View render returns `Err` — a failed render, not a late one, outside the watchdog (the `fail_view` test seam exists to pin it). Know both paths before touching the threshold question below.
 
 **One question to settle, not assume (WU5):** §10.3 says the watchdog acts when the loop "misses a deadline by more than 1 frame". The built rule accumulates `ceil(late / budget)` and trips when the sum exceeds 2 — so one frame late by 1.5 budgets (`frames_missed` 2) does not trip it. Read the gating tests and §10.3 together and decide whether the threshold matches the text; record the answer either way.
 
@@ -48,7 +50,7 @@ The quality-profile probe (`gpu.rs` `probe_quality`) is a heuristic: a CPU adapt
 
 - **Schema and types.** `manifest.automation: [AutomationRule]` — `{ id, trigger: { kind, params? }, conditions?: [ {…} ], action: { command, payload? }, enabled = true }`, the nine §13.2 trigger kinds as an enum. Typed in `nbe-core` (`manifest.rs`: `AutomationRule`, `AutomationTrigger`, `AutomationTriggerKind`, `AutomationAction`).
 - **Commands.** `automation.enable` / `automation.disable` `{ ruleId }` (control plane: `E_NOT_FOUND` for an unknown rule; toggles `automationRules`), `automation.hold { hold }` (sets `automationHold`, which is on the §10.1 tick). `nbe-preflight` knows all three command names and their required fields.
-- **Audit.** `audit.ts` reserves `kind: "automation"` for automation actions (AC-25 §4); nothing writes it.
+- **Audit.** ~~`audit.ts` reserves `kind: "automation"` for automation actions (AC-25 §4); nothing writes it.~~ Overstated (corrected in PR #32's fix round, §2c): `AuditRecord.kind` is `"command" | "auth" | "preflight"`. `"automation"` appears only in a **comment** anticipating it (AC-25 §4), so nothing can write that kind without a type change — WU1 makes it.
 - **Missing:** an evaluator; every trigger adapter; conditions evaluation; the once-per-frame limiter (§13.3 #3); runtime self-trigger suppression (§13.4); **preflight cycle detection** (§13.4 — nothing in `nbe-preflight` or `nbe-core` validates rules); hold's "within 1 frame" guarantee (§13.5, AC-25 #2).
 - **`autoFollow` is normative since v0.1 and unimplemented.** Items carry it (`nbe-core` `auto_follow`, control-plane `state.ts`); nothing advances on media end. §3.1's time-axis table lists it as "subsumed by Automation", and §13.5 #2 requires hold to suppress it — so it lands here.
 
@@ -112,11 +114,11 @@ Every §2a rule applies. The ones that bite:
 
 **Allowed:** the rule evaluator and its trigger adapters in the control plane; `autoFollow` as the first built-in consumer of `mediaEnd`; preflight cycle checks in `nbe-preflight` / `nbe-core`; the engine events B1/B3 decide on; ladder rung 2 and the §10.3 threshold answer per C1.
 
-**Forbidden:** rule evaluation on the render loop; any path by which an automation action skips a command precondition or the audit log; ladder rungs 3–4 (no subject); GPU timing (C1 permitting otherwise); changes to the watchdog's placement on the loop (AC-7 needs it there); ratifying any candidate inside the feature PR.
+**Forbidden:** rule evaluation on the render loop; any path by which an automation action skips a command precondition or the audit log; ladder rungs 3–4 (no subject); GPU timing (C1 permitting otherwise); changes to the watchdog's placement on the loop (the built placement; by this prompt's inference AC-7's one-frame deadline needs it there); ratifying any candidate inside the feature PR.
 
 ## 7. Work items
 
-- **WU1 — Evaluator core (control plane).** Load rules with the package; `enabled` and `automation.enable/disable`; conditions; dispatch through the command registry as actor `automation:<ruleId>`; audit every attempt — fired, refused by a precondition, suppressed by hold, suppressed as a self-trigger, rate-limited — with `kind: "automation"`.
+- **WU1 — Evaluator core (control plane).** Add `"automation"` to `AuditRecord.kind` in `packages/control-plane/src/audit.ts` — **the type does not accept automation writes today**. Nothing enumerates the kinds (no mirror, no token test; the only other writer is `server.ts`'s `"preflight"` record), so pin the widened union with a test. Load rules with the package; `enabled` and `automation.enable/disable`; conditions; dispatch through the command registry as actor `automation:<ruleId>`; audit every attempt — fired, refused by a precondition, suppressed by hold, suppressed as a self-trigger, rate-limited — with `kind: "automation"`.
 - **WU2 — Limiter and suppression.** At most one firing per rule per frame (§13.3 #3); a rule whose action re-triggers itself is suppressed at runtime (§13.4); hold suppresses all triggers and `autoFollow` within one frame and cancels pending (B5) actions (§13.5, AC-25 #2).
 - **WU3 — Trigger adapters.** `timer`, `timeOfDay`, `stateChange`, `hotkey`, `rssKeyword`, `mediaEnd`, `mediaStart` (per B3); `audioLevel` (per B1) and `streamHealth` (per B2) only once their decisions land — until then they are refused at package load with a named reason, never accepted and silently inert.
 - **WU4 — `autoFollow`.** Media end on an item with `autoFollow` advances as §3.1 describes, through the same dispatch path, suppressed by hold.
@@ -164,7 +166,7 @@ Every §2a rule applies. The ones that bite:
 The 2026-09-10 draft, kept here so the change is visible:
 
 1. ~~"Read … `agents/prompts/01-foundation.md` (metrics) and `03-compositor.md` (telemetry)"~~ — neither file exists (`01-bootstrap-core-preflight.md`, `04-basic-compositor.md`).
-2. ~~"Forbidden: … any watchdog work on the render thread"~~ — contradicts AC-7 (fallback within one frame of the missed deadline) and the built, gated watchdog (§0.1).
+2. ~~"Forbidden: … any watchdog work on the render thread"~~ — conflicts with the built, gated watchdog (§0.1) and, by this prompt's inference, with AC-7's one-frame deadline (AC-7 states the deadline, not the thread).
 3. ~~Steps 1–4: detection, fallback tiers, reporting, restoration~~ — detection, the fallback trip, `degradationRung` reporting and rung-1 restoration with hysteresis are built (§0.1–0.2). What remains is rung 2 and the §10.3 threshold question (WU6).
 4. ~~"shed … drop the lowest-priority optional Element first"~~ — §10.5's yield order is Preview rate, loop caches, effect quality, multiview tiles; "optional Elements" is not a §10.5 rung.
 5. The draft never mentioned §13 or AC-25, although the prompt map had assigned the automation runtime to this slot on 2026-09-04 (the midpoint integration review, `[RI-5]`, commit `a9ff3a7`) — six days before the draft was written.
