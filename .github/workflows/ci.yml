@@ -388,11 +388,20 @@ jobs:
             echo "FAIL stream_url_precedence: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the stream commands suite actually ran (Prompt 10 WU4)
-        # Same two-floor shape. Ten of the thirteen tests open a stream and
-        # gate on the encoder + chain (loud SKIP without either); the other
-        # four (not-running refusal, no-endpoint refusal, stop-while-idle
-        # refusal, srt-scheme refusal) run everywhere and are the floor
-        # skipping cannot satisfy.
+        # Twenty-one tests. Thirteen open a stream and gate on the hardware
+        # encoder (loud SKIP without one). Eight run on this runner (a
+        # zero-copy chain, no encoder) and are the floor skipping cannot
+        # satisfy: six refusals that need no hardware at all (not running, no
+        # endpoint, stop while idle, cpuReadback tapPath, garbage url,
+        # non-string url), the chain-less refusal (chain forced absent), and
+        # the refusal-order pin (stream_start_refusal_order_is_config_then_
+        # chain_then_encoder), whose encoder leg needs this runner's real
+        # chain. exercised>=8 is exactly the runner's shape, so removing any of
+        # the eight — the pin included — turns this step red.
+        # ~~Ten of the thirteen tests open a stream … the other four … run
+        # everywhere~~ and ~~floors ran>=20 exercised>=4~~: two rounds stale
+        # (§2c) — the pin landed at bf0274c without the floor rising, so
+        # deleting it left CI green. Found by PR #30's second-key pass.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1)
@@ -403,12 +412,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=4)"
-          if [ "$ran" -lt 20 ]; then
-            echo "FAIL prompt10_stream_cmds: expected at least 20 tests to run, got $ran"; exit 1
+          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=21 exercised>=8)"
+          if [ "$ran" -lt 21 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 21 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 4 ]; then
-            echo "FAIL prompt10_stream_cmds: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 8 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the RTMP transport suite actually ran (Prompt 10 WU5)
         # Two layers since the PR #30 repair round. Thirteen tests drive the

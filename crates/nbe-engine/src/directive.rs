@@ -1093,7 +1093,9 @@ impl DirectiveHandler {
                 ),
             ));
         }
-        // (6) SPEC §16.14 precondition, wired: this build's hardware encoder.
+        // (6) SPEC §16.14 precondition, wired: a hardware H.264 encoder
+        // (§9.2 — spec law, like the chain; ~~"this build's hardware
+        // encoder"~~ was the old refusal-order framing, corrected above).
         if !crate::record::session::encoder_available() {
             return Err(DirectiveError::NoHardwareEncoder(
                 "stream.start: no hardware H.264 encoder available".into(),

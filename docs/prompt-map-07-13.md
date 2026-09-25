@@ -1244,6 +1244,19 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   holds whole frames; the guard `drains_racing_eviction_stay_stereo_aligned`
   reads 0 odd of 8,833 drains (104 of 598 with the old eviction).
 - **Transport state is not on the wire** — see the v0.5 §7 candidate.
+- **The extended-timestamp fix has no real-ingest witness past 0xFFFFFF.**
+  It is guarded against the conforming double
+  (`extended_timestamp_repeats_on_every_type3_chunk`, base `0x0100_0000`);
+  a 4.66-hour soak leg or a real-ingest marathon is its owed witness.
+- **The second `Acquire` fence, deferred deliberately.** `SurfacePool::is_free`
+  proves one direction: the retain read cannot see the pre-encode baseline. The
+  other half — VideoToolbox's pixel reads ordered before the compositor's next
+  writes once the read sees the release — rests today on CoreFoundation's
+  internal atomics and on Metal submission acting as a barrier. A second
+  `fence(Acquire)` after `encoder_released()` returns true would make it
+  explicit, at one `dmb ishld` on arm64 per acquire. Both keys judged the
+  current shape sound in practice; the line is owed to the first ARM production
+  target or the next quiet moment, whichever comes first.
 
 ## 11 — Watchdog
 

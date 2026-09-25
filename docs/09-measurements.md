@@ -970,15 +970,21 @@ lives and dies with the stream thread, so there is no edge to miss.
 ### Two numbers for one encode call — both honest, different shapes
 
 The independent review measured PR #30's per-frame encode at **3.6 ms mean**;
-this round's before-measurement puts PR #30's per-frame stream cost at
-**~0.2–0.3 ms** of the tick. They disagree because they measure different
+this round's before-measurement puts PR #30's steady per-frame stream cost at
+**~0.13 ms** of the tick. ~~"~0.2–0.3 ms"~~ — that figure included the one
+tick that opened the encoder (corrected after PR #30's second-key pass, §2c).
+The arithmetic, from the loop table above (before, 300 ticks each): the
+`stream` row's mean 1.727 ms includes its 39.881 ms encoder-open tick, so the
+other 299 average (1.727 × 300 − 39.881) / 299 = **1.599 ms**; against the
+`none` row's 1.465 ms that is **+0.134 ms** per steady frame (+0.262 ms with the
+open tick left in). The two numbers disagree because they measure different
 things, and a future reader comparing them should know which is which.
 
 | | review (2026-09-24, load 2.59 → 2.71) | repair round (loads 2.07–2.83) |
 |---|---|---|
 | What was timed | each `encode_pixel_buffer` call | the loop's whole tick (stream share), and each encode call on the stream thread |
 | Pacing | **none** — 300 calls back to back in a temporary test (`zz_review_probe`: one 1080p30 8 Mbps session, a 4-surface pool, never drawn into) | **the show's rate** — the production loop at 30 fps |
-| Result | mean 3.6, p95 6.1, max 20.3 ms, 0 of 300 over budget | tick +0.25 ms mean with the stream live (before: 1.729 vs 1.484 ms); call on the thread 0.05–0.11 ms mean |
+| Result | mean 3.6, p95 6.1, max 20.3 ms, 0 of 300 over budget | tick +0.134 ms mean per steady frame (1.599 vs 1.465 ms, the encoder-open tick excluded; +0.262 ms with it); call on the thread 0.05–0.11 ms mean. ~~"+0.25 ms (before: 1.729 vs 1.484 ms)"~~ — those two means came from the own-author pass's run and appear nowhere else in the tree |
 | What it is | **throughput-limited**: unpaced submission outruns the encoder, and VideoToolbox's backpressure blocks each call until it has room | **steady state**: the encoder is idle when each frame arrives |
 
 Both are true of the same code. The steady-state number is what PR #30's loop
