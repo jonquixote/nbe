@@ -130,6 +130,10 @@ pub struct EngineState {
     /// thread. `None` while Idle. Cleared on every stop path so the driver
     /// detaches; the thread keeps its own `Arc` for the tail drain.
     pub record_tap: Mutex<Option<Arc<crate::record::AudioTap>>>,
+    /// The live stream's audio tap: published by `stream.start`, attached to
+    /// the live graph by the audio driver beside the record tap, drained by
+    /// the stream thread. `None` while Idle; cleared on every stop path.
+    pub stream_tap: Mutex<Option<Arc<crate::record::AudioTap>>>,
     /// Accumulated record-feed cost in milliseconds (loop-updated, off the
     /// render budget by construction; observable to tests, no wire/telemetry
     /// change).
@@ -147,6 +151,29 @@ pub struct EngineState {
     /// this to measure `recordSpaceMib`; `None` when no package is loaded or
     /// the package declares no record target.
     pub record_dir: Mutex<Option<std::path::PathBuf>>,
+    /// Engine streaming state (SPEC §16.14). WU4 flips `Idle -> Live` on
+    /// `stream.start` once the [`StreamSession`](crate::record::stream::StreamSession)
+    /// opens, and back on `stream.stop` / `show.stop` quiescence after the
+    /// session closes.
+    pub stream_state: Mutex<StreamState>,
+    /// The live stream, if any. `Some` exactly while `stream_state` is `Live`
+    /// via the directive path. `stream.stop` closes it before the ack;
+    /// `show.stop` quiesces it the same way.
+    pub stream_session: Mutex<Option<crate::record::stream::StreamSession>>,
+    /// The frame path the live stream selected, and why (ZERO-COPY Phase 2
+    /// shape, record-mirrored). `None` until a stream has selected one. Not
+    /// cleared at stop: the field reads as the path the LAST stream used.
+    pub stream_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
+    /// Stream frames dropped because no surface could be taken (G1
+    /// drop-Arc discipline): the View drew regardless, the stream took the
+    /// drawn surface or dropped it. Never moves `skipped_record_frames` nor
+    /// `droppedFramesTotal` (AC-10 item 4). `Arc` so the loop hook counts
+    /// without holding state locks across GPU work.
+    pub skipped_stream_frames: Arc<AtomicU64>,
+    /// Accumulated stream-feed cost in milliseconds (loop-updated, off the
+    /// render budget by construction; observable to tests, no wire change
+    /// beyond `streamBufferMs` which reads the transport counter).
+    pub stream_tap_ms: Mutex<f64>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
 }
@@ -192,10 +219,16 @@ impl EngineState {
             record_state: Mutex::new(RecordState::Idle),
             record_session: Mutex::new(None),
             record_tap: Mutex::new(None),
+            stream_tap: Mutex::new(None),
             record_tap_ms: Mutex::new(0.0),
             record_tap_selection: Mutex::new(None),
             skipped_record_frames: Arc::new(AtomicU64::new(0)),
             record_dir: Mutex::new(None),
+            stream_state: Mutex::new(StreamState::Idle),
+            stream_session: Mutex::new(None),
+            stream_tap_selection: Mutex::new(None),
+            skipped_stream_frames: Arc::new(AtomicU64::new(0)),
+            stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),
         }
     }
@@ -422,4 +455,16 @@ pub enum RecordState {
     #[default]
     Idle,
     Recording,
+}
+
+/// Engine streaming state (SPEC §16.14): `Idle → Live → (stop) Idle`.
+/// WU4 enters `Live` on `stream.start` (show running + encoder available +
+/// zero-copy chain available + endpoint resolved); `stream.stop` and
+/// `show.stop` quiescence return it to `Idle`. Exactly one live stream exists
+/// at a time (§9.1 ceiling — a second start while `Live` is refused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamState {
+    #[default]
+    Idle,
+    Live,
 }

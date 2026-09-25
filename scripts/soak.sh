@@ -131,6 +131,13 @@ R7_HITS=0
 # iteration records; `set -u` is on, so they are declared rather than assumed.
 LAST_TAP_PATHS=""
 LAST_TAP_REASONS=""
+# The last iteration's stream evidence (Prompt 10), for soak.json.
+LAST_STREAM_LINE=""
+LAST_SURVIVAL_LINE=""
+LAST_RECONNECT_LINE=""
+LAST_G1_LINE=""
+LAST_VT_LINE=""
+LAST_MEDIAMTX=""
 
 for i in $(seq 1 "$ITERATIONS"); do
   say "--- iteration $i/$ITERATIONS"
@@ -152,6 +159,45 @@ for i in $(seq 1 "$ITERATIONS"); do
   done
   say "  09 suites: $SKIPS skips"
   [ "$SKIPS" -eq 0 ] || { say "  VOID-ish: $SKIPS capability skips during the run"; FAILED=1; }
+
+  # The stream suites (Prompt 10), in full, zero skips — with one exception:
+  # the MediaMTX interop proof needs an out-of-band binary in /tmp, and its
+  # absence is RECORDED (soak.json stream.mediamtx), not failed, because no
+  # soak row claims interop. Every other skip means the host lost a
+  # capability mid-run. The evidence lines each suite prints are the rows'
+  # record (docs/soak-protocol.md §1).
+  SSKIPS=0
+  : >"$ITER/stream-evidence.txt"
+  for t in prompt10_rtmp prompt10_stream_cmds prompt10_telemetry zerocopy_g1; do
+    O="$(cargo test -p nbe-engine --test "$t" -- --nocapture 2>&1)"
+    echo "$O" >"$ITER/$t.log"
+    K="$(echo "$O" | grep '^SKIP' | grep -vc 'MediaMTX')"
+    SSKIPS=$((SSKIPS + K))
+    if echo "$O" | grep -q "^test result: FAILED"; then
+      say "  FAIL $t (see $ITER/$t.log)"; FAILED=1
+    fi
+    echo "$O" | grep -E '^(LIVE LOOP|SURVIVAL|RECONNECT|BOTH LIVE|BACKPRESSURE|BOUNDED STOP|G1 guard|VT retain guard|MEDIAMTX-PROOF)' \
+      >>"$ITER/stream-evidence.txt"
+  done
+  say "  stream suites: $SSKIPS capability skips (MediaMTX proof excluded)"
+  [ "$SSKIPS" -eq 0 ] || { say "  VOID-ish: $SSKIPS capability skips in the stream suites"; FAILED=1; }
+  sed 's/^/    /' "$ITER/stream-evidence.txt" | tee -a "$OUT/soak.log"
+  LAST_SURVIVAL_LINE="$(grep -h '^SURVIVAL:' "$ITER/stream-evidence.txt" | head -1)"
+  LAST_RECONNECT_LINE="$(grep -h '^RECONNECT:' "$ITER/stream-evidence.txt" | head -1)"
+  LAST_G1_LINE="$(grep -h '^G1 guard:' "$ITER/stream-evidence.txt" | head -1)"
+  LAST_VT_LINE="$(grep -h '^VT retain guard:' "$ITER/stream-evidence.txt" | head -1)"
+  if grep -q '^MEDIAMTX-PROOF .*2 tracks (H264, MPEG-4 Audio)' "$ITER/stream-evidence.txt"; then
+    LAST_MEDIAMTX="proved"
+  else
+    LAST_MEDIAMTX="skipped (binary absent) or not proved — see $ITER/prompt10_rtmp.log"
+  fi
+  # 'VT retain guard' is required, not merely grepped: the guard skips on CI
+  # (no encoder), so this is its only home, and a row whose capture is
+  # optional is the tense defect PR #24's pass named.
+  for need in SURVIVAL RECONNECT 'G1 guard' 'LIVE LOOP' 'BOTH LIVE' 'VT retain guard'; do
+    grep -q "^$need" "$ITER/stream-evidence.txt" \
+      || { say "  stream evidence missing: '$need' — the row it backs has no record this iteration"; FAILED=1; }
+  done
 
   # The rehearsal: thresholds, recording end-to-end, AC-6.
   ( cd packages/control-plane && npm run test:rehearsal ) >"$ITER/rehearsal.log" 2>&1
@@ -190,6 +236,14 @@ for i in $(seq 1 "$ITERATIONS"); do
   # The rehearsal prints it too, which is the cross-check: two independent
   # derivations of the same fact, from the ticks and from the step.
   TAP_LINE="$(grep -h '^RECORD PATH:' "$ITER/rehearsal.log" 2>/dev/null | head -1)"
+  # The rehearsal's stream step (Prompt 10): the binary streamed beside the
+  # show. A clean iteration that never printed it did not stream.
+  STREAM_LINE="$(grep -h 'STREAM:' "$ITER/rehearsal.log" 2>/dev/null | head -1 | sed 's/^# //')"
+  say "  rehearsal stream: ${STREAM_LINE:-<none>}"
+  if [ "$RS" -eq 0 ] && [ "${RF:-1}" -eq 0 ] && [ -z "$STREAM_LINE" ]; then
+    say "  rehearsal stream: NO STREAM LINE across a clean iteration"; FAILED=1
+  fi
+  LAST_STREAM_LINE="$STREAM_LINE"
   say "  record tap: ${TAP_PATHS:-<none captured>} | reasons: ${TAP_REASONS:-<none>}"
   [ -n "$TAP_LINE" ] && say "  rehearsal said: $TAP_LINE"
   echo "${TAP_PATHS:-}" >"$ITER/record-tap-path.txt"
@@ -239,6 +293,14 @@ cat >"$OUT/soak.json" <<JSON
   "record_tap": {
     "paths_last_iteration": "${LAST_TAP_PATHS:-}",
     "reasons_last_iteration": "${LAST_TAP_REASONS:-}"
+  },
+  "stream": {
+    "rehearsal_last_iteration": "${LAST_STREAM_LINE:-}",
+    "survival_last_iteration": "${LAST_SURVIVAL_LINE:-}",
+    "reconnect_last_iteration": "${LAST_RECONNECT_LINE:-}",
+    "g1_last_iteration": "${LAST_G1_LINE:-}",
+    "vt_retain_last_iteration": "${LAST_VT_LINE:-}",
+    "mediamtx": "${LAST_MEDIAMTX:-}"
   },
   "outcome": "$([ "$FAILED" -eq 0 ] && echo PASS || echo FAIL)"
 }

@@ -26,7 +26,10 @@ pub mod aac;
 pub mod audio_tap;
 pub mod feed;
 pub mod markers;
+pub mod pool;
+pub mod rtmp;
 pub mod session;
+pub mod stream;
 pub mod tap_path;
 pub mod thread;
 pub mod writer;
@@ -50,6 +53,36 @@ pub fn zerocopy_pool(
     height: u32,
 ) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
     nbe_decode::zerocopy::SurfacePool::new(device, width, height, thread::RECORD_CHANNEL_BOUND + 1)
+}
+
+/// Build a take's SHARED surface pool at View geometry (Gate G1).
+///
+/// Sized [`pool::shared_pool_size`]: each consumer's queue plus the surface
+/// its thread is encoding, plus the drawn one. Used by `record.start`; a
+/// stream that starts while a take is live shares the take's pool.
+pub fn shared_zerocopy_pool(
+    device: &wgpu::Device,
+) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
+    nbe_decode::zerocopy::SurfacePool::new(
+        device,
+        crate::render::VIEW_W,
+        crate::render::VIEW_H,
+        pool::shared_pool_size(thread::RECORD_CHANNEL_BOUND, stream::STREAM_CHANNEL_BOUND),
+    )
+}
+
+/// Build the stream's own surface pool at View geometry, sized
+/// [`pool::stream_pool_size`]. Built by `stream.start` (the chain probe IS
+/// this build) and owned by the session — never by the render loop.
+pub fn stream_zerocopy_pool(
+    device: &wgpu::Device,
+) -> Result<nbe_decode::zerocopy::SurfacePool, nbe_decode::zerocopy::ZeroCopyError> {
+    nbe_decode::zerocopy::SurfacePool::new(
+        device,
+        crate::render::VIEW_W,
+        crate::render::VIEW_H,
+        pool::stream_pool_size(stream::STREAM_CHANNEL_BOUND),
+    )
 }
 pub use session::{encoder_available, set_force_no_encoder, RecordSession, SessionError};
 pub use thread::{

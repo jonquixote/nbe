@@ -531,6 +531,321 @@ test("[RI-1] step 8: preview.set is visible in telemetry", async () => {
   assert.equal((tick["data"] as Record<string, unknown>)["previewItem"], "A1");
 });
 
+// --- Stream extension (Prompt 10 repair round) -------------------------------
+//
+// The rehearsal is the one place the real engine BINARY runs a show, so it is
+// where the stream path must be seen running in it: `stream.start` on a live
+// show, the binary's own loop handing surfaces to its stream thread, VideoToolbox
+// + AAC on that thread, RTMP onto a socket. PR #30 shipped streaming without the
+// rehearsal ever starting a stream.
+//
+// The ingest is a minimal in-test RTMP responder: it completes the handshake,
+// answers `connect` / `createStream` / `publish` with canned AMF0 replies, and
+// then counts what arrives. It does not parse media — the wire-level proofs
+// (chunking, timestamps, codec headers) live in `prompt10_rtmp`, against a
+// conforming double and a real MediaMTX. This step proves composition: the
+// binary streams while the show runs, and stops inside the grace window.
+//
+// Placed before the gate so the gate's zero-drop / zero-underrun totals cover
+// the streamed span. On a machine without a hardware H.264 encoder (CI) the
+// engine refuses `stream.start` with E_NO_HARDWARE_ENCODER; the step asserts
+// that refusal in the engine log and skips loudly — never green by absence.
+
+/** How long the stream runs beside the show. */
+const STREAM_SECS = 4;
+
+interface RtmpSinkStats {
+  connections: number;
+  published: boolean;
+  /** Bytes received after `publish` was answered: media plus chunk headers. */
+  mediaBytes: number;
+  /** Media messages reassembled from the client's chunks. */
+  videoMessages: number;
+  videoKeyframes: number;
+  videoSequenceHeaders: number;
+  audioMessages: number;
+  audioSequenceHeaders: number;
+  /** The first chunk the sink could not frame (it stops counting there). */
+  parseError: string | null;
+}
+
+/**
+ * Just enough chunk parsing to count media: the client's announced chunk size,
+ * fmt 0 message headers (with the extended timestamp), fmt 3 continuations.
+ * The client only ever sends fmt 0 first chunks, so fmt 1/2 are a parse error.
+ * A chunk is consumed only once header AND body are both buffered.
+ */
+class ChunkCounter {
+  private buf = Buffer.alloc(0);
+  private chunkSize = 128;
+  private cur: { type: number; remaining: number; ext: boolean; head: number[] } | null = null;
+  constructor(private stats: RtmpSinkStats) {}
+  feed(chunk: Buffer): void {
+    this.buf = Buffer.concat([this.buf, chunk]);
+    while (this.stats.parseError === null && this.step()) {
+      // keep framing
+    }
+  }
+  /** Frame one whole chunk; false when more bytes are needed. */
+  private step(): boolean {
+    if (this.buf.length < 1) return false;
+    const b0 = this.buf[0] as number;
+    const fmt = b0 >> 6;
+    if ((b0 & 0x3f) < 2) {
+      this.stats.parseError = `unexpected multi-byte chunk stream id ${b0 & 0x3f}`;
+      return false;
+    }
+    let hdr: number;
+    let msg: { type: number; remaining: number; ext: boolean; head: number[] };
+    if (fmt === 0) {
+      if (this.buf.length < 12) return false;
+      const ext = this.buf.readUIntBE(1, 3) === 0xffffff;
+      hdr = 12 + (ext ? 4 : 0);
+      msg = { type: this.buf[7] as number, remaining: this.buf.readUIntBE(4, 3), ext, head: [] };
+    } else if (fmt === 3 && this.cur !== null && this.cur.remaining > 0) {
+      hdr = 1 + (this.cur.ext ? 4 : 0);
+      msg = this.cur;
+    } else {
+      this.stats.parseError = `unexpected fmt ${fmt}`;
+      return false;
+    }
+    const take = Math.min(msg.remaining, this.chunkSize);
+    if (this.buf.length < hdr + take) return false;
+    const body = this.buf.subarray(hdr, hdr + take);
+    this.buf = this.buf.subarray(hdr + take);
+    for (const byte of body.subarray(0, Math.max(0, 4 - msg.head.length))) msg.head.push(byte);
+    msg.remaining -= take;
+    this.cur = msg;
+    if (msg.remaining === 0) this.complete(msg);
+    return true;
+  }
+  private complete(msg: { type: number; head: number[] }): void {
+    const [first, second] = msg.head;
+    if (msg.type === 0x01 && msg.head.length === 4) {
+      this.chunkSize = Buffer.from(msg.head).readUInt32BE(0);
+    } else if (msg.type === 0x09) {
+      this.stats.videoMessages += 1;
+      if (first === 0x17 && second === 0x00) this.stats.videoSequenceHeaders += 1;
+      else if (first === 0x17) this.stats.videoKeyframes += 1;
+    } else if (msg.type === 0x08) {
+      this.stats.audioMessages += 1;
+      if (second === 0x00) this.stats.audioSequenceHeaders += 1;
+    }
+  }
+}
+
+function amfString(s: string): Buffer {
+  const b = Buffer.alloc(3 + s.length);
+  b[0] = 0x02;
+  b.writeUInt16BE(s.length, 1);
+  b.write(s, 3, "latin1");
+  return b;
+}
+function amfNumber(n: number): Buffer {
+  const b = Buffer.alloc(9);
+  b[0] = 0x00;
+  b.writeDoubleBE(n, 1);
+  return b;
+}
+const AMF_NULL = Buffer.from([0x05]);
+function amfObject(props: Array<[string, Buffer]>): Buffer {
+  const parts: Buffer[] = [Buffer.from([0x03])];
+  for (const [k, v] of props) {
+    const key = Buffer.alloc(2 + k.length);
+    key.writeUInt16BE(k.length, 0);
+    key.write(k, 2, "latin1");
+    parts.push(key, v);
+  }
+  parts.push(Buffer.from([0x00, 0x00, 0x09]));
+  return Buffer.concat(parts);
+}
+/** One AMF0 command message on chunk stream 3, single chunk (payload ≤ 128). */
+function rtmpCommand(streamId: number, payload: Buffer): Buffer {
+  assert.ok(payload.length <= 128, "canned replies fit one default-size chunk");
+  const h = Buffer.alloc(12);
+  h[0] = 0x03; // fmt 0, csid 3
+  h.writeUIntBE(0, 1, 3);
+  h.writeUIntBE(payload.length, 4, 3);
+  h[7] = 0x14;
+  h.writeUInt32LE(streamId, 8);
+  return Buffer.concat([h, payload]);
+}
+
+async function startRtmpSink(): Promise<{
+  port: number;
+  stats: RtmpSinkStats;
+  close: () => void;
+}> {
+  const { createServer } = await import("node:net");
+  const stats: RtmpSinkStats = {
+    connections: 0,
+    published: false,
+    mediaBytes: 0,
+    videoMessages: 0,
+    videoKeyframes: 0,
+    videoSequenceHeaders: 0,
+    audioMessages: 0,
+    audioSequenceHeaders: 0,
+    parseError: null,
+  };
+  const sockets = new Set<import("node:net").Socket>();
+  const srv = createServer((sock) => {
+    stats.connections += 1;
+    sockets.add(sock);
+    sock.on("close", () => sockets.delete(sock));
+    sock.on("error", () => {});
+    let phase: "c0c1" | "c2" | "dialog" | "media" = "c0c1";
+    // Every client byte after C2 is chunked; the counter frames all of it
+    // (the dialog's Set Chunk Size is what it learns the chunk size from).
+    const counter = new ChunkCounter(stats);
+    let buf = Buffer.alloc(0);
+    const answered = { connect: false, createStream: false, publish: false };
+    sock.on("data", (chunk: Buffer) => {
+      if (phase === "media") {
+        stats.mediaBytes += chunk.length;
+        counter.feed(chunk);
+        return;
+      }
+      buf = Buffer.concat([buf, chunk]);
+      if (phase === "c0c1" && buf.length >= 1537) {
+        const c1 = buf.subarray(1, 1537);
+        sock.write(Buffer.concat([Buffer.from([3]), Buffer.alloc(1536), c1]));
+        buf = buf.subarray(1537);
+        phase = "c2";
+      }
+      if (phase === "c2" && buf.length >= 1536) {
+        buf = buf.subarray(1536);
+        phase = "dialog";
+        counter.feed(buf);
+      } else if (phase === "dialog") {
+        counter.feed(chunk);
+      }
+      if (phase !== "dialog") return;
+      if (!answered.connect && buf.includes(amfString("connect"))) {
+        answered.connect = true;
+        sock.write(
+          rtmpCommand(
+            0,
+            Buffer.concat([
+              amfString("_result"),
+              amfNumber(1),
+              AMF_NULL,
+              amfObject([["code", amfString("NetConnection.Connect.Success")]]),
+            ]),
+          ),
+        );
+      }
+      if (!answered.createStream && buf.includes(amfString("createStream"))) {
+        answered.createStream = true;
+        sock.write(
+          rtmpCommand(0, Buffer.concat([amfString("_result"), amfNumber(2), AMF_NULL, amfNumber(1)])),
+        );
+      }
+      if (!answered.publish && buf.includes(amfString("publish"))) {
+        answered.publish = true;
+        sock.write(
+          rtmpCommand(
+            1,
+            Buffer.concat([
+              amfString("onStatus"),
+              amfNumber(0),
+              AMF_NULL,
+              amfObject([["code", amfString("NetStream.Publish.Start")]]),
+            ]),
+          ),
+        );
+        stats.published = true;
+        phase = "media";
+        buf = Buffer.alloc(0);
+      }
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const addr = srv.address();
+  assert.ok(addr !== null && typeof addr === "object");
+  return {
+    port: addr.port,
+    stats,
+    close: () => {
+      for (const s of sockets) s.destroy();
+      srv.close();
+    },
+  };
+}
+
+test("[P10] step 9: a live stream publishes beside the running show and stops in the grace window", async () => {
+  const sink = await startRtmpSink();
+  try {
+    const fields = () => (ticks.at(-1)?.["data"] ?? {}) as Record<string, unknown>;
+    const spanStart = {
+      dropped: droppedNow(),
+      underruns: (fields()["audioUnderrunsTotal"] ?? 0) as number,
+    };
+    const startReply = await ok("stream.start", {
+      url: `rtmp://127.0.0.1:${sink.port}/live/rehearsal`,
+    });
+    const applied = await server.awaitApplied(
+      (startReply["stateVersion"] ?? 0) as number,
+      COMMAND_MS,
+    );
+    if (!applied) {
+      // Same capability gate as the record steps: a refusal is distinguished
+      // from a wedged pipeline by the engine's own log.
+      const refused = engineLog.some(
+        (l) => l.includes("E_NO_HARDWARE_ENCODER") || l.includes("E_NO_ZEROCOPY"),
+      );
+      assert.ok(
+        refused,
+        `stream.start produced no engine ack and no capability refusal in the engine log — pipeline wedged (last log lines: ${JSON.stringify(engineLog.slice(-3))})`,
+      );
+      console.log("SKIP stream step: engine refused stream.start (no hardware H.264 encoder / zero-copy chain on this machine)");
+      // The control plane recorded the command ("as commanded"); put it back.
+      await ok("stream.stop", {});
+      return;
+    }
+    await untilTelemetry("the tick reports the stream live (as commanded)", (t) =>
+      (t["data"] as Record<string, unknown>)?.["streamState"] === "live",
+    );
+    await sleep(STREAM_SECS * 1000);
+    const stopStarted = Date.now();
+    const stopReply = await ok("stream.stop", {});
+    assert.ok(
+      await server.awaitApplied((stopReply["stateVersion"] ?? 0) as number, STOP_MS),
+      "the engine must apply stream.stop (thread gone, transport closed) before it acks",
+    );
+    const stopMs = Date.now() - stopStarted;
+    const span = {
+      dropped: droppedNow() - spanStart.dropped,
+      underruns: ((fields()["audioUnderrunsTotal"] ?? 0) as number) - spanStart.underruns,
+    };
+    const st = sink.stats;
+    console.log(
+      `STREAM: ${st.mediaBytes} bytes in ${STREAM_SECS} s over ${st.connections} connection(s): ` +
+        `video ${st.videoMessages} messages (${st.videoSequenceHeaders} sequence header, ${st.videoKeyframes} keyframes), ` +
+        `audio ${st.audioMessages} messages (${st.audioSequenceHeaders} sequence header); ` +
+        `stream.stop applied in ${stopMs} ms; span drops ${span.dropped}, underruns ${span.underruns}`,
+    );
+    assert.ok(st.published, "the engine completed the RTMP publish dialog");
+    assert.equal(st.parseError, null, "the engine's chunks frame cleanly");
+    assert.ok(st.videoSequenceHeaders >= 1, "the encoder's AVC sequence header went out");
+    // 30 fps for STREAM_SECS, less the dial: most frames must arrive.
+    assert.ok(
+      st.videoMessages >= STREAM_SECS * 30 * 0.5,
+      `video flowed at the show's rate: ${st.videoMessages} messages in ${STREAM_SECS} s`,
+    );
+    assert.ok(st.videoKeyframes >= STREAM_SECS - 1, `1 s keyframes: saw ${st.videoKeyframes}`);
+    assert.ok(st.audioSequenceHeaders >= 1, "the AAC sequence header went out");
+    // 1024-sample packets at 48 kHz: 46.9 per second.
+    assert.ok(
+      st.audioMessages >= STREAM_SECS * 46 * 0.5,
+      `the show's audio flowed: ${st.audioMessages} AAC messages in ${STREAM_SECS} s`,
+    );
+    assert.ok(stopMs <= STOP_MS, `stream.stop must apply within ${STOP_MS} ms, took ${stopMs} ms`);
+  } finally {
+    sink.close();
+  }
+});
+
 test("[RI-1] gate: no drops, no underruns, no fallback, and the profile is real", async () => {
   const fields = (ticks.at(-1)?.["data"] ?? {}) as Record<string, unknown>;
   assert.equal(fields["droppedFramesTotal"], 0, "zero-drop across the whole show");

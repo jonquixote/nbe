@@ -316,6 +316,162 @@ jobs:
           else
             echo "No skips: this runner ran a take on both frame paths."
           fi
+      - name: the G1 shared-pool suite actually ran (Prompt 10 WU1)
+        # On the production seams since the PR #30 repair round: the real GPU
+        # SurfacePool, a real RenderLoop drawing through record's
+        # begin/end_tap_frame, the real stream handoff. The runner has a
+        # zero-copy chain (Metal + IOSurface) and no encoder, so three of the
+        # four run here and the VideoToolbox retain guard skips loudly. The
+        # exercised floor is the chain: if the runner ever loses it, this step
+        # fails instead of going green on skips.
+        # ~~Hermetic by design (Arc slots under the pool's free rule, no GPU):
+        # all 3 run everywhere~~ — PR #30's guard modelled the pool with
+        # SharedPool<()> and could not see the rule or the sizing it was
+        # guarding were wrong (§2c).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_g1 -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=3)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL zerocopy_g1: expected at least 4 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 3 ]; then
+            echo "FAIL zerocopy_g1: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the tapPath override suite actually ran (Prompt 10 WU2)
+        # Same two-floor shape. Three of the five tests open a take and gate on
+        # the hardware encoder (loud SKIP without one); the other two
+        # (refusal paths, typed-model law) run everywhere and are the floor
+        # that skipping cannot satisfy.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test zerocopy_override -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "zerocopy_override: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=2)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL zerocopy_override: expected at least 5 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL zerocopy_override: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream url precedence suite actually ran (Prompt 10 WU3)
+        # Pure logic over resolve_stream_url (no engine state, no encoder):
+        # all 10 run everywhere, floors equal, same reason as the G1 block.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test stream_url_precedence -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "stream_url_precedence: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=10)"
+          if [ "$ran" -lt 10 ]; then
+            echo "FAIL stream_url_precedence: expected at least 10 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 10 ]; then
+            echo "FAIL stream_url_precedence: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream commands suite actually ran (Prompt 10 WU4)
+        # Twenty-one tests. Thirteen open a stream and gate on the hardware
+        # encoder (loud SKIP without one). Eight run on this runner (a
+        # zero-copy chain, no encoder) and are the floor skipping cannot
+        # satisfy: six refusals that need no hardware at all (not running, no
+        # endpoint, stop while idle, cpuReadback tapPath, garbage url,
+        # non-string url), the chain-less refusal (chain forced absent), and
+        # the refusal-order pin (stream_start_refusal_order_is_config_then_
+        # chain_then_encoder), whose encoder leg needs this runner's real
+        # chain. exercised>=8 is exactly the runner's shape, so removing any of
+        # the eight — the pin included — turns this step red.
+        # ~~Ten of the thirteen tests open a stream … the other four … run
+        # everywhere~~ and ~~floors ran>=20 exercised>=4~~: two rounds stale
+        # (§2c) — the pin landed at bf0274c without the floor rising, so
+        # deleting it left CI green. Found by PR #30's second-key pass.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_stream_cmds: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=21 exercised>=8)"
+          if [ "$ran" -lt 21 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 21 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 8 ]; then
+            echo "FAIL prompt10_stream_cmds: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the RTMP transport suite actually ran (Prompt 10 WU5)
+        # Two layers since the PR #30 repair round. Thirteen tests drive the
+        # real transport (and, for audio and the stop path, the real stream
+        # session and thread) with synthetic payloads against a conforming
+        # in-process double: handshake, dialog, chunking at the announced
+        # size, the extended timestamp, media-time timestamps, pings,
+        # reconnect, backpressure, buffer accounting, engine audio, the
+        # manifest's AAC bitrate, the bounded stop, the telemetry tick, error
+        # tokens, the 48 kHz header. They run everywhere; exercised >= 13 is
+        # the floor skipping cannot satisfy. Seven drive the production loop
+        # with a live encoder (loud SKIP without encoder + chain; the MediaMTX
+        # proof also skips on its absent binary). One measurement is #[ignore].
+        # ~~Twelve of the thirteen tests ... gate on the encoder + chain~~ —
+        # PR #30 exercised 1 of 13 here (§2c).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=13)"
+          if [ "$ran" -lt 20 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 20 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 13 ]; then
+            echo "FAIL prompt10_rtmp: expected at least 13 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the stream telemetry suite actually ran (Prompt 10 WU6)
+        # Same two-floor shape. One of the three tests goes live and gates on
+        # the encoder + chain (loud SKIP without either); the other two
+        # (pre-start stub, refused-start stub) run everywhere and are the floor
+        # that skipping cannot satisfy.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt10_telemetry -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt10_telemetry: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=2)"
+          if [ "$ran" -lt 3 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 3 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL prompt10_telemetry: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits

@@ -391,8 +391,11 @@ async fn the_pool_is_built_at_start_sized_to_the_channel_and_gone_after_stop() {
         .expect("a zero-copy take has a pool");
     assert_eq!(
         pool.len(),
-        nbe_engine::record::RECORD_CHANNEL_BOUND + 1,
-        "one surface in flight per channel slot, plus the one being drawn"
+        nbe_engine::record::pool::shared_pool_size(
+            nbe_engine::record::RECORD_CHANNEL_BOUND,
+            nbe_engine::record::stream::STREAM_CHANNEL_BOUND,
+        ),
+        "G1 sized: each consumer's queue + encoder, plus drawn (the stream's share stays headroom until it is live)"
     );
     assert_eq!(
         pool.dimensions(),
@@ -419,8 +422,12 @@ async fn the_pool_is_built_at_start_sized_to_the_channel_and_gone_after_stop() {
 /// corrupt frames in production.
 #[test]
 fn loop_wiring_acquires_the_surface_before_the_draw() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("main.rs is readable");
+    // ~~`/src/main.rs`~~ (§2c): the loop's per-frame body moved into
+    // `tick::run_tick` in the PR #30 repair round, so this reads the tick.
+    let file = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tick.rs"))
+        .expect("tick.rs is readable");
+    // The tick's body only: the module docs name these seams in prose.
+    let src = &file[file.find("pub async fn run_tick").expect("the tick exists")..];
     let begin = src
         .find("begin_tap_frame")
         .expect("the loop acquires a surface");
@@ -442,6 +449,14 @@ fn loop_wiring_acquires_the_surface_before_the_draw() {
         "the View is restored after the draw, not before"
     );
     assert!(restore < end, "restore_view runs before the handoff");
+    // The stream's own-pool loan obeys the same rule: asked before the draw.
+    let stream_acquire = src
+        .find("p.acquire()")
+        .expect("the stream leg acquires from its own pool");
+    assert!(
+        stream_acquire < draw,
+        "the stream's surface must be acquired before the draw, for the same reason"
+    );
 }
 
 /// Companion to the above: the counter the acquire feeds is the one the loop

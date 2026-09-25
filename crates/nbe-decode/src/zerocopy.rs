@@ -98,6 +98,11 @@ fn make_surface(width: u32, height: u32) -> Result<CFRetained<IOSurfaceRef>, Zer
     unsafe { IOSurfaceRef::new(&dict) }.ok_or_else(|| unavailable("IOSurfaceCreate returned NULL"))
 }
 
+/// A [`SharedSurface`]'s own reference on its `CVPixelBuffer`: the one it took
+/// from `CVPixelBufferCreateWithIOSurface`. Any retain count above this is
+/// another holder.
+pub const PIXEL_BUFFER_BASELINE_RETAIN: usize = 1;
+
 /// A frame buffer both the compositor and the encoder can see.
 ///
 /// The wgpu texture and the `CVPixelBuffer` are two views of one allocation. A
@@ -155,6 +160,25 @@ impl SharedSurface {
     /// a test rather than asserted in a comment.
     pub fn surface_id(&self) -> u32 {
         self.surface.id()
+    }
+
+    /// The `CVPixelBuffer`'s Core Foundation retain count.
+    ///
+    /// This surface holds exactly one reference, so the baseline is
+    /// [`PIXEL_BUFFER_BASELINE_RETAIN`]. Anything above it is another holder —
+    /// in practice VideoToolbox, which retains the buffer when
+    /// `VTCompressionSessionEncodeFrame` accepts it and releases it only once
+    /// the frame has been encoded (the encode is asynchronous). This is how the
+    /// pool's free rule can tell "no Rust owner" from "nobody reading".
+    pub fn pixel_buffer_retain_count(&self) -> usize {
+        let cf: &objc2_core_foundation::CFType = &self.pixel_buffer;
+        cf.retain_count()
+    }
+
+    /// True when nothing but this surface references its `CVPixelBuffer` —
+    /// in particular, when no encoder still holds the frame.
+    pub fn encoder_released(&self) -> bool {
+        self.pixel_buffer_retain_count() <= PIXEL_BUFFER_BASELINE_RETAIN
     }
 }
 
@@ -366,21 +390,81 @@ impl SurfacePool {
 
     /// How many surfaces nobody else is holding right now.
     pub fn free(&self) -> usize {
-        self.surfaces
-            .iter()
-            .filter(|s| std::sync::Arc::strong_count(s) == 1)
-            .count()
+        self.surfaces.iter().filter(|s| Self::is_free(s)).count()
+    }
+
+    /// The free rule: no Rust holder AND no encoder holder.
+    ///
+    /// **`Arc::strong_count == 1` alone was not enough, and that shipped in
+    /// merged code** (ZERO-COPY Phase 3b's record path; PR #30 doubled the
+    /// exposure with a second encoder). `VTCompressionSessionEncodeFrame`
+    /// *retains* the `CVPixelBuffer` it is handed and encodes asynchronously:
+    /// measured on the reference machine, the buffer's retain count reads 1
+    /// before `encode_pixel_buffer`, 2 the moment it returns, and falls back to
+    /// 1 between 1.6 ms and 17.5 ms later. The record thread drops its `Arc`
+    /// as soon as `encode_pixel_buffer` returns, so a count-only rule marked
+    /// the surface free while VideoToolbox was still reading its pixels — and
+    /// the compositor could draw the next frame into it. ~~At 30 fps that
+    /// window is usually shorter than a frame; at 60 fps (16.7 ms) the measured
+    /// worst case already exceeds it.~~ Precisely: a frame is overwritten while
+    /// VideoToolbox reads it exactly when the gap between the consumer's drop
+    /// and the loop's next acquire is shorter than VideoToolbox's hold
+    /// (1.6–3.7 ms steady, 17.5 ms on the first frame). A keeping-pace thread
+    /// at 30 fps leaves ~31 ms; the window opens when the thread runs late, and
+    /// at 60 fps the ~15 ms steady gap does not cover the first-frame hold. The
+    /// result is a torn frame in the file. No shipped recording has been
+    /// audited (`docs/09-measurements.md`, Prompt 10).
+    ///
+    /// The retain chain is VideoToolbox's own statement of when it is done,
+    /// so the rule reads it: a surface is free only when its `CVPixelBuffer`
+    /// is back at [`PIXEL_BUFFER_BASELINE_RETAIN`]. Still one-sided — a
+    /// release that lands a microsecond after the check costs a skip, never a
+    /// corrupted frame.
+    ///
+    /// **Why the fence, and why it is proof rather than hope** (construction
+    /// argument, written because no test on the normative x86 machine can
+    /// flip on its removal — see below):
+    ///
+    /// * A consumer thread C calls `VTCompressionSessionEncodeFrame`, which
+    ///   retains the buffer (R) before it returns: the header lets the client
+    ///   release its own reference the moment the call returns, so the
+    ///   session's retain must already be in place. C then drops its `Arc`:
+    ///   `strong.fetch_sub(1, Release)` (D). R is sequenced before D.
+    /// * This thread reads `Arc::strong_count` — a `Relaxed` load (L) in std —
+    ///   and sees 1, the value D wrote (with two consumers, D is the later of
+    ///   two RMW decrements, which is in the first one's release sequence).
+    /// * `fence(Acquire)` (F) after L: by the fence rule, D synchronizes-with
+    ///   F because L, sequenced before F, read the value D wrote. So R
+    ///   happens-before the retain-count read below (G), and G returns R's
+    ///   increment or a later value — never the pre-encode baseline while
+    ///   VideoToolbox still holds the buffer. A release that lands after G
+    ///   costs a skip, never a corrupted frame.
+    /// * Without F, L's `Relaxed` load orders nothing: on a weakly ordered CPU
+    ///   (arm64 — Apple Silicon, the spec's primary target) G may observe the
+    ///   retain count's older value after L observed 1, and hand out a
+    ///   surface VideoToolbox is reading. On x86-64 loads are not reordered
+    ///   with older loads, so the hazard cannot manifest there; LLVM lowers
+    ///   `fence acquire` to no instruction on x86-64 and to `dmb ishld` on
+    ///   arm64, which is why removing it cannot flip a test on this machine.
+    ///   (PR #30's first version of this rule had no fence; found by its
+    ///   own-author pass.)
+    fn is_free(s: &std::sync::Arc<SharedSurface>) -> bool {
+        if std::sync::Arc::strong_count(s) != 1 {
+            return false;
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        s.encoder_released()
     }
 
     /// Take a free surface, or `None` when every one is still in flight.
     ///
     /// `None` is the signal to skip this record frame **before drawing it**.
-    /// Never hands out a surface another holder still has: see the type's note
-    /// on why the count is one-sided.
+    /// Never hands out a surface another holder still has — including an
+    /// encoder that has not finished reading it (see [`Self::is_free`]).
     pub fn acquire(&self) -> Option<std::sync::Arc<SharedSurface>> {
         self.surfaces
             .iter()
-            .find(|s| std::sync::Arc::strong_count(s) == 1)
+            .find(|s| Self::is_free(s))
             .map(std::sync::Arc::clone)
     }
 

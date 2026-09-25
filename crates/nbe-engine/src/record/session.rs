@@ -77,14 +77,38 @@ pub fn force_no_encoder() -> bool {
     FORCE_NO_ENCODER.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// A hardware encoder has answered the probe once in this process.
+static ENCODER_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// True unless the seam forces otherwise and a hardware H.264 encoder answers.
-/// The start path probes this WITHOUT opening a stream (the recording encoder
-/// opens later, on the record thread, at the first take).
+/// The start paths probe this WITHOUT opening their encoder (the record and
+/// stream encoders open later, on their own threads).
+///
+/// **A positive answer is cached for the process.** The probe opens and
+/// closes a real VideoToolbox session — measured 36–38 ms per call (187 ms
+/// the first time) — and `record.start` / `stream.start` both ran it on the
+/// directive path every time: the open-stall PR #30's repair round was asked
+/// to move off that critical section. Whether the machine HAS a hardware
+/// encoder does not change while the engine runs; a negative answer is not
+/// cached (it is probed again), and the forced-unavailable seam is consulted
+/// first, exactly as before. If an encoder ever fails to open after a
+/// positive probe, the thread that opens it reports that loudly (record:
+/// `E_NO_HARDWARE_ENCODER` at stop; stream: a video-less stream, every frame
+/// counted in `skipped_stream_frames`). The binary warms this at boot, off the
+/// directive path.
 pub fn encoder_available() -> bool {
-    if FORCE_NO_ENCODER.load(std::sync::atomic::Ordering::SeqCst) {
+    use std::sync::atomic::Ordering;
+    if FORCE_NO_ENCODER.load(Ordering::SeqCst) {
         return false;
     }
-    crate::encode::is_available()
+    if ENCODER_SEEN.load(Ordering::SeqCst) {
+        return true;
+    }
+    let found = crate::encode::is_available();
+    if found {
+        ENCODER_SEEN.store(true, Ordering::SeqCst);
+    }
+    found
 }
 
 /// Opening or ending a record take fails loudly, with stable tokens.

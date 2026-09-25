@@ -454,7 +454,22 @@ fn loop_wiring_pre_check_before_readback() {
 
     // And in the loop: the counter fold follows the tap, and the inline encode
     // path is still gone.
-    let src = include_str!("../src/main.rs");
+    //
+    // **Moved a second time** (§2c): ~~`include_str!("../src/main.rs")`~~ —
+    // the PR #30 repair round lifted the loop's per-frame body into
+    // `tick::run_tick` (and its cadence into `tick::run_loop`) so tests drive
+    // the production loop; `main.rs` now only calls `run_loop`. The guard
+    // reads the tick, and pins that `main.rs` holds no frame logic of its own.
+    let main = include_str!("../src/main.rs");
+    assert!(
+        main.contains("tick::run_loop") && !main.contains("end_tap_frame"),
+        "main.rs runs the library loop and owns no per-frame output logic"
+    );
+    let src = include_str!("../src/tick.rs");
+    assert!(
+        !src.contains("encode_pixel_buffer") && !src.contains("EncodeSession"),
+        "the loop never encodes: record and stream encode on their own threads"
+    );
     let tap = src
         .find("end_tap_frame")
         .expect("loop must call the post-draw tap seam");

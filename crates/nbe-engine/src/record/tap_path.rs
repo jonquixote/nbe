@@ -46,10 +46,12 @@ impl fmt::Display for TapPath {
 /// consumer, and because streaming's answer is already fixed by the spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Consumer {
-    /// Recording to disk — the only consumer built today.
+    /// Recording to disk.
     Record,
-    /// Streaming (Prompt 10). **Not built.** Named here so the table shows
-    /// where it lands before it arrives.
+    /// Streaming (Prompt 10, live). Its only lawful path is [`TapPath::ZeroCopy`]:
+    /// recording's v0.4.2 readback allowance does not extend here, so a
+    /// `CpuReadback` override for this consumer is refused on the
+    /// `E_NO_ZEROCOPY` path (see [`select_with_override`]) — never Override-live.
     Stream,
 }
 
@@ -117,8 +119,9 @@ pub fn select(zero_copy_capable: bool, height: u32, consumer: Consumer) -> Selec
 /// path, and this returns `None` rather than quietly handing it the readback the
 /// spec forbids.
 ///
-/// Nothing calls this yet. It exists so Prompt 10 arrives to a decision already
-/// made, instead of finding the tap defaulted to the path it is forbidden from.
+/// Called by the `stream.start` gate (and the tests pinning the refusal row),
+/// so Prompt 10 arrives to a decision already made instead of finding the tap
+/// defaulted to the path it is forbidden from.
 pub fn select_stream(zero_copy_capable: bool) -> Option<Selection> {
     zero_copy_capable.then_some(Selection {
         path: TapPath::ZeroCopy,
@@ -132,6 +135,12 @@ pub fn select_stream(zero_copy_capable: bool) -> Option<Selection> {
 /// links but produces garbage, say. It is documented as an escape hatch and not
 /// a feature: an override that becomes routine means the table is wrong, and
 /// the fix is the table.
+///
+/// Stream contract: `CpuReadback` for [`Consumer::Stream`] is unlawful (no
+/// readback allowance covers streaming), so the `stream.start` call site refuses
+/// that combination on the `E_NO_ZEROCOPY` path BEFORE calling here — this
+/// function must never produce an Override-live stream selection, and no caller
+/// hands it that combination.
 pub fn select_with_override(
     zero_copy_capable: bool,
     height: u32,

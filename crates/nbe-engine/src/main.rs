@@ -6,10 +6,8 @@
 use nbe_engine::audio_driver;
 use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::render::RenderLoop;
-use nbe_engine::state::{EngineState, RecordState, SharedEngineState, SharedOutgoing};
-use std::sync::atomic::Ordering;
+use nbe_engine::state::{EngineState, SharedEngineState, SharedOutgoing};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,6 +48,11 @@ async fn main() -> anyhow::Result<()> {
     // boundaries — not a spin. It renders even while the clock is STOPPED so
     // the operator always has a picture (the fallback slate).
     let mut render = RenderLoop::new(state.clone()).await?;
+    // Warm the hardware-encoder probe off the directive path: the first
+    // answer opens a real VideoToolbox session (~190 ms), and a positive one
+    // is cached for the process (see `record::session::encoder_available`),
+    // so `record.start` / `stream.start` never pay it.
+    tokio::task::spawn_blocking(nbe_engine::record::encoder_available);
     let render_state = state.clone();
     // The render/record loop below hands frames to the dedicated record
     // thread over a bounded channel; the thread owns the hardware encoder
@@ -60,124 +63,12 @@ async fn main() -> anyhow::Result<()> {
     // budget/deadline path is untouched by the choice of spawner.
     let render_loops = tokio::task::LocalSet::new();
     render_loops.spawn_local(async move {
-        let frame_budget = Duration::from_secs_f64(1.0 / house_rate as f64);
-        let mut next_boundary = Instant::now();
-        let mut stopped_frame: u64 = 0;
-        // WU-pipe record handoff (additive only): the budget pre-check and
-        // the handoff below never enter the render budget — `render_frame`
-        // keeps its own deadline check UNCHANGED, and the record cost
-        // (readback + handoff) accumulates into the engine-state
-        // `record_tap_ms` counter. Over budget the record frame is SKIPPED
-        // BEFORE the readback (record degrades, View never); on a saturated
-        // handoff channel the frame is SHED (same counter). Both count in
-        // `skipped_record_frames`.
-        //
-        // Audio note: the record thread drains the shared tap that
-        // `record.start` published and the audio driver attached to the live
-        // graph; the loop never touches audio.
-        loop {
-            let now = Instant::now();
-            if next_boundary > now {
-                tokio::time::sleep(next_boundary - now).await;
-            }
-            let (frame, deadline) = match render_state.master_frame() {
-                // RUNNING: the master clock owns the frame number and the
-                // deadline is real.
-                Some(f) => (f, Some(frame_budget)),
-                // STOPPED: still render, but a missed deadline is meaningless
-                // when no show clock is running, so nothing is counted.
-                None => {
-                    stopped_frame = stopped_frame.wrapping_add(1);
-                    (stopped_frame, None)
-                }
-            };
-            // WU-pipe: one record frame per loop iteration, both paths.
-            //
-            // Budget honesty is unchanged: the budget pre-check still runs
-            // AFTER the draw (it needs the View's measured time) and an
-            // over-budget frame still skips with no readback, no handoff and no
-            // encode. What the zero-copy path adds is an EARLIER question —
-            // "is a free surface available?" — asked before the draw, because
-            // on that path the draw goes into the surface and a missing one
-            // costs a corrupted frame rather than a skipped one.
-            //
-            // One lock acquisition resolves both the take's pool and its
-            // handoff endpoint, so they cannot describe different takes.
-            let recording = *render_state.record_state.lock().unwrap() == RecordState::Recording;
-            let (pool, endpoint) = match recording {
-                true => {
-                    let g = render_state.record_session.lock().unwrap();
-                    match g.as_ref() {
-                        Some(s) => (s.surface_pool(), Some(s.frame_sender())),
-                        None => (None, None),
-                    }
-                }
-                false => (None, None),
-            };
-            // What the take CLAIMS, which is what makes a missing pool a chain
-            // loss rather than an ordinary CPU take.
-            let claims_zero_copy = matches!(
-                *render_state.record_tap_selection.lock().unwrap(),
-                Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
-            ) && recording;
-            let loan = match nbe_engine::record::begin_tap_frame(
-                &mut render,
-                pool.as_deref(),
-                claims_zero_copy,
-                &render_state.skipped_record_frames,
-            ) {
-                Ok(loan) => loan,
-                // Option A: the take ends here, loudly, rather than recording
-                // frames through a transport nobody chose. The View is
-                // unaffected and still goes on air this frame.
-                Err(e) => {
-                    nbe_engine::record::end_take_on_chain_loss(&render_state, &e.to_string());
-                    Default::default()
-                }
-            };
-
-            let render_started = Instant::now();
-            let _ = render.render_frame(frame, deadline);
-            let render_elapsed = render_started.elapsed();
-            // The View goes back to the built-in target the moment the draw is
-            // done, before anything can fail: a retarget left in place would
-            // composite the NEXT frame into a surface nobody is holding.
-            nbe_engine::record::restore_view(&mut render, &loan);
-
-            if recording {
-                if let Some(tx) = endpoint {
-                    let feed_ms = nbe_engine::record::end_tap_frame(
-                        loan,
-                        render_elapsed,
-                        deadline,
-                        &tx,
-                        &render_state.skipped_record_frames,
-                        || async {
-                            // Timed readback (the only await, and only on the
-                            // CPU path): its cost belongs to the record
-                            // counter, never the render budget.
-                            let started = Instant::now();
-                            let rgba = render.readback_view().await;
-                            (rgba, started.elapsed())
-                        },
-                    )
-                    .await;
-                    *render_state.record_tap_ms.lock().unwrap() += feed_ms;
-                }
-                tracing::debug!(
-                    record_tap_ms = *render_state.record_tap_ms.lock().unwrap(),
-                    skipped_record_frames =
-                        render_state.skipped_record_frames.load(Ordering::SeqCst),
-                    "record handoff tick"
-                );
-            }
-            next_boundary += frame_budget;
-            // If we fell far behind, resynchronize rather than spiral.
-            let now = Instant::now();
-            if next_boundary < now {
-                next_boundary = now + frame_budget;
-            }
-        }
+        // Cadence and tick both live in the library (`nbe_engine::tick`), so
+        // tests drive this exact loop. Output costs accumulate into
+        // `record_tap_ms` / `stream_tap_ms`, never the render budget: the
+        // stream's share of a tick is one bounded `try_send` (the stream
+        // thread encodes; the loop never does).
+        nbe_engine::tick::run_loop(&mut render, &render_state, house_rate, |_| true).await;
     });
 
     render_loops

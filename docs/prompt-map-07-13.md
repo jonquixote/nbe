@@ -1168,6 +1168,96 @@ Durable fix (one commit, at a boundary — no battery straddled it): workspace `
 
 Inherits the guest-link JWT / `jti` revocation work (§10.7 #1) assigned by `[RI-5]`, and the TURN credential vending shape (§5.1 #11, §9.6.2) whose response has a schema but no derivation rule. WHEP preview (AC-20) is explicitly **post-v1** and not 10's scope — it waits for a WebRTC stack to exist. The mix-minus guarantee 06 built structurally (§8.6, `render_guest_return` has no path reading a guest's own bus) is 10's to preserve when real guests replace test tones.
 
+### Executed as PR #30 — and repaired before merge (2026-09-23)
+
+PR #30 executed this prompt and its author's own two-key pass called it
+**mergeable** at `8733c99`. ~~"Verdict: mergeable. The two-key pass holds."~~
+An independent review found it was not (§2c): CI was red, the stream carried no
+audio, the encoder ran on the render loop, and the production loop was never
+tested. The repair round (`87f93b2`..`251b405`) is recorded here; the numbers
+are in `docs/09-measurements.md`, Prompt 10 section.
+
+**What the repair round changed.**
+
+1. **Refusal order is config → chain → encoder**, decided and pinned
+   (`stream_start_refusal_order_is_config_then_chain_then_encoder`).
+   ~~The chain refusal is the SPEC's claim; the encoder refusal is this
+   build's.~~ Corrected by the own-author pass (§2c): §9.2's hardware-only
+   encode is spec law too — both refusals come from the spec, and §16.14 states
+   no evaluation order. The honest grounds: a configuration refusal is the same
+   on every machine, and config → chain → encoder is the only order the CI
+   runner (chain, no encoder) can observe — PR #30's encoder-first order failed
+   there in run 35878301689. The pinned order is drafted as an UNRATIFIED
+   candidate in `docs/v0.5-outline.md` §7.
+2. **The stream has its own thread** (`nbe-stream`), owning the VideoToolbox
+   session and the AAC converter; the render loop's whole stream cost is one
+   bounded `try_send`. PR #30 opened the encoder on the first live tick
+   (measured 35.6–39.9 ms, over the 33.3 ms budget in 10 of 11 starts) and
+   encoded every frame on the loop.
+3. **The stream carries the show's audio** through its own `AudioTap`, AAC at
+   the manifest's rate, the codec's own AudioSpecificConfig. MediaMTX logs
+   `2 tracks (H264, MPEG-4 Audio)` from the engine's pipeline.
+4. **Honest timestamps and parameters**: RTMP timestamps are media time (video
+   PTS on the show clock; audio sample count), the extended timestamp repeats
+   on Type 3 chunks, and fps / bitrates come from the show and the manifest.
+5. **The transport conforms**: it announces its own chunk size instead of
+   silently adopting the server's, answers pings, reads the server with a real
+   chunk reader, and its static AAC header is 48 kHz (was 44.1).
+6. **A merged defect, found here: the zero-copy free rule.** VideoToolbox
+   retains the `CVPixelBuffer` after `encode_pixel_buffer` returns (1.6–17.5 ms
+   measured); the pool called the surface free on `Arc::strong_count == 1`
+   alone. **The record path shipped this first**, in ZERO-COPY Phase 3b; the
+   rule now waits for VideoToolbox's release — read after an `Acquire` fence
+   (`7c57ccf`), without which the rule was sound on x86-64 but unproven on
+   arm64. The precise exposure and "no shipped recording has been audited" are
+   in `docs/09-measurements.md`; the guard's soak row makes the soak its home.
+7. **The loop is in the library** (`tick::run_tick`, `tick::run_loop`), so
+   tests drive the production loop; the dress rehearsal streams (step 9); G1's
+   guard runs on real surfaces instead of `SharedPool<()>`.
+8. **`streamBufferMs` is `0` with no session again** (law); PR #30's `-1`
+   sentinel is an UNRATIFIED candidate in `docs/v0.5-outline.md` §7, beside a
+   drafted `streamTransportState`.
+9. **`stream.start` no longer stalls the directive path**: the encoder probe
+   opened a real VideoToolbox session on every call (36–38 ms); a positive
+   answer is now cached and warmed at boot. 37.2 ms → 4.3 ms per start.
+
+**Still owed, named rather than hidden.**
+
+- **nginx-rtmp is untested.** The chunk-size and ping fixes stand on RTMP
+  §5.4.1 / §7.1.7 and the conforming double; MediaMTX accepted PR #30's
+  chunk-size behaviour too (it evidently treats chunk size symmetrically), so
+  the real-server proof does not discriminate that bug. A per-direction server
+  is the missing witness.
+- **The client never sends Acknowledgement messages** (it receives almost
+  nothing, so a server's window is never reached); recorded, not built.
+- ~~**Audio-tap eviction is per sample.** A consumer stalled past the ring's
+  capacity can lose an odd number of samples and swap stereo channels — the
+  record tap has the same property. The stream thread keeps drains paired, but
+  cannot repair an eviction.~~ Wrong about both paths (own-author pass, §2c).
+  The hazard: with the ring full, a drain racing an eviction mid-push returned
+  an odd count starting on a right-channel sample (probe: 177 of 907 drains).
+  **Stream:** the thread's carry re-paired from the shifted start — L and R
+  swapped silently until the next odd drain (new with PR #30). **Record:** the
+  writer refused the odd push ("audio must be whole stereo frames") and the
+  take ended (pre-existing, merged). **Fixed** (`909f89d`): `AudioTap` stores
+  and evicts whole stereo frames, so every drain starts on a left sample and
+  holds whole frames; the guard `drains_racing_eviction_stay_stereo_aligned`
+  reads 0 odd of 8,833 drains (104 of 598 with the old eviction).
+- **Transport state is not on the wire** — see the v0.5 §7 candidate.
+- **The extended-timestamp fix has no real-ingest witness past 0xFFFFFF.**
+  It is guarded against the conforming double
+  (`extended_timestamp_repeats_on_every_type3_chunk`, base `0x0100_0000`);
+  a 4.66-hour soak leg or a real-ingest marathon is its owed witness.
+- **The second `Acquire` fence, deferred deliberately.** `SurfacePool::is_free`
+  proves one direction: the retain read cannot see the pre-encode baseline. The
+  other half — VideoToolbox's pixel reads ordered before the compositor's next
+  writes once the read sees the release — rests today on CoreFoundation's
+  internal atomics and on Metal submission acting as a barrier. A second
+  `fence(Acquire)` after `encoder_released()` returns true would make it
+  explicit, at one `dmb ishld` on arm64 per acquire. Both keys judged the
+  current shape sound in practice; the line is owed to the first ARM production
+  target or the next quiet moment, whichever comes first.
+
 ## 11 — Watchdog
 
 The watchdog itself exists and is gated (pass 4 confirmed deadline accounting and fallback trip both fail correctly when deleted). What 11 must now add is **the automation engine runtime** (§13, AC-25), assigned by `[RI-5]`: triggers, the once-per-frame limit, runtime cycle suppression, and audit logging of every automation action. `automation.hold` exists from Prompt 02; the engine behind it does not. 11 also inherits **F3's fix** as context — the fix round adds a `fail_view` seam, so §10.3's engagement path finally has production coverage that 11's work must keep.
