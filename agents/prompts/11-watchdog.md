@@ -1,6 +1,6 @@
 # Agent Prompt 11 — The Automation Engine Runtime, and the Watchdog's Remainder (crates/nbe-engine, packages/control-plane)
 
-**Targets: SPEC v0.4 at v0.4.5 (`docs/spec.v0.4.md`) — Section 13 (automation engine), AC-25 (automation), Section 10.3 (watchdog), Section 10.5 and AC-27 (degradation ladder), Section 10.1 (telemetry), Section 10.7 (audit), AC-7 (fallback latency). Prerequisites: Prompts 01–10 merged (Prompt 10 merged 2026-09-25 UTC — locally 2026-09-24 21:08 −0700 — as PR #30, `57dd4b9`).**
+**Targets: SPEC v0.4 at ~~v0.4.5~~ v0.4.6 (`docs/spec.v0.4.md`; v0.4.6 landed this prompt's B2 and drafted B4's table, 2026-09-25) — Section 13 (automation engine), AC-25 (automation), Section 10.3 (watchdog), Section 10.5 and AC-27 (degradation ladder), Section 10.1 (telemetry), Section 10.7 (audit), AC-7 (fallback latency). Prerequisites: Prompts 01–10 merged (Prompt 10 merged 2026-09-25 UTC — locally 2026-09-24 21:08 −0700 — as PR #30, `57dd4b9`).**
 
 **Upgraded for the tree, 2026-09-25 UTC (locally 2026-09-24 23:35 −0700).** The 2026-09-10 draft (superseded text in §12) asked for a watchdog the tree already has, cited two prompt files that do not exist, and forbade the one placement AC-7 requires. The prompt map had moved this slot's real work to the automation runtime on 2026-09-04, before the draft existed (`docs/prompt-map-07-13.md` § 11: *"The watchdog itself exists and is gated … What 11 must now add is the automation engine runtime (§13, AC-25), assigned by [RI-5]"*). This upgrade makes the prompt say so, states what is already true, and names the decisions that belong to the user before an executor starts.
 
@@ -11,7 +11,7 @@ Read these first:
 - `docs/spec.v0.4.md` — §13 (the rule model, triggers, execution semantics, cycle detection, hold), AC-25, §10.3, §10.5, AC-27, AC-7.
 - `docs/implementation-standards.md` — §2a rules 1–8; rule 7 (a test must enter the path it claims) and rule 8 (floors count ran and exercised) bite hardest here.
 - `docs/prompt-map-07-13.md` § 11 and the "Still owed" list under § 10.
-- `docs/v0.5-outline.md` §7 — ~~two UNRATIFIED wire candidates this prompt depends on~~ (miscounted; corrected in PR #32's fix round, §2c). §7 holds **three** UNRATIFIED rows — the `streamBufferMs` NO-SESSION sentinel, the `stream.start` refusal order, and `streamTransportState`. Of this prompt's candidates **only B2's (`streamTransportState`) lives there**; B1's level-crossing event and B4's command → trigger effect table are **new** candidates this prompt would create.
+- `docs/v0.5-outline.md` §7 — ~~two UNRATIFIED wire candidates this prompt depends on~~ (miscounted; corrected in PR #32's fix round, §2c). §7 holds **three** UNRATIFIED rows — the `streamBufferMs` NO-SESSION sentinel, the `stream.start` refusal order, and `streamTransportState`. Of this prompt's candidates **only B2's (`streamTransportState`) lives there**; B1's level-crossing event and B4's command → trigger effect table are **new** candidates this prompt would create. *(Since v0.4.6, 2026-09-25: all three §7 rows are ratified — B2's with its mechanism on the wire — and B4's table is drafted UNRATIFIED in SPEC §13.4.1, so this prompt creates B1's candidate and B4's mechanism.)*
 - `VOCABULARY.md` — `View`, `Element`, `Sequence`, `Item`.
 
 ---
@@ -59,13 +59,13 @@ The quality-profile probe (`gpu.rs` `probe_quality`) is a heuristic: a CPU adapt
 | §13.2 trigger | Source today | Status |
 |---|---|---|
 | `mediaEnd` | engine `itemEvent { event: "end" }` (`nbe-protocol` `ItemEvent::End`) reaches the control plane | **wired source** |
-| `mediaStart` | no engine "started" event; the control plane knows when a take applies (`appliedStateVersion`) | **needs a definition** (B3) |
+| `mediaStart` | no engine "started" event; the control plane knows when a take applies (`appliedStateVersion`) | ~~**needs a definition** (B3)~~ **decided (B3, 2026-09-25):** control-plane-side, the take applied |
 | `timer` | the show clock | available |
 | `timeOfDay` | wall clock | available |
-| `audioLevel` | `busPeakDbfs` only on the **1 Hz** telemetry tick | **cannot meet AC-25 #1** (B1) |
+| `audioLevel` | `busPeakDbfs` only on the **1 Hz** telemetry tick | **cannot meet AC-25 #1** (B1) — decided 2026-09-25: an engine level-crossing event, built here as a candidate |
 | `hotkey` | keyboard adapter + Companion profiles (`keyboard.ts`, intent `Hotkey` trigger kind) | available |
 | `rssKeyword` | ticker RSS refresh (`commands/ticker.ts` `ticker.refreshRss`) | available (per refresh) |
-| `streamHealth` | transport state (`PublisherState`) is engine-internal; the wire's `streamState` is commanded and stays `live` through a redial | **blocked on a wire decision** (B2) |
+| `streamHealth` | ~~transport state (`PublisherState`) is engine-internal;~~ the wire's `streamState` is commanded and stays `live` through a redial; **since v0.4.6 the transport's own state is on the §10.1 tick as `streamTransportState`** | ~~**blocked on a wire decision** (B2)~~ **available** — B2 landed in v0.4.6 |
 | `stateChange` | the control plane's state machine | available |
 
 ---
@@ -85,17 +85,23 @@ Alternative: split into 11a (automation) and 11b (watchdog remainder). The split
 
 What the gate must measure: **trigger observed → command dispatched** latency in the control plane, against AC-25 #1's one frame (33.3 ms at the house rate). Define "observed" precisely per trigger kind in the design note — for engine-originated triggers the WebSocket hop is inside the budget, and the note says how much of it is.
 
-## 3. Blockers — decisions owed before execution
+## 3. ~~Blockers — decisions owed before execution~~ Decisions — spoken by the user on 2026-09-25
 
-| # | Question | Options | Recommendation |
-|---|---|---|---|
-| **B1** | `audioLevel` must fire within one frame (AC-25 #1), but bus levels reach the control plane once a second | (a) the engine emits a level-crossing event on the render channel — a wire addition, UNRATIFIED candidate; (b) evaluate `audioLevel` rules in the engine (splits the rule engine); (c) narrow AC-25 #1 for `audioLevel` to the telemetry cadence (spec change) | **(a)** — the engine already emits `itemEvent`; a threshold-crossing event keeps one evaluator |
-| **B2** | `streamHealth` needs transport state, which is not on the wire | ratify `streamTransportState` (v0.5 §7, UNRATIFIED), or an engine event on publisher transitions | **ratify the candidate** — it also closes the soak row's "no telemetry consumer sees the redial" gap |
-| **B3** | `mediaStart` has no engine event | control-plane-side (the take whose item goes on air applied) vs an engine "first frame presented" event | **control-plane-side** for v1 — the take is the operator-visible start; an engine event can follow if a show needs frame-exact starts |
-| **B4** | §13.4 wants *transitive* cycle rejection at preflight, which needs to know which commands can cause which triggers — the spec has no such table | (a) draft a command → trigger effect table (UNRATIFIED candidate) and check transitively; (b) reject direct self-trigger statically, suppress the rest at runtime only | **(a)**, drafted as a candidate — the table is small (take/mix/cut/stop → `stateChange`/`mediaStart`/`mediaEnd`; ticker → `rssKeyword` never) and makes §13.4 checkable |
-| **B5** | AC-25 #2 cancels "pending actions" within a frame, but a rule has no delay field, so nothing is pending for long | define "pending" as fired-but-not-yet-dispatched within the current frame (the limiter's queue) | **that definition**, stated in the design note and pinned by a test |
+*§2c: the heading read "Blockers — decisions owed before execution". The user
+spoke all six on 2026-09-25; the last column says what each became. SPEC v0.4.6
+(`docs/spec.v0.4.md`, changelog) landed B2 and drafted B4's table; the prompt
+map's v0.4.6 entry records all six.*
 
-B1, B2 and B4 each produce a §10.1 / spec candidate; per `docs/implementation-standards.md` and PR #30's precedent, candidates ship marked UNRATIFIED with their guards and are ratified by the user separately, never inside this feature PR.
+| # | Question | Options | Recommendation | Decided 2026-09-25 |
+|---|---|---|---|---|
+| **C1** | Scope (§1) | one prompt with two gated work units, or 11a/11b | one prompt, two gated work units | **decided** — one prompt, two gated work units, as §1 recommends |
+| **B1** | `audioLevel` must fire within one frame (AC-25 #1), but bus levels reach the control plane once a second | (a) the engine emits a level-crossing event on the render channel — a wire addition, UNRATIFIED candidate; (b) evaluate `audioLevel` rules in the engine (splits the rule engine); (c) narrow AC-25 #1 for `audioLevel` to the telemetry cadence (spec change) | **(a)** — the engine already emits `itemEvent`; a threshold-crossing event keeps one evaluator | **candidate ships with the feature PR** — (a). Its mechanism is this prompt's to build; it ships marked UNRATIFIED with its guards and the user ratifies it separately |
+| **B2** | `streamHealth` needs transport state, which is not on the wire | ratify `streamTransportState` (v0.5 §7, UNRATIFIED), or an engine event on publisher transitions | **ratify the candidate** — it also closes the soak row's "no telemetry consumer sees the redial" gap | **landed v0.4.6** — ratified and on the wire (SPEC §10.1, §10.1.1; `f15b617`): `"live"` / `"reconnecting"` / `"closed"`, stub `"none"`. The soak row's gap is closed and `scripts/soak.sh` records the values. `streamHealth`'s source now exists |
+| **B3** | `mediaStart` has no engine event | control-plane-side (the take whose item goes on air applied) vs an engine "first frame presented" event | **control-plane-side** for v1 — the take is the operator-visible start; an engine event can follow if a show needs frame-exact starts | **decided** — control-plane-side. SPEC §13.4.1's `mediaStart` column is derived with this definition |
+| **B4** | §13.4 wants *transitive* cycle rejection at preflight, which needs to know which commands can cause which triggers — the spec has no such table | (a) draft a command → trigger effect table (UNRATIFIED candidate) and check transitively; (b) reject direct self-trigger statically, suppress the rest at runtime only | **(a)**, drafted as a candidate — the table is small (take/mix/cut~~/stop~~ → `stateChange`/`mediaStart`/`mediaEnd`; ticker → `rssKeyword` never) and makes §13.4 checkable. *(§2c: "stop" struck — the derivation found `item.stop` causes no `mediaEnd`: it is `PLAYING → READY`, never `DONE`.)* | **candidate ships with the feature PR** — (a). The table is drafted UNRATIFIED in SPEC §13.4.1 (v0.4.6 row 4), all 55 §16 commands with citations. WU5's transitive check is its mechanism and ships with this prompt's PR; the user ratifies the table separately |
+| **B5** | AC-25 #2 cancels "pending actions" within a frame, but a rule has no delay field, so nothing is pending for long | define "pending" as fired-but-not-yet-dispatched within the current frame (the limiter's queue) | **that definition**, stated in the design note and pinned by a test | **decided** — that definition, pinned by a test in WU2 |
+
+~~B1, B2 and B4 each produce a §10.1 / spec candidate~~ B1 and B4 each produce a §10.1 / spec candidate (§2c: B2's was ratified and landed in v0.4.6, before this prompt executes); per `docs/implementation-standards.md` and PR #30's precedent, candidates ship marked UNRATIFIED with their guards and are ratified by the user separately, never inside this feature PR.
 
 ## 4. Quality bar
 

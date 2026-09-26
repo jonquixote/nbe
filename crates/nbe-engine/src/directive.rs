@@ -1019,9 +1019,11 @@ impl DirectiveHandler {
     /// every chain and configuration refusal was unreachable there; the first
     /// version of this function shipped that way and
     /// `stream_tap_path_cpu_readback_is_refused_no_zerocopy` failed on CI (run
-    /// 35878301689) while passing on a machine with an encoder. Because a test
-    /// now pins an order §16.14 never states, the order is drafted as an
-    /// UNRATIFIED candidate in `docs/v0.5-outline.md` §7.
+    /// 35878301689) while passing on a machine with an encoder. ~~Because a
+    /// test now pins an order §16.14 never states, the order is drafted as an
+    /// UNRATIFIED candidate in `docs/v0.5-outline.md` §7.~~ **§16.14 states
+    /// this order as law since v0.4.6** (ratified 2026-09-25, on these two
+    /// grounds and no others); the test is its guard.
     ///
     /// A successful start opens the [`crate::record::stream::StreamSession`],
     /// publishes the selection (`select_stream`'s gate, then
@@ -1144,6 +1146,11 @@ impl DirectiveHandler {
         // The audio driver attaches the stream's tap on its next cycle.
         *self.state.stream_tap.lock().unwrap() = Some(session.tap());
         *self.state.stream_session.lock().unwrap() = Some(session);
+        // §10.1 `streamTransportState` (v0.4.6): from here on a session-less
+        // tick reads "closed", not the never-started "none" stub.
+        self.state
+            .stream_transport_opened
+            .store(true, Ordering::SeqCst);
         *self.state.stream_state.lock().unwrap() = StreamState::Live;
         Ok(())
     }
@@ -1583,10 +1590,23 @@ fn stream_tap_override(
 /// `url` counts as SILENT, never as an endpoint — an empty string must not
 /// become a valid publish target. Returned urls are trimmed.
 ///
-/// Scheme rule: the winner must be an `rtmp://` publish target
+/// Publish-target rule: the winner must parse as a COMPLETE RTMP publish target
+/// — `rtmp://host[:port]/app/key`, scheme case-insensitive — by the same
+/// [`crate::record::rtmp::parse_rtmp_url`] the publisher dials with (§9.4:
+/// "the RTMP publish target, complete"). Anything else — a foreign scheme, no
+/// app/key path, no host, a bad port, a missing stream key — is refused
+/// `E_BAD_PAYLOAD`-shaped HERE, before any probe and before any session, with
+/// the parser's reason in the message. A non-string `url` never reaches this
+/// resolver: `on_stream_start` refuses it first.
+///
+/// ~~Scheme rule: the winner must be an `rtmp://` publish target
 /// (case-insensitive match) — anything else is refused `E_BAD_PAYLOAD`-shaped
-/// here, so garbage never goes Live with `publisher=None`. A non-string `url`
-/// never reaches this resolver: `on_stream_start` refuses it first.
+/// here, so garbage never goes Live with `publisher=None`.~~ Superseded in PR
+/// #33's fix round (§2c). The scheme check let `rtmp://host/app` through: the
+/// publisher's own parse then refused it at spawn, the session opened with NO
+/// publisher, and `streamState` went live on a stream that published nothing.
+/// v0.4.6's `streamTransportState` surfaced it (`"closed"` beside a live
+/// stream). One parser now decides at both sites, so they cannot disagree.
 ///
 /// The refusal is `E_BAD_PAYLOAD`-shaped: the engine has no dedicated
 /// `BadPayload` variant, so — like `marker.add`'s missing name and
@@ -1618,9 +1638,16 @@ pub fn resolve_stream_url(
                 .into(),
         ));
     };
-    if !winner.to_ascii_lowercase().starts_with("rtmp://") {
+    // The full parse, not a scheme check: the publisher dials with this same
+    // parser, so an endpoint that resolves here is one it can spawn on.
+    if let Err(e) = crate::record::rtmp::parse_rtmp_url(&winner) {
+        let reason = match e {
+            crate::record::rtmp::RtmpError::Parse(m) => m,
+            other => other.to_string(),
+        };
         return Err(DirectiveError::Invalid(format!(
-            "E_BAD_PAYLOAD: stream.start url is not an rtmp:// publish target: {winner}"
+            "E_BAD_PAYLOAD: stream.start url is not a complete rtmp://host[:port]/app/key \
+             publish target ({reason})"
         )));
     }
     Ok(winner)

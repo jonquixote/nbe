@@ -1170,6 +1170,13 @@ with `git checkout`; the suites green after.
 | F13 | streamBufferMs idle back to the -1 sentinel | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub` | `pre-start streamBufferMs is 0.0: nothing is buffered`; `a refused start leaves 0.0 on the wire, never an absent field`; `stopped tick returns to 0.0 with the key still present` |
 | F16 | static AAC header 44.1 kHz (PR #30) | `static_audio_sequence_header_is_48k` | `(assert_eq)` |
 
+*F13 retired in SPEC v0.4.6 (2026-09-25, §2c). The user ratified the `-1`
+sentinel, so the behaviour F13 removed is now the law, and its three tests were
+rewritten to pin `-1.0` with no session against `0.0` for a live session's empty
+buffer. F13's failure messages above are the retired pins' messages, kept as
+that round's record; the flip's own falsification is in the spec's v0.4.6
+changelog.*
+
 **Final repair round (after the own-author pass):**
 
 | # | Behaviour removed | Result |

@@ -292,7 +292,7 @@ async fn stream_start_on_running_show_with_manifest_url_opens_session() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
 
     handler
@@ -307,7 +307,7 @@ async fn stream_start_on_running_show_with_manifest_url_opens_session() {
     );
     assert_eq!(
         endpoint_of(&state),
-        "rtmp://manifest.example/live",
+        "rtmp://manifest.example/live/key",
         "the manifest endpoint answers a silent command (WU3 call site)"
     );
     let sel = selection_of(&state);
@@ -342,7 +342,7 @@ async fn stream_start_without_running_show_is_forbidden() {
         .apply(&directive(
             "stream.start",
             1,
-            serde_json::json!({"url": "rtmp://command.example/live"}),
+            serde_json::json!({"url": "rtmp://command.example/live/key"}),
         ))
         .await
         .expect_err("stream.start with no RUNNING show must be refused");
@@ -400,7 +400,7 @@ async fn stream_start_on_chain_less_machine_refuses_no_zerocopy_loudly() {
     let _serial = SERIAL.lock().await;
     let _force = ForceNoChainGuard::set();
     let (state, handler, outgoing) = harness();
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
 
     let err = handler
@@ -426,8 +426,10 @@ async fn stream_start_on_chain_less_machine_refuses_no_zerocopy_loudly() {
 }
 
 /// The refusal ORDER is part of the contract, so it is pinned (PR #30 repair
-/// round): configuration, then the SPEC's chain refusal, then this build's
-/// encoder. The first version probed the encoder first; on the macos-14 runner
+/// round): configuration, then the chain, then the encoder — **SPEC §16.14
+/// law since v0.4.6**, and this test is its guard. (~~"then the SPEC's chain
+/// refusal, then this build's encoder"~~ — §9.2's hardware-only encode is
+/// spec law too.) The first version probed the encoder first; on the macos-14 runner
 /// (Metal adapter, no H.264 encoder) that made every chain and configuration
 /// refusal unreachable, and CI run 35878301689 failed on exactly that.
 ///
@@ -447,7 +449,7 @@ async fn stream_start_refusal_order_is_config_then_chain_then_encoder() {
     {
         let _no_chain = ForceNoChainGuard::set();
         let (_state, handler, _) = harness();
-        let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+        let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
         load_and_start(&handler, &pkg_path).await;
         let err = handler
             .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -462,8 +464,10 @@ async fn stream_start_refusal_order_is_config_then_chain_then_encoder() {
     // Leg 2: a cpuReadback stream is refused before either probe.
     {
         let (_state, handler, _) = harness();
-        let (_pkg, pkg_path) =
-            write_package(Some("rtmp://manifest.example/live"), Some("cpuReadback"));
+        let (_pkg, pkg_path) = write_package(
+            Some("rtmp://manifest.example/live/key"),
+            Some("cpuReadback"),
+        );
         load_and_start(&handler, &pkg_path).await;
         let err = handler
             .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -481,7 +485,7 @@ async fn stream_start_refusal_order_is_config_then_chain_then_encoder() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     let err = handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -527,7 +531,7 @@ async fn stream_stop_finalizes_before_ack_flows() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -568,7 +572,7 @@ async fn stream_stop_failure_withholds_ack() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -614,7 +618,7 @@ async fn show_stop_gracefully_quiesces_a_live_stream() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -660,7 +664,7 @@ async fn show_stop_force_stops_a_live_stream_anyway() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -698,7 +702,7 @@ async fn show_stop_with_quiesce_outputs_false_is_refused_while_live() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -747,7 +751,7 @@ async fn show_stop_with_quiesce_outputs_false_and_force_stops_immediately() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -782,7 +786,10 @@ async fn stream_tap_path_cpu_readback_is_refused_no_zerocopy() {
     // encoder and chain probes.
     let _serial = SERIAL.lock().await;
     let (state, handler, outgoing) = harness();
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), Some("cpuReadback"));
+    let (_pkg, pkg_path) = write_package(
+        Some("rtmp://manifest.example/live/key"),
+        Some("cpuReadback"),
+    );
     load_and_start(&handler, &pkg_path).await;
 
     let err = handler
@@ -821,7 +828,7 @@ async fn second_stream_start_while_live_is_forbidden() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -833,7 +840,7 @@ async fn second_stream_start_while_live_is_forbidden() {
         .apply(&directive(
             "stream.start",
             4,
-            serde_json::json!({"url": "rtmp://other.example/live"}),
+            serde_json::json!({"url": "rtmp://other.example/live/key"}),
         ))
         .await
         .expect_err("second stream.start while live must be refused");
@@ -864,11 +871,13 @@ async fn second_stream_start_while_live_is_forbidden() {
 
 #[tokio::test]
 async fn stream_start_with_garbage_url_refuses_bad_payload() {
-    // Garbage must never go Live with publisher=None: the scheme is validated
-    // at resolve time, not discovered later by a missing transport.
+    // Garbage must never go Live with publisher=None: the endpoint is PARSED
+    // at resolve time (the publisher's own parser since PR #33's fix round;
+    // ~~"the scheme is validated"~~ let a keyless URL through, §2c), not
+    // discovered later by a missing transport.
     let _serial = SERIAL.lock().await;
     let (state, handler, outgoing) = harness();
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
 
     let err = handler
@@ -900,7 +909,7 @@ async fn stream_start_with_non_string_url_refuses_bad_payload() {
     // operator did not name.
     let _serial = SERIAL.lock().await;
     let (state, handler, outgoing) = harness();
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
 
     let err = handler
@@ -937,7 +946,7 @@ async fn stream_start_with_uppercase_scheme_resolves() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
 
     handler
@@ -980,7 +989,7 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -1078,7 +1087,8 @@ async fn show_stop_with_both_live_quiesces_inside_two_seconds_first_failure_wins
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path, _rec) = write_record_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path, _rec) =
+        write_record_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("record.start", 3, serde_json::json!({})))
@@ -1144,7 +1154,7 @@ async fn show_stop_with_failing_stream_withholds_ack() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))
@@ -1199,7 +1209,7 @@ async fn stream_stop_during_feed_lock_returns_boundedly() {
     if !chain_or_skip(&state).await {
         return;
     }
-    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live"), None);
+    let (_pkg, pkg_path) = write_package(Some("rtmp://manifest.example/live/key"), None);
     load_and_start(&handler, &pkg_path).await;
     handler
         .apply(&directive("stream.start", 3, serde_json::json!({})))

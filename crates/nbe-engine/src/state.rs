@@ -161,9 +161,19 @@ pub struct EngineState {
     /// `show.stop` quiesces it the same way.
     pub stream_session: Mutex<Option<crate::record::stream::StreamSession>>,
     /// The frame path the live stream selected, and why (ZERO-COPY Phase 2
-    /// shape, record-mirrored). `None` until a stream has selected one. Not
-    /// cleared at stop: the field reads as the path the LAST stream used.
+    /// shape, record-mirrored). `None` until a stream has selected one.
+    /// ~~Not cleared at stop: the field reads as the path the LAST stream
+    /// used.~~ Cleared on every stop path (`on_stream_stop`, both `show.stop`
+    /// quiescence arms) — the comment contradicted the code; corrected in
+    /// v0.4.6's row 2, which needed a stream-lifetime fact this field does not
+    /// carry and found it here.
     pub stream_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
+    /// True once any stream session has opened in this engine's lifetime.
+    /// It is what lets `streamTransportState` (§10.1, v0.4.6) say `"closed"`
+    /// after a stream stops rather than falling back to the `"none"` stub,
+    /// which means "no stream has started". Set where the session is stored;
+    /// never cleared — the `record_tap_selection` lifetime.
+    pub stream_transport_opened: AtomicBool,
     /// Stream frames dropped because no surface could be taken (G1
     /// drop-Arc discipline): the View drew regardless, the stream took the
     /// drawn surface or dropped it. Never moves `skipped_record_frames` nor
@@ -227,6 +237,7 @@ impl EngineState {
             stream_state: Mutex::new(StreamState::Idle),
             stream_session: Mutex::new(None),
             stream_tap_selection: Mutex::new(None),
+            stream_transport_opened: AtomicBool::new(false),
             skipped_stream_frames: Arc::new(AtomicU64::new(0)),
             stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),

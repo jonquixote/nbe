@@ -444,6 +444,15 @@ export const EngineTelemetryFrameSchema = z
     // both readable, neither a missing key.
     recordTapPath: z.string().optional(),
     recordTapReason: z.string().optional(),
+    // SPEC §10.1, ratified v0.4.6: the stream transport's own state — "live",
+    // "reconnecting", "closed", or "none" before any stream has started.
+    // `.optional()` for the reason `recordTapPath` is, and only that reason:
+    // its landing's FINAL shape (Phase 3b), where optional is tolerance of an
+    // engine build that predates the field, never the contract — the engine
+    // always emits it (§10.1.1), and a `.strict()` schema must not refuse
+    // every tick from an older build. Not `.default()`: the control plane
+    // must never fabricate what the socket is doing.
+    streamTransportState: z.string().optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

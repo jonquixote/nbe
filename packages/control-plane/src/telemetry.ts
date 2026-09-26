@@ -49,11 +49,23 @@ export interface TelemetryTick {
   /** Why that path was chosen, so a fallback is distinguishable from a choice.
    *  `"none"` before any take. Required, same reason. */
   recordTapReason: string;
+  /** SPEC §10.1 (v0.4.6): the stream transport's own state — `"live"`,
+   *  `"reconnecting"`, `"closed"`, or `"none"` before any stream has started.
+   *  Engine-owned; `streamState` above is the commanded one and stays `"live"`
+   *  through a redial (§9.5), so this is where a redial is visible. Required,
+   *  same reason as `recordTapPath`. */
+  streamTransportState: string;
 }
 
 /** The stub a telemetry field carries before its subsystem has run (§10.1.1).
  *  Mirrors `nbe_protocol::tap_none`. */
 export const TAP_NONE = "none";
+
+/** `streamBufferMs` when no measurement exists — no stream session, or no
+ *  fresh engine report (SPEC §10.1, ratified v0.4.6). Negative milliseconds
+ *  are impossible, so it never collides with a live session's honest `0`,
+ *  "the buffer is empty". Mirrors `nbe_protocol::STREAM_BUFFER_NO_SESSION_MS`. */
+export const STREAM_BUFFER_NO_SESSION_MS = -1;
 
 /** How long a cached engine report stays authoritative (default 2 s). */
 export const ENGINE_TELEMETRY_TTL_MS = 2000;
@@ -79,9 +91,15 @@ export function buildTick(
     decodeSessions: f?.decodeSessions ?? 0,
     vramUsedMib: f?.vramUsedMib ?? 0,
     textureCacheUsedMib: f?.textureCacheUsedMib ?? 0,
-    // §10.1 law: buffered ms, 0 when nothing is buffered or no report is
-    // fresh. Idle vs drained-live is `streamState`'s to say, on this tick.
-    streamBufferMs: f?.streamBufferMs ?? 0,
+    // §10.1, ratified v0.4.6: buffered ms while a session exists; -1 when no
+    // measurement exists — the engine's no-session value forwarded, or no
+    // fresh engine report at all. A live session's 0 means "the buffer is
+    // empty" and stays distinguishable. ~~"§10.1 law: buffered ms, 0 when
+    // nothing is buffered or no report is fresh. Idle vs drained-live is
+    // `streamState`'s to say, on this tick."~~ — the repair round's wording
+    // (`f8ff895`), struck per §2c; §10.1 never carried that sentence, and
+    // v0.4.6 wrote the one it does.
+    streamBufferMs: f?.streamBufferMs ?? STREAM_BUFFER_NO_SESSION_MS,
     recordSpaceMib: f?.recordSpaceMib ?? 0,
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,
@@ -94,6 +112,15 @@ export function buildTick(
     // same as an operator seeing it, which is what these two lines are for.
     recordTapPath: f?.recordTapPath ?? TAP_NONE,
     recordTapReason: f?.recordTapReason ?? TAP_NONE,
+    // SPEC §10.1, v0.4.6. Always forwarded, stubbed — the rule followed is
+    // §10.1.1's completeness (the `recordTapPath` FINAL shape, Phase 3b), not
+    // the F1-era one it replaced: PR #24's F1 fix forwarded the tap fields
+    // only when present, on the reasoning that absence meant "no take yet".
+    // §10.1.1 forbids that reasoning, so this is decided against it. A stale
+    // report stubs to "none" rather than "closed": with no fresh engine
+    // report the control plane does not know what the socket is doing, and
+    // `engineConnected: false` already says why.
+    streamTransportState: f?.streamTransportState ?? TAP_NONE,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),

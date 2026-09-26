@@ -190,6 +190,7 @@ fn render_channel_frames_round_trip() {
             bus_peak_dbfs: [("master".to_string(), -12.3)].into_iter().collect(),
             record_tap_path: "zeroCopy".into(),
             record_tap_reason: "Table".into(),
+            stream_transport_state: "reconnecting".into(),
         },
     });
     round_trip(&PushFrame::StateChange {
@@ -348,7 +349,8 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         decode_sessions: 0,
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
-        stream_buffer_ms: 0.0,
+        // The v0.4.6 NO-SESSION sentinel, sampled as a value (-1.0), not 0.0.
+        stream_buffer_ms: nbe_protocol::STREAM_BUFFER_NO_SESSION_MS,
         record_space_mib: 0.0,
         master_clock_drift_ms: 0.0,
         fallback_active: false,
@@ -378,6 +380,10 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         // `quality_profile` today, and whatever is added next.
         record_tap_path: "zeroCopy".into(),
         record_tap_reason: "Table".into(),
+        // SPEC v0.4.6. Sampled with a VALUE, not the `"none"` stub, per the
+        // rule above: `"reconnecting"` is the token the field exists to carry
+        // (a redial `streamState` does not show).
+        stream_transport_state: "reconnecting".into(),
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();

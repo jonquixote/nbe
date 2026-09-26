@@ -23,6 +23,7 @@ import {
   ingestEngineFrame,
   newWorldTelemetry,
   ENGINE_TELEMETRY_TTL_MS,
+  STREAM_BUFFER_NO_SESSION_MS,
 } from "./telemetry.js";
 import { ControlPlaneState } from "./state.js";
 
@@ -95,14 +96,16 @@ test("engine telemetry requires streamBufferMs and parses a distinctive value", 
 
 test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfully", () => {
   // Idle pre-start: no engine report yet. Both keys present — streamState
-  // "idle" (as commanded), streamBufferMs 0 (§10.1: nothing buffered).
+  // "idle" (as commanded), streamBufferMs -1 (§10.1, v0.4.6: no measurement
+  // exists). ~~"streamBufferMs 0 (§10.1: nothing buffered)"~~ — retired §2c.
   {
     const state = new ControlPlaneState();
     const tick = buildTick(state, newWorldTelemetry(), Date.now());
     assert.ok("streamState" in tick, "pre-start tick must carry streamState, never omit it");
     assert.ok("streamBufferMs" in tick, "pre-start tick must carry streamBufferMs, never omit it");
     assert.equal(tick.streamState, "idle");
-    assert.equal(tick.streamBufferMs, 0);
+    assert.equal(STREAM_BUFFER_NO_SESSION_MS, -1, "the sentinel is -1 on the wire");
+    assert.equal(tick.streamBufferMs, -1, "no engine report: no measurement exists");
     assert.equal(tick.engineConnected, false);
   }
 
@@ -132,29 +135,64 @@ test("ticks carry streamState and streamBufferMs in every phase, stubbed lawfull
     state.streamState = "live";
     const world = newWorldTelemetry();
     const then = Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000;
-    ingestEngineFrame(world, EngineTelemetryFrameSchema.parse(engineFrame(210)), then);
+    // The stale report CARRIES a transport state ("live"), so the assert below
+    // discriminates: forwarding stale data would read "live", not the stub.
+    ingestEngineFrame(
+      world,
+      EngineTelemetryFrameSchema.parse({ ...engineFrame(210), streamTransportState: "live" }),
+      then,
+    );
     const tick = buildTick(state, world, Date.now());
     assert.ok("streamState" in tick && "streamBufferMs" in tick, "stale ticks stay complete");
     assert.equal(tick.streamState, "live", "engine loss must not rewrite the commanded state");
-    assert.equal(tick.streamBufferMs, 0, "a stale engine report stubs the buffer to 0 (no fresh data)");
+    assert.equal(
+      tick.streamBufferMs,
+      -1,
+      "a stale engine report stubs the buffer to -1: no fresh measurement exists " +
+        '(~~"stubs the buffer to 0"~~, retired v0.4.6)',
+    );
     assert.equal(tick.engineConnected, false);
+    // §10.1 (v0.4.6): with no fresh report the control plane does not know
+    // what the socket is doing — "none", never "closed" (and never the stale
+    // "live"); engineConnected: false above says why.
+    assert.equal(
+      tick.streamTransportState,
+      "none",
+      "a stale report stubs the transport state to none",
+    );
   }
 });
 
 // ---------------------------------------------------------------------------
-// Idle vs drained-live: the law already distinguishes them, on the same tick.
-// streamBufferMs is 0 in both — nothing is buffered in either — and
-// streamState ("as commanded") says which. PR #30 first invented a -1
-// sentinel for this; that changed a ratified field inside a feature PR and is
-// reverted (drafted as an UNRATIFIED candidate in docs/v0.5-outline.md §7).
+// Idle vs drained-live: SPEC v0.4.6 makes the field itself distinguish them.
+// An idle engine (no session) reports -1, "no measurement exists"; a
+// drained-live session reports 0, "the buffer is empty". streamState on the
+// same tick still says which, but it is commanded, not measured — the
+// sentinel is what lets the engine field be read alone.
+//
+// Retired per §2c — the repair round's test, which pinned the opposite:
+//
+// > test("idle and drained-live both report 0 and differ by streamState")
+// > Idle vs drained-live: the law already distinguishes them, on the same
+// > tick. streamBufferMs is 0 in both — nothing is buffered in either — and
+// > streamState ("as commanded") says which. PR #30 first invented a -1
+// > sentinel for this; that changed a ratified field inside a feature PR and
+// > is reverted (drafted as an UNRATIFIED candidate in docs/v0.5-outline.md §7).
+//
+// The user ratified the sentinel in v0.4.6; "the law" that test cited was
+// never a §10.1 sentence.
 // ---------------------------------------------------------------------------
 
-test("idle and drained-live both report 0 and differ by streamState", () => {
+test("idle reports -1 and drained-live reports 0: the field alone distinguishes them", () => {
   const now = Date.now();
 
   const idle = new ControlPlaneState();
   const idleWorld = newWorldTelemetry();
-  ingestEngineFrame(idleWorld, EngineTelemetryFrameSchema.parse(engineFrame(0)), now);
+  ingestEngineFrame(
+    idleWorld,
+    EngineTelemetryFrameSchema.parse(engineFrame(STREAM_BUFFER_NO_SESSION_MS)),
+    now,
+  );
   const idleTick = buildTick(idle, idleWorld, now);
 
   const live = new ControlPlaneState();
@@ -163,8 +201,13 @@ test("idle and drained-live both report 0 and differ by streamState", () => {
   ingestEngineFrame(liveWorld, EngineTelemetryFrameSchema.parse(engineFrame(0)), now);
   const liveTick = buildTick(live, liveWorld, now);
 
-  assert.equal(idleTick.streamBufferMs, 0, "an idle engine buffers nothing");
-  assert.equal(liveTick.streamBufferMs, 0, "a drained-live session honestly reports 0");
+  assert.equal(idleTick.streamBufferMs, -1, "an idle engine has no measurement: the sentinel forwards");
+  assert.equal(liveTick.streamBufferMs, 0, "a drained-live session honestly reports an empty buffer");
+  assert.notEqual(
+    idleTick.streamBufferMs,
+    liveTick.streamBufferMs,
+    "no-session and empty-buffer must be distinguishable from streamBufferMs alone",
+  );
   assert.equal(idleTick.streamState, "idle");
   assert.equal(liveTick.streamState, "live");
 });

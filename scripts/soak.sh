@@ -131,6 +131,8 @@ R7_HITS=0
 # iteration records; `set -u` is on, so they are declared rather than assumed.
 LAST_TAP_PATHS=""
 LAST_TAP_REASONS=""
+# The last iteration's streamTransportState capture (SPEC v0.4.6), same shape.
+LAST_TRANSPORT_STATES=""
 # The last iteration's stream evidence (Prompt 10), for soak.json.
 LAST_STREAM_LINE=""
 LAST_SURVIVAL_LINE=""
@@ -258,6 +260,28 @@ for i in $(seq 1 "$ITERATIONS"); do
   LAST_TAP_PATHS="$TAP_PATHS"
   LAST_TAP_REASONS="$TAP_REASONS"
 
+  # The stream transport's own state (§10.1, ratified v0.4.6): distinct values
+  # with counts across the iteration's ticks — the record-tap shape above, for
+  # the field that makes a redial visible on the wire. `streamState` is the
+  # commanded one and stays `live` through a redial (§9.5); this one says what
+  # the socket did. A healthy rehearsal reads `none` before step 9, `live`
+  # while it streams, `closed` after (first measured 2026-09-25:
+  # `closed:26 live:5 none:19`). A `reconnecting` count on a rehearsal that
+  # killed no ingest is a finding.
+  TRANSPORT_STATES="$(grep -ho '"streamTransportState":"[^"]*"' "$ITER/telemetry.jsonl" 2>/dev/null \
+    | sed 's/.*:"//; s/"$//' | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')"
+  say "  stream transport: ${TRANSPORT_STATES:-<none captured>}"
+  echo "${TRANSPORT_STATES:-}" >"$ITER/stream-transport-state.txt"
+  # A clean iteration that streamed and whose ticks never read `live` has lost
+  # the field (or the transport never went live and nothing else said so).
+  if [ "$RS" -eq 0 ] && [ "${RF:-1}" -eq 0 ] && [ -n "$STREAM_LINE" ]; then
+    case "${TRANSPORT_STATES:-}" in
+      *live:*) : ;;
+      *) say "  stream transport: NO live ON THE WIRE across a clean streaming iteration"; FAILED=1 ;;
+    esac
+  fi
+  LAST_TRANSPORT_STATES="$TRANSPORT_STATES"
+
   # Flake-register watch list (§5): R7's signature, with a COUNT, because a
   # quiet return is what the list exists to catch.
   RUN7="$(cd packages/control-plane && npm test 2>&1)"
@@ -300,13 +324,15 @@ cat >"$OUT/soak.json" <<JSON
     "reconnect_last_iteration": "${LAST_RECONNECT_LINE:-}",
     "g1_last_iteration": "${LAST_G1_LINE:-}",
     "vt_retain_last_iteration": "${LAST_VT_LINE:-}",
-    "mediamtx": "${LAST_MEDIAMTX:-}"
+    "mediamtx": "${LAST_MEDIAMTX:-}",
+    "transport_states_last_iteration": "${LAST_TRANSPORT_STATES:-}"
   },
   "outcome": "$([ "$FAILED" -eq 0 ] && echo PASS || echo FAIL)"
 }
 JSON
 say "=== soak.json written"
 say "=== record tap: ${LAST_TAP_PATHS:-<none>} (${LAST_TAP_REASONS:-<none>})"
+say "=== stream transport: ${LAST_TRANSPORT_STATES:-<none>}"
 say "=== R7 watch list: $R7_HITS sighting(s) in $ITERATIONS iterations"
 
 if [ "$FAILED" -eq 0 ]; then

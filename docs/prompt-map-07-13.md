@@ -498,6 +498,146 @@ tree, and passed on CI rerun. This is R7's test, not a new entry: same name, sam
 signature, same load-sensitive family, now 3 sightings across unrelated changes.
 The redelivery-vs-extra-bump question still stands — payloads still uncaught.
 
+### Finding R10 — a stream drain missed its 5 s bound once on CI (recorded 2026-09-25, PR #33)
+
+*Numbered after R9, the highest filed; R8 appears nowhere in the tree.*
+
+**Signature.** `prompt10_rtmp::telemetry_tick_wires_the_live_session_counter`
+panicked at `crates/nbe-engine/tests/prompt10_rtmp.rs:1570`: `drained reads 0 on
+the tick`, with `test result: FAILED. 19 passed; 1 failed; 1 ignored`. This was CI
+attempt 1 of run `36120910087`, at head `000159f`, in the `rust` job (job
+`108025920278`, hosted `macos-14`, runner `GitHub Actions 1000002963`). The
+re-run, attempt 2 of the same run, passed. Locally, on the normative machine,
+the test passed 10/10 at 0.37–0.46 s each (load 2.75 → 3.09 across the loop).
+It is the first recorded failure of this test. The eleven CI runs before it,
+back to `35976288284`, all contain the test (it landed in `200816f`), and all
+were green.
+
+**Not the change under review.** The test opens `StreamSession::open` directly
+and never calls `resolve_stream_url`, the only engine code PR #33's fix round
+changed.
+
+**The bound.** The test publishes 64 × 60 KB video payloads into a stalled peer.
+The bounded channel admits what it can and sheds the rest. It then un-stalls the
+peer and gives the tick 5 s (`poll_until(Duration::from_secs(5), …)`) to read
+`0.0`. Draining means the in-process test server reads and parses every message
+on one thread per connection. On the runner the test ran about 5.4 s (the
+preceding test finished at 09:54:34.90Z; this one failed at 09:54:40.28Z), which
+fits the drain poll expiring. Locally the whole test takes about 0.4 s: a gap of
+more than 13× that is not explained.
+
+**The class: R9's.** A wall-clock bound that measures the machine as well as the
+code, and VOID-shaped above the quiescence ceiling. **The unanswered question is
+the runner's load at the failure, and this run's logs cannot answer it.** The
+workflow echoes no load: `.github/workflows/ci.yml` contains no `vm.loadavg` or
+`uptime` anywhere. The job API records only the runner's name and labels.
+Answering it for a future sighting needs a `sysctl -n vm.loadavg` echoed around
+the workspace test step. That capture is owed and not made here (this entry is
+records only).
+
+**THE REFUTATION CONDITION, written before the next run rather than after it.**
+Either of these reopens R10 as a defect in the transport's drain or in the test
+server, not a load flake:
+- **a second sighting with the load recorded and under the 3.0 ceiling** — a
+  soak iteration qualifies, because the soak checks quiescence first and runs
+  `prompt10_rtmp` whole; a CI sighting qualifies only once the load capture
+  above exists;
+- **the drain approaching its bound on a quiescent run** — say, any quiescent
+  run of this test above 2.5 s, against about 0.4 s today.
+
+Until then it rides the watch list (`docs/soak-protocol.md` §5), in R7's shape.
+The re-run's green is not evidence of absence; it is the reason the entry exists.
+
+**The widened class, linked.** PR #33's keyless fix (`40e96e6`) means the
+hardware-gated stream tests now open real publishers and stream threads. Their
+stops are bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as
+`close_error_seam_fails_loudly_with_the_network_token`'s flake — **Finding R11**,
+below. ~~…'s load flake, recorded under § 11's "SPEC v0.4.6" entry. So the stream
+suites now carry two wall-clock bounds in R9's class, this drain and that
+teardown, and a loaded run can trip either.~~ *Corrected 2026-09-25, a day after
+it was written (§2c): R11's second sighting was under the quiescence ceiling, so
+the 500 ms flake does NOT track load and is not R9's class.* What links the two
+is narrower and true: **both are wall-clock bounds on another thread's
+progress** — this drain on the test server's reader, that teardown on the stream
+thread's exit. A run that trips either is a sighting to record, not a load
+excuse.
+
+### Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)
+
+*Numbered after R10; no R11 existed in the tree. This entry supersedes the
+"load flake" note filed under § 11's "SPEC v0.4.6" entry in `74dcc24`, which is
+kept there, struck, per §2c.*
+
+**Signature.** `record::stream::tests::close_error_seam_fails_loudly_with_the_network_token`
+fails with `released seam must close: Teardown("stream thread did not exit within
+500 ms")`. The test arms the close-error seam, gets its injected `Teardown`, then
+releases the seam and calls `stop_and_close` again. That second call must see the
+stream thread exit within `STREAM_THREAD_STOP_TIMEOUT` (500 ms).
+
+**Sightings.**
+1. **PR #33's two-key pass, at load 27.3.** Recorded in `74dcc24` with load named
+   as the cause.
+2. **2026-09-25, at load 2.59 — under the 3.0 quiescence ceiling** — in a full
+   `cargo test --workspace` at `263b074`, where the `nbe-engine` lib suite runs
+   this test beside 49 others in parallel (`49 passed; 1 failed`). It did not
+   reproduce: 0 failures in 10 lib-suite runs at load 5.6–6.3, and 20/20 passes
+   run alone (load 4.64 at the end of those).
+
+**The correction.** ~~"at load 27.3 that plausibly took longer … The class is
+R9's: a wall-clock bound that measures the machine, not the code."~~ (`74dcc24`)
+**Refuted by sighting 2.** Load does not predict this failure: it expired once
+at 2.59 and never in thirty tries at load 4.6–6.3. What the two sightings share is
+only the shape. The bound is 500 ms of wall clock against a thread's exit, the
+failure is the wait expiring, and **what the system and the thread were doing
+inside that window is unknown in both.**
+
+**The class correction.** This is **not** R9's class as recorded. R9's bound
+*tracked* load: it passed at 2.58 and failed at ~30 on the same binary, which is
+what made it a machine measurement. A bound that expires under the ceiling with
+its cause unknown is an **open flake**, and this entry files it as one.
+
+**Hypotheses — both UNTESTED, neither evidenced:**
+- **In-process contention from the parallel lib suite.** Sighting 2 ran beside
+  49 tests in one process; the 30 non-sightings ran either alone or in quieter
+  suite runs. The system load average does not measure this.
+- **A cold VideoToolbox start.** The stream thread opens its H.264 and AAC
+  encoders eagerly, first thing (`run_stream_thread` → `StreamThread::open`),
+  before it can read the `Stop` control message. It invalidates the
+  VideoToolbox session on its way out. The test stops the thread immediately
+  after `StreamSession::open`, so the 500 ms window contains an encoder open, an
+  AAC open and an invalidation. A first-in-process session opening slowly would
+  spend the window before the thread ever sees `Stop`. This is read from the
+  code, not observed.
+
+**THE RESOLUTION CONDITION, written before the next run rather than after it.**
+- **The next sighting must capture the window's contents.** At the moment the
+  wait expires, record where the thread was: `StreamStats`' `encoder_ready`,
+  `encoder_open_us` and `aac_ready` say whether it was still opening encoders,
+  and a thread stack says the rest. That is how R7 was resolved: its payload
+  dump, added two rounds earlier for exactly this, named the mechanism on the
+  fifth sighting. **A third sighting without that capture adds a count and
+  settles nothing.**
+- **The standing fix direction: rebound by event, not wall** — R9's own
+  resolution shape ("rebound by work, not wall"). The tree is closer than the
+  phrase suggests: `stop_thread` already waits on the exit *event* (it polls the
+  thread's `done` channel). What fails is the 500 ms wall *cap* on that wait,
+  after which it detaches the thread unjoined and reports failure. A deadlock and
+  a slow exit are told apart by whether the exit *ever* happens, so the wait
+  should hang off the event with a generous wall backstop sized for deadlock
+  detection. §16.1's 2 s `show.stop` window is the ceiling that backstop has to
+  respect, and that is the design question to settle. Queued under § 10's "Still
+  owed"; not built here.
+
+**The CI consequence, stated plainly.** This test runs on every `rust` job,
+since the unit test needs no encoder to open a session. It can red any of them
+with an attempt-1 failure that goes green on re-run. That is rerun culture
+arriving through a wall clock. This entry is what stands between a green re-run
+and the habit of pressing it: a re-run is not evidence the flake is gone, and a
+sighting that is re-run without being recorded here is a lost datum.
+
+**Watch list:** `docs/soak-protocol.md` §5, in R7's and R10's shape.
+
+### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
 The bound `nbe-preflight` runs under is derived from two measured constant
@@ -1216,7 +1356,11 @@ are in `docs/09-measurements.md`, Prompt 10 section.
    guard runs on real surfaces instead of `SharedPool<()>`.
 8. **`streamBufferMs` is `0` with no session again** (law); PR #30's `-1`
    sentinel is an UNRATIFIED candidate in `docs/v0.5-outline.md` §7, beside a
-   drafted `streamTransportState`.
+   drafted `streamTransportState`. *(Superseded 2026-09-25, §2c: SPEC v0.4.6
+   ratified both. The sentinel is `-1` again, now as law, and
+   `streamTransportState` is on the wire — see "SPEC v0.4.6" under § 11. The
+   "(law)" above was also an inference: §10.1 stated no no-session value until
+   v0.4.6.)*
 9. **`stream.start` no longer stalls the directive path**: the encoder probe
    opened a real VideoToolbox session on every call (36–38 ms); a positive
    answer is now cached and warmed at boot. 37.2 ms → 4.3 ms per start.
@@ -1245,7 +1389,7 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   and evicts whole stereo frames, so every drain starts on a left sample and
   holds whole frames; the guard `drains_racing_eviction_stay_stereo_aligned`
   reads 0 odd of 8,833 drains (104 of 598 with the old eviction).
-- **Transport state is not on the wire** — see the v0.5 §7 candidate.
+- ~~**Transport state is not on the wire** — see the v0.5 §7 candidate.~~ **Landed 2026-09-25**: SPEC v0.4.6 row 2, `streamTransportState` (§2c).
 - **The extended-timestamp fix has no real-ingest witness past 0xFFFFFF.**
   It is guarded against the conforming double
   (`extended_timestamp_repeats_on_every_type3_chunk`, base `0x0100_0000`);
@@ -1259,10 +1403,19 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   explicit, at one `dmb ishld` on arm64 per acquire. Both keys judged the
   current shape sound in practice; the line is owed to the first ARM production
   target or the next quiet moment, whichever comes first.
+- **QUEUED (small work order): the stream thread's teardown wait, rebound by
+  event (Finding R11).** `stop_thread` already waits on the thread's exit event
+  but gives up after 500 ms of wall clock (`STREAM_THREAD_STOP_TIMEOUT`) and
+  detaches the thread. The wait's purpose is deadlock detection, and a deadlock
+  and a slow exit differ in whether the exit *ever* happens. So bound the wait by
+  the exit event, with a generous wall backstop sized to §16.1's 2 s `show.stop`
+  window. Also add the capture R11 requires: on expiry, record `StreamStats`
+  (`encoder_ready`, `encoder_open_us`, `aac_ready`) and the thread's state, so
+  the next sighting names its phase. Not built in PR #33; the merge was waiting.
 
 ## 11 — Watchdog
 
-*Upgraded 2026-09-25 UTC — see "Prompt 11 upgraded for the tree" below; blocked on C1 and B1–B5.*
+*Upgraded 2026-09-25 UTC — see "Prompt 11 upgraded for the tree" below; ~~blocked on C1 and B1–B5~~ all six decided 2026-09-25 — see "SPEC v0.4.6" below.*
 
 The watchdog itself exists and is gated (pass 4 confirmed deadline accounting and fallback trip both fail correctly when deleted). What 11 must now add is **the automation engine runtime** (§13, AC-25), assigned by `[RI-5]`: triggers, the once-per-frame limit, runtime cycle suppression, and audit logging of every automation action. `automation.hold` exists from Prompt 02; the engine behind it does not. 11 also inherits **F3's fix** as context — the fix round adds a `fail_view` seam, so §10.3's engagement path finally has production coverage that 11's work must keep.
 
@@ -1279,7 +1432,90 @@ The watchdog itself exists and is gated (pass 4 confirmed deadline accounting an
 | **B4** | §13.4 transitive cycle rejection needs a command → trigger effect table the spec lacks | draft the table as an UNRATIFIED candidate |
 | **B5** | AC-25 #2's "pending actions" — rules have no delay | fired-but-not-dispatched within the current frame |
 
-**Prompt 11 is BLOCKED on C1 and B1–B5.** They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
+~~**Prompt 11 is BLOCKED on C1 and B1–B5.**~~ *Unblocked 2026-09-25 — the user spoke all six; see the next entry.* They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
+
+### SPEC v0.4.6 — Prompt 11's six decisions, spoken 2026-09-25
+
+The user spoke Prompt 11's six decisions on **2026-09-25** (UTC and local −0700
+agree on the date). SPEC-REV-2 landed them the v0.4.5 way — the words predate
+the text, so there was no drafting phase, and each ratified row landed with its
+mechanism and had its guard run at its landing commit. Branch `spec-rev-v046`.
+
+| # | The user's word | Where it landed |
+|---|---|---|
+| **C1** | One prompt, two gated work units | **Recorded for the executor** — `agents/prompts/11-watchdog.md` §1 and §3 |
+| **B1** | The engine level-crossing event; its mechanism is Prompt 11's to build and it ships there as a candidate | **Candidate, home: Prompt 11's feature PR** — marked UNRATIFIED with its guards there, ratified by the user separately. No v0.4.6 row |
+| **B2** | Ratify `streamTransportState` | **Landed, v0.4.6 row 2** — §10.1 field, note and §10.1.1 ownership; engine, protocol, control-plane schema and `buildTick`; token, completeness, readability and redial-on-the-wire guards; the mirror fixture samples `"reconnecting"`; the soak captures distinct values. Landing `f15b617`, record `9d1dfed` |
+| **B3** | Control-plane-side `mediaStart` | **Recorded for the executor** — the take applied. §13.4.1's `mediaStart` column uses it |
+| **B4** | The command → trigger effect table, as a candidate | **Candidate, drafted UNRATIFIED in SPEC §13.4.1** (v0.4.6 row 4, `69a2b54`): all 55 §16 commands with citations. Its mechanism — WU5's transitive check — ships with Prompt 11's feature PR, and the table is ratified separately |
+| **B5** | "Pending" = fired-but-not-dispatched within the frame | **Recorded for the executor** — pinned by a test in WU2 |
+
+The same order settled two Prompt 10 candidates from `docs/v0.5-outline.md` §7:
+**row 1**, `stream.start`'s refusal order as §16.14 law (`724e35f`, record
+`0a39c29`), and **row 3**, the `streamBufferMs` NO-SESSION sentinel, `-1` on the
+engine and the control plane (`00d8b46`, record `9a5c3a2`). All three §7 rows now
+read RATIFIED.
+
+**Found while landing it, recorded rather than fixed** (the order allowed no
+other behaviour):
+
+- ~~**A keyless `rtmp://` endpoint publishes nothing and says live.**
+  `resolve_stream_url` checks only the scheme, so `rtmp://host/app` passes. Then
+  `parse_rtmp_url` refuses it, the session opens with no publisher, `streamState`
+  goes live, and nothing is published. `StreamSession::stream_buffer_ms` reads
+  `0.0` for it, not the sentinel. The new field is how it surfaced: the tick reads
+  `streamTransportState: "closed"` beside a live stream.~~ **FIXED in PR #33's
+  fix round (`40e96e6`, §2c).** The two-key pass judged a ledger line
+  insufficient: an operator sees a stream that says live and reaches no one. Now
+  `resolve_stream_url` runs the publisher's own `parse_rtmp_url`, so a keyless
+  or malformed endpoint is refused `E_BAD_PAYLOAD` at resolve time, before any
+  probe or session, naming the parser's reason. The guards are in
+  `stream_url_precedence`. The fix also exposed the tests' reliance on the
+  defect. Keyless URL literals that the tests treated as valid (15 in
+  `stream_url_precedence`, 23 in `prompt10_stream_cmds`, 1 in
+  `prompt10_telemetry`) resolved only through it. They gained a `/key`, so the
+  hardware-gated stream tests now open real publishers.
+- **`item.stop` has no engine effect.** The engine does not route it, so a
+  stopped timed item keeps its scheduled `end`, which the control plane's
+  `markDone` drops. §13.4.1 records it for WU3/WU5.
+- **The control plane's `StreamState` type admits `"reconnecting"`,** and nothing
+  sets it. `stream state tokens are stable` pins the token; only tests assign it.
+- **§10.1 never stated `streamBufferMs`'s no-session value.** The repair round's
+  "§10.1 law: 0" was code-comment inference, so v0.4.6 wrote the sentence rather
+  than amending one.
+- **`stream_tap_selection`'s doc comment said "not cleared at stop",** and every
+  stop path clears it. It is corrected in row 2, with the old text struck.
+
+**~~A load flake, recorded by class~~ A teardown-wait flake — superseded by
+Finding R11 (PR #33's two-key pass).**
+*Corrected 2026-09-25, a day after it was written (§2c). Its causal claim — that
+load explains the failure — is refuted: the same failure recurred at load 2.59,
+under the ceiling, and did not recur in 30 tries at load 4.6–6.3. See **Finding
+R11** beside R7 and R10 in § 07. The original text stands, struck where it is
+wrong:*
+
+`record::stream::tests::close_error_seam_fails_loudly_with_the_network_token`
+failed once, at load 27.3, on its teardown-wait bound. Its second
+`stop_and_close` must see the stream thread exit within
+`STREAM_THREAD_STOP_TIMEOUT` (500 ms). The thread drops its VideoToolbox encoder
+on the way out (the constant's own doc says this is short but not instant), ~~and
+at load 27.3 that plausibly took longer. That cause is an inference, not a
+measurement.~~ The same test passed in this PR's workspace battery at `7346879`,
+which started at load 3.85. ~~The class is R9's: a wall-clock bound that measures
+the machine, not the code. By doctrine a run above the quiescence ceiling is VOID
+for anything timing-shaped, so this is not a finding against the teardown.~~
+**No test changes: the bound is not weakened to look green.** The 500 ms, plus
+the transport's 800 ms, is what keeps a stream stop inside §16.1's 2 s window
+beside record's parallel 1.5 s (`STREAM_THREAD_STOP_TIMEOUT`'s own doc). ~~It
+matters on CI only if a loaded runner approaches it. Today's runner has no H.264
+encoder, so its stream threads run without one and have no VideoToolbox session
+to invalidate on the way out.~~ *(Struck: the test runs on every CI `rust` job
+and can red it with an attempt-1 failure — R11's CI consequence.)* One
+consequence of the keyless fix widens the ~~class~~ exposure: the hardware-gated
+`prompt10_stream_cmds` and `prompt10_telemetry` tests now open real publishers
+and stream threads, so their stops are bounded by the same 500 ms. ~~A loaded
+local run can flake them the same way, and the same doctrine applies.~~ Any run
+can trip that bound, loaded or not, until R11 is resolved.
 
 ## 12 — Benchmark
 
