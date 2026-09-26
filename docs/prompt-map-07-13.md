@@ -551,11 +551,93 @@ The re-run's green is not evidence of absence; it is the reason the entry exists
 **The widened class, linked.** PR #33's keyless fix (`40e96e6`) means the
 hardware-gated stream tests now open real publishers and stream threads. Their
 stops are bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as
-`close_error_seam_fails_loudly_with_the_network_token`'s load flake, recorded
-under § 11's "SPEC v0.4.6" entry. So the stream suites now carry two wall-clock
-bounds in R9's class, this drain and that teardown, and a loaded run can trip
-either.
+`close_error_seam_fails_loudly_with_the_network_token`'s flake — **Finding R11**,
+below. ~~…'s load flake, recorded under § 11's "SPEC v0.4.6" entry. So the stream
+suites now carry two wall-clock bounds in R9's class, this drain and that
+teardown, and a loaded run can trip either.~~ *Corrected 2026-09-25, a day after
+it was written (§2c): R11's second sighting was under the quiescence ceiling, so
+the 500 ms flake does NOT track load and is not R9's class.* What links the two
+is narrower and true: **both are wall-clock bounds on another thread's
+progress** — this drain on the test server's reader, that teardown on the stream
+thread's exit. A run that trips either is a sighting to record, not a load
+excuse.
 
+### Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)
+
+*Numbered after R10; no R11 existed in the tree. This entry supersedes the
+"load flake" note filed under § 11's "SPEC v0.4.6" entry in `74dcc24`, which is
+kept there, struck, per §2c.*
+
+**Signature.** `record::stream::tests::close_error_seam_fails_loudly_with_the_network_token`
+fails with `released seam must close: Teardown("stream thread did not exit within
+500 ms")`. The test arms the close-error seam, gets its injected `Teardown`, then
+releases the seam and calls `stop_and_close` again. That second call must see the
+stream thread exit within `STREAM_THREAD_STOP_TIMEOUT` (500 ms).
+
+**Sightings.**
+1. **PR #33's two-key pass, at load 27.3.** Recorded in `74dcc24` with load named
+   as the cause.
+2. **2026-09-25, at load 2.59 — under the 3.0 quiescence ceiling** — in a full
+   `cargo test --workspace` at `263b074`, where the `nbe-engine` lib suite runs
+   this test beside 49 others in parallel (`49 passed; 1 failed`). It did not
+   reproduce: 0 failures in 10 lib-suite runs at load 5.6–6.3, and 20/20 passes
+   run alone (load 4.64 at the end of those).
+
+**The correction.** ~~"at load 27.3 that plausibly took longer … The class is
+R9's: a wall-clock bound that measures the machine, not the code."~~ (`74dcc24`)
+**Refuted by sighting 2.** Load does not predict this failure: it expired once
+at 2.59 and never in thirty tries at load 4.6–6.3. What the two sightings share is
+only the shape. The bound is 500 ms of wall clock against a thread's exit, the
+failure is the wait expiring, and **what the system and the thread were doing
+inside that window is unknown in both.**
+
+**The class correction.** This is **not** R9's class as recorded. R9's bound
+*tracked* load: it passed at 2.58 and failed at ~30 on the same binary, which is
+what made it a machine measurement. A bound that expires under the ceiling with
+its cause unknown is an **open flake**, and this entry files it as one.
+
+**Hypotheses — both UNTESTED, neither evidenced:**
+- **In-process contention from the parallel lib suite.** Sighting 2 ran beside
+  49 tests in one process; the 30 non-sightings ran either alone or in quieter
+  suite runs. The system load average does not measure this.
+- **A cold VideoToolbox start.** The stream thread opens its H.264 and AAC
+  encoders eagerly, first thing (`run_stream_thread` → `StreamThread::open`),
+  before it can read the `Stop` control message. It invalidates the
+  VideoToolbox session on its way out. The test stops the thread immediately
+  after `StreamSession::open`, so the 500 ms window contains an encoder open, an
+  AAC open and an invalidation. A first-in-process session opening slowly would
+  spend the window before the thread ever sees `Stop`. This is read from the
+  code, not observed.
+
+**THE RESOLUTION CONDITION, written before the next run rather than after it.**
+- **The next sighting must capture the window's contents.** At the moment the
+  wait expires, record where the thread was: `StreamStats`' `encoder_ready`,
+  `encoder_open_us` and `aac_ready` say whether it was still opening encoders,
+  and a thread stack says the rest. That is how R7 was resolved: its payload
+  dump, added two rounds earlier for exactly this, named the mechanism on the
+  fifth sighting. **A third sighting without that capture adds a count and
+  settles nothing.**
+- **The standing fix direction: rebound by event, not wall** — R9's own
+  resolution shape ("rebound by work, not wall"). The tree is closer than the
+  phrase suggests: `stop_thread` already waits on the exit *event* (it polls the
+  thread's `done` channel). What fails is the 500 ms wall *cap* on that wait,
+  after which it detaches the thread unjoined and reports failure. A deadlock and
+  a slow exit are told apart by whether the exit *ever* happens, so the wait
+  should hang off the event with a generous wall backstop sized for deadlock
+  detection. §16.1's 2 s `show.stop` window is the ceiling that backstop has to
+  respect, and that is the design question to settle. Queued under § 10's "Still
+  owed"; not built here.
+
+**The CI consequence, stated plainly.** This test runs on every `rust` job,
+since the unit test needs no encoder to open a session. It can red any of them
+with an attempt-1 failure that goes green on re-run. That is rerun culture
+arriving through a wall clock. This entry is what stands between a green re-run
+and the habit of pressing it: a re-run is not evidence the flake is gone, and a
+sighting that is re-run without being recorded here is a lost datum.
+
+**Watch list:** `docs/soak-protocol.md` §5, in R7's and R10's shape.
+
+### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
 The bound `nbe-preflight` runs under is derived from two measured constant
@@ -1321,6 +1403,15 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   explicit, at one `dmb ishld` on arm64 per acquire. Both keys judged the
   current shape sound in practice; the line is owed to the first ARM production
   target or the next quiet moment, whichever comes first.
+- **QUEUED (small work order): the stream thread's teardown wait, rebound by
+  event (Finding R11).** `stop_thread` already waits on the thread's exit event
+  but gives up after 500 ms of wall clock (`STREAM_THREAD_STOP_TIMEOUT`) and
+  detaches the thread. The wait's purpose is deadlock detection, and a deadlock
+  and a slow exit differ in whether the exit *ever* happens. So bound the wait by
+  the exit event, with a generous wall backstop sized to §16.1's 2 s `show.stop`
+  window. Also add the capture R11 requires: on expiry, record `StreamStats`
+  (`encoder_ready`, `encoder_open_us`, `aac_ready`) and the thread's state, so
+  the next sighting names its phase. Not built in PR #33; the merge was waiting.
 
 ## 11 — Watchdog
 
@@ -1395,27 +1486,36 @@ other behaviour):
 - **`stream_tap_selection`'s doc comment said "not cleared at stop",** and every
   stop path clears it. It is corrected in row 2, with the old text struck.
 
-**A load flake, recorded by class (PR #33's two-key pass).**
+**~~A load flake, recorded by class~~ A teardown-wait flake — superseded by
+Finding R11 (PR #33's two-key pass).**
+*Corrected 2026-09-25, a day after it was written (§2c). Its causal claim — that
+load explains the failure — is refuted: the same failure recurred at load 2.59,
+under the ceiling, and did not recur in 30 tries at load 4.6–6.3. See **Finding
+R11** beside R7 and R10 in § 07. The original text stands, struck where it is
+wrong:*
+
 `record::stream::tests::close_error_seam_fails_loudly_with_the_network_token`
 failed once, at load 27.3, on its teardown-wait bound. Its second
 `stop_and_close` must see the stream thread exit within
 `STREAM_THREAD_STOP_TIMEOUT` (500 ms). The thread drops its VideoToolbox encoder
-on the way out (the constant's own doc says this is short but not instant), and
+on the way out (the constant's own doc says this is short but not instant), ~~and
 at load 27.3 that plausibly took longer. That cause is an inference, not a
-measurement. The same test passed in this PR's workspace battery at `7346879`,
-which started at load 3.85. The class is R9's: a wall-clock bound that measures
-the machine, not the code. By doctrine a run above the quiescence ceiling is VOID for anything
-timing-shaped, so this is not a finding against the teardown. **No test changes:
-the bound is not weakened to look green.** The 500 ms, plus the transport's
-800 ms, is what keeps a stream stop inside §16.1's 2 s window beside record's
-parallel 1.5 s (`STREAM_THREAD_STOP_TIMEOUT`'s own doc). It matters on CI only if
-a loaded runner approaches it. Today's runner has no H.264 encoder, so its
-stream threads run without one and have no VideoToolbox session to invalidate on
-the way out. One consequence of the keyless fix widens the class:
-the hardware-gated `prompt10_stream_cmds` and `prompt10_telemetry` tests now
-open real publishers and stream threads, so their stops are bounded by the same
-500 ms. A loaded local run can flake them the same way, and the same doctrine
-applies.
+measurement.~~ The same test passed in this PR's workspace battery at `7346879`,
+which started at load 3.85. ~~The class is R9's: a wall-clock bound that measures
+the machine, not the code. By doctrine a run above the quiescence ceiling is VOID
+for anything timing-shaped, so this is not a finding against the teardown.~~
+**No test changes: the bound is not weakened to look green.** The 500 ms, plus
+the transport's 800 ms, is what keeps a stream stop inside §16.1's 2 s window
+beside record's parallel 1.5 s (`STREAM_THREAD_STOP_TIMEOUT`'s own doc). ~~It
+matters on CI only if a loaded runner approaches it. Today's runner has no H.264
+encoder, so its stream threads run without one and have no VideoToolbox session
+to invalidate on the way out.~~ *(Struck: the test runs on every CI `rust` job
+and can red it with an attempt-1 failure — R11's CI consequence.)* One
+consequence of the keyless fix widens the ~~class~~ exposure: the hardware-gated
+`prompt10_stream_cmds` and `prompt10_telemetry` tests now open real publishers
+and stream threads, so their stops are bounded by the same 500 ms. ~~A loaded
+local run can flake them the same way, and the same doctrine applies.~~ Any run
+can trip that bound, loaded or not, until R11 is resolved.
 
 ## 12 — Benchmark
 
