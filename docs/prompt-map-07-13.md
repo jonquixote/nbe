@@ -550,9 +550,12 @@ The re-run's green is not evidence of absence; it is the reason the entry exists
 
 **The widened class, linked.** PR #33's keyless fix (`40e96e6`) means the
 hardware-gated stream tests now open real publishers and stream threads. Their
-stops are bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as
+stops ~~are bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as~~
+*were* bounded by the same 500 ms `STREAM_THREAD_STOP_TIMEOUT` as
 `close_error_seam_fails_loudly_with_the_network_token`'s flake — **Finding R11**,
-below. ~~…'s load flake, recorded under § 11's "SPEC v0.4.6" entry. So the stream
+below. *(Since `bb7d4a2`, 2026-09-26: that wait hangs off the thread's exit
+event with an 1100 ms deadlock backstop — R11 resolved. This drain's 5 s bound
+is unchanged and still open.)* ~~…'s load flake, recorded under § 11's "SPEC v0.4.6" entry. So the stream
 suites now carry two wall-clock bounds in R9's class, this drain and that
 teardown, and a loaded run can trip either.~~ *Corrected 2026-09-25, a day after
 it was written (§2c): R11's second sighting was under the quiescence ceiling, so
@@ -562,7 +565,52 @@ progress** — this drain on the test server's reader, that teardown on the stre
 thread's exit. A run that trips either is a sighting to record, not a load
 excuse.
 
-### Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)
+### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)
+
+**Resolution, recorded 2026-09-26 (§2c: the open entry stands below, unedited).**
+Both halves of the resolution condition landed together in `bb7d4a2`:
+- **The rebound, by event, not wall.** `stop_thread` now awaits the thread's
+  exit EVENT — `done` is a `tokio::sync::oneshot` the thread fires as its last
+  act — bounded by a deadlock backstop, `STREAM_THREAD_EXIT_BACKSTOP` =
+  1100 ms. That plus the transport's 800 ms, waited in sequence, is 1900 ms,
+  inside §16.1's 2 s window (a pinned arithmetic test). A slow exit passes; only
+  an exit that never comes fails the stop.
+- **The capture.** `StreamStats` carries the thread's phase (`spawned →
+  openingEncoders → running → exiting → done`). On expiry the `Teardown` error
+  and a `tracing::error` read `phase=…, encoder_ready=…, encoder_open_us=…,
+  aac_ready=…`, so a sighting names where the thread was.
+
+Guards: `a_slow_exit_inside_the_backstop_is_a_clean_stop` (an 800 ms exit via a
+per-session seam passes), `a_hung_exit_is_reported_with_the_thread_phase` (the
+capture names `phase=exiting`), and `the_exit_backstop_fits_the_section_16_1_window`.
+Falsified at `bb7d4a2`, each restored with `git checkout`:
+
+| Mutation | Signature |
+|---|---|
+| backstop back to the old 500 ms cap | `a thread that exits inside the backstop is a clean stop, however slowly: Teardown("stream thread did not exit within 500 ms (phase=exiting, encoder_ready=true, encoder_open_us=239059, aac_ready=true)")` |
+| capture removed from the error | `the capture names the phase the thread was in, got: E_NETWORK: stream thread did not exit within 1100 ms` |
+| the event wait skipped | `the wait must have waited for the exit event (7.642703ms < 800ms)` |
+
+**The first datum the capture produced** is in the first row above: on the first
+encoder open in that test process, VideoToolbox took **239 ms**
+(`encoder_open_us=239059`); the next open took 38 ms. A cold open alone can
+spend half the old 500 ms cap before the thread ever reads `Stop`. That is
+evidence for hypothesis 2 (a cold VideoToolbox start), not proof of what the two
+sightings were. The backstop does not depend on which hypothesis is true, which
+is the point of rebounding by event.
+
+**Found while writing the guards:** `set_force_close_error` is process-global,
+so `close_error_seam_fails_loudly_with_the_network_token`'s armed seam made the
+new tests' concurrent `stop_and_close` return the injected `Teardown`
+("stream teardown failed (injected)"). The three stop tests now serialize on a
+module mutex. This was a latent in-process contention of exactly the shape
+hypothesis 1 names. It is not shown to be what either sighting was: both
+sightings read "did not exit within 500 ms", never "injected".
+
+**Still watched.** A flake that goes quiet is not thereby explained. The soak
+row stays, and a sighting now carries its capture.
+
+### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
 *Numbered after R10; no R11 existed in the tree. This entry supersedes the
 "load flake" note filed under § 11's "SPEC v0.4.6" entry in `74dcc24`, which is
@@ -1403,8 +1451,10 @@ are in `docs/09-measurements.md`, Prompt 10 section.
   explicit, at one `dmb ishld` on arm64 per acquire. Both keys judged the
   current shape sound in practice; the line is owed to the first ARM production
   target or the next quiet moment, whichever comes first.
-- **QUEUED (small work order): the stream thread's teardown wait, rebound by
-  event (Finding R11).** `stop_thread` already waits on the thread's exit event
+- ~~**QUEUED (small work order): the stream thread's teardown wait, rebound by
+  event (Finding R11).**~~ **DONE in `bb7d4a2` (Prompt 11 WU0, 2026-09-26)** —
+  the rebound and the capture, as queued below; R11 is marked resolved. The
+  queue line, kept: `stop_thread` already waits on the thread's exit event
   but gives up after 500 ms of wall clock (`STREAM_THREAD_STOP_TIMEOUT`) and
   detaches the thread. The wait's purpose is deadlock detection, and a deadlock
   and a slow exit differ in whether the exit *ever* happens. So bound the wait by
