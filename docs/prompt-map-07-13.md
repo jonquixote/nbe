@@ -1441,6 +1441,13 @@ agree on the date). SPEC-REV-2 landed them the v0.4.5 way — the words predate
 the text, so there was no drafting phase, and each ratified row landed with its
 mechanism and had its guard run at its landing commit. Branch `spec-rev-v046`.
 
+**Merged** as PR #33 on 2026-09-26 at 03:18 UTC (locally 2026-09-25 20:18
+−0700), squashed to `619846c` on `main`. Its tree is identical to the PR's
+final head, `6988c04`. **Main's CI at the merge commit: run `36214380771`,
+success** — control-plane, dress rehearsal and rust all green. Recorded
+2026-09-26 as the first commit of Prompt 11's branch; it was owed from the
+merge.
+
 | # | The user's word | Where it landed |
 |---|---|---|
 | **C1** | One prompt, two gated work units | **Recorded for the executor** — `agents/prompts/11-watchdog.md` §1 and §3 |
