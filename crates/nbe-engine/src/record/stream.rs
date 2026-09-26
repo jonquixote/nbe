@@ -70,7 +70,7 @@
 //!   probe already answered; a thread-side failure is a degraded stream, not
 //!   a refused one).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,11 +90,78 @@ use crate::record::AudioTap;
 /// stream drop; a deep queue would be stale airtime.
 pub const STREAM_CHANNEL_BOUND: usize = 2;
 
-/// Bounded wait for the stream thread to exit inside `stop_and_close`. The
-/// thread drops its encoder on the way out (VideoToolbox invalidation), so
-/// this is short-but-not-instant; with the transport's 800 ms it stays inside
-/// the §16.1 2 s window beside record's parallel 1.5 s.
-pub const STREAM_THREAD_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+/// Deadlock backstop for the stream thread's exit inside `stop_and_close` —
+/// Finding R11's rebound, **by event, not wall**.
+///
+/// The wait hangs off the thread's exit EVENT: `done` is a oneshot the thread
+/// fires as its last act, and `stop_thread` awaits it. A thread that exits at
+/// any point inside the backstop passes, however slowly it exits. The wall
+/// clock is only a backstop, and its one job is telling a deadlock (the exit
+/// never happens) from a slow exit (it happens late). On expiry the error
+/// carries the thread's phase and encoder state, so a sighting names where the
+/// thread was ([`StreamThreadPhase`]).
+///
+/// Sized to §16.1's 2 s `show.stop` window. This plus the transport's
+/// `PublisherHandle::stop_timeout()` (800 ms), waited in sequence, is
+/// 1900 ms ≤ 2000 ms, beside record's parallel 1.5 s. That leaves 100 ms of
+/// ack-pump headroom (record keeps 500) for the slowest *successful* stop, and
+/// only a thread that takes over a second to exit ever gets near it; a healthy
+/// exit takes milliseconds (measured in the R11 record). No test asserts that
+/// latency — it would be the wall-clock bound this constant replaced.
+/// `the_exit_backstop_fits_the_section_16_1_window` pins the arithmetic.
+///
+/// ~~`STREAM_THREAD_STOP_TIMEOUT` = 500 ms: "Bounded wait for the stream thread
+/// to exit inside `stop_and_close`. The thread drops its encoder on the way out
+/// (VideoToolbox invalidation), so this is short-but-not-instant; with the
+/// transport's 800 ms it stays inside the §16.1 2 s window beside record's
+/// parallel 1.5 s."~~ Superseded (§2c). That 500 ms was a latency assertion on
+/// a thread's exit, polled every 5 ms. It expired twice, once at load 27.3 and
+/// once at 2.59 under the quiescence ceiling, with the cause unknown both times
+/// (`docs/prompt-map-07-13.md`, Finding R11).
+pub const STREAM_THREAD_EXIT_BACKSTOP: Duration = Duration::from_millis(1100);
+
+/// Where the stream thread is in its life — R11's capture. Stored in
+/// [`StreamStats::phase`] as the thread moves, read by `stop_thread` when the
+/// exit backstop expires, so a sighting says where the thread was instead of
+/// only that the wait ran out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StreamThreadPhase {
+    /// Spawned; not yet opening encoders.
+    Spawned = 0,
+    /// Opening the H.264 and AAC encoders (`StreamThread::open`) — eager, at
+    /// spawn, before the thread can read `Stop`.
+    OpeningEncoders = 1,
+    /// In the run loop: encoding, publishing, polling for `Stop`.
+    Running = 2,
+    /// Left the run loop; dropping its encoders (VideoToolbox invalidation).
+    Exiting = 3,
+    /// Everything dropped; about to fire `done`.
+    Done = 4,
+}
+
+impl StreamThreadPhase {
+    /// The capture's token for a phase.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StreamThreadPhase::Spawned => "spawned",
+            StreamThreadPhase::OpeningEncoders => "openingEncoders",
+            StreamThreadPhase::Running => "running",
+            StreamThreadPhase::Exiting => "exiting",
+            StreamThreadPhase::Done => "done",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => StreamThreadPhase::OpeningEncoders,
+            2 => StreamThreadPhase::Running,
+            3 => StreamThreadPhase::Exiting,
+            4 => StreamThreadPhase::Done,
+            _ => StreamThreadPhase::Spawned,
+        }
+    }
+}
 
 /// The stream tap's ring: one second of 48 kHz stereo. The stream thread
 /// drains it at least every [`AUDIO_POLL`]; the ring only fills if the thread
@@ -235,6 +302,8 @@ enum StreamControl {
 /// never on the wire.
 #[derive(Debug, Default)]
 pub struct StreamStats {
+    /// The thread's [`StreamThreadPhase`], as a `u8` (R11's capture).
+    pub phase: AtomicU8,
     /// The encoder opened on the thread (eagerly, at spawn).
     pub encoder_ready: AtomicBool,
     /// Time the encoder open took on the thread, µs (off the loop and off
@@ -253,6 +322,29 @@ pub struct StreamStats {
     pub audio_packets_published: AtomicU64,
 }
 
+impl StreamStats {
+    /// The thread's current phase (R11's capture).
+    pub fn phase(&self) -> StreamThreadPhase {
+        StreamThreadPhase::from_u8(self.phase.load(Ordering::SeqCst))
+    }
+
+    fn set_phase(&self, phase: StreamThreadPhase) {
+        self.phase.store(phase as u8, Ordering::SeqCst);
+    }
+
+    /// The capture R11's resolution condition demands, as one line: where the
+    /// thread was and how far its encoders got.
+    pub fn capture(&self) -> String {
+        format!(
+            "phase={}, encoder_ready={}, encoder_open_us={}, aac_ready={}",
+            self.phase().as_str(),
+            self.encoder_ready.load(Ordering::SeqCst),
+            self.encoder_open_us.load(Ordering::SeqCst),
+            self.aac_ready.load(Ordering::SeqCst),
+        )
+    }
+}
+
 /// A live stream: the publish target, the selection, the publisher, and the
 /// stream thread's endpoints. Deliberately `Send` so engine state can hold
 /// it; the `!Send` half lives on the stream thread.
@@ -269,7 +361,10 @@ pub struct StreamSession {
     tap: Arc<AudioTap>,
     frame_tx: Option<SyncSender<StreamMsg>>,
     control_tx: Option<Sender<StreamControl>>,
-    done_rx: Option<Receiver<()>>,
+    /// Fired by the thread as its last act: the exit EVENT `stop_thread`
+    /// awaits (R11's rebound). A oneshot, so the wait wakes on the event
+    /// rather than polling for it.
+    done_rx: Option<tokio::sync::oneshot::Receiver<()>>,
     handle: Option<std::thread::JoinHandle<()>>,
     /// The stream's own surfaces (stream-only frames). Lives and dies with
     /// the session, like the record take's pool — so no teardown path can
@@ -287,6 +382,31 @@ impl StreamSession {
         selection: Selection,
         params: StreamParams,
         skipped: Arc<AtomicU64>,
+    ) -> Self {
+        Self::open_inner(endpoint, selection, params, skipped, Duration::ZERO)
+    }
+
+    /// [`Self::open`] with a thread that lingers `exit_delay` in its exit path
+    /// (phase `Exiting`) before firing `done` — the slow-exit and hung-exit
+    /// seam R11's rebound is tested with. Per session, never global, so a
+    /// parallel test's stream thread is untouched.
+    #[cfg(test)]
+    pub(crate) fn open_with_exit_delay(
+        endpoint: impl Into<String>,
+        selection: Selection,
+        params: StreamParams,
+        skipped: Arc<AtomicU64>,
+        exit_delay: Duration,
+    ) -> Self {
+        Self::open_inner(endpoint, selection, params, skipped, exit_delay)
+    }
+
+    fn open_inner(
+        endpoint: impl Into<String>,
+        selection: Selection,
+        params: StreamParams,
+        skipped: Arc<AtomicU64>,
+        exit_delay: Duration,
     ) -> Self {
         let endpoint = endpoint.into();
         let publisher = maybe_spawn_publisher(&endpoint, params.envelope_bps()).map(Arc::new);
@@ -309,7 +429,7 @@ impl StreamSession {
         if let Some(publisher) = session.publisher.clone() {
             let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
             let (control_tx, control_rx) = std::sync::mpsc::channel();
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
             let args = StreamThreadArgs {
                 params,
                 publisher,
@@ -319,6 +439,7 @@ impl StreamSession {
                 done_tx,
                 skipped,
                 stats: session.stats.clone(),
+                exit_delay,
             };
             let handle = std::thread::Builder::new()
                 .name("nbe-stream".into())
@@ -437,10 +558,10 @@ impl StreamSession {
         };
         self.closed = true;
         self.surface_pool = None;
-        if !thread_exited {
+        if let Err(capture) = thread_exited {
             return Err(StreamError::Teardown(format!(
-                "stream thread did not exit within {} ms",
-                STREAM_THREAD_STOP_TIMEOUT.as_millis()
+                "stream thread did not exit within {} ms ({capture})",
+                STREAM_THREAD_EXIT_BACKSTOP.as_millis()
             )));
         }
         if !transport_closed {
@@ -468,32 +589,42 @@ impl StreamSession {
         self.closed = true;
     }
 
-    async fn stop_thread(&mut self) -> bool {
+    /// Signal the thread and await its exit EVENT, bounded by
+    /// [`STREAM_THREAD_EXIT_BACKSTOP`] (R11's rebound). `Ok` once the thread
+    /// has exited, however long that took inside the backstop. `Err` carries
+    /// R11's capture when the backstop expires: the thread's phase and
+    /// encoder state at that moment. The thread is then detached, not joined
+    /// (a join would block on the very deadlock the backstop detects).
+    ///
+    /// ~~Polled `try_recv` every 5 ms against a 500 ms wall cap~~ (§2c): the
+    /// event was there all along; the wall clock was the assertion.
+    async fn stop_thread(&mut self) -> Result<(), String> {
         self.frame_tx.take();
         if let Some(c) = self.control_tx.take() {
             let _ = c.send(StreamControl::Stop);
         }
         let Some(rx) = self.done_rx.take() else {
-            return true;
+            return Ok(());
         };
-        let start = Instant::now();
-        loop {
-            match rx.try_recv() {
-                // Reported, or gone without reporting (a panicked thread has
-                // exited too): either way it is no longer running.
-                Ok(()) | Err(TryRecvError::Disconnected) => {
-                    if let Some(h) = self.handle.take() {
-                        let _ = h.join();
-                    }
-                    return true;
+        match tokio::time::timeout(STREAM_THREAD_EXIT_BACKSTOP, rx).await {
+            // Fired, or dropped unfired (a panicked thread has exited too):
+            // either way it is no longer running.
+            Ok(Ok(())) | Ok(Err(_)) => {
+                if let Some(h) = self.handle.take() {
+                    let _ = h.join();
                 }
-                Err(TryRecvError::Empty) => {}
+                Ok(())
             }
-            if start.elapsed() >= STREAM_THREAD_STOP_TIMEOUT {
+            Err(_elapsed) => {
+                let capture = self.stats.capture();
+                tracing::error!(
+                    backstop_ms = STREAM_THREAD_EXIT_BACKSTOP.as_millis() as u64,
+                    capture = %capture,
+                    "stream thread did not exit within its backstop (R11 capture)"
+                );
                 self.handle.take();
-                return false;
+                Err(capture)
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 }
@@ -554,7 +685,11 @@ struct StreamThreadArgs {
     tap: Arc<AudioTap>,
     frame_rx: Receiver<StreamMsg>,
     control_rx: Receiver<StreamControl>,
-    done_tx: Sender<()>,
+    done_tx: tokio::sync::oneshot::Sender<()>,
+    /// Test seam (R11): linger this long in the exit path before firing
+    /// `done`. `Duration::ZERO` in production; only
+    /// `StreamSession::open_with_exit_delay` (cfg(test)) sets it.
+    exit_delay: Duration,
     /// The engine-state `skipped_stream_frames`: thread-side drops (no
     /// encoder, refused encodes, publish sheds) land beside the loop's.
     skipped: Arc<AtomicU64>,
@@ -562,14 +697,23 @@ struct StreamThreadArgs {
 }
 
 fn run_stream_thread(args: StreamThreadArgs) {
+    args.stats.set_phase(StreamThreadPhase::OpeningEncoders);
     {
         let mut t = StreamThread::open(&args);
+        args.stats.set_phase(StreamThreadPhase::Running);
         t.run(&args);
+        args.stats.set_phase(StreamThreadPhase::Exiting);
+        if !args.exit_delay.is_zero() {
+            std::thread::sleep(args.exit_delay);
+        }
         // `t` drops here: the VideoToolbox session is invalidated, which
         // releases any buffer it still retains — before `done` says the
         // thread is finished with the pool's surfaces.
     }
-    let _ = args.done_tx.send(());
+    args.stats.set_phase(StreamThreadPhase::Done);
+    // `done` is the exit EVENT `stop_thread` awaits: fired last.
+    let StreamThreadArgs { done_tx, .. } = args;
+    let _ = done_tx.send(());
 }
 
 struct StreamThread {
@@ -830,8 +974,18 @@ mod tests {
         set_force_no_chain(false);
     }
 
+    /// Serializes the tests that call `stop_and_close` on a real thread.
+    /// `set_force_close_error` is a process-global seam: while
+    /// `close_error_seam_fails_loudly_with_the_network_token` holds it armed,
+    /// any other session's `stop_and_close` in this test binary returns the
+    /// injected `Teardown`. The lib harness runs tests in parallel, so without
+    /// this the R11 rebound tests read the other test's injection (found
+    /// writing them: "stream teardown failed (injected)").
+    static STOP_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn close_error_seam_fails_loudly_with_the_network_token() {
+        let _serial = STOP_SERIAL.lock().await;
         let sel = crate::record::tap_path::select_stream(true).unwrap();
         let mut s = StreamSession::open(
             "rtmp://127.0.0.1:9/live/k",
@@ -846,6 +1000,109 @@ mod tests {
         set_force_close_error(false);
         s.stop_and_close().await.expect("released seam must close");
         assert!(s.is_closed());
+    }
+
+    // -----------------------------------------------------------------------
+    // Finding R11's rebound: the exit wait hangs off the thread's exit EVENT;
+    // the wall clock is a deadlock backstop, and its expiry names the phase.
+    // Each test runs on a tokio runtime, so the publisher and the stream
+    // thread both exist (no runtime -> no thread -> nothing to wait on).
+    // -----------------------------------------------------------------------
+
+    /// A thread that takes 800 ms to exit is SLOW, not dead: the rebound wait
+    /// passes it. The old 500 ms cap failed it — that is the falsification.
+    #[tokio::test]
+    async fn a_slow_exit_inside_the_backstop_is_a_clean_stop() {
+        let _serial = STOP_SERIAL.lock().await;
+        let sel = crate::record::tap_path::select_stream(true).unwrap();
+        let slow = Duration::from_millis(800);
+        let mut s = StreamSession::open_with_exit_delay(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+            slow,
+        );
+        let started = Instant::now();
+        s.stop_and_close()
+            .await
+            .expect("a thread that exits inside the backstop is a clean stop, however slowly");
+        let took = started.elapsed();
+        assert!(s.is_closed());
+        assert!(
+            took >= slow,
+            "the wait must have waited for the exit event ({took:?} < {slow:?})"
+        );
+        assert_eq!(s.stats().phase(), StreamThreadPhase::Done);
+    }
+
+    /// A thread that never exits inside the backstop is the deadlock the
+    /// backstop exists for. The error names where the thread was — R11's
+    /// capture — instead of only that the wait ran out.
+    #[tokio::test]
+    async fn a_hung_exit_is_reported_with_the_thread_phase() {
+        let _serial = STOP_SERIAL.lock().await;
+        let sel = crate::record::tap_path::select_stream(true).unwrap();
+        let mut s = StreamSession::open_with_exit_delay(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+            STREAM_THREAD_EXIT_BACKSTOP * 3,
+        );
+        let err = s
+            .stop_and_close()
+            .await
+            .expect_err("a thread that does not exit inside the backstop must fail the stop");
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("E_NETWORK: "),
+            "the teardown token, got: {msg}"
+        );
+        assert!(
+            msg.contains("did not exit within 1100 ms"),
+            "the backstop is named, got: {msg}"
+        );
+        assert!(
+            msg.contains("phase=exiting"),
+            "the capture names the phase the thread was in, got: {msg}"
+        );
+        assert!(
+            msg.contains("encoder_ready=") && msg.contains("aac_ready="),
+            "the capture carries the encoder state, got: {msg}"
+        );
+    }
+
+    /// The backstop's arithmetic, pinned the way record's
+    /// `stop_timeout_leaves_headroom_inside_spec_window` pins its own: the
+    /// thread backstop and the transport's stop, waited in sequence, fit
+    /// §16.1's 2 s `show.stop` window; and the backstop tolerates the slow
+    /// exit the old 500 ms cap refused.
+    #[test]
+    fn the_exit_backstop_fits_the_section_16_1_window() {
+        let sequential = STREAM_THREAD_EXIT_BACKSTOP + PublisherHandle::stop_timeout();
+        assert!(
+            sequential <= Duration::from_millis(1900),
+            "thread backstop + transport stop must leave ack headroom inside §16.1's 2 s, got {sequential:?}"
+        );
+        assert!(
+            STREAM_THREAD_EXIT_BACKSTOP > Duration::from_millis(800),
+            "the backstop must tolerate an 800 ms exit (R11's slow-exit case)"
+        );
+    }
+
+    #[test]
+    fn phase_tokens_are_stable() {
+        for (p, t) in [
+            (StreamThreadPhase::Spawned, "spawned"),
+            (StreamThreadPhase::OpeningEncoders, "openingEncoders"),
+            (StreamThreadPhase::Running, "running"),
+            (StreamThreadPhase::Exiting, "exiting"),
+            (StreamThreadPhase::Done, "done"),
+        ] {
+            assert_eq!(p.as_str(), t);
+            assert_eq!(StreamThreadPhase::from_u8(p as u8), p);
+        }
     }
 
     #[test]
