@@ -1841,6 +1841,15 @@ at `619846c`.
     Under F6, prompt04's older `a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop`
     still passes. It asserts only that sustained misses trip, which is why the
     pins are needed.
+  - **CI found the first pin too tight.** Run `36356479347` at `5a5cc55`
+    failed the rust job with `late by more than one frame and at most two:
+    293.22125ms`. The runner's first frame took about 143 ms to render on top
+    of the 250 ms injected. The bound refused a scenario that had not
+    happened, which is its job, but 50 ms of headroom was a wall bound
+    tracking the machine (R9's class). `1fa7fe6` fixes it: both pins now
+    render an on-time warm-up frame first, and the 1.5-budget case runs 750 ms
+    against 300 ms, which leaves 150 ms of headroom. F6 was re-run at
+    `1fa7fe6` and fails both pins again, with the same signatures.
   - **§10.3's threshold — the answer.** §10.3: "If the render loop misses a
     deadline by more than 1 frame, the watchdog MUST: 1. log fault, 2.
     increment fault counter, 3. activate fallback slate if the fault affects
