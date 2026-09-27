@@ -104,11 +104,15 @@ behind the hold's own dispatch is cancelled rather than run (AC-25 #2).
 Every trigger event carries a **cause**: the chain of rule ids whose actions
 led to it. It is empty for an operator's command, an engine frame or a clock.
 A rule's action runs with the chain extended by that rule, and the triggers the
-action raises in the same turn carry it. WU5 uses the chain for §13.4's runtime
-suppression (a rule in its own chain is suppressed) and checks each suppression
-against §13.4.1's row for the action's command. Deferred effects break the
-chain: a take's `mediaEnd` arrives one duration later. §13.3's limiter bounds
-those at runtime, and preflight's static check (WU5) owns them.
+action raises in the same turn carry it. As built in WU5 (`ed64942`), a rule
+whose id is in the event's chain is suppressed: `fire()` checks after the hold
+and the conditions, and audits `automation.suppressedSelfTrigger`. Deferred
+effects break the chain; a take's `mediaEnd`, for example, arrives one
+duration later. Preflight's static check owns those (§13.4.1 as data,
+`nbe_core::automation_effects`), and it counts deferred edges. Because that
+check over-approximates, it refuses every cycle the data shows, so the runtime
+suppression is reached only through an edge the data lacks. The runtime row
+check (`automation.test.ts`) exists to find such an edge, and found none.
 
 ## 5. `streamHealth`: which tokens fire, and does a redial fire?
 

@@ -1795,6 +1795,83 @@ at `619846c`.
     connection per family) binds a rule's actions, since each rule runs on its
     own connection. A rule therefore sustains 5 actions/s in one family, below
     once per frame. It is recorded, not changed.
+- **WU5** (`ed64942`; §10.3 pin `5538bdd`): self-triggers, run last.
+  - **Preflight refuses a rule cycle by name** (§13.4, AC-25 #3). §13.4.1 is
+    now data, `crates/nbe-core/src/automation_effects.json`, and
+    `nbe_core::automation_effects` builds rule → rule edges from it.
+    - The refusal reads ``automationRule: automation rules form a cycle: `a` →
+      `b` → `a` (`a`: `view.take` changes `viewItem`; `b`: `record.start`
+      changes `recordState`) — a rule's action can re-trigger itself (SPEC
+      §13.4)``.
+    - The check over-approximates: conditions are ignored, and disabled rules
+      count.
+    - **Deferred edges count.** This was WU5's decision, and a looping
+      playlist is refused. Aliases resolve before the check.
+  - **The runtime suppresses a self-trigger.** It checks whether the rule is in
+    the event's cause chain, and audits `automation.suppressedSelfTrigger`.
+  - **§13.4.1, row by row.** The runtime check executes all 55 commands
+    against watchers. It found **no missing edge**, since no command raised a
+    trigger its row does not name. 47 commands are accepted, and every row has
+    one. The rows the tree contradicted are amended in place with citations
+    (SPEC §13.4.1, "Checked against the tree"):
+    - nine groups whose "yes" changes no field a rule can name;
+    - `show.unload`, whose rules unload before the diff;
+    - `audioLevel` and `streamHealth` cells marked deferred;
+    - take and cut clearing `previewItem` and `fallbackActive`.
+  - **Two tests changed** because their manifests became cycles. The
+    recall-hold guard now triggers on A2's `mediaStart`, since its recall
+    changes `previewItem`. "An action payload preflight cannot judge…" now
+    triggers on a hotkey, because `mediaEnd` → `view.cut` is a deferred
+    self-edge.
+  - Falsified at `ed64942` (F1–F5) and `5538bdd` (F6), each restored with
+    `git checkout`:
+
+    | # | Mutation | Guard that failed | Signature |
+    |---|---|---|---|
+    | F1 | the runtime suppression removed | `the runtime suppresses a rule its own action re-triggered` | actual `automation.action`, expected `automation.suppressedSelfTrigger` |
+    | F2 | preflight's cycle check removed | `a_rule_cycle_fails_preflight_with_the_cycle_named` | `… "preview.set" … must fail preflight; errors []` |
+    | F3 | an edge dropped from the data (`preview.set` without `previewItem`) | all three readers: nbe-core's cycle-of-one test, preflight's cycle test, and the runtime row check | the row check: `triggers raised that the command's §13.4.1 row does not name — missing edges` + `'preview.set {"itemRef":"A1"} raised stateChange:previewItem'` |
+    | F4 | deferred edges ignored | `a_linear_playlist_is_not_a_cycle_and_a_looping_one_is`; preflight's cycle test | `deferred edges count (WU5): a looping playlist re-triggers itself`; `… "program.cut" … must fail preflight; errors []` |
+    | F5 | a command's row deleted (`marker.add`) | all three readers | `§16's 55 commands, each once` (left 54, right 55); `registered commands with no §13.4.1 row`; `marker.add has a §13.4.1 row` |
+    | F6 | the watchdog threshold 2 → 1 | both §10.3 pins | `the tree does not slate a single frame missed by 1–2 frames; §10.3's words would`; `the slate engages on the third consecutive miss, not before (frame 1)` |
+
+    Under F6, prompt04's older `a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop`
+    still passes. It asserts only that sustained misses trip, which is why the
+    pins are needed.
+  - **§10.3's threshold — the answer.** §10.3: "If the render loop misses a
+    deadline by more than 1 frame, the watchdog MUST: 1. log fault, 2.
+    increment fault counter, 3. activate fallback slate if the fault affects
+    VIEW." The tree works differently (`render.rs`'s deadline arm;
+    `watchdog.rs`). A late View frame reports `ceil(late / budget)` missed
+    frames. Consecutive reports are summed, and an on-time frame resets the
+    sum. A sum above 2 logs and raises the slate. **They disagree in both
+    directions**, both pinned through the real render loop (`5538bdd`):
+    - *The tree is laxer.* One frame late by 1.5 budgets reports 2, and 2 is
+      not above 2, so there is no log and no slate. §10.3's words require
+      both, for any single frame late by between 1 and 2 frames.
+    - *The tree is stricter.* Three consecutive frames, each late by less than
+      one frame, trip the slate, though none "misses a deadline by more than 1
+      frame".
+    - *"Increment fault counter" has no counter.* `droppedFramesTotal` counts
+      every late View frame, whatever its lateness, which is a different
+      quantity. The log is written only at the trip.
+    - *And the slate never comes down*, as WU6 found: the engine only ever
+      stores `fallback_active = true`.
+
+    **A spec-revision question for the user, not a drive-by fix.** There are
+    three options:
+    - (a) Move the tree to §10.3's words, and slate any frame late by more than
+      one frame. With a slate that never clears, one 70 ms hiccup at 30 fps
+      would hold the slate for the rest of the show.
+    - (b) Move §10.3 to the tree: slate when the lateness of consecutive late
+      View frames, in frames rounded up, sums past 2. A single long hiccup
+      stays off the slate, and §10.5's ladder acts first on sustained
+      pressure.
+    - (c) Keep the sum and add a single-frame bound.
+
+    Whichever is chosen, two things are still owed: a watchdog fault counter,
+    and a rule for releasing the slate (§10.3 names activation only). The
+    executor recommends (b), with both of those.
 
 ## 12 — Benchmark
 

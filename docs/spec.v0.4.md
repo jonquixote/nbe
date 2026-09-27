@@ -2945,28 +2945,65 @@ does. The trigger readings the cells assume:
 
 | Commands | `stateChange` | `mediaStart` | `mediaEnd` | Other triggers | Derived from |
 |---|---|---|---|---|---|
-| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel` — the take swaps the clip bus's source | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
+| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first. *Amended in Prompt 11 WU5 (§2c), from the tree:* the take also clears `previewItem` when the previewed item is taken, and clears `fallbackActive` (`state.ts` `take`: `if (this.previewItem === itemRef) this.previewItem = null; this.fallbackActive = false`) | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel`, **deferred** — the take swaps the clip bus's source, and the crossing arrives on a later engine frame (`server.ts`, `audioLevelCrossing` → `NO_CAUSE`). *~~`audioLevel` —~~ amended in WU5 (§2c): the cell did not say deferred* | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
 | `item.stop` | yes — `PLAYING → READY` | no | **no** — a stop is not a completion: the item leaves `PLAYING` for `READY`, never `DONE` | — | §16.4 cell; `state.ts` `stopItem`, `markDone` (accepts only `PLAYING`); `directive.rs` routing (`item.stop` is not routed) |
 | `show.start` | yes — show `LOADED → RUNNING`, clock `STOPPED → RUNNING` | no | no | `timer`, deferred — the show clock starts | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_start` |
-| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth` — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1) | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
-| `show.load`, `show.unload`, `show.preflight` | yes — `→ LOADED` / `→ UNLOADED` with item and scene states cleared; preflight state set | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
+| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth`, **deferred** — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1), observed on the next §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell did not say deferred* | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
+| `show.load`, `show.unload`, `show.preflight` | `show.load`: yes — `→ LOADED` with item and scene states cleared, seen by the NEW package's rules (the evaluator loads them before the diff, `server.ts` `afterAccepted`). *Amended in Prompt 11 WU5 (§2c):* `show.unload` ~~yes — `→ UNLOADED`~~ **fires no `stateChange` rule** — the evaluator unloads the package's rules in the same turn, before the diff (`afterAccepted`: `automation.unload()`), so nothing is left to hear it; `show.preflight` ~~preflight state set~~ fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those) (it sets `preflightPassed` and `lastError`, `commands/show.ts`) | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
 | `preview.set`, `item.arm`, `item.unarm`, `item.reset` | yes — the §17 item transitions their cells name | no — nothing goes on air | no | — | §16.2, §16.4 cells; `commands/view.ts`, `commands/sequence.ts`; `state.ts` `armItem`, `unarmItem`, `resetItem` |
-| `scene.arm`, `scene.apply` | yes — scene `ARMED`, or applied to its target bus | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene`, `applyScene` (scene states only) |
+| `scene.arm`, `scene.apply` | ~~yes~~ — scene `ARMED`, or applied to its target bus; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene`, `applyScene` (scene states only) |
 | `snapshot.recall` | yes — view state, item states, overlays and `automationHold` restored wholesale | **no under B3** — it is not a take; but it can set `viewItem` without one, so an evaluator that keys `mediaStart` on `viewItem` would put it in this column | no | — | §16.11 cell; `state.ts` `recallSnapshot`; `directive.rs` routing (not routed) |
 | `view.fallback` | yes — `fallbackActive` | no — the fallback slate is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_fallback` |
-| `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`; stop takes it to `closed` | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
+| `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth`, **deferred** — start takes `streamTransportState` to `reconnecting` and then `live`; stop takes it to `closed`; each is observed on a later §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell read* ~~"`streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`"~~ *— `reconnecting` is no more same-dispatch than `live`* | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
 | `record.start`, `record.stop` | yes — `recordState` | no | no | — | §16.14 cells; `commands/output.ts` |
-| `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | yes — the playback, bus, duck and mute changes their cells name | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel` — each moves a bus's level, up or down | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
-| `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | yes — visibility and property changes | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
-| `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | yes — ticker source and queue | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
+| `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | ~~yes~~ — the playback, bus, duck and mute changes their cells name; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel`, **deferred** — each moves a bus's level, up or down, and the crossing arrives on a later engine frame. *Amended in WU5 (§2c): the cell did not say deferred* | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
+| `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | ~~yes~~ — visibility and property changes; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
+| `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | ~~yes~~ — ticker source and queue; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
 | `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today, and no rule to reach.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes. Until then preflight refuses every `rssKeyword` rule (v0.4.7, §13.2's params table). *Amended in Prompt 11 (§2c): the cell read* ~~"**none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes"~~ *— true of the command, silent on the rule, which the draft of Prompt 11 read as "available (per refresh)"* | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`); `nbe-core` `automation.rs` `validate_rule` (`RssKeyword` arm) |
-| `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | yes — the guest source and configuration changes their cells name | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
-| `automation.enable`, `automation.disable`, `automation.hold` | yes — a rule enabled or disabled; `automationHold` | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
+| `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | ~~yes~~ — the guest source and configuration changes their cells name; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
+| `automation.enable`, `automation.disable`, `automation.hold` | `automation.hold`: yes — `automationHold`. `automation.enable`, `automation.disable`: ~~yes — a rule enabled or disabled~~ a rule enabled or disabled, which fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
 | `snapshot.save`, `marker.add`, `plugin.reload` | **frame only** — a store is updated (snapshots, markers) or a plugin reloaded; nothing on air and no §17, show or output transition | no | no | — | §16.11, §16.12 cells; `commands/state.ts` |
 | `guest.getTurn`, `system.status`, `system.telemetry.subscribe`, `system.telemetry.unsubscribe` | **frame only** — "none", or per-connection | no | no | — | §16.9, §16.15 cells; `commands/guest.ts`, `commands/system.ts`; `dispatch.ts` `READ_ONLY` |
 
-55 commands, each in exactly one row. Two things the derivation turned up, both
-recorded rather than decided here:
+55 commands, each in exactly one row.
+
+**Checked against the tree (Prompt 11 WU5, 2026-09-27).** The table is held as
+data in `crates/nbe-core/src/automation_effects.json`, one entry per command,
+and has two readers:
+
+- **Preflight's cycle check** (`nbe_core::automation_effects`) builds its edges
+  from the data.
+- **The control plane's runtime check** executes every command
+  (`automation.test.ts`, "§13.4.1, row by row"), with rules watching every
+  field a `stateChange` rule can name and `mediaStart`.
+  - Every trigger a command raises must be a cell its row names. A trigger
+    raised and not named would be a missing edge, the unsafe side.
+  - Every named same-dispatch cell must be shown to fire.
+  - One command per row must be accepted.
+
+47 of the 55 are accepted in the check's package, which covers all 19 rows.
+Eight are refused by their own preconditions in that package: `graphic.hide`,
+`graphic.update`, `overlay.show`, `overlay.hide`, `clock.configure`,
+`soundboard.stop`, `guest.getTurn`, `plugin.reload`.
+
+Rows the tree contradicted are amended in place above, each with its code
+citation (§2c). There are three kinds:
+
+- **`stateChange` "yes" where no rule can hear it.** The change touches no
+  field a rule can name, since v0.4.7's params table: `scene.*`, the soundboard
+  and audio row, the element and graphics row, the ticker queue row, `guest.*`,
+  `automation.enable` and `automation.disable`, and `show.preflight`.
+- **`show.unload`.** Its rules unload before the diff.
+- **Effects that arrive after the command's dispatch are marked deferred:**
+  `audioLevel`, and `streamHealth`, which is observed on the tick.
+
+Take and cut also clear `previewItem` and `fallbackActive`, which the take row
+now says. The same-dispatch cells the check confirmed unchanged are
+`item.stop`; `show.start`; `show.stop`; `preview.set`, `item.arm`,
+`item.unarm` and `item.reset`; `snapshot.recall`; `view.fallback`;
+`stream.*`; `record.*`; `automation.hold`; and the two "frame only" rows.
+
+Two things the derivation turned up, both recorded rather than decided here:
 
 - **`item.stop` has no engine effect.** The engine does not route it, so a
   stopped timed item keeps its scheduled `end`. The `mediaEnd` reading above —
@@ -2977,6 +3014,15 @@ recorded rather than decided here:
   playlist. §13.3's once-per-frame limiter bounds it at runtime. Whether a
   deferred edge counts for §13.4's *static* rejection is Prompt 11's to decide
   (WU5); the table records edges and their timing, not the verdict.
+  **Decided in WU5: it counts.** AC-25 #3 names self-triggering rules with no
+  exception for timing. The cause chain the runtime suppression reads does not
+  survive the delay: a `mediaEnd` arrives as an engine frame with no chain. So
+  only the static check can see such a loop, and a looping playlist is refused
+  by name. The check also over-approximates in two other ways. Conditions are
+  ignored, and disabled rules count, since `automation.enable` can arm them.
+  Items narrow only where the payload names one: `view.cut { itemRef }` can
+  start and end only that item. (`nbe_core::automation_effects`, module
+  documentation.)
 
 ## 13.5 Automation hold
 
