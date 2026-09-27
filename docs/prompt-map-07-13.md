@@ -1682,6 +1682,40 @@ at `619846c`.
   |---|---|---|
   | the limiter does not count autoFollow | `autoFollow advances once per completion, never twice, and the limiter counts it` | `no second advance in the frame` — `2 !== 1` |
   | a completion with no next item audited again | `autoFollow on the last rundown item is a no-op that audits nothing` | `nothing attempted, nothing audited` (deep-equal) |
+- **WU6** (`d455aa0`): ladder rung 2, built as the user decided on 2026-09-27.
+  The §4a stop is resolved; the draft's "buildable" row is struck with the
+  tree's correction.
+  - **The invariant, as tested.** Eviction applies only to loops not feeding
+    the View. With a loop on air and rung 2 reached and held, that loop's ring
+    is resident on every frame. The View keeps its cadence: the loop repeats
+    every period and moves within it. The previewed loop sheds, and is
+    re-acquired on take. Both are recorded and counted, and `degradationRung`
+    reports 2.
+  - **The ladder is in order.** Rung 1 comes after 2 consecutive late frames;
+    rung 2 comes only from rung 1, after 2 more late frames while rung 1 is in
+    force.
+
+  Falsified at `d455aa0`:
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | on-air eviction permitted (the shed ignores what feeds the View) | all 4, the continuity guard among them | `frame 6: the loop feeding the View must stay resident (rung LoopsShed)`; `frame 4: the on-air loop stays resident` |
+  | rung 2 straight from nominal | `the_ladder_climbs_in_order_rung_1_before_rung_2` | `rung 1 at 2 late frames, rung 2 at 4 — in that order` — left `[0, 2, 2, 2, 2, 2]` |
+  | no re-acquire on take | `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take` | `re-acquired on take, recorded` — left `[]` |
+  | shedding disabled | 3 of 4 | `the previewed loop is shed` |
+
+  Three findings from building it, recorded rather than fixed:
+  - **The watchdog comes before rung 2.** The watchdog trips on a missed-frame
+    sum above 2, which is three consecutive misses. A rung-2 threshold counted
+    consecutively would sit behind the fallback slate and never act. Rung 2
+    therefore counts late frames since rung 1; the ladder's domain is
+    sustained but intermittent pressure. This matters for WU5's §10.3 answer.
+  - **The engine never clears `fallback_active`.** It is only ever stored
+    `true` (`watchdog.rs`, `render.rs`, `directive.rs`). Once the slate is up,
+    nothing in the engine takes it down. For §10.3, and the user's.
+  - **The engine ignores `preview.set`.** Its preview item changes only
+    through `show.resync`, so the preview bus shows a new preview only after a
+    resync. This predates Prompt 11 and is out of scope.
 
 ## 12 — Benchmark
 
