@@ -136,6 +136,15 @@ impl RenderChannel {
         );
         req.headers_mut().insert("x-nbe-role", "render".parse()?);
         let (ws, _resp) = connect_async(req).await?;
+        // B1: crossings queued while no control plane was listening are stale
+        // by the time one is (`OutgoingQueue::discard_stale_crossings`).
+        let stale = self.outgoing.discard_stale_crossings();
+        if stale > 0 {
+            warn!(
+                stale,
+                "dropped audioLevelCrossing frames queued during the outage (not replayed)"
+            );
+        }
         let (wss, wsr) = ws.split();
 
         // Each connection: pump engine frames out; read directives in; keep

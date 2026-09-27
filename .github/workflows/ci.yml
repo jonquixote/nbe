@@ -476,6 +476,48 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL prompt10_telemetry: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: the audioLevel crossing suite actually ran (Prompt 11 B1)
+        # Six tests on real metered levels (a tone on a graph bus, the graph's own
+        # peak meter), one entering through show.load. No hardware: every test runs on
+        # every runner, so the floors are equal (6/6); a lower exercised count is a
+        # finding, not a skip.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_audio_level -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_audio_level: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=6)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL prompt11_audio_level: expected at least 6 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 6 ]; then
+            echo "FAIL prompt11_audio_level: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the preflight automation suite actually ran (Prompt 11 B1)
+        # Preflight refuses a malformed audioLevel rule by name; a complete one passes.
+        # Hardware-free: floors equal (2/2).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=2 exercised>=2)"
+          if [ "$ran" -lt 2 ]; then
+            echo "FAIL preflight automation: expected at least 2 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 2 ]; then
+            echo "FAIL preflight automation: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits

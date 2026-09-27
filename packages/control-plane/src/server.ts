@@ -13,6 +13,7 @@ import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import {
   EngineFrameSchema,
   EnvelopeSchema,
+  type AudioLevelCrossingFrame,
   WS_PATH,
   PROTOCOL_VERSION,
   CpError,
@@ -140,6 +141,14 @@ export interface ControlPlaneServer {
    * already expired. See the R5 note in `dress-rehearsal.test.ts`.
    */
   awaitApplied(version: number, ms: number): Promise<boolean>;
+  /**
+   * Subscribe to engine EVENTS the control plane consumes rather than
+   * applies — today `audioLevelCrossing` (SPEC v0.4.7 candidate B1), which
+   * the automation evaluator matches to rules. Returns the unsubscribe.
+   * Called synchronously as the frame is parsed: no queue, no tick, so a
+   * crossing reaches its consumer in the same event-loop turn it arrived in.
+   */
+  onEngineEvent(listener: (frame: AudioLevelCrossingFrame) => void): () => void;
   close(): Promise<void>;
 }
 
@@ -175,6 +184,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const rateLimiter = new RateLimiter();
 
   const clients = new Map<string, ClientSession>();
+  const engineEventListeners = new Set<(frame: AudioLevelCrossingFrame) => void>();
 
   // -- SPEC §5.9.5: the quiescence acknowledgement -------------------------
   // `show.stop` waits for a render node to confirm it applied the stop
@@ -470,6 +480,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         } else if (frame.kind === "resyncRequest") {
           // SPEC §5.9.4: the engine lost continuity; hand it the snapshot.
           sendResync(session);
+        } else if (frame.kind === "audioLevelCrossing") {
+          // B1: a crossing is an event for a consumer, not a state to apply.
+          // Handed over synchronously — the evaluator's one-frame budget
+          // (AC-25 #1) starts when this frame arrives.
+          for (const listener of engineEventListeners) listener(frame);
         } else if (frame.kind === "itemEvent") {
           const before = state.stateVersion;
           if (frame.event === "end") state.markDone(frame.itemRef);
@@ -567,6 +582,10 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     bridge,
     wsBridge,
     awaitApplied: (version: number, ms: number) => waitForGrace(ms, version),
+    onEngineEvent(listener) {
+      engineEventListeners.add(listener);
+      return () => engineEventListeners.delete(listener);
+    },
     async close() {
       for (const s of clients.values()) {
         s.closed = true;

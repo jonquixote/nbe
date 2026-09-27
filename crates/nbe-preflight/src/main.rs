@@ -527,6 +527,25 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         }
     }
 
+    // B1 (SPEC v0.4.7 candidate): an `audioLevel` rule whose params do not
+    // read — no bus, an unmetered bus, a threshold outside (-120, 0], a
+    // misspelled key — could never fire, and a rule accepted and silently
+    // inert is what Prompt 11 §9 forbids. Refused here, by name, before the
+    // engine ever installs a watch. (A manifest whose automation does not
+    // parse at all is the schema's refusal, already reported above.)
+    let rules: Vec<nbe_core::manifest::AutomationRule> = manifest_json
+        .get("automation")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    for e in nbe_core::automation::audio_level_watches(&rules).1 {
+        had_errors = true;
+        report.push_error(format!("automationRule: {e} (SPEC §13.2, v0.4.7)"));
+    }
+
     // SPEC §12.4: the absolute short-loop frame cap. Checked before the
     // resource arithmetic so a package past the bound is refused by name
     // rather than saturating into a number that means nothing.

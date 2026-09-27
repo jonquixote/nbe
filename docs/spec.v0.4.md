@@ -18,6 +18,20 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.7 — **drafted in Prompt 11's PR (2026-09-27); ratified by the user's
+merge of that PR.** The user's word in Prompt 11's execution order: B1 "lands
+with the full audit trio … and the user's merge is the ratification word". Until that merge, this
+entry and the two passages it names are a candidate. Prompt 11 §9 forbids the
+executor ratifying inside a feature PR, and the executor does not; the merge is
+the user's act.
+
+| # | Change | Sections | Guarded by |
+|---|---|---|---|
+| 1 | **`audioLevel` rules fire on an engine-computed crossing** (Prompt 11's B1, decision (a): one evaluator, the `itemEvent` precedent). The rule's params are `{ bus, thresholdDbfs, direction? }`, and preflight refuses a rule whose params do not read. The engine compares each watched bus's measured peak with its threshold on every audio block — one block per house frame, so within AC-25 #1's one frame — and sends a new render-channel frame, `audioLevelCrossing`, which the control plane's evaluator matches to rules. Crossings queued while no control plane was connected are not replayed. Before this, `audioLevel` could not meet AC-25 #1 at all: bus levels reached the control plane once a second | 5.9.3 (new row), 13.2 (new note) | `prompt11_audio_level` (six tests on real metered levels, one entering through `show.load`), the mirror's `rust_and_typescript_agree_on_the_audio_level_crossing_fields` and `crossing_direction_tokens_are_stable`, the control-plane readability test `an audioLevelCrossing frame from the render node reaches the engine-event consumer intact`, and `nbe-preflight`'s `automation` suite |
+
+No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
+object, and the params contract is spec text, not a schema edit.
+
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
 (`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting
@@ -850,6 +864,7 @@ Accepted only from `render`-role sessions; from any other role they MUST be igno
 | `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
 | `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
 | `resyncRequest` | `{ v, kind, reason }` where `reason` is `seqGap` \| `reconnect` \| `internal` | The engine asks for a full snapshot. |
+| `audioLevelCrossing` | `{ v, kind, bus, thresholdDbfs, direction, levelDbfs, masterFrame }` where `direction` is `rising` \| `falling` | **New in v0.4.7.** A bus level crossed an `audioLevel` rule's threshold, on the audio block it happened in (§13.2). Consumed by the automation evaluator, never applied as state. |
 
 Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
 
@@ -2741,6 +2756,39 @@ The command is any command-bus command. Automation actions face the same precond
 | `rssKeyword` | an RSS item matches a keyword rule |
 | `streamHealth` | stream state changes (e.g., reconnecting) |
 | `stateChange` | a specified state transition occurs |
+
+**`audioLevel`: its parameters, and where the crossing is computed (normative,
+new in v0.4.7).** An `audioLevel` rule's `trigger.params` are
+`{ "bus": string, "thresholdDbfs": number, "direction"?: "rising" | "falling" }`,
+and no other keys:
+
+- `bus` names a metered bus as `busPeakDbfs` does (`mic`, `clip`, `music`,
+  `sfx`, `guest`, `master`, `guestReturn`, `ifb`, or `guest:<guestId>`);
+- `thresholdDbfs` lies in (−120, 0], because −120 dBFS is the meter's floor and
+  a threshold at or below it could never be crossed from below;
+- `direction` defaults to `rising`.
+
+Preflight MUST refuse a rule whose params do not read this way, naming the rule
+and the reason. A rule that can never fire is not accepted and left inert.
+
+**The crossing is computed in the engine.** The §10.1 tick carries
+`busPeakDbfs` once a second, and AC-25 #1 gives a rule one frame. The engine
+therefore compares each watched bus's measured peak with its threshold on every
+audio block — one block per house frame — and on a crossing sends an
+`audioLevelCrossing` frame (§5.9.3) in that block. `rising` fires when the peak
+goes from below the threshold to at-or-above it; `falling` fires on the
+reverse. A watch starts below, so a level already present when the package
+loads does not fire a `rising` rule. There is no hysteresis: a level hovering on
+a threshold crosses on each block it changes side, and §13.3 #3's once-per-frame
+limit is what bounds the firing. The control plane's evaluator matches the
+crossing to its rules; one evaluator, as §5.9.3's `itemEvent` already is for
+`mediaEnd`.
+
+**A crossing is a moment, not a state.** Crossings the engine queued while no
+control plane was connected MUST NOT be delivered when one connects: a rule
+would fire late, on a level that may already have fallen back. This is
+§5.9.4's rule 4 in the other direction. Acknowledgements and `itemEvent`s are
+unaffected, because they report states that are still true.
 
 ## 13.3 Execution semantics
 

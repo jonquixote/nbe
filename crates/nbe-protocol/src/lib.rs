@@ -491,6 +491,17 @@ pub enum ItemEvent {
     Missing,
 }
 
+/// Which way a bus level crossed its threshold (`audioLevelCrossing`,
+/// SPEC v0.4.7 candidate B1). Wire tokens `rising` / `falling`; mirrors
+/// `nbe_core::automation::CrossingDirection`, which reads the same tokens from
+/// a rule's params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CrossingDirection {
+    Rising,
+    Falling,
+}
+
 /// Render node → control plane (SPEC 5.9.3). Accepted only from `render`-role
 /// sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -520,6 +531,30 @@ pub enum EngineFrame {
     },
     #[serde(rename = "resyncRequest")]
     ResyncRequest { v: String, reason: ResyncReason },
+    /// A bus level crossed an `audioLevel` rule's threshold (SPEC v0.4.7,
+    /// candidate B1 — ratified by the user's merge of Prompt 11's PR, never
+    /// inside it). The crossing is computed in the engine, on the audio block
+    /// (one block per house frame), because only the engine sees levels at
+    /// that cadence: the §10.1 tick carries `busPeakDbfs` once a second,
+    /// which cannot meet AC-25 #1's one frame. The control plane's evaluator
+    /// matches the crossing to its rules — one evaluator, the `itemEvent`
+    /// precedent.
+    #[serde(rename = "audioLevelCrossing")]
+    AudioLevelCrossing {
+        v: String,
+        /// The bus, named as `busPeakDbfs` names it.
+        bus: String,
+        #[serde(rename = "thresholdDbfs")]
+        threshold_dbfs: f64,
+        direction: CrossingDirection,
+        /// The block's measured peak that crossed (never below the -120 dBFS
+        /// meter floor, so always finite on the wire).
+        #[serde(rename = "levelDbfs")]
+        level_dbfs: f64,
+        /// The master frame of the block in which it crossed.
+        #[serde(rename = "masterFrame")]
+        master_frame: u64,
+    },
 }
 
 impl EngineFrame {
@@ -529,5 +564,6 @@ impl EngineFrame {
         "appliedStateVersion",
         "itemEvent",
         "resyncRequest",
+        "audioLevelCrossing",
     ];
 }

@@ -42,7 +42,9 @@ async fn main() -> anyhow::Result<()> {
     //
     // The sink is the null sink: device glue is the recorded deferral in
     // agents/prompts/06-audio-graph.md. Everything above the sink is real.
-    audio_driver::spawn(state.clone(), house_rate);
+    // B1: with the outbound queue, so an `audioLevel` crossing reaches the
+    // control plane within the block it happened in.
+    audio_driver::spawn_with_events(state.clone(), house_rate, outgoing.clone());
 
     // The render loop runs on its own task, driven by master-clock frame
     // boundaries — not a spin. It renders even while the clock is STOPPED so

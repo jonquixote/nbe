@@ -187,6 +187,31 @@ impl DirectiveHandler {
             });
         *self.state.record_dir.lock().unwrap() = record_dir;
 
+        // B1 (SPEC v0.4.7 candidate): the `audioLevel` rules' watches. The
+        // crossing is computed here, in the engine, on the audio block — the
+        // control plane only ever sees 1 Hz levels. A rule whose params do not
+        // read is skipped LOUDLY: preflight refuses it before load, so one
+        // arriving here means a package preflight never saw.
+        let rules: Vec<nbe_core::manifest::AutomationRule> = manifest
+            .get("automation")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap_or_else(|e| {
+                tracing::error!(err = %e, "show.load: automation rules do not parse; no audioLevel watches");
+                None
+            })
+            .unwrap_or_default();
+        let (watches, errors) = nbe_core::automation::audio_level_watches(&rules);
+        for e in &errors {
+            tracing::error!(err = %e, "show.load: audioLevel rule skipped (preflight should have refused it)");
+        }
+        info!(
+            watches = watches.len(),
+            "show.load: audioLevel watches installed"
+        );
+        *self.state.audio_level_watches.lock().unwrap() = Arc::new(watches);
+
         // Prompt 05: decode the package's video assets here, at load time.
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
         // boundary — and is reported as `itemEvent: decodeError` so the

@@ -100,6 +100,11 @@ pub struct EngineState {
     pub audio_drift_ms_bits: AtomicU64,
     /// Per-bus peak levels for telemetry (SPEC §10.1).
     pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// The loaded package's `audioLevel` watches (SPEC v0.4.7 candidate B1),
+    /// installed by `show.load` from the manifest's automation rules. The
+    /// audio driver swaps them in by pointer on its next block and reports a
+    /// crossing of any of them as an `audioLevelCrossing` frame.
+    pub audio_level_watches: Mutex<Arc<Vec<nbe_core::automation::AudioLevelWatch>>>,
     /// Audio intents published by the directive path and drained by whoever
     /// owns the graph. The directive thread never touches the graph itself.
     pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
@@ -222,6 +227,7 @@ impl EngineState {
             unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
@@ -420,6 +426,23 @@ impl OutgoingQueue {
     pub fn drain(&self) -> Vec<EngineFrame> {
         let mut q = self.inner.lock().unwrap();
         q.drain(..).collect()
+    }
+
+    /// Drop queued `audioLevelCrossing` frames (B1); keep everything else.
+    /// Returns how many were dropped.
+    ///
+    /// Called when a new control-plane connection starts. A crossing is a
+    /// moment, not a state: one that could not be delivered while it was true
+    /// must not fire a rule seconds later, after an outage, on a level that
+    /// may long since have fallen back. §5.9.4's rule for directives, applied
+    /// to this event in the other direction: the backlog is not replayed.
+    /// Acks and `itemEvent`s are kept — they report states (`DONE`, applied),
+    /// which are still true on reconnect.
+    pub fn discard_stale_crossings(&self) -> usize {
+        let mut q = self.inner.lock().unwrap();
+        let before = q.len();
+        q.retain(|f| !matches!(f, EngineFrame::AudioLevelCrossing { .. }));
+        before - q.len()
     }
 
     /// Resolves when a frame has been queued since the last drain.
