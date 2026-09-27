@@ -399,6 +399,10 @@ interface Pending {
   cause: Cause;
   observedAt: number;
   frame: number;
+  /** The audit actor; `automation:<ruleId>` unless set (autoFollow). */
+  actor?: string;
+  /** The audit event the action runs under; `automation.action` unless set. */
+  auditEvent?: string;
 }
 
 /**
@@ -467,6 +471,43 @@ export class AutomationEvaluator {
       if (t) clearTimeout(t);
       this.timers.delete(r.id);
     }
+  }
+
+  /**
+   * `autoFollow` (§3.1, WU4): the item `itemRef`, which carries `autoFollow`,
+   * completed (`PLAYING → DONE`). Advance to `next`, the following item in
+   * the rundown, with `view.cut` — through the same queue as a rule's action,
+   * so a hold suppresses it (§13.5 #2) and cancels it while pending (B5). The
+   * last item has nowhere to go: that is audited, not invented.
+   */
+  autoFollow(itemRef: string, next: string | undefined, cause: Cause = NO_CAUSE, observedAt: number = this.clock()): void {
+    const actor = `autoFollow:${itemRef}`;
+    const frame = Math.floor(observedAt / this.frameMs);
+    const detail = { itemRef, next: next ?? null, chain: cause.chain, frame };
+    if (next === undefined) {
+      this.deps.audit({ event: "autoFollow.endOfRundown", outcome: "rejected", actor, detail });
+      return;
+    }
+    if (this.deps.state.automationHold) {
+      this.deps.audit({ event: "autoFollow.suppressedByHold", outcome: "rejected", command: "view.cut", actor, detail });
+      return;
+    }
+    this.pending.push({
+      rule: {
+        id: actor,
+        trigger: { kind: "mediaEnd", itemRef },
+        conditions: [],
+        action: { command: "view.cut", payload: { itemRef: next } },
+        enabled: true,
+      },
+      event: { kind: "mediaEnd", itemRef },
+      cause,
+      observedAt,
+      frame,
+      actor,
+      auditEvent: "autoFollow.advance",
+    });
+    this.scheduleDrain();
   }
 
   /** `automation.hold { hold: true }` accepted: cancel every pending action, now. */
@@ -539,7 +580,7 @@ export class AutomationEvaluator {
         event: reason === "hold" ? "automation.cancelledByHold" : "automation.cancelledByUnload",
         outcome: "rejected",
         command: p.rule.action.command,
-        actor: `automation:${p.rule.id}`,
+        actor: p.actor ?? `automation:${p.rule.id}`,
         detail: { ruleId: p.rule.id, trigger: p.event, chain: p.cause.chain, frame: p.frame },
       });
     }
@@ -557,7 +598,7 @@ export class AutomationEvaluator {
 
   private async drain(): Promise<void> {
     for (let p = this.pending.shift(); p; p = this.pending.shift()) {
-      const actor = `automation:${p.rule.id}`;
+      const actor = p.actor ?? `automation:${p.rule.id}`;
       const detailBase = { ruleId: p.rule.id, trigger: p.event, chain: p.cause.chain, frame: p.frame };
       // No hold re-check here: a hold is engaged only by an accepted command,
       // and the command path cancels the queue in that command's own turn
@@ -567,7 +608,7 @@ export class AutomationEvaluator {
         command: p.rule.action.command,
         payload: p.rule.action.payload,
         actor,
-        auditEvent: "automation.action",
+        auditEvent: p.auditEvent ?? "automation.action",
         detail: { ...detailBase, observedAt: p.observedAt, dispatchedAt, latencyMs: dispatchedAt - p.observedAt },
         cause: { chain: [...p.cause.chain, p.rule.id] },
       });

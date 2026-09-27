@@ -94,6 +94,11 @@ export function automationPackage(automation: unknown[], extra: Record<string, u
           { id: "A3", kind: "sceneRef", sceneRef: "SCN" },
           // Timed: a take puts it PLAYING, and the engine's `end` makes it DONE.
           { id: "AT", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60 },
+          // WU4: an autoFollow item and the item after it; and an autoFollow
+          // item that is the last in the rundown.
+          { id: "AF", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
+          { id: "AN", kind: "sceneRef", sceneRef: "SCN" },
+          { id: "AZ", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
         ],
       },
       control: {
@@ -613,6 +618,105 @@ test("audioLevel fires on the engine's matching crossing (v0.4.7) and not on ano
   assert.deepEqual(firedTriggers(), [
     { kind: "audioLevel", bus: "mic", thresholdDbfs: -12, direction: "rising", levelDbfs: -3, masterFrame: 900 },
   ]);
+  render.close();
+  ws.close();
+});
+
+// ---------------------------------------------------------------------------
+// WU4 — autoFollow: advance on media end, through the same queue, held by hold
+// ---------------------------------------------------------------------------
+
+const END = (itemRef: string) => JSON.stringify({ v: "0.3", kind: "itemEvent", itemRef, event: "end" });
+
+function followRows(): AuditRecord[] {
+  return automationRows().filter((r) => (r.event ?? "").startsWith("autoFollow."));
+}
+
+test("autoFollow advances to the next rundown item when its item completes", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AN", "the next item is on air");
+  const rows = followRows();
+  assert.equal(rows.length, 1, JSON.stringify(rows));
+  assert.equal(rows[0]!.event, "autoFollow.advance");
+  assert.equal(rows[0]!.outcome, "ok");
+  assert.equal(rows[0]!.actor, "autoFollow:AF");
+  assert.equal(rows[0]!.command, "view.cut");
+  render.close();
+  ws.close();
+});
+
+test("autoFollow does not advance for an item without it, or for a stopped item", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  // AT carries no autoFollow: it completes, and the View stays on it.
+  assert.equal((await send(ws, "view.cut", { itemRef: "AT" })).status, "ok");
+  render.send(END("AT"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AT");
+  // AF stopped, then the engine's late end: no completion, no advance.
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  assert.equal((await send(ws, "item.stop", { itemId: "AF" })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AF");
+  assert.deepEqual(followRows(), [], "no advance, nothing audited");
+  render.close();
+  ws.close();
+});
+
+test("a hold suppresses autoFollow (§13.5 #2), audited", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  assert.equal((await send(ws, "automation.hold", { hold: true })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AF", "held: the View does not advance");
+  const rows = followRows();
+  assert.deepEqual(rows.map((r) => r.event), ["autoFollow.suppressedByHold"]);
+  assert.equal(rows[0]!.actor, "autoFollow:AF");
+  render.close();
+  ws.close();
+});
+
+test("a pending autoFollow is cancelled by a hold that lands before it dispatches (B5)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // A rule on AF's end engages the hold; it is queued ahead of the advance,
+  // so the advance is PENDING when the hold lands.
+  const ws = await loadAndStart([
+    {
+      id: "holder",
+      trigger: { kind: "mediaEnd", params: { itemRef: "AF" } },
+      action: { command: "automation.hold", payload: { hold: true } },
+    },
+  ]);
+  const render = await renderSession();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AF", "the advance never dispatched");
+  const cancelled = automationRows().filter((r) => r.event === "automation.cancelledByHold");
+  assert.deepEqual(cancelled.map((r) => r.actor), ["autoFollow:AF"]);
+  render.close();
+  ws.close();
+});
+
+test("autoFollow on the last rundown item goes nowhere, and says so", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AZ" })).status, "ok");
+  render.send(END("AZ"));
+  await flushed(render);
+  assert.equal(state.viewItem, "AZ");
+  assert.deepEqual(followRows().map((r) => r.event), ["autoFollow.endOfRundown"]);
   render.close();
   ws.close();
 });

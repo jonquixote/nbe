@@ -718,6 +718,15 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
             snapAfter.itemStates.get(frame.itemRef) === "DONE"
           ) {
             automation.fire({ kind: "mediaEnd", itemRef: frame.itemRef }, NO_CAUSE, observedAt);
+            // WU4: autoFollow — the item completed; advance to the next item
+            // in the rundown (§3.1), through the evaluator's queue so hold
+            // governs it (§13.5 #2).
+            const pkg = state.pkg;
+            if (pkg?.items.get(frame.itemRef)?.autoFollow) {
+              const order = [...pkg.items.keys()];
+              const next = order[order.indexOf(frame.itemRef) + 1];
+              automation.autoFollow(frame.itemRef, next, NO_CAUSE, observedAt);
+            }
           }
         }
         return;
