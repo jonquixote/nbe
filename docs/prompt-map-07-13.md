@@ -1631,6 +1631,27 @@ at `619846c`.
   | the limiter removed | `a rule that would fire twice in one frame fires once…` | `fired once in the frame` — `2 !== 1` |
   | hold suppression removed | `a held engine fires nothing…` | `held: nothing dispatched` — `1 !== 0` |
   | pending not cancelled when a hold engages | `a hold cancels every pending action…` | `only the hold itself dispatched` (actual: three actors) |
+- **WU3** (`75f7ad4`): the trigger adapters.
+  - **Where each is wired.** `mediaStart` (B3) on a take; `mediaEnd` on the
+    recorded `PLAYING → DONE`; `timer`; `timeOfDay`; `hotkey` on an
+    `intentSource`, whatever the carried command's outcome; `streamHealth` on
+    the tick's `streamTransportState`, with a baseline (§5 of the design note
+    argues the token mapping); `audioLevel` on the v0.4.7 crossing.
+  - **The §13.4.1 `item.stop` claim** is now guarded: a stopped timed item's
+    late `end` fires nothing.
+
+  Falsified at `75f7ad4`, one adapter at a time. Each fails exactly its own
+  test (17 pass, 1 fail):
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | mediaStart unwired | `mediaStart fires when a take puts its item on air…` | `only A2's start, once` |
+  | mediaEnd fires on any `end` (the `PLAYING → DONE` check removed) | `mediaEnd fires on the engine's end of a PLAYING item — and not for a stopped one` | `a stop is not a completion (§13.4.1's item.stop row)` |
+  | timer never scheduled | `timer fires atMs…` | deep-equal: `[]` vs the timer event |
+  | timeOfDay never scheduled | `` timeOfDay fires when the local wall clock reaches `at` `` | `at 00:53:03` (deep-equal) |
+  | hotkey only on accepted commands | `hotkey fires when its binding fires, whatever…` | deep-equal: `[]` vs the hotkey event |
+  | streamHealth without a baseline | `streamHealth fires on a change TO…` | `after live` |
+  | audioLevel unwired | `audioLevel fires on the engine's matching crossing…` | deep-equal: `[]` vs the audioLevel event |
 
 ## 12 — Benchmark
 
