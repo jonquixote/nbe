@@ -306,12 +306,21 @@ async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
     let (state, _h, mut render) = loaded_engine(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    // 250 ms of work against a 100 ms budget: late by ~150 ms, 1.5 budgets.
+    // A warm-up frame, on time, first: the first render on a cold adapter
+    // costs far more than any other (143 ms on the CI runner, run
+    // 36356479347, which failed this test's bound), and an on-time frame
+    // resets the watchdog's sum.
+    assert!(render
+        .render_frame(0, Some(Duration::from_secs(5)))
+        .view_late_by
+        .is_none());
+    // 750 ms of work against a 300 ms budget: late by ~450 ms, 1.5 budgets,
+    // with 150 ms of render headroom before the lateness reaches 2 budgets.
     // ceil(1.5) = 2 missed frames, and 2 is not above the threshold of 2.
-    let budget = Duration::from_millis(100);
-    render.injected_view_delay = Some(Duration::from_millis(250));
+    let budget = Duration::from_millis(300);
+    render.injected_view_delay = Some(Duration::from_millis(750));
     let late = render
-        .render_frame(0, Some(budget))
+        .render_frame(1, Some(budget))
         .view_late_by
         .expect("the frame is late");
     assert!(
@@ -332,6 +341,11 @@ async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
     let (state, _h, mut render) = loaded_engine(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
+    // A warm-up frame, on time, first (see the test above).
+    assert!(render
+        .render_frame(0, Some(Duration::from_secs(5)))
+        .view_late_by
+        .is_none());
     // 210 ms of work against a 200 ms budget: each frame is late by far less
     // than one frame, so none "misses a deadline by more than 1 frame" — and
     // the sum of three single misses exceeds 2.
@@ -339,7 +353,7 @@ async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
     render.injected_view_delay = Some(Duration::from_millis(210));
     for f in 0..3 {
         let late = render
-            .render_frame(f, Some(budget))
+            .render_frame(f + 1, Some(budget))
             .view_late_by
             .expect("the frame is late");
         assert!(
