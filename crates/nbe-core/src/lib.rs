@@ -2,6 +2,7 @@
 //! Normative spec: SPEC v0.4 (`docs/spec.v0.4.md`).
 
 pub mod automation;
+pub mod automation_effects;
 pub mod manifest;
 pub mod preflight;
 pub mod validate;

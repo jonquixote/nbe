@@ -351,7 +351,9 @@ test("an action payload preflight cannot judge refuses the load at the control p
   await connect(ws);
   const r = await send(ws, "show.load", {
     packagePath: automationPackage([
-      { id: "badcut", trigger: { kind: "mediaEnd" }, action: { command: "view.cut", payload: { itemRef: 5 } } },
+      // A hotkey trigger: a cut cannot cause one, so the rule is no cycle
+      // (WU5's check, §13.4) and preflight passes it to this layer.
+      { id: "badcut", trigger: { kind: "hotkey", params: { bindingId: "take-key" } }, action: { command: "view.cut", payload: { itemRef: 5 } } },
     ]),
   });
   assert.equal(r.status, "error");
@@ -474,7 +476,10 @@ test("a snapshot.recall that restores a held snapshot cancels pending actions to
   // Recalling a snapshot saved while held sets it with no `automation.hold` —
   // the path WU2 found missed (e985e40). The recall is the first of three
   // actions one trigger queues; the other two are pending when it lands.
-  const trig = { kind: "stateChange", params: { field: "previewItem", to: "A1" } };
+  // The trigger is A2 going on air: a recall changes `previewItem`, so a
+  // `previewItem` trigger would make the recaller a cycle of one, which
+  // preflight refuses since WU5 (§13.4) — a recall is not a take.
+  const trig = { kind: "mediaStart", params: { itemRef: "A2" } };
   const ws = await loadAndStart([
     { id: "recaller", trigger: trig, action: { command: "snapshot.recall", payload: { name: "held" } } },
     markerRule("b", trig),
@@ -484,7 +489,7 @@ test("a snapshot.recall that restores a held snapshot cancels pending actions to
   assert.equal((await send(ws, "snapshot.save", { name: "held" })).status, "ok");
   assert.equal((await send(ws, "automation.hold", { hold: false })).status, "ok");
   nextFrame();
-  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  assert.equal((await send(ws, "view.cut", { itemRef: "A2" })).status, "ok");
   await server.automation.settled();
   const rows = automationRows();
   assert.deepEqual(
@@ -804,4 +809,251 @@ test("autoFollow advances once per completion, never twice, and the limiter coun
   assert.equal(state.viewItem, "AN");
   render.close();
   ws.close();
+});
+
+// ---------------------------------------------------------------------------
+// WU5 — self-triggers: the runtime's suppression, and §13.4.1 row by row
+// ---------------------------------------------------------------------------
+
+/** §13.4.1 as data — the same file preflight's cycle check reads. */
+const EFFECTS = JSON.parse(
+  readFileSync(new URL("../../../crates/nbe-core/src/automation_effects.json", import.meta.url), "utf8"),
+) as { commands: Record<string, { stateChange?: string[]; mediaStart?: boolean; deferred?: string[]; item?: string }> };
+
+test("a rule's action carries its chain into the triggers it raises in the same dispatch", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // r1's action changes previewItem, which r2 listens for. r2's firing names
+  // r1 in its chain — the fact the runtime's self-trigger suppression reads.
+  const ws = await loadAndStart([
+    {
+      id: "r1",
+      trigger: { kind: "stateChange", params: { field: "showState", to: "RUNNING" } },
+      action: { command: "preview.set", payload: { itemRef: "A1" } },
+    },
+    markerRule("r2", { kind: "stateChange", params: { field: "previewItem" } }),
+  ]);
+  const rows = automationRows().filter((r) => r.event === "automation.action");
+  assert.deepEqual(
+    rows.map((r) => [r.actor, r.detail?.["chain"]]),
+    [
+      ["automation:r1", []],
+      ["automation:r2", ["r1"]],
+    ],
+  );
+  ws.close();
+});
+
+test("the runtime suppresses a rule its own action re-triggered (§13.4), audited", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // No manifest preflight admits can do this through the command path: the
+  // static check refuses every cycle §13.4.1's data shows, and the data
+  // over-approximates. The suppression exists for an edge the data lacks, so
+  // it is reached here the way such an edge would reach it — an event raised
+  // with the rule in its chain, through the evaluator's one entry — and
+  // asserted on the audit log.
+  const ws = await loadAndStart([markerRule("self", { kind: "stateChange", params: { field: "previewItem" } })]);
+  const before = automationRows().length;
+  const event = { kind: "stateChange", field: "previewItem", from: null, to: "A1" } as const;
+  nextFrame();
+  server.automation.fire(event, { chain: ["self"] });
+  await server.automation.settled();
+  let rows = automationRows().slice(before);
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.actor, r.detail?.["chain"]]),
+    [["automation.suppressedSelfTrigger", "automation:self", ["self"]]],
+  );
+  assert.equal(state.markers.length, 0, "nothing dispatched");
+  // Another rule's chain is not this rule's: it fires.
+  nextFrame();
+  server.automation.fire(event, { chain: ["other"] });
+  await server.automation.settled();
+  rows = automationRows().slice(before);
+  assert.deepEqual(
+    rows.map((r) => r.event),
+    ["automation.suppressedSelfTrigger", "automation.action"],
+  );
+  ws.close();
+});
+
+test("§13.4.1, row by row: every command raises only the same-dispatch triggers its row names", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // Watchers on every field a stateChange rule can name, and on mediaStart.
+  // Each command runs from a fresh admin session (§10.7's limiter is per
+  // connection), a frame apart, and the watchers it raises — fired, held or
+  // limited, all audited — must be cells its §13.4.1 row names. A trigger
+  // raised and NOT named is a missing edge: the cycle check's unsafe side.
+  const FIELDS = ["showState", "viewItem", "previewItem", "streamState", "recordState", "automationHold", "fallbackActive"];
+  const ITEMS = ["A1", "A2", "AT"];
+  const pkg = automationPackage([
+    ...FIELDS.map((f) => markerRule(`w-${f}`, { kind: "stateChange", params: { field: f } })),
+    ...ITEMS.map((i) => markerRule(`w-itemState-${i}`, { kind: "stateChange", params: { field: "itemState", itemRef: i } })),
+    markerRule("w-mediaStart", { kind: "mediaStart" }),
+    markerRule("idle", { kind: "hotkey", params: { bindingId: "take-key" } }), // for automation.enable/disable to name
+  ], {
+    // Templates, so the graphics, breaking and ticker rows have commands that
+    // can be accepted (a ticker is declared by a ticker template, package.ts).
+    templates: [
+      { id: "TPL", kind: "generic" },
+      { id: "BRK", kind: "breakingBanner" },
+      { id: "TCK", kind: "ticker" },
+    ],
+  });
+  const render = await renderSession();
+  const cmd = async (command: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    nextFrame();
+    const c = conn("admin", ADMIN);
+    await connect(c);
+    const r = await send(c, command, payload);
+    c.close();
+    await server.automation.settled();
+    return r;
+  };
+  const setup = async (command: string, payload: Record<string, unknown> = {}): Promise<void> => {
+    const r = await cmd(command, payload);
+    assert.equal(r.status, "ok", `setup ${command}: ${JSON.stringify(r)}`);
+  };
+  const WATCHED = new Set(["automation.action", "automation.suppressedByHold", "automation.rateLimited", "automation.suppressedSelfTrigger"]);
+  const raised = (from: number): Set<string> => {
+    const out = new Set<string>();
+    for (const r of automationRows().slice(from)) {
+      const trig = r.detail?.["trigger"] as { kind: string; field?: string } | undefined;
+      if (!WATCHED.has(r.event ?? "") || !r.actor?.startsWith("automation:w-") || !trig) continue;
+      out.add(trig.kind === "stateChange" ? `stateChange:${trig.field}` : trig.kind);
+    }
+    return out;
+  };
+  const declared = (command: string): Set<string> => {
+    const e = EFFECTS.commands[command];
+    assert.ok(e, `${command} has a §13.4.1 row`);
+    return new Set([...(e.stateChange ?? []).map((f) => `stateChange:${f}`), ...(e.mediaStart ? ["mediaStart"] : [])]);
+  };
+  const seen = new Map<string, Set<string>>();
+  const accepted = new Map<string, boolean>();
+  const unnamed: string[] = [];
+  const probe = async (command: string, payload: Record<string, unknown> = {}): Promise<void> => {
+    const from = automationRows().length;
+    const r = await cmd(command, payload);
+    accepted.set(command, (accepted.get(command) ?? false) || r.status === "ok");
+    const got = raised(from);
+    const want = declared(command);
+    for (const k of got) if (!want.has(k)) unnamed.push(`${command} ${JSON.stringify(payload)} raised ${k}`);
+    const u = seen.get(command) ?? new Set<string>();
+    for (const k of got) u.add(k);
+    seen.set(command, u);
+  };
+
+  await probe("show.load", { packagePath: pkg });
+  await probe("show.preflight", {});
+  await probe("show.start", {});
+  await probe("preview.set", { itemRef: "A1" });
+  await setup("view.fallback");
+  await setup("preview.set", { itemRef: "A2" });
+  await probe("view.take", {});
+  await setup("view.fallback");
+  await setup("preview.set", { itemRef: "A1" });
+  await probe("view.cut", { itemRef: "A1" });
+  await setup("view.cut", { itemRef: "AT" });
+  await probe("item.stop", { itemId: "AT" });
+  await probe("item.arm", { itemId: "A2" });
+  await probe("item.unarm", { itemId: "A2" });
+  await setup("view.cut", { itemRef: "AT" });
+  render.send(END("AT"));
+  await flushed(render);
+  await probe("item.reset", { itemId: "AT" });
+  await setup("view.cut", { itemRef: "A1" });
+  await probe("view.fallback", {});
+  await probe("automation.hold", { hold: true });
+  await probe("automation.hold", { hold: false });
+  // A held snapshot with A2 on air and A1 in preview, recalled over A1 on air.
+  await setup("view.cut", { itemRef: "A2" });
+  await setup("preview.set", { itemRef: "A1" });
+  await setup("automation.hold", { hold: true });
+  await setup("snapshot.save", { name: "held" });
+  await setup("automation.hold", { hold: false });
+  await setup("view.cut", { itemRef: "A1" });
+  await probe("snapshot.recall", { name: "held" });
+  await setup("automation.hold", { hold: false });
+  await probe("record.start", {});
+  await probe("record.stop", {});
+  await probe("stream.start", {});
+  await probe("stream.stop", {});
+  // The rows whose cells change nothing a stateChange rule can name.
+  for (const [command, payload] of [
+    ["scene.arm", { sceneId: "SCN" }],
+    ["scene.apply", { sceneId: "SCN", target: "preview" }],
+    ["element.toggle", { elementId: "main", visible: false }],
+    ["element.set", { elementId: "main", patch: {} }],
+    ["graphic.show", { templateId: "TPL", fields: {} }],
+    ["graphic.hide", {}],
+    ["graphic.update", { elementId: "main", fields: {} }],
+    ["breaking.show", { headline: "h" }],
+    ["breaking.hide", {}],
+    ["overlay.show", { overlayId: "o" }],
+    ["overlay.hide", { overlayId: "o" }],
+    ["clock.configure", { elementId: "main" }],
+    ["ticker.setSource", { source: "manual" }],
+    ["ticker.override", { items: [] }],
+    ["ticker.clearOverride", {}],
+    ["ticker.refreshRss", {}],
+    ["soundboard.play", { assetId: "a_img" }],
+    ["soundboard.stop", {}],
+    ["soundboard.stopAll", {}],
+    ["audio.bus.set", { bus: "music", gainDb: -6 }],
+    ["audio.duck", { bus: "music", enabled: true }],
+    ["guest.connect", { guestId: "g1", whipUrl: "https://guest.invalid/whip" }],
+    ["guest.mute", { guestId: "g1", muted: true }],
+    ["guest.setLayout", { guestId: "g1", layout: "pip" }],
+    ["guest.placeholder", { guestId: "g1" }],
+    ["guest.configureReturn", { guestId: "g1" }],
+    ["guest.getTurn", { guestId: "g1" }],
+    ["guest.disconnect", { guestId: "g1" }],
+    ["automation.disable", { ruleId: "idle" }],
+    ["automation.enable", { ruleId: "idle" }],
+    ["snapshot.save", { name: "plain" }],
+    ["marker.add", { name: "m" }],
+    ["plugin.reload", { pluginId: "p" }],
+    ["system.status", {}],
+    ["system.telemetry.subscribe", {}],
+    ["system.telemetry.unsubscribe", {}],
+  ] as const) {
+    await probe(command, payload as Record<string, unknown>);
+  }
+  await probe("show.stop", {});
+  await probe("show.unload", {});
+
+  const refused = [...accepted].filter(([, ok]) => !ok).map(([c]) => c);
+  // One command per §13.4.1 row (19 rows) must be ACCEPTED, or its row is
+  // checked against nothing: a refused command raises nothing and passes.
+  const ONE_PER_ROW = [
+    "view.take", "item.stop", "show.start", "show.stop", "show.load", "preview.set", "scene.arm",
+    "snapshot.recall", "view.fallback", "stream.start", "record.start", "soundboard.play", "element.toggle",
+    "ticker.setSource", "ticker.refreshRss", "guest.connect", "automation.hold", "marker.add", "system.status",
+  ];
+  assert.deepEqual(ONE_PER_ROW.filter((c) => !accepted.get(c)), [], "a row with no accepted command is unchecked");
+  console.log(`ROW CHECK: ${accepted.size} commands probed, ${accepted.size - refused.length} accepted; refused by their own preconditions: ${refused.join(", ") || "none"}`);
+  assert.deepEqual(unnamed, [], "triggers raised that the command's §13.4.1 row does not name — missing edges");
+  assert.deepEqual(
+    Object.keys(EFFECTS.commands).filter((c) => !accepted.has(c)),
+    [],
+    "every §13.4.1 row's commands are probed",
+  );
+  // Each named same-dispatch cell is demonstrated, not only allowed — except
+  // where this package cannot reach it, which is stated.
+  const NOT_REACHED: Record<string, string[]> = {
+    // Loaded from UNLOADED, nothing is on air to clear. A load over a loaded
+    // show clears them (state.ts loadPackage), and the new rules see it: the
+    // evaluator loads them before the diff (server.ts afterAccepted).
+    "show.load": ["stateChange:viewItem", "stateChange:previewItem", "stateChange:fallbackActive", "stateChange:itemState"],
+  };
+  const undemonstrated: string[] = [];
+  for (const [command] of Object.entries(EFFECTS.commands)) {
+    const want = declared(command);
+    if (want.size === 0) continue;
+    assert.ok(accepted.get(command), `${command}, whose row names triggers, must be accepted to be checked`);
+    for (const k of want) {
+      if (!seen.get(command)?.has(k) && !(NOT_REACHED[command] ?? []).includes(k)) undemonstrated.push(`${command}: ${k}`);
+    }
+  }
+  assert.deepEqual(undemonstrated, [], "cells a row names that no probe demonstrated");
+  render.close();
 });

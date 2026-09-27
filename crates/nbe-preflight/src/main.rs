@@ -600,6 +600,27 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             }
         }
     }
+    // SPEC §13.4 / AC-25 #3: a rule whose action can re-trigger it, directly
+    // or through other rules, is refused by name — over §13.4.1's effects as
+    // data (`nbe_core::automation_effects`), with each action read under its
+    // canonical name so an alias cannot hide an edge.
+    let canonical_rules: Vec<_> = rules
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            if let Some(c) = canonical_action(&r.action.command) {
+                r.action.command = c.to_string();
+            }
+            r
+        })
+        .collect();
+    if let Some(cycle) = nbe_core::automation_effects::find_cycle(&canonical_rules) {
+        had_errors = true;
+        report.push_error(format!(
+            "automationRule: {} (SPEC §13.4)",
+            nbe_core::automation_effects::describe_cycle(&cycle)
+        ));
+    }
 
     // SPEC §12.4: the absolute short-loop frame cap. Checked before the
     // resource arithmetic so a package past the bound is refused by name
@@ -1091,5 +1112,34 @@ fn main() -> ExitCode {
             report_path.display()
         );
         ExitCode::from(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::REGISTERED_COMMANDS;
+
+    /// §13.4.1's data must name exactly the commands a rule's action can name:
+    /// a registered command with no effects row would cause nothing in the
+    /// cycle check — a missing edge, the unsafe direction.
+    #[test]
+    fn every_registered_command_has_an_effects_row_and_no_other_does() {
+        let effects: std::collections::BTreeSet<&str> =
+            nbe_core::automation_effects::command_effects()
+                .keys()
+                .map(String::as_str)
+                .collect();
+        let registered: std::collections::BTreeSet<&str> =
+            REGISTERED_COMMANDS.iter().copied().collect();
+        assert_eq!(
+            registered.difference(&effects).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "registered commands with no §13.4.1 row"
+        );
+        assert_eq!(
+            effects.difference(&registered).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "§13.4.1 rows naming no registered command"
+        );
     }
 }

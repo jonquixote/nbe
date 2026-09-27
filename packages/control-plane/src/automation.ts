@@ -414,6 +414,7 @@ interface Pending {
  *
  * Flow for one trigger event: every enabled rule it matches, in manifest
  * order → held? suppressed (audited) → conditions false? not an attempt →
+ * raised by its own action? suppressed as a self-trigger (audited, §13.4) →
  * already fired this frame? rate-limited (audited) → enqueued as PENDING.
  * The queue drains one action at a time through the command path; a hold
  * accepted in between cancels everything still pending (B5), audited.
@@ -554,6 +555,17 @@ export class AutomationEvaluator {
         continue;
       }
       if (!rule.conditions.every((c) => this.holds(c))) continue; // conditions false: not an attempt
+      // §13.4: "the runtime MUST also suppress a rule that fires itself". The
+      // chain names the rules whose actions raised this event in their own
+      // dispatch; a rule in it would be re-triggering itself. Preflight
+      // refuses every cycle §13.4.1's data shows (nbe-core
+      // `automation_effects`, over-approximating), so this is reached only
+      // through an edge the data lacks. Deferred effects break the chain —
+      // the static check owns those.
+      if (cause.chain.includes(rule.id)) {
+        this.deps.audit({ event: "automation.suppressedSelfTrigger", outcome: "rejected", command: rule.action.command, actor, detail });
+        continue;
+      }
       if (this.lastFrame.get(rule.id) === frame) {
         this.deps.audit({ event: "automation.rateLimited", outcome: "rejected", command: rule.action.command, actor, detail });
         continue;

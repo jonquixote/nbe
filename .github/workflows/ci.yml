@@ -522,10 +522,11 @@ jobs:
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL prompt11_ladder: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: the preflight automation suite actually ran (Prompt 11 B1, WU1)
+      - name: the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5)
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
-        # WU1: every trigger kind, conditions, the action); a complete one passes.
-        # Hardware-free: floors equal. Were 2/2 at B1.
+        # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
+        # a complete one passes. Hardware-free: floors equal. Were 2/2 at B1,
+        # 3/3 at WU1.
         run: |
           set -u
           out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
@@ -536,12 +537,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
-          if [ "$ran" -lt 3 ]; then
-            echo "FAIL preflight automation: expected at least 3 tests to run, got $ran"; exit 1
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL preflight automation: expected at least 4 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 3 ]; then
-            echo "FAIL preflight automation: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL preflight automation: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
         # nbe-core's reading of every trigger kind, held to the fixture the
@@ -769,7 +770,7 @@ jobs:
         # the wire, which needs nbe-preflight: without it they SKIP, and the
         # suite-wide floor above would stay green about nothing. This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
-        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25).
+        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28).
         run: |
           set -u
           out=$(node --import tsx --test src/automation.test.ts 2>&1)
@@ -783,10 +784,10 @@ jobs:
           skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=25 exercised>=25)"
+          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=28 exercised>=28)"
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 25 ]; then echo "FAIL automation: expected at least 25 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 25 ]; then echo "FAIL automation: expected at least 25 tests to execute rather than skip, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 28 ]; then echo "FAIL automation: expected at least 28 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 28 ]; then echo "FAIL automation: expected at least 28 tests to execute rather than skip, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.

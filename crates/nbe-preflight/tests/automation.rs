@@ -170,3 +170,53 @@ fn every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name() {
         );
     }
 }
+
+#[test]
+fn a_rule_cycle_fails_preflight_with_the_cycle_named() {
+    // WU5: SPEC §13.4 / AC-25 #3 — preflight REFUSES rules whose actions can
+    // re-trigger themselves, directly or through other rules, over §13.4.1's
+    // effects as data, and names the cycle.
+    let dir = tempfile::tempdir().unwrap();
+    for (rules, needle) in [
+        (
+            r#"{ "id": "loop", "trigger": { "kind": "stateChange", "params": { "field": "previewItem" } },
+                 "action": { "command": "preview.set", "payload": { "itemRef": "A1" } } }"#,
+            "automation rules form a cycle: `loop` → `loop` (`loop`: `preview.set` changes `previewItem`)",
+        ),
+        (
+            r#"{ "id": "a", "trigger": { "kind": "stateChange", "params": { "field": "recordState" } },
+                 "action": { "command": "view.take" } },
+               { "id": "b", "trigger": { "kind": "stateChange", "params": { "field": "viewItem" } },
+                 "action": { "command": "record.start" } }"#,
+            "`a` → `b` → `a` (`a`: `view.take` changes `viewItem`; `b`: `record.start` changes `recordState`)",
+        ),
+        (
+            // A deprecated alias reaches the same command, so it cannot hide
+            // the edge; and the edge is deferred — the loop is one duration
+            // long, and still a loop (WU5's decision).
+            r#"{ "id": "replay", "trigger": { "kind": "mediaEnd", "params": { "itemRef": "A1" } },
+                 "action": { "command": "program.cut", "payload": { "itemRef": "A1" } } }"#,
+            "`replay` → `replay` (`replay`: `view.cut` schedules an item's end (mediaEnd, deferred))",
+        ),
+    ] {
+        let root = package(dir.path(), rules);
+        let (code, report) = run(&root);
+        let errs = errors(&report);
+        assert_eq!(code, 2, "{rules} must fail preflight; errors {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.starts_with("automationRule: ")
+                && e.contains(needle)
+                && e.ends_with("(SPEC §13.4)")),
+            "expected the cycle named, {needle:?}; got {errs:?}"
+        );
+    }
+
+    // No cycle: the action raises a trigger no rule here listens for.
+    let root = package(
+        dir.path(),
+        r#"{ "id": "rec", "trigger": { "kind": "stateChange", "params": { "field": "showState", "to": "RUNNING" } },
+             "action": { "command": "record.start" } }"#,
+    );
+    let (code, report) = run(&root);
+    assert_eq!(code, 0, "an acyclic rule passes; report {report}");
+}
