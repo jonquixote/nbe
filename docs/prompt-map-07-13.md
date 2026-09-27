@@ -1652,6 +1652,23 @@ at `619846c`.
   | hotkey only on accepted commands | `hotkey fires when its binding fires, whatever…` | deep-equal: `[]` vs the hotkey event |
   | streamHealth without a baseline | `streamHealth fires on a change TO…` | `after live` |
   | audioLevel unwired | `audioLevel fires on the engine's matching crossing…` | deep-equal: `[]` vs the audioLevel event |
+- **WU4** (`4d11ba9`): `autoFollow`, normative since v0.1 and unimplemented until
+  now.
+  - **What it does.** When an item carrying it completes (`PLAYING → DONE`), the
+    View advances to the next rundown item with `view.cut`.
+  - **How it runs.** Through the evaluator's queue, with actor
+    `autoFollow:<itemRef>`. A hold suppresses it, and cancels it while it is
+    still pending.
+  - **The last item** has nowhere to go; that is audited, not invented.
+
+  Falsified at `4d11ba9`:
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | the advance removed | 4 of the 5 autoFollow tests | `the next item is on air` — `'AF' !== 'AN'` |
+  | autoFollow ignores hold | `a hold suppresses autoFollow…` | `held: the View does not advance` — `'AN' !== 'AF'` |
+  | the wrong next item (two ahead) | `autoFollow advances to the next rundown item…` | `'AZ' !== 'AN'` |
+  | end of rundown not audited | `autoFollow on the last rundown item goes nowhere, and says so` | deep-equal: `[]` vs `["autoFollow.endOfRundown"]` |
 
 ## 12 — Benchmark
 
