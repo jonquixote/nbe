@@ -376,8 +376,13 @@ test("an audioLevelCrossing frame from the render node reaches the engine-event 
     const { bus: _noBus, ...noBus } = frame;
     render.send(JSON.stringify(noBus));
     render.send(JSON.stringify(frame));
-    await until(() => got.length >= 1, 3000);
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait on the SERVER having processed the three frames, not on the
+    // consumer, so a dropped hand-off fails on the assertion below instead of
+    // on a timeout: a later message on the render connection is answered only
+    // after them (per-connection order). A render session may not command, so
+    // the answer is E_AUTH — its arrival is the ordering proof.
+    const reply = await send(render, "system.status", {});
+    assert.equal(reply.status, "error");
     assert.equal(got.length, 1, "exactly the well-formed render-session frame is consumed");
     assert.deepEqual(got[0], frame, "the crossing reaches its consumer with every field intact");
     monitor.close();
