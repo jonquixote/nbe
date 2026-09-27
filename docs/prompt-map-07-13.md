@@ -1762,7 +1762,10 @@ at `619846c`.
   while held, and the B5 test still passes. §13.5 gains the sentence it
   needed: hold is a state, not a command. The automation suite's CI floor
   rises 24 → 25.
-- **WU7** (`fb1ef14`, corrections `f03796f` and `fb7619f`): latency, measured.
+- **WU7** (`fb1ef14`, corrections `f03796f`, `fb7619f` and `6ab9c77`): latency,
+  measured. The last correction came from the gate run: the landing's test
+  helper failed `clippy -D warnings` (`type_complexity`), and a type alias
+  fixes it.
   - **The instrument.**
     `packages/control-plane/src/automation-latency.measure.ts`, run with
     `npm run measure:automation` and deliberately not part of `npm test`.
