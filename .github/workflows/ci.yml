@@ -498,6 +498,30 @@ jobs:
           if [ "$exercised" -lt 6 ]; then
             echo "FAIL prompt11_audio_level: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: the degradation ladder's rung 2 suite actually ran (Prompt 11 WU6)
+        # Four tests on a real render loop with two decoded loops: the ladder's
+        # order, off-air shedding and re-acquire on take, and the View-continuity
+        # guard. They need a GPU adapter and video decode, both present on the
+        # macos-14 runner (prompt04/prompt05 run here); a machine without an
+        # adapter skips loudly (SKIP:), so floors ran>=4 exercised>=4 make a
+        # skip on this runner a failure, not a green.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_ladder -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_ladder: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL prompt11_ladder: expected at least 4 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL prompt11_ladder: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: the preflight automation suite actually ran (Prompt 11 B1, WU1)
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action); a complete one passes.

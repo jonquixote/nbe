@@ -36,7 +36,7 @@ It runs on the render loop **on purpose**. AC-7 requires the cut to the fallback
 
 | Rung | Subject in the tree | Status |
 |---|---|---|
-| 2 — loop caches evict to streaming | loops already have a streaming mode (`video.rs`: "when streaming it is the read-ahead window") | **buildable** — a mechanism exists to degrade to |
+| 2 — loop caches evict to streaming | ~~loops already have a streaming mode (`video.rs`: "when streaming it is the read-ahead window")~~ the tree has no runtime streaming decode (`load_video_asset` decodes a bounded prefix; "until read-ahead lands") | ~~**buildable** — a mechanism exists to degrade to~~ *Struck (§2c): there is no streaming decode to evict TO. The executor stopped at §4a, and the user decided (2026-09-27) that the rung's domain is loops not on air. Their VRAM ring is shed and re-uploaded on take or preroll. Built in WU6; SPEC v0.4.7 row 2* |
 | 3 — effect quality | no effect pipeline (§14 plugins unbuilt) | **no subject** |
 | 4 — multiview tiles | `multiview_mask` is always `None`; no multiview output exists | **no subject** |
 

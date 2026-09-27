@@ -21,24 +21,25 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 v0.4.7 — **drafted in Prompt 11's PR (2026-09-27); ratified by the user's
 merge of that PR.** The user's word in Prompt 11's execution order: B1 "lands
 with the full audit trio … and the user's merge is the ratification word". Until that merge, this
-entry and the two passages it names are a candidate. Prompt 11 §9 forbids the
+entry and the passages it names are a candidate. Prompt 11 §9 forbids the
 executor ratifying inside a feature PR, and the executor does not; the merge is
 the user's act.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
 | 1 | **`audioLevel` rules fire on an engine-computed crossing** (Prompt 11's B1, decision (a): one evaluator, the `itemEvent` precedent). The rule's params are `{ bus, thresholdDbfs, direction? }`, and preflight refuses a rule whose params do not read. The engine compares each watched bus's measured peak with its threshold on every audio block — one block per house frame, so within AC-25 #1's one frame — and sends a new render-channel frame, `audioLevelCrossing`, which the control plane's evaluator matches to rules. Crossings queued while no control plane was connected are not replayed. Before this, `audioLevel` could not meet AC-25 #1 at all: bus levels reached the control plane once a second | 5.9.3 (new row), 13.2 (new note) | `prompt11_audio_level` (six tests on real metered levels, one entering through `show.load`), the mirror's `rust_and_typescript_agree_on_the_audio_level_crossing_fields` and `crossing_direction_tokens_are_stable`, the control-plane readability test `an audioLevelCrossing frame from the render node reaches the engine-event consumer intact`, and `nbe-preflight`'s `automation` suite |
+| 2 | **Ladder rung 2's domain: loops not on air** (the user's word of 2026-09-27, resolving Prompt 11's §4a stop). §10.5's "loop caches evict to streaming" applies only to loops not feeding the View. Evicting the loop on air would freeze it, and §10.5 says the View MUST NOT be degraded. Off-air loops shed under rung 2 and are re-acquired on the next take or preroll; both are recorded. Rung 2 is reached only from rung 1. Recorded as rejected by the user: (a) build read-ahead decode first — its own prompt, and scope expansion here; (c) defer — it leaves AC-27 short. Prompt 11's draft row "buildable — a mechanism exists to degrade to" is struck with the tree's correction (§2c): no streaming decode exists to evict *to*, and the rung's domain was always non-on-air loops | 10.5 (new note) | `prompt11_ladder`: `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`, `the_on_air_loop_stays_resident_under_consecutive_misses`, `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take`, `the_ladder_climbs_in_order_rung_1_before_rung_2` |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
 
-**Guards, run at `6322f90`** (the landing `6158435`, plus `6322f90`, which makes
+**Row 1's guards, run at `6322f90`** (the landing `6158435`, plus `6322f90`, which makes
 the readability test fail on its assertion rather than a timeout):
 `prompt11_audio_level` ok. 6 passed; 0 failed · `mirror` ok. 18 passed; 0 failed ·
 `nbe-preflight` `automation` ok. 2 passed; 0 failed · `nbe-core` `automation`
 ok. 4 passed · the control-plane readability test # pass 1; # fail 0.
 
-**Falsified at the landing tree**, each restored with `git checkout`:
+**Row 1, falsified at its landing tree**, each restored with `git checkout`:
 
 | Mutation | Guard that failed | Signature |
 |---|---|---|
@@ -2287,6 +2288,24 @@ Normative yield order under sustained load:
 4. Multiview tiles.
 
 The View MUST NOT be degraded. Telemetry MUST expose the current ladder rung as `degradationRung`.
+
+**Rung 2's domain: loops not on air (normative, new in v0.4.7).** "Loop caches
+evict to streaming" evicts only loops that are **not feeding the View**. The
+clause above is why: evicting the loop on air would freeze the View, and no
+eviction may. An off-air loop — the preview's, a prerolled one — sheds its
+cache under rung 2. It is re-acquired on the next take that puts it on air, or
+on preroll once the pressure has cleared. Each shed and each re-acquire is
+observable: `degradationRung` reports rung 2 on the §10.1 tick, and the engine
+records and counts each shed and re-acquire.
+
+The ladder is climbed in order. Rung 2 is reached only from rung 1, when rung 1
+was in force and the View kept missing deadlines. That pressure is sustained
+but not necessarily consecutive: under consecutive misses the §10.3 watchdog
+puts the fallback slate on air before rung 2 could act.
+
+Rung 2 does not stream: this build has no runtime streaming decode. A shed loop
+is re-uploaded from its decoded frames, which is why the domain is off-air
+loops only.
 
 ## 10.6 Coverage additions
 

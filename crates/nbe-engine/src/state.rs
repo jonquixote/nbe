@@ -191,6 +191,10 @@ pub struct EngineState {
     pub stream_tap_ms: Mutex<f64>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
+    /// Loop caches ladder rung 2 shed (off-air only), and loop caches
+    /// re-acquired after a shed — the rung's effect, counted (WU6).
+    pub loops_shed_total: AtomicU64,
+    pub loops_reacquired_total: AtomicU64,
 }
 
 pub struct FallbackSlate {
@@ -247,6 +251,8 @@ impl EngineState {
             skipped_stream_frames: Arc::new(AtomicU64::new(0)),
             stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),
+            loops_shed_total: AtomicU64::new(0),
+            loops_reacquired_total: AtomicU64::new(0),
         }
     }
 
@@ -317,7 +323,8 @@ impl EngineState {
     pub fn rung(&self) -> crate::render::Rung {
         match self.degradation_rung.load(Ordering::SeqCst) {
             0 => crate::render::Rung::Nominal,
-            _ => crate::render::Rung::PreviewHalfRate,
+            1 => crate::render::Rung::PreviewHalfRate,
+            _ => crate::render::Rung::LoopsShed,
         }
     }
 
