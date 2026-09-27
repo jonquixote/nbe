@@ -1592,6 +1592,30 @@ at `619846c`.
   v0.4.7's changelog. Found while landing it: crossings queued during an outage
   would have replayed on reconnect, firing rules late. They are dropped at
   connect.
+- **WU1** (`2d6a9a4`, guards `2eedec7`): the evaluator core, on the ONE command
+  path (`server.ts` `runCommand`). A rule's action runs as `operator`, actor
+  `automation:<ruleId>`, audited `kind: "automation"` in the same `AuditLog`.
+  The params contract covers every trigger kind (`docs/automation-design.md`
+  §2). `nbe-preflight` refuses by it; the control plane's read holds the same
+  verdicts over one shared 32-case fixture and also judges action payloads.
+  `rssKeyword` is refused at load because no RSS source exists, contradicting
+  the draft's "available". `enabled: false` is now honoured. Falsified at
+  `2eedec7`, each restored with `git checkout`:
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | an automation action not audited | `a rule fires through the real command path…`, `a rule disabled… re-arms it` | `one action row: []` — `0 !== 1`; `re-armed, it fires on the next change` — `0 !== 1` |
+  | `enabled: false` ignored at load | `a rule disabled in the manifest never fires…` | `true !== false` |
+  | the control plane's load-time read ignored | `an action payload preflight cannot judge…` | `'ok' !== 'error'` |
+  | a rule acts as `admin` | the audit-row test; `…faces an operator's role check…` | `an automation action faces an operator's preconditions (§13.1)` (+ `'admin'`); `the rule is refused as an operator is` (+ `'E_NOT_FOUND'`) |
+  | preflight's rule check removed | `every_trigger_kind_is_read…`, `a_malformed_audio_level_rule…` | the rss rule `must fail preflight` (left 0, right 2) |
+  | `"automation"` removed from the audit kind union | the kind pin (compile) | `TS2678: Type '"automation"' is not comparable to type '"command" \| "auth" \| "preflight"'` |
+
+  Also found: with no `nbe-preflight` built, the control-plane suites that
+  `t.skip()` on it never exit. `render-channel.test.ts` hangs the same way, so
+  this predates this work; CI always builds preflight. The release binary was
+  also stale (Sep 24), and the control-plane tests resolve release before
+  debug, so they had been running an old preflight. It was rebuilt.
 
 ## 12 — Benchmark
 
