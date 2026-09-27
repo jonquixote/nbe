@@ -61,21 +61,43 @@ fn silence(driver: &mut AudioDriver, bus: BusId) {
 /// Every `audioLevelCrossing` frame queued so far, as
 /// `(bus, threshold, direction, level, masterFrame)`.
 fn crossings(outgoing: &OutgoingQueue) -> Vec<(String, f64, CrossingDirection, f64, u64)> {
+    stamped_crossings(outgoing)
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// As [`crossings`], each with its `ts` (Unix ms).
+fn stamped_crossings(
+    outgoing: &OutgoingQueue,
+) -> Vec<(f64, (String, f64, CrossingDirection, f64, u64))> {
     outgoing
         .drain()
         .into_iter()
         .filter_map(|f| match f {
             EngineFrame::AudioLevelCrossing {
+                ts,
                 bus,
                 threshold_dbfs,
                 direction,
                 level_dbfs,
                 master_frame,
                 ..
-            } => Some((bus, threshold_dbfs, direction, level_dbfs, master_frame)),
+            } => Some((
+                ts,
+                (bus, threshold_dbfs, direction, level_dbfs, master_frame),
+            )),
             _ => None,
         })
         .collect()
+}
+
+fn unix_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
 }
 
 #[test]
@@ -92,14 +114,23 @@ fn a_rising_crossing_is_reported_on_the_block_it_happens_in() {
     // A tone at ~-0.9 dBFS on the mic bus: the NEXT block crosses, and the
     // frame names that block's master frame.
     tone(&mut d, BusId::Mic, 0.9);
+    let before = unix_ms();
     d.cycle(11);
-    let got = crossings(&outgoing);
+    let after = unix_ms();
+    let got = stamped_crossings(&outgoing);
     assert_eq!(
         got.len(),
         1,
         "exactly one crossing, on the block it happened: {got:?}"
     );
-    let (bus, threshold, direction, level, frame) = got[0].clone();
+    // `ts` is read while the block is computed — the start of AC-25 #1's
+    // end-to-end measurement (WU7) — not before it, and not at send time.
+    let ts = got[0].0;
+    assert!(
+        (before..=after).contains(&ts),
+        "ts {ts} is read during the block's cycle [{before}, {after}]"
+    );
+    let (bus, threshold, direction, level, frame) = got[0].1.clone();
     assert_eq!(bus, "mic");
     assert_eq!(threshold, -12.0);
     assert_eq!(direction, CrossingDirection::Rising);
@@ -226,6 +257,7 @@ fn crossings_queued_during_an_outage_are_not_replayed() {
     });
     q.push(EngineFrame::AudioLevelCrossing {
         v: PROTOCOL_VERSION.into(),
+        ts: 0.0,
         bus: "mic".into(),
         threshold_dbfs: -12.0,
         direction: CrossingDirection::Rising,

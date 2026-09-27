@@ -312,6 +312,8 @@ export type TriggerEvent =
       direction: "rising" | "falling";
       levelDbfs: number;
       masterFrame: number;
+      /** The engine's Unix-ms stamp of the crossing (v0.4.7): WU7's end-to-end start. */
+      ts: number;
     }
   | { kind: "hotkey"; bindingId: string }
   | { kind: "streamHealth"; state: StreamTransportToken; from: string }
@@ -398,6 +400,8 @@ interface Pending {
   event: TriggerEvent;
   cause: Cause;
   observedAt: number;
+  /** When it joined the queue — the end of AC-25 #1's measured span. */
+  queuedAt: number;
   frame: number;
   /** The audit actor; `automation:<ruleId>` unless set (autoFollow). */
   actor?: string;
@@ -510,6 +514,7 @@ export class AutomationEvaluator {
       event: { kind: "mediaEnd", itemRef },
       cause,
       observedAt,
+      queuedAt: this.clock(),
       frame,
       actor,
       auditEvent: "autoFollow.advance",
@@ -517,9 +522,13 @@ export class AutomationEvaluator {
     this.scheduleDrain();
   }
 
-  /** `automation.hold { hold: true }` accepted: cancel every pending action, now. */
-  holdEngaged(): void {
-    this.cancelPending("hold");
+  /**
+   * A hold was engaged by the command accepted at `heldAt`: cancel every
+   * pending action, now. Each cancellation's audit row carries
+   * `latencyMs = cancelledAt − heldAt` — AC-25 #2's number (WU7).
+   */
+  holdEngaged(heldAt: number = this.clock()): void {
+    this.cancelPending("hold", heldAt);
   }
 
   close(): void {
@@ -550,7 +559,7 @@ export class AutomationEvaluator {
         continue;
       }
       this.lastFrame.set(rule.id, frame);
-      this.pending.push({ rule, event, cause, observedAt, frame });
+      this.pending.push({ rule, event, cause, observedAt, queuedAt: this.clock(), frame });
       enqueued = true;
     }
     if (enqueued) this.scheduleDrain();
@@ -580,15 +589,17 @@ export class AutomationEvaluator {
     return readField(s, c.field, c.itemRef) === c.equals;
   }
 
-  private cancelPending(reason: "hold" | "unload"): void {
+  private cancelPending(reason: "hold" | "unload", heldAt?: number): void {
     const cancelled = this.pending.splice(0, this.pending.length);
+    const cancelledAt = this.clock();
     for (const p of cancelled) {
+      const timing = heldAt === undefined ? {} : { heldAt, cancelledAt, latencyMs: cancelledAt - heldAt };
       this.deps.audit({
         event: reason === "hold" ? "automation.cancelledByHold" : "automation.cancelledByUnload",
         outcome: "rejected",
         command: p.rule.action.command,
         actor: p.actor ?? `automation:${p.rule.id}`,
-        detail: { ruleId: p.rule.id, trigger: p.event, chain: p.cause.chain, frame: p.frame },
+        detail: { ruleId: p.rule.id, trigger: p.event, chain: p.cause.chain, frame: p.frame, ...timing },
       });
     }
   }
@@ -616,7 +627,13 @@ export class AutomationEvaluator {
         payload: p.rule.action.payload,
         actor,
         auditEvent: p.auditEvent ?? "automation.action",
-        detail: { ...detailBase, observedAt: p.observedAt, dispatchedAt, latencyMs: dispatchedAt - p.observedAt },
+        detail: {
+          ...detailBase,
+          observedAt: p.observedAt,
+          queuedAt: p.queuedAt,
+          dispatchedAt,
+          latencyMs: dispatchedAt - p.observedAt,
+        },
         cause: { chain: [...p.cause.chain, p.rule.id] },
       });
     }

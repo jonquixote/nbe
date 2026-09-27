@@ -506,6 +506,8 @@ export const AudioLevelCrossingFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
     kind: z.literal("audioLevelCrossing"),
+    // Unix ms, fractional: when the engine computed the crossing (v0.4.7).
+    ts: z.number(),
     bus: z.string().min(1),
     thresholdDbfs: z.number(),
     direction: z.enum(["rising", "falling"]),

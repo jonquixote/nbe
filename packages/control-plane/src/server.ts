@@ -397,8 +397,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     // §13.5 / AC-25 #2: a hold cancels every pending action, in this turn —
     // whichever command engaged it (`automation.hold`, or a `snapshot.recall`
     // restoring a held snapshot).
-    if (!before.automationHold && state.automationHold) automation.holdEngaged();
     const observedAt = automation.now();
+    if (!before.automationHold && state.automationHold) automation.holdEngaged(observedAt);
     const after = snapshot(state);
     for (const e of stateChanges(before, after)) automation.fire(e, cause, observedAt);
     // B3: mediaStart is control-plane-side — the take whose item goes on air,
@@ -685,6 +685,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
               direction: frame.direction,
               levelDbfs: frame.levelDbfs,
               masterFrame: frame.masterFrame,
+              ts: frame.ts,
             },
             NO_CAUSE,
             automation.now(),

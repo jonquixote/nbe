@@ -14,7 +14,8 @@
     "test": "node --import tsx --test $(ls src/*.test.ts | grep -v dress-rehearsal)",
     "typecheck": "tsc --noEmit",
     "gen:manifest-types": "node scripts/gen-manifest-types.mjs",
-    "test:rehearsal": "node --import tsx --test src/dress-rehearsal.test.ts"
+    "test:rehearsal": "node --import tsx --test src/dress-rehearsal.test.ts",
+    "measure:automation": "node --import tsx src/automation-latency.measure.ts"
   },
   "dependencies": {
     "uuid": "^11.1.0",

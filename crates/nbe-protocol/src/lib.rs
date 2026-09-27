@@ -542,6 +542,12 @@ pub enum EngineFrame {
     #[serde(rename = "audioLevelCrossing")]
     AudioLevelCrossing {
         v: String,
+        /// Unix milliseconds, fractional, read when the crossing was computed
+        /// on its block — `engineTelemetry`'s `ts`, at sub-millisecond
+        /// resolution. The start of AC-25 #1's end-to-end measurement; the
+        /// control plane's `observedAt` is on its own monotonic clock, so
+        /// only a wall-clock stamp crosses the process boundary.
+        ts: f64,
         /// The bus, named as `busPeakDbfs` names it.
         bus: String,
         #[serde(rename = "thresholdDbfs")]

@@ -360,6 +360,7 @@ test("an audioLevelCrossing frame from the render node reaches the engine-event 
     const frame = {
       v: "0.3",
       kind: "audioLevelCrossing",
+      ts: 1768000000123.25,
       bus: "mic",
       thresholdDbfs: -12,
       direction: "rising",

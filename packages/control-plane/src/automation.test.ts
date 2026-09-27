@@ -230,6 +230,13 @@ test("a rule fires through the real command path and its action is audited as au
   assert.equal(row.detail?.["ruleId"], "on-air");
   assert.deepEqual(row.detail?.["trigger"], { kind: "stateChange", field: "showState", from: "LOADED", to: "RUNNING" });
   assert.equal(typeof row.detail?.["latencyMs"], "number");
+  // WU7: the span's three instants, in order — observed, queued, dispatched.
+  const [observedAt, queuedAt, dispatchedAt] = ["observedAt", "queuedAt", "dispatchedAt"].map((k) => row.detail?.[k]);
+  assert.ok(
+    typeof observedAt === "number" && typeof queuedAt === "number" && typeof dispatchedAt === "number",
+    `the row carries the span's instants: ${JSON.stringify(row.detail)}`,
+  );
+  assert.ok(observedAt <= queuedAt && queuedAt <= dispatchedAt, "observed ≤ queued ≤ dispatched");
   assert.ok((row.stateVersionAfter ?? 0) > (row.stateVersionBefore ?? 0), "the action bumped the version once");
   assert.ok(state.markers.some((m) => m.name === "by-on-air"), "the action's effect is real state");
   ws.close();
@@ -448,6 +455,14 @@ test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", 
   assert.deepEqual(actions.map((r) => r.actor), ["automation:holder"], "only the hold itself dispatched");
   const cancelled = rows.filter((r) => r.event === "automation.cancelledByHold");
   assert.deepEqual(cancelled.map((r) => r.actor), ["automation:b", "automation:c"], "both pending actions cancelled, audited");
+  // WU7: AC-25 #2's number — hold accepted → pending cancelled — on each row.
+  for (const r of cancelled) {
+    const { heldAt, cancelledAt, latencyMs } = r.detail as Record<string, unknown>;
+    assert.ok(
+      typeof heldAt === "number" && typeof cancelledAt === "number" && latencyMs === cancelledAt - heldAt,
+      `the cancellation carries its latency: ${JSON.stringify(r.detail)}`,
+    );
+  }
   assert.equal(state.markers.length, 0, "no cancelled action reached state");
   assert.equal(state.automationHold, true);
   ws.close();
@@ -610,13 +625,13 @@ test("audioLevel fires on the engine's matching crossing (v0.4.7) and not on ano
   ]);
   const render = await renderSession();
   const crossing = (threshold: number, direction: string) =>
-    JSON.stringify({ v: "0.3", kind: "audioLevelCrossing", bus: "mic", thresholdDbfs: threshold, direction, levelDbfs: -3, masterFrame: 900 });
+    JSON.stringify({ v: "0.3", kind: "audioLevelCrossing", ts: 1768000000000.5, bus: "mic", thresholdDbfs: threshold, direction, levelDbfs: -3, masterFrame: 900 });
   render.send(crossing(-12, "falling")); // the other direction
   render.send(crossing(-20, "rising")); // another threshold
   render.send(crossing(-12, "rising"));
   await flushed(render);
   assert.deepEqual(firedTriggers(), [
-    { kind: "audioLevel", bus: "mic", thresholdDbfs: -12, direction: "rising", levelDbfs: -3, masterFrame: 900 },
+    { kind: "audioLevel", bus: "mic", thresholdDbfs: -12, direction: "rising", levelDbfs: -3, masterFrame: 900, ts: 1768000000000.5 },
   ]);
   render.close();
   ws.close();

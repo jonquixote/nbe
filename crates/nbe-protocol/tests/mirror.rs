@@ -476,6 +476,7 @@ fn effective_quality_profile_never_exceeds_the_requested_one() {
 fn audio_level_crossing(direction: CrossingDirection) -> EngineFrame {
     EngineFrame::AudioLevelCrossing {
         v: PROTOCOL_VERSION.into(),
+        ts: 1_768_000_000_123.25,
         bus: "mic".into(),
         threshold_dbfs: -12.0,
         direction,
@@ -514,6 +515,7 @@ fn rust_and_typescript_agree_on_the_audio_level_crossing_fields() {
             "levelDbfs",
             "masterFrame",
             "thresholdDbfs",
+            "ts",
             "v"
         ]
         .into_iter()

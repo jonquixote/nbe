@@ -311,6 +311,11 @@ impl AudioDriver {
             self.above = vec![false; current.len()];
             self.watches = current;
         }
+        // One stamp per block: every crossing on it was computed now.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         for (i, w) in self.watches.iter().enumerate() {
             let level = block_peaks
                 .get(&w.bus)
@@ -330,6 +335,7 @@ impl AudioDriver {
             if let Some(q) = &self.events {
                 q.push(EngineFrame::AudioLevelCrossing {
                     v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                    ts,
                     bus: w.bus.clone(),
                     threshold_dbfs: w.threshold_dbfs,
                     direction: match w.direction {
