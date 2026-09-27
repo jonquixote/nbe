@@ -1616,6 +1616,21 @@ at `619846c`.
   this predates this work; CI always builds preflight. The release binary was
   also stale (Sep 24), and the control-plane tests resolve release before
   debug, so they had been running an old preflight. It was rebuilt.
+- **WU2** (`e985e40`): the guards for the limiter, hold, and B5's pending queue,
+  with two corrections found while writing them.
+  - A hold now cancels pending actions whichever command engages it. A
+    `snapshot.recall` restoring a held snapshot had been missed.
+  - The drain's redundant hold re-check is removed; nothing could have caught
+    its absence.
+
+  A test seam, `automationClock`, keeps the limiter's frame deterministic.
+  Falsified at `e985e40`:
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | the limiter removed | `a rule that would fire twice in one frame fires once…` | `fired once in the frame` — `2 !== 1` |
+  | hold suppression removed | `a held engine fires nothing…` | `held: nothing dispatched` — `1 !== 0` |
+  | pending not cancelled when a hold engages | `a hold cancels every pending action…` | `only the hold itself dispatched` (actual: three actors) |
 
 ## 12 — Benchmark
 
