@@ -22,10 +22,16 @@
 //! the real socket, a real audio asset on the soundboard, `audioLevel` rules
 //! on the sfx bus. End to end from the engine's `ts` on the crossing (read
 //! while the block is computed) to the control plane's `queuedAt`, the span
-//! AC-25 #1 gives one frame. `ts` is Unix ms; the control plane's instants
-//! are `performance.now()`, put on the same wall clock as
-//! `performance.timeOrigin + t`. The alignment of those two readings is
-//! measured on every crossing and printed; it bounds the span's error.
+//! AC-25 #1 gives one frame. `ts` is Unix ms (the engine's `SystemTime`);
+//! the control plane's instants are `performance.now()`. They meet on the wall
+//! clock through an offset `Date.now() − performance.now()` read at a
+//! millisecond EDGE of `Date.now()` (spin until it ticks), recalibrated before
+//! every play; each crossing uses the calibration nearest it. NOT
+//! `performance.timeOrigin + t`: the first full run (2026-09-27) found that
+//! conversion 1.8–3.5 ms off the wall clock thirteen minutes into the process,
+//! drifting within the tier, and every span came out negative. A negative
+//! span now fails the run: a clock that puts the effect before its cause is
+//! broken, not fast.
 //!
 //! Counted two ways, every phase: the audit log's rows, and the effect in
 //! state (a marker per action; for autoFollow the item it advanced to; for
@@ -518,8 +524,30 @@ interface Crossing {
   direction: string;
   /** `performance.now()` when the frame reached the consumer (= observed). */
   arrivedAt: number;
-  /** `performance.timeOrigin + performance.now() − Date.now()` at arrival. */
-  alignment: number;
+}
+
+interface Calibration {
+  /** `performance.now()` at the edge. */
+  at: number;
+  /** Wall-clock ms minus `performance.now()`, read where `Date.now()` ticks. */
+  offset: number;
+}
+
+/**
+ * `Date.now()` floors the wall clock to a whole ms, so a single reading is up
+ * to 1 ms early. At the instant it ticks over, the floor IS the wall clock:
+ * spin until it changes and read `performance.now()` beside it. At most ~1 ms
+ * of spinning, done between plays, never while a crossing is in flight.
+ */
+function calibrate(): Calibration {
+  const d0 = Date.now();
+  let d = d0;
+  let at = performance.now();
+  while (d === d0) {
+    at = performance.now();
+    d = Date.now();
+  }
+  return { at, offset: d - at };
 }
 
 async function tierEngine(): Promise<Row[]> {
@@ -527,8 +555,7 @@ async function tierEngine(): Promise<Row[]> {
   const ctx = await startServer();
   const crossings: Crossing[] = [];
   ctx.server.onEngineEvent((f) => {
-    const arrivedAt = performance.now();
-    crossings.push({ ts: f.ts, direction: f.direction, arrivedAt, alignment: performance.timeOrigin + arrivedAt - Date.now() });
+    crossings.push({ ts: f.ts, direction: f.direction, arrivedAt: performance.now() });
   });
   const log: string[] = [];
   const engine: ChildProcess = spawn(ENGINE_BIN, [], {
@@ -563,8 +590,10 @@ async function tierEngine(): Promise<Row[]> {
       return crossings.length >= count;
     };
     let plays = 0;
+    const calibrations: Calibration[] = [];
     for (let i = 0; i < N; i++) {
       const want = crossings.length + 2;
+      calibrations.push(calibrate());
       await ok(admin, "soundboard.play", { assetId: "stab_sfx" });
       plays++;
       if (!(await waitFor(want, 3000))) {
@@ -572,8 +601,17 @@ async function tierEngine(): Promise<Row[]> {
       }
       await sleep(PACE_MS);
     }
+    calibrations.push(calibrate());
     await ctx.server.automation.settled();
     admin.close();
+
+    // The calibration nearest each crossing; adjacent calibrations bound how
+    // far the offset can have moved in between.
+    const nearest = (t: number): Calibration =>
+      calibrations.reduce((a, b) => (Math.abs(b.at - t) < Math.abs(a.at - t) ? b : a));
+    const offsets = calibrations.map((c) => c.offset);
+    let step = 0;
+    for (let k = 1; k < calibrations.length; k++) step = Math.max(step, Math.abs(calibrations[k]!.offset - calibrations[k - 1]!.offset));
 
     const actions = rows(ctx, "automation.action").filter((r) => r.outcome === "ok");
     const byTs = new Map<string, AuditRecord>();
@@ -590,24 +628,22 @@ async function tierEngine(): Promise<Row[]> {
       if (!r) continue;
       matched++;
       const d = r.detail as Record<string, number>;
-      toObserved.push(performance.timeOrigin + d["observedAt"]! - c.ts);
-      toQueued.push(performance.timeOrigin + d["queuedAt"]! - c.ts);
-      toDispatched.push(performance.timeOrigin + d["dispatchedAt"]! - c.ts);
+      const { offset } = nearest(c.arrivedAt);
+      toObserved.push(d["observedAt"]! + offset - c.ts);
+      toQueued.push(d["queuedAt"]! + offset - c.ts);
+      toDispatched.push(d["dispatchedAt"]! + offset - c.ts);
     }
     const rises = crossings.filter((c) => c.direction === "rising").length;
     const falls = crossings.filter((c) => c.direction === "falling").length;
     const mRise = markers(ctx, "by-rise");
     const mFall = markers(ctx, "by-fall");
     const agree = rises === plays && falls === plays && actions.length === 2 * plays && mRise + mFall === 2 * plays && matched === 2 * plays;
-    const counts = `plays ${plays} · crossings ${rises}↑ ${falls}↓ · audit ${actions.length} (joined ${matched}) · markers ${mRise}↑ ${mFall}↓ — ${agree ? "agree" : "**DISAGREE**"}`;
-    // Date.now() is the wall clock floored to a whole ms, so each reading of
-    // (timeOrigin + now − Date.now()) is δ + frac, frac ∈ [0, 1): δ — how far
-    // this process's wall conversion sits from the wall clock the engine's
-    // `ts` is read on — lies in (max − 1, min].
-    const al = crossings.map((c) => c.alignment);
-    const [lo, hi] = [Math.min(...al), Math.max(...al)];
+    const causal = Math.min(...toObserved) >= 0;
+    const counts =
+      `plays ${plays} · crossings ${rises}↑ ${falls}↓ · audit ${actions.length} (joined ${matched}) · markers ${mRise}↑ ${mFall}↓ — ${agree ? "agree" : "**DISAGREE**"}` +
+      (causal ? "" : " · **DISAGREE: a span is negative — the clocks are not aligned**");
     console.log(
-      `clock alignment: timeOrigin + now − Date.now() over ${al.length} crossings ∈ [${lo.toFixed(3)}, ${hi.toFixed(3)}] ms ⇒ offset δ ∈ (${(hi - 1).toFixed(3)}, ${lo.toFixed(3)}] ms — the spans below are exact to within |δ|`,
+      `clock alignment: ${calibrations.length} edge calibrations of Date.now() − performance.now(); offset range ${(Math.max(...offsets) - Math.min(...offsets)).toFixed(3)} ms over the tier, largest step between adjacent calibrations ${step.toFixed(3)} ms — each span is within that step of exact`,
     );
     return [
       row("crossing ts → frame arrives (engine → socket → consumer)", toObserved, counts),
