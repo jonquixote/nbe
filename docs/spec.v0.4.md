@@ -29,6 +29,7 @@ the user's act.
 |---|---|---|---|
 | 1 | **`audioLevel` rules fire on an engine-computed crossing** (Prompt 11's B1, decision (a): one evaluator, the `itemEvent` precedent). The rule's params are `{ bus, thresholdDbfs, direction? }`, and preflight refuses a rule whose params do not read. The engine compares each watched bus's measured peak with its threshold on every audio block — one block per house frame, so within AC-25 #1's one frame — and sends a new render-channel frame, `audioLevelCrossing`, which the control plane's evaluator matches to rules. Crossings queued while no control plane was connected are not replayed. Before this, `audioLevel` could not meet AC-25 #1 at all: bus levels reached the control plane once a second | 5.9.3 (new row), 13.2 (new note) | `prompt11_audio_level` (six tests on real metered levels, one entering through `show.load`), the mirror's `rust_and_typescript_agree_on_the_audio_level_crossing_fields` and `crossing_direction_tokens_are_stable`, the control-plane readability test `an audioLevelCrossing frame from the render node reaches the engine-event consumer intact`, and `nbe-preflight`'s `automation` suite |
 | 2 | **Ladder rung 2's domain: loops not on air** (the user's word of 2026-09-27, resolving Prompt 11's §4a stop). §10.5's "loop caches evict to streaming" applies only to loops not feeding the View. Evicting the loop on air would freeze it, and §10.5 says the View MUST NOT be degraded. Off-air loops shed under rung 2 and are re-acquired on the next take or preroll; both are recorded. Rung 2 is reached only from rung 1. Recorded as rejected by the user: (a) build read-ahead decode first — its own prompt, and scope expansion here; (c) defer — it leaves AC-27 short. Prompt 11's draft row "buildable — a mechanism exists to degrade to" is struck with the tree's correction (§2c): no streaming decode exists to evict *to*, and the rung's domain was always non-on-air loops | 10.5 (new note) | `prompt11_ladder`: `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`, `the_on_air_loop_stays_resident_under_consecutive_misses`, `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take`, `the_ladder_climbs_in_order_rung_1_before_rung_2` |
+| 3 | **The automation params contract** (Prompt 11 WU1). The schema types `trigger.params` and `conditions` as free objects, and §13.2 named each trigger without its parameters, so a rule whose params did not read could load and never fire. §13.2 gains the table preflight enforces, verbatim from `nbe_core::automation::validate_rule`, and preflight refuses a rule that does not read, by name. `rssKeyword` is refused outright: no RSS item is ever fetched (§13.4.1) | 13.2 (new table; the `rssKeyword` row), 13.4.1 (the `rssKeyword` reading and the `ticker.refreshRss` row, amended §2c-visible) | the shared 32-case fixture `crates/nbe-core/tests/fixtures/automation_rules.json`, read by `nbe-core`'s `every_fixture_rule_gets_its_verdict_from_the_rust_reading` and by the control plane's `every fixture rule gets its verdict from the control plane's reading, the same as preflight's` — a rule one side accepts and the other refuses fails both; `nbe-preflight`'s `every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name` |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -56,6 +57,15 @@ with the fixture diff". The tree splits that in two, and both halves are
 guarded. Stopping emission is caught by the emission tests, because the mirror
 checks the wire's shape, not whether the engine sends. A drift in the wire's
 shape is what the mirror catches, with the key diff above.*
+
+**Row 3's guards, run at `fb7619f`.** The table was written from
+`validate_rule` as it landed in WU1 (`2d6a9a4`); neither it nor the fixture
+has changed since. `automation_rules` ok. 1 passed; 0 failed · `nbe-preflight`
+`automation` ok. 3 passed; 0 failed ·
+`every fixture rule gets its verdict from the control plane's reading, the same as preflight's`
+# pass 1; # fail 0. Its falsification is WU1's (`docs/prompt-map-07-13.md`,
+WU1's table): preflight's rule check removed, and the rss rule `must fail
+preflight` (left 0, right 2).
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2796,9 +2806,36 @@ The command is any command-bus command. Automation actions face the same precond
 | `timeOfDay` | a wall-clock time is reached |
 | `audioLevel` | a bus crosses a level threshold |
 | `hotkey` | a binding fires |
-| `rssKeyword` | an RSS item matches a keyword rule |
+| `rssKeyword` | an RSS item matches a keyword rule. **Refused at load in this build (v0.4.7):** no RSS item is ever fetched, so preflight refuses a rule with this trigger rather than accept one that can never fire (params table below) |
 | `streamHealth` | stream state changes (e.g., reconnecting) |
 | `stateChange` | a specified state transition occurs |
+
+**Trigger params and conditions (normative, new in v0.4.7).** The schema types
+`trigger.params` and `conditions` as free objects, and the table above names
+each trigger without its parameters. A rule's params MUST read as follows, with
+no keys beyond those named. This is what preflight enforces
+(`nbe_core::automation::validate_rule`), and the control plane's read at load
+holds the same verdicts:
+
+| Trigger | `trigger.params` | Preflight refuses the rule when |
+|---|---|---|
+| `mediaEnd`, `mediaStart` | `{ itemRef? }` | `itemRef` is not an item in the rundown |
+| `timer` | `{ atMs }` | `atMs` is not a finite number greater than 0 (show-clock milliseconds after `show.start`) |
+| `timeOfDay` | `{ at }` | `at` is not `"HH:mm"` or `"HH:mm:ss"` — two digits each, hour ≤ 23, minute and second ≤ 59 (local wall clock) |
+| `audioLevel` | `{ bus, thresholdDbfs, direction? }` | as the `audioLevel` note below |
+| `hotkey` | `{ bindingId }` | `bindingId` is not a `control.bindings` entry, or that binding's trigger kind is not `hotkey` |
+| `rssKeyword` | — | **always**: it has no source in this build — `ticker.refreshRss` mutates nothing (§13.4.1) |
+| `streamHealth` | `{ state }` | `state` is not `live`, `reconnecting` or `closed` (a `streamTransportState` token, §10.1; `none` is a stub, not a state) |
+| `stateChange` | `{ field, itemRef?, from?, to? }` | `field` is not one of `showState`, `viewItem`, `previewItem`, `streamState`, `recordState`, `automationHold`, `fallbackActive`, `itemState`; or `field` is `itemState` without an `itemRef` naming a rundown item; or `itemRef` is given with any other field |
+
+A condition is `{ field, itemRef?, equals }`, with no other keys: `field` and
+`itemRef` read as `stateChange`'s do, and `equals` is required. A rule's
+conditions must all hold (AND), read when the trigger fires. A rule's action
+names a registered command with its required payload keys, checked as a
+control binding's action is; the control plane also validates the whole payload
+against the command's §16 schema at load. Preflight names the rule and the
+reason: ``automationRule: automation rule `<id>`: <reason> (SPEC §13.2)``, where
+a trigger's reason begins `<kind> trigger`.
 
 **`audioLevel`: its parameters, and where the crossing is computed (normative,
 new in v0.4.7).** An `audioLevel` rule's `trigger.params` are
@@ -2882,7 +2919,11 @@ does. The trigger readings the cells assume:
   arrives for an item that was stopped, and `markDone` drops it.
 - **`timeOfDay`, `hotkey`** — no command causes them (the wall clock; operator
   input). **`rssKeyword`** — no command causes it today (no RSS fetch exists; see
-  `ticker.refreshRss`).
+  `ticker.refreshRss`), and since v0.4.7 no `rssKeyword` rule loads: preflight
+  refuses it (§13.2's params table; `nbe_core::automation::validate_rule`, the
+  `RssKeyword` arm: "has no source in this build"). *Amended in Prompt 11
+  (§2c): the reading stopped at "no command causes it today", which left a rule
+  that could never fire free to load.*
 
 | Commands | `stateChange` | `mediaStart` | `mediaEnd` | Other triggers | Derived from |
 |---|---|---|---|---|---|
@@ -2900,7 +2941,7 @@ does. The trigger readings the cells assume:
 | `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | yes — the playback, bus, duck and mute changes their cells name | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel` — each moves a bus's level, up or down | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
 | `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | yes — visibility and property changes | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
 | `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | yes — ticker source and queue | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
-| `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`) |
+| `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today, and no rule to reach.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes. Until then preflight refuses every `rssKeyword` rule (v0.4.7, §13.2's params table). *Amended in Prompt 11 (§2c): the cell read* ~~"**none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes"~~ *— true of the command, silent on the rule, which the draft of Prompt 11 read as "available (per refresh)"* | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`); `nbe-core` `automation.rs` `validate_rule` (`RssKeyword` arm) |
 | `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | yes — the guest source and configuration changes their cells name | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
 | `automation.enable`, `automation.disable`, `automation.hold` | yes — a rule enabled or disabled; `automationHold` | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
 | `snapshot.save`, `marker.add`, `plugin.reload` | **frame only** — a store is updated (snapshots, markers) or a plugin reloaded; nothing on air and no §17, show or output transition | no | no | — | §16.11, §16.12 cells; `commands/state.ts` |

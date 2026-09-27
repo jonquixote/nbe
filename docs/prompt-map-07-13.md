@@ -1716,6 +1716,42 @@ at `619846c`.
   - **The engine ignores `preview.set`.** Its preview item changes only
     through `show.resync`, so the preview bus shows a new preview only after a
     resync. This predates Prompt 11 and is out of scope.
+- **WU1's spec bookkeeping** (owed since WU1; ordered 2026-09-27):
+  - **The params contract is spec text.** SPEC v0.4.7 row 3: §13.2 gains the
+    table preflight enforces, written from `nbe_core::automation::validate_rule`
+    arm by arm, ratified by the user's merge. It is guarded by the shared
+    32-case fixture, which both readers read, and by preflight's every-kind
+    test. The guards' run is in v0.4.7.
+  - **`rssKeyword` is refused, and the spec now says so.** §13.2's trigger row,
+    §13.4.1's reading and its `ticker.refreshRss` row are amended to the
+    refusal, with the old cell struck (§2c). The error came from the draft
+    prompt's §0.5 row, "available (per refresh)", written from the command's
+    name rather than its handler. That row and the WU3 adapter list are struck
+    in `agents/prompts/11-watchdog.md`. The order also named v0.5-outline rows.
+    **The tree has none:** `grep -i rss` finds 0 lines in
+    `docs/v0.5-outline.md` (and 0 in `docs/v0.4-outline.md`), so nothing
+    there is struck, and the draft was the only source of the error.
+  - **One more WU1 defect**, found while writing WU7: `audit.ts`'s comment
+    named `audit.test.ts` as the kind pin. No such file exists; the pin is in
+    `automation.test.ts`. Fixed in `63e392f` (comment only).
+- **C1, as it actually reads.** ~~C1 — the take contract~~ was the executor
+  order's description (§2c; the continuation of 2026-09-27 corrected it). C1 is
+  the **scope decision**, `agents/prompts/11-watchdog.md` §1 and §3, decided
+  2026-09-25: **one prompt, two gated work units.**
+  - *In:* (1) the automation engine runtime (§13, AC-25), including
+    `autoFollow`; (2) the watchdog remainder that has a subject — §10.3's
+    threshold question, and ladder rung 2 with its AC-27 item.
+  - *Out, recorded:* ladder rungs 3–4 (no effect pipeline, no multiview
+    output); GPU timing and the other §10.1 stubs (Prompt 12).
+  - **Where the build stands.**
+    - Unit 1: WU1–WU4 are landed and recorded, and WU7's latency is landed
+      (`fb1ef14`). WU5 (self-trigger suppression, preflight cycle detection)
+      runs last.
+    - Unit 2: rung 2 is landed (WU6, `d455aa0`). §10.3's answer is WU5's.
+    - The out-of-scope items stay out. `Rung` ends at `LoopsShed = 2`
+      (`render.rs`), and `telemetry.rs`, where `renderGpuTimeMs` is stubbed
+      `0.0`, is unchanged since `619846c`.
+    - One prompt, one PR: compliant.
 
 ## 12 — Benchmark
 
