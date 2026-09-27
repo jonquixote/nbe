@@ -17,8 +17,8 @@ export interface AuditRecord {
    * control-plane action"). `automation` records every automation attempt —
    * fired, refused by a precondition, suppressed by hold, cancelled by hold,
    * rate-limited, suppressed as a self-trigger — and `autoFollow`'s advances
-   * (SPEC §10.7, AC-25 #4; Prompt 11 WU1). Pinned by
-   * `audit.test.ts`'s kind test: nothing else enumerates these.
+   * (SPEC §10.7, AC-25 #4; Prompt 11 WU1). Pinned by the audit-kind test
+   * in `automation.test.ts`: nothing else enumerates these.
    */
   kind: "command" | "auth" | "preflight" | "automation";
   /**
