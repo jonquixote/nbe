@@ -12,6 +12,7 @@ import { dirname, join, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { CpError } from "./protocol.js";
+import { parseRules } from "./automation.js";
 import type { Manifest, Item, Scene, Asset } from "./generated/manifest-schema.js";
 import type { PackageInfo, PackageItem, PackageElement } from "./state.js";
 
@@ -572,6 +573,8 @@ export async function loadPackage(
     clockElements,
     plugins: new Set((manifest.plugins ?? []).map((p) => p.id)),
     automationRules: new Set((manifest.automation ?? []).map((r) => r.id)),
+    automation: [],
+    bindings: new Map((manifest.control?.bindings ?? []).map((b) => [b.id, b.trigger?.kind])),
     assets: new Map((manifest.assets as Asset[]).map((a) => [a.id, a.source])),
     transitionPresets: new Map(
       (manifest.transitions ?? []).map((t) => [
@@ -588,6 +591,16 @@ export async function loadPackage(
     fallbackAssetId: manifest.show.fallbackAssetId,
     qualityProfile: manifest.qualityProfile,
   };
+
+  // Prompt 11 WU1: every rule must read. One that cannot be evaluated refuses
+  // the load, by name — never accepted and left silently inert (§9).
+  const parsedRules = parseRules(manifest.automation ?? [], { items: new Set(items.keys()), bindings: pkg.bindings });
+  if (parsedRules.errors.length > 0) {
+    throw new CpError("E_PREFLIGHT_FAILED", `automationRule: ${parsedRules.errors.join("; ")}`, {
+      automationErrors: parsedRules.errors,
+    });
+  }
+  pkg.automation = parsedRules.rules;
 
   return { pkg, exitCode: pre.exitCode, warnings: pre.report?.warnings ?? [] };
 }

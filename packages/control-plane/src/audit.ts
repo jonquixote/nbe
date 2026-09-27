@@ -14,10 +14,19 @@ export interface AuditRecord {
   ts: number;
   /**
    * `preflight` records a decode-bound decision (SPEC §10.7: "every
-   * control-plane action"). §10.7 already precedents extra kinds — automation
-   * actions are recorded with `kind: "automation"` (AC-25 §4).
+   * control-plane action"). `automation` records every automation attempt —
+   * fired, refused by a precondition, suppressed by hold, cancelled by hold,
+   * rate-limited, suppressed as a self-trigger — and `autoFollow`'s advances
+   * (SPEC §10.7, AC-25 #4; Prompt 11 WU1). Pinned by
+   * `audit.test.ts`'s kind test: nothing else enumerates these.
    */
-  kind: "command" | "auth" | "preflight";
+  kind: "command" | "auth" | "preflight" | "automation";
+  /**
+   * Who acted, when it was not a session: `automation:<ruleId>` for a rule's
+   * action, `autoFollow:<itemRef>` for an advance. Absent for session commands
+   * (their `role`/`tokenId` say who).
+   */
+  actor?: string | null;
   /** Stable event name for a non-command action, e.g. `preflight.bound_decision`. */
   event?: string;
   /** Free-form structured detail for such an event. */

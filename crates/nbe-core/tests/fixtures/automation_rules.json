@@ -1,0 +1,41 @@
+{
+  "_doc": "One verdict per rule, held by BOTH readings of the automation params contract: nbe-core::automation::validate_rule (what nbe-preflight refuses by) and packages/control-plane/src/automation.ts parseRule (what the evaluator runs by). Both suites read this file; a rule one side accepts and the other refuses fails both. Every action is a valid marker.add, so only the trigger and conditions vary.",
+  "refs": {
+    "items": ["A1", "A2", "A3"],
+    "bindings": { "take-key": "hotkey", "cmp-1": "companionKey", "bare": null }
+  },
+  "cases": [
+    { "valid": true,  "trigger": { "kind": "mediaEnd" } },
+    { "valid": true,  "trigger": { "kind": "mediaEnd", "params": { "itemRef": "A1" } } },
+    { "valid": false, "trigger": { "kind": "mediaEnd", "params": { "itemRef": "Z9" } } },
+    { "valid": false, "trigger": { "kind": "mediaStart", "params": { "item": "A1" } } },
+    { "valid": true,  "trigger": { "kind": "timer", "params": { "atMs": 1500 } } },
+    { "valid": false, "trigger": { "kind": "timer", "params": { "atMs": 0 } } },
+    { "valid": false, "trigger": { "kind": "timer" } },
+    { "valid": true,  "trigger": { "kind": "timeOfDay", "params": { "at": "18:30" } } },
+    { "valid": true,  "trigger": { "kind": "timeOfDay", "params": { "at": "06:05:09" } } },
+    { "valid": false, "trigger": { "kind": "timeOfDay", "params": { "at": "25:00" } } },
+    { "valid": false, "trigger": { "kind": "timeOfDay", "params": { "at": "6:30" } } },
+    { "valid": true,  "trigger": { "kind": "audioLevel", "params": { "bus": "mic", "thresholdDbfs": -12 } } },
+    { "valid": true,  "trigger": { "kind": "audioLevel", "params": { "bus": "guest:g1", "thresholdDbfs": -40, "direction": "falling" } } },
+    { "valid": false, "trigger": { "kind": "audioLevel", "params": { "bus": "program", "thresholdDbfs": -12 } } },
+    { "valid": false, "trigger": { "kind": "audioLevel", "params": { "bus": "mic", "thresholdDbfs": -120 } } },
+    { "valid": true,  "trigger": { "kind": "hotkey", "params": { "bindingId": "take-key" } } },
+    { "valid": false, "trigger": { "kind": "hotkey", "params": { "bindingId": "cmp-1" } } },
+    { "valid": false, "trigger": { "kind": "hotkey", "params": { "bindingId": "bare" } } },
+    { "valid": false, "trigger": { "kind": "hotkey", "params": { "bindingId": "nope" } } },
+    { "valid": false, "trigger": { "kind": "rssKeyword", "params": { "keyword": "breaking" } } },
+    { "valid": true,  "trigger": { "kind": "streamHealth", "params": { "state": "reconnecting" } } },
+    { "valid": false, "trigger": { "kind": "streamHealth", "params": { "state": "none" } } },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "showState", "to": "RUNNING" } } },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "itemState", "itemRef": "A2", "to": "PLAYING" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "itemState" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "viewItem", "itemRef": "A1" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "tally" } } },
+    { "valid": true,  "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "showState", "equals": "RUNNING" } ] },
+    { "valid": true,  "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "itemState", "itemRef": "A3", "equals": "ARMED" } ] },
+    { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "showState" } ] },
+    { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "showState", "equals": "RUNNING", "not": true } ] },
+    { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "itemState", "equals": "DONE" } ] }
+  ]
+}

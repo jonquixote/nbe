@@ -527,12 +527,16 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         }
     }
 
-    // B1 (SPEC v0.4.7 candidate): an `audioLevel` rule whose params do not
-    // read — no bus, an unmetered bus, a threshold outside (-120, 0], a
-    // misspelled key — could never fire, and a rule accepted and silently
-    // inert is what Prompt 11 §9 forbids. Refused here, by name, before the
-    // engine ever installs a watch. (A manifest whose automation does not
-    // parse at all is the schema's refusal, already reported above.)
+    // Prompt 11 (WU1, and B1 before it): every automation rule must read. A
+    // rule whose trigger params or conditions the evaluator cannot evaluate
+    // — an unmetered bus, a typo'd key, a hotkey on a non-hotkey binding, an
+    // rssKeyword rule with no RSS source — would never fire, and a rule
+    // accepted and silently inert is what Prompt 11 §9 forbids. The decision
+    // is preflight's (Addendum 02a §1.4); the control plane's reading holds
+    // the same verdicts (`nbe-core/tests/fixtures/automation_rules.json`).
+    // The action is a command, checked the way a control binding's is: a
+    // registered command, with its required keys. (A manifest whose
+    // automation does not parse at all is the schema's refusal, above.)
     let rules: Vec<nbe_core::manifest::AutomationRule> = manifest_json
         .get("automation")
         .cloned()
@@ -541,9 +545,60 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         .ok()
         .flatten()
         .unwrap_or_default();
-    for e in nbe_core::automation::audio_level_watches(&rules).1 {
-        had_errors = true;
-        report.push_error(format!("automationRule: {e} (SPEC §13.2, v0.4.7)"));
+    let refs = nbe_core::automation::RuleRefs {
+        items: manifest_json
+            .get("rundown")
+            .and_then(|r| r.get("items"))
+            .and_then(|i| i.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect(),
+        bindings: manifest_json
+            .get("control")
+            .and_then(|c| c.get("bindings"))
+            .and_then(|b| b.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|b| {
+                let id = b.get("id").and_then(|v| v.as_str())?;
+                let kind = b
+                    .get("trigger")
+                    .and_then(|t| t.get("kind"))
+                    .and_then(|k| k.as_str())
+                    .map(String::from);
+                Some((id.to_string(), kind))
+            })
+            .collect(),
+    };
+    for rule in &rules {
+        if let Err(e) = nbe_core::automation::validate_rule(rule, &refs) {
+            had_errors = true;
+            report.push_error(format!("automationRule: {e} (SPEC §13.2)"));
+            continue;
+        }
+        let Some(action) = canonical_action(&rule.action.command) else {
+            had_errors = true;
+            report.push_error(format!(
+                "automationRule: automation rule `{}`: action command `{}` is not a command (SPEC §13.1)",
+                rule.id, rule.action.command
+            ));
+            continue;
+        };
+        for key in required_payload_keys(action) {
+            if !rule
+                .action
+                .payload
+                .as_ref()
+                .is_some_and(|p| p.contains_key(*key))
+            {
+                had_errors = true;
+                report.push_error(format!(
+                    "automationRule: automation rule `{}`: action {action} is missing required payload field `{key}` (SPEC §13.1)",
+                    rule.id
+                ));
+            }
+        }
     }
 
     // SPEC §12.4: the absolute short-loop frame cap. Checked before the

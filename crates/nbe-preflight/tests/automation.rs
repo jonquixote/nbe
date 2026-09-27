@@ -124,3 +124,49 @@ fn a_complete_audio_level_rule_passes_preflight() {
     );
     assert_eq!(code, 0, "and the package is air-ready; report {report}");
 }
+
+#[test]
+fn every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name() {
+    // WU1: the whole params contract, not only audioLevel. The verdict for
+    // each shape is shared with the control plane's reading
+    // (nbe-core/tests/fixtures/automation_rules.json); this checks preflight
+    // REFUSES by it, with the rule named.
+    let dir = tempfile::tempdir().unwrap();
+    for (rule, needle) in [
+        (
+            r#"{ "id": "rss", "trigger": { "kind": "rssKeyword", "params": { "keyword": "x" } },
+                 "action": { "command": "marker.add", "payload": { "name": "m" } } }"#,
+            "rule `rss`: rssKeyword trigger has no source",
+        ),
+        (
+            r#"{ "id": "hk", "trigger": { "kind": "hotkey", "params": { "bindingId": "nope" } },
+                 "action": { "command": "marker.add", "payload": { "name": "m" } } }"#,
+            "rule `hk`: hotkey trigger bindingId",
+        ),
+        (
+            r#"{ "id": "sc", "trigger": { "kind": "stateChange", "params": { "field": "tally" } },
+                 "action": { "command": "marker.add", "payload": { "name": "m" } } }"#,
+            "rule `sc`: stateChange trigger field",
+        ),
+        (
+            r#"{ "id": "cmd", "trigger": { "kind": "mediaEnd" },
+                 "action": { "command": "view.warp" } }"#,
+            "rule `cmd`: action command `view.warp` is not a command",
+        ),
+        (
+            r#"{ "id": "key", "trigger": { "kind": "mediaEnd" },
+                 "action": { "command": "view.cut" } }"#,
+            "rule `key`: action view.cut is missing required payload field `itemRef`",
+        ),
+    ] {
+        let root = package(dir.path(), rule);
+        let (code, report) = run(&root);
+        let errs = errors(&report);
+        assert_eq!(code, 2, "{rule} must fail preflight; errors {errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("automationRule") && e.contains(needle)),
+            "expected an error containing {needle:?}; got {errs:?}"
+        );
+    }
+}

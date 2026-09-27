@@ -1,12 +1,19 @@
 //! Automation rule parameters (SPEC §13.2 triggers).
 //!
-//! The manifest schema types a rule's `trigger.params` as a free object
-//! (`additionalProperties: true`), and §13.2 names each trigger kind without
-//! its parameters. This module is the tree's reading of those parameters for
-//! the triggers that the ENGINE must evaluate. Today that is one:
-//! `audioLevel`, whose crossing only the engine can see in time (SPEC v0.4.7
-//! candidate B1: "the crossing is computed in the engine at render cadence").
-//! Every other trigger kind is evaluated by the control plane and read there.
+//! The manifest schema types a rule's `trigger.params` and `conditions` as
+//! free objects (`additionalProperties: true`), and §13.2 names each trigger
+//! kind without its parameters. This module is the tree's reading of them —
+//! recorded in `docs/automation-design.md` — in two parts:
+//!
+//! * [`validate_rule`] reads every trigger kind and every condition, and is
+//!   what `nbe-preflight` refuses a package by (the validation decision is
+//!   preflight's, Addendum 02a §1.4). The control plane's evaluator reads the
+//!   same contract (`packages/control-plane/src/automation.ts`), and the two
+//!   are held to one verdict per fixture by
+//!   `tests/fixtures/automation_rules.json`.
+//! * [`audio_level_watch`] extracts what the ENGINE evaluates: `audioLevel`,
+//!   whose crossing only the engine can see in time (SPEC v0.4.7 candidate B1:
+//!   "the crossing is computed in the engine at render cadence").
 //!
 //! A malformed `audioLevel` rule is an error, never a silently inert watch
 //! (Prompt 11 §9: "Accept a trigger kind it cannot evaluate and leave the rule
@@ -77,7 +84,7 @@ pub struct AudioLevelWatch {
 /// Why an `audioLevel` rule's params were refused. The message names the
 /// rule, so a preflight report points at the line to fix.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("automation rule `{rule}`: audioLevel trigger {reason}")]
+#[error("automation rule `{rule}`: {reason}")]
 pub struct ParamError {
     pub rule: String,
     pub reason: String,
@@ -92,13 +99,18 @@ pub struct ParamError {
 /// error, because a typo'd key (`treshold`) would otherwise leave a rule that
 /// never fires.
 pub fn audio_level_watch(rule: &AutomationRule) -> Result<Option<AudioLevelWatch>, ParamError> {
+    audio_level_params(rule).map_err(|reason| ParamError {
+        rule: rule.id.clone(),
+        reason: format!("audioLevel trigger {reason}"),
+    })
+}
+
+/// [`audio_level_watch`]'s reading, with the bare reason on refusal.
+fn audio_level_params(rule: &AutomationRule) -> Result<Option<AudioLevelWatch>, String> {
     if rule.trigger.kind != AutomationTriggerKind::AudioLevel {
         return Ok(None);
     }
-    let err = |reason: String| ParamError {
-        rule: rule.id.clone(),
-        reason,
-    };
+    let err = |reason: String| reason;
     let params = rule
         .trigger
         .params
@@ -171,6 +183,213 @@ pub fn audio_level_watches(rules: &[AutomationRule]) -> (Vec<AudioLevelWatch>, V
         }
     }
     (watches, errors)
+}
+
+/// What a rule may reference in its package: rundown item ids, and control
+/// bindings with their trigger kinds.
+#[derive(Debug, Default, Clone)]
+pub struct RuleRefs {
+    pub items: std::collections::BTreeSet<String>,
+    /// binding id → its `trigger.kind` (`hotkey`, `companionKey`, …), `None`
+    /// for a binding with no trigger.
+    pub bindings: std::collections::BTreeMap<String, Option<String>>,
+}
+
+/// The control-plane state a `stateChange` trigger or a condition can name.
+pub const STATE_FIELDS: &[&str] = &[
+    "showState",
+    "viewItem",
+    "previewItem",
+    "streamState",
+    "recordState",
+    "automationHold",
+    "fallbackActive",
+    "itemState",
+];
+
+type Params = std::collections::HashMap<String, serde_json::Value>;
+
+fn only_keys(params: &Params, allowed: &[&str]) -> Result<(), String> {
+    let mut keys: Vec<&String> = params.keys().collect();
+    keys.sort();
+    for k in keys {
+        if !allowed.contains(&k.as_str()) {
+            return Err(format!(
+                "unknown param `{k}` (allowed: {})",
+                if allowed.is_empty() {
+                    "none".to_string()
+                } else {
+                    allowed.join(", ")
+                }
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn trigger_reason(rule: &AutomationRule, refs: &RuleRefs) -> Result<(), String> {
+    let empty = Params::new();
+    let params = rule.trigger.params.as_ref().unwrap_or(&empty);
+    let item = |v: Option<&serde_json::Value>| -> bool {
+        v.and_then(|v| v.as_str())
+            .is_some_and(|s| refs.items.contains(s))
+    };
+    match rule.trigger.kind {
+        AutomationTriggerKind::MediaEnd | AutomationTriggerKind::MediaStart => {
+            only_keys(params, &["itemRef"])?;
+            match params.get("itemRef") {
+                None => Ok(()),
+                Some(v) if item(Some(v)) => Ok(()),
+                Some(v) => Err(format!("itemRef {v} is not an item in the rundown")),
+            }
+        }
+        AutomationTriggerKind::Timer => {
+            only_keys(params, &["atMs"])?;
+            match params.get("atMs").and_then(|v| v.as_f64()) {
+                Some(ms) if ms.is_finite() && ms > 0.0 => Ok(()),
+                _ => Err(
+                    "needs a positive number `atMs` (show-clock milliseconds after show.start)"
+                        .into(),
+                ),
+            }
+        }
+        AutomationTriggerKind::TimeOfDay => {
+            only_keys(params, &["at"])?;
+            let ok = params.get("at").and_then(|v| v.as_str()).is_some_and(|s| {
+                let parts: Vec<&str> = s.split(':').collect();
+                let two = |p: &str| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit());
+                (parts.len() == 2 || parts.len() == 3)
+                    && parts.iter().all(|p| two(p))
+                    && parts[0].parse::<u32>().is_ok_and(|h| h <= 23)
+                    && parts[1].parse::<u32>().is_ok_and(|m| m <= 59)
+                    && parts
+                        .get(2)
+                        .is_none_or(|s| s.parse::<u32>().is_ok_and(|s| s <= 59))
+            });
+            if ok {
+                Ok(())
+            } else {
+                Err("needs `at` as \"HH:mm\" or \"HH:mm:ss\" (local wall clock)".into())
+            }
+        }
+        AutomationTriggerKind::AudioLevel => audio_level_params(rule).map(|_| ()),
+        AutomationTriggerKind::Hotkey => {
+            only_keys(params, &["bindingId"])?;
+            let Some(id) = params.get("bindingId").and_then(|v| v.as_str()) else {
+                return Err(format!(
+                    "bindingId {} is not a control binding in this package",
+                    params
+                        .get("bindingId")
+                        .map(|v| v.to_string())
+                        .unwrap_or("undefined".into())
+                ));
+            };
+            match refs.bindings.get(id) {
+                None => Err(format!(
+                    "bindingId \"{id}\" is not a control binding in this package"
+                )),
+                Some(Some(k)) if k == "hotkey" => Ok(()),
+                Some(k) => Err(format!(
+                    "binding \"{id}\" is a {} binding, not a hotkey",
+                    k.as_deref().unwrap_or("trigger-less")
+                )),
+            }
+        }
+        AutomationTriggerKind::RssKeyword => {
+            Err("has no source in this build: no RSS feed is ever fetched \
+             (ticker.refreshRss mutates nothing; SPEC §13.4.1)"
+                .into())
+        }
+        AutomationTriggerKind::StreamHealth => {
+            only_keys(params, &["state"])?;
+            match params.get("state").and_then(|v| v.as_str()) {
+                Some("live" | "reconnecting" | "closed") => Ok(()),
+                _ => Err("needs `state`: \"live\", \"reconnecting\" or \"closed\" \
+                          (a streamTransportState token; \"none\" is a stub, not a state)"
+                    .into()),
+            }
+        }
+        AutomationTriggerKind::StateChange => {
+            only_keys(params, &["field", "itemRef", "from", "to"])?;
+            let field = params.get("field").and_then(|v| v.as_str());
+            let Some(field) = field.filter(|f| STATE_FIELDS.contains(f)) else {
+                return Err(format!(
+                    "field {} is not one of {}",
+                    params
+                        .get("field")
+                        .map(|v| v.to_string())
+                        .unwrap_or("undefined".into()),
+                    STATE_FIELDS.join(", ")
+                ));
+            };
+            if field == "itemState" {
+                if !item(params.get("itemRef")) {
+                    return Err("field itemState needs an `itemRef` naming a rundown item".into());
+                }
+            } else if params.contains_key("itemRef") {
+                return Err("itemRef applies only to field itemState".into());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn condition_reason(
+    c: &std::collections::HashMap<String, serde_json::Value>,
+    refs: &RuleRefs,
+) -> Result<(), String> {
+    only_keys(c, &["field", "itemRef", "equals"]).map_err(|e| format!("condition has an {e}"))?;
+    let Some(field) = c
+        .get("field")
+        .and_then(|v| v.as_str())
+        .filter(|f| STATE_FIELDS.contains(f))
+    else {
+        return Err(format!(
+            "condition field {} is not one of {}",
+            c.get("field")
+                .map(|v| v.to_string())
+                .unwrap_or("undefined".into()),
+            STATE_FIELDS.join(", ")
+        ));
+    };
+    if !c.contains_key("equals") {
+        return Err("condition needs `equals`".into());
+    }
+    if field == "itemState" {
+        let ok = c
+            .get("itemRef")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| refs.items.contains(s));
+        if !ok {
+            return Err("condition on itemState needs an `itemRef` naming a rundown item".into());
+        }
+    } else if c.contains_key("itemRef") {
+        return Err("condition itemRef applies only to field itemState".into());
+    }
+    Ok(())
+}
+
+/// Read one rule's trigger params and conditions against the tree's contract
+/// (module doc). `Err` names the rule and the reason, in the same words the
+/// control plane's reading uses. The action (a command) is checked by
+/// `nbe-preflight` beside the control bindings' actions, with the same
+/// registered-command list and required keys.
+pub fn validate_rule(rule: &AutomationRule, refs: &RuleRefs) -> Result<(), ParamError> {
+    let kind = serde_json::to_value(rule.trigger.kind)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    trigger_reason(rule, refs).map_err(|reason| ParamError {
+        rule: rule.id.clone(),
+        reason: format!("{kind} trigger {reason}"),
+    })?;
+    for c in &rule.conditions {
+        condition_reason(c, refs).map_err(|reason| ParamError {
+            rule: rule.id.clone(),
+            reason,
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

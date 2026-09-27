@@ -83,6 +83,8 @@ function stateAt(target: ItemState, opts: { timed?: boolean } = {}): ControlPlan
     clockElements: new Set(),
     plugins: new Set(),
     automationRules: new Set(),
+    automation: [],
+    bindings: new Map(),
     assets: new Map(),
     transitionPresets: new Map(),
     fallbackAssetId: undefined,
