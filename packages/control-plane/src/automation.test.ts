@@ -468,6 +468,40 @@ test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", 
   ws.close();
 });
 
+test("a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // The hold is engaged by whichever accepted command sets `automationHold`.
+  // Recalling a snapshot saved while held sets it with no `automation.hold` —
+  // the path WU2 found missed (e985e40). The recall is the first of three
+  // actions one trigger queues; the other two are pending when it lands.
+  const trig = { kind: "stateChange", params: { field: "previewItem", to: "A1" } };
+  const ws = await loadAndStart([
+    { id: "recaller", trigger: trig, action: { command: "snapshot.recall", payload: { name: "held" } } },
+    markerRule("b", trig),
+    markerRule("c", trig),
+  ]);
+  assert.equal((await send(ws, "automation.hold", { hold: true })).status, "ok");
+  assert.equal((await send(ws, "snapshot.save", { name: "held" })).status, "ok");
+  assert.equal((await send(ws, "automation.hold", { hold: false })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  await server.automation.settled();
+  const rows = automationRows();
+  assert.deepEqual(
+    rows.filter((r) => r.event === "automation.action").map((r) => r.actor),
+    ["automation:recaller"],
+    "only the recall dispatched",
+  );
+  assert.deepEqual(
+    rows.filter((r) => r.event === "automation.cancelledByHold").map((r) => r.actor),
+    ["automation:b", "automation:c"],
+    "the hold the recall restored cancelled both pending actions, audited",
+  );
+  assert.equal(state.markers.length, 0, "no cancelled action reached state");
+  assert.equal(state.automationHold, true, "the recall restored the hold");
+  ws.close();
+});
+
 // ---------------------------------------------------------------------------
 // WU3 — the trigger adapters, each through its real source
 // ---------------------------------------------------------------------------
