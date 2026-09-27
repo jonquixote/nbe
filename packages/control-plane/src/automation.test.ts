@@ -312,3 +312,48 @@ test("every fixture rule gets its verdict from the control plane's reading, the 
   });
   assert.deepEqual(wrong, [], "verdicts that disagree with the fixture");
 });
+
+test("an action payload preflight cannot judge refuses the load at the control plane's own read", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // Preflight checks an action's command name and required KEYS, as it does
+  // for a control binding; the payload's full §16 validation is the control
+  // plane's (the command schemas live here). `itemRef: 5` has the key and the
+  // wrong type: preflight passes it, the control plane's read refuses it —
+  // this layer, and only this layer.
+  const ws = conn("admin", ADMIN);
+  await connect(ws);
+  const r = await send(ws, "show.load", {
+    packagePath: automationPackage([
+      { id: "badcut", trigger: { kind: "mediaEnd" }, action: { command: "view.cut", payload: { itemRef: 5 } } },
+    ]),
+  });
+  assert.equal(r.status, "error");
+  const err = r.error as { code: string; message: string };
+  assert.equal(err.code, "E_PREFLIGHT_FAILED");
+  assert.match(err.message, /^automationRule: automation rule `badcut`: action payload is not a valid view\.cut payload/);
+  assert.equal(state.pkg, null);
+  ws.close();
+});
+
+test("an automation action faces an operator's role check, not an admin's", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // plugin.reload is admin-only (§16.0). A rule acts as operator (§13.1), so
+  // its plugin.reload is refused E_AUTH — where an admin would have reached
+  // the handler and been told E_NOT_FOUND.
+  const ws = await loadAndStart([
+    {
+      id: "reloader",
+      trigger: { kind: "stateChange", params: { field: "previewItem", to: "A1" } },
+      action: { command: "plugin.reload", payload: { pluginId: "nope" } },
+    },
+  ]);
+  const admin = await send(ws, "plugin.reload", { pluginId: "nope" });
+  assert.notEqual((admin.error as { code: string }).code, "E_AUTH", "an admin gets past the role check");
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  await server.automation.settled();
+  const row = automationRows().find((r) => r.event === "automation.action");
+  assert.ok(row);
+  assert.equal(row.outcome, "rejected");
+  assert.equal(row.errorCode, "E_AUTH", "the rule is refused as an operator is");
+  ws.close();
+});
