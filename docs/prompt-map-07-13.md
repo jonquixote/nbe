@@ -1659,7 +1659,10 @@ at `619846c`.
   - **How it runs.** Through the evaluator's queue, with actor
     `autoFollow:<itemRef>`. A hold suppresses it, and cancels it while it is
     still pending.
-  - **The last item** has nowhere to go; that is audited, not invented.
+  - ~~**The last item** has nowhere to go; that is audited, not invented.~~
+    *Superseded by the user's word of 2026-09-27 (§2c): a completion with no
+    next item is a no-op that audits nothing, because nothing was attempted.
+    The first landing's `autoFollow.endOfRundown` row is gone (`34fc557`).*
 
   Falsified at `4d11ba9`:
 
@@ -1668,7 +1671,17 @@ at `619846c`.
   | the advance removed | 4 of the 5 autoFollow tests | `the next item is on air` — `'AF' !== 'AN'` |
   | autoFollow ignores hold | `a hold suppresses autoFollow…` | `held: the View does not advance` — `'AN' !== 'AF'` |
   | the wrong next item (two ahead) | `autoFollow advances to the next rundown item…` | `'AZ' !== 'AN'` |
-  | end of rundown not audited | `autoFollow on the last rundown item goes nowhere, and says so` | deep-equal: `[]` vs `["autoFollow.endOfRundown"]` |
+  | ~~end of rundown not audited~~ (superseded: now the required behaviour) | ~~`autoFollow on the last rundown item goes nowhere, and says so`~~ | ~~deep-equal: `[]` vs `["autoFollow.endOfRundown"]`~~ |
+
+  **The correction, `34fc557`**, per the user's continuation order. The
+  once-per-frame limiter now counts `autoFollow`, keyed by its actor; before,
+  it bypassed the limiter. A completion with no next item audits nothing.
+  Falsified at `34fc557`:
+
+  | Mutation | Guard that failed | Signature |
+  |---|---|---|
+  | the limiter does not count autoFollow | `autoFollow advances once per completion, never twice, and the limiter counts it` | `no second advance in the frame` — `2 !== 1` |
+  | a completion with no next item audited again | `autoFollow on the last rundown item is a no-op that audits nothing` | `nothing attempted, nothing audited` (deep-equal) |
 
 ## 12 — Benchmark
 
