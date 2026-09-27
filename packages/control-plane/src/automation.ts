@@ -477,21 +477,28 @@ export class AutomationEvaluator {
    * `autoFollow` (§3.1, WU4): the item `itemRef`, which carries `autoFollow`,
    * completed (`PLAYING → DONE`). Advance to `next`, the following item in
    * the rundown, with `view.cut` — through the same queue as a rule's action,
-   * so a hold suppresses it (§13.5 #2) and cancels it while pending (B5). The
-   * last item has nowhere to go: that is audited, not invented.
+   * so a hold suppresses it (§13.5 #2) and cancels it while pending (B5), and
+   * the once-per-frame limiter counts it (keyed by its actor) like a rule.
+   *
+   * The last item has nowhere to go: a no-op that audits nothing — nothing
+   * was attempted (the user's word, 2026-09-27). ~~"that is audited, not
+   * invented"~~ — WU4's first landing audited `autoFollow.endOfRundown`
+   * (§2c).
    */
   autoFollow(itemRef: string, next: string | undefined, cause: Cause = NO_CAUSE, observedAt: number = this.clock()): void {
+    if (next === undefined) return;
     const actor = `autoFollow:${itemRef}`;
     const frame = Math.floor(observedAt / this.frameMs);
-    const detail = { itemRef, next: next ?? null, chain: cause.chain, frame };
-    if (next === undefined) {
-      this.deps.audit({ event: "autoFollow.endOfRundown", outcome: "rejected", actor, detail });
-      return;
-    }
+    const detail = { itemRef, next, chain: cause.chain, frame };
     if (this.deps.state.automationHold) {
       this.deps.audit({ event: "autoFollow.suppressedByHold", outcome: "rejected", command: "view.cut", actor, detail });
       return;
     }
+    if (this.lastFrame.get(actor) === frame) {
+      this.deps.audit({ event: "automation.rateLimited", outcome: "rejected", command: "view.cut", actor, detail });
+      return;
+    }
+    this.lastFrame.set(actor, frame);
     this.pending.push({
       rule: {
         id: actor,

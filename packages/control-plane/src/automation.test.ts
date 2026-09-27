@@ -708,7 +708,11 @@ test("a pending autoFollow is cancelled by a hold that lands before it dispatche
   ws.close();
 });
 
-test("autoFollow on the last rundown item goes nowhere, and says so", async (t) => {
+// ~~"autoFollow on the last rundown item goes nowhere, and says so"~~ — WU4's
+// first landing audited `autoFollow.endOfRundown`. The user's word
+// (2026-09-27): a completion with no next item is a no-op that audits
+// nothing, because nothing was attempted (§2c).
+test("autoFollow on the last rundown item is a no-op that audits nothing", async (t) => {
   if (!preflightAvailable()) return t.skip("nbe-preflight not built");
   const ws = await loadAndStart([]);
   const render = await renderSession();
@@ -716,7 +720,39 @@ test("autoFollow on the last rundown item goes nowhere, and says so", async (t) 
   render.send(END("AZ"));
   await flushed(render);
   assert.equal(state.viewItem, "AZ");
-  assert.deepEqual(followRows().map((r) => r.event), ["autoFollow.endOfRundown"]);
+  assert.equal(state.itemStates.get("AZ"), "DONE", "the item did complete");
+  assert.deepEqual(automationRows(), [], "nothing attempted, nothing audited");
+  render.close();
+  ws.close();
+});
+
+test("autoFollow advances once per completion, never twice, and the limiter counts it", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  // A duplicate end for one completion: one advance.
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  render.send(END("AF"));
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(followRows().filter((r) => r.event === "autoFollow.advance").length, 1, "one advance per completion");
+  // Taken and completed again in the SAME frame (the clock is frozen): the
+  // once-per-frame limiter counts autoFollow like a rule's action.
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  const rows = automationRows();
+  assert.equal(rows.filter((r) => r.event === "autoFollow.advance").length, 1, "no second advance in the frame");
+  const limited = rows.filter((r) => r.event === "automation.rateLimited");
+  assert.deepEqual(limited.map((r) => r.actor), ["autoFollow:AF"], "the second is audited as rate-limited");
+  assert.equal(state.viewItem, "AF", "the limited advance never ran");
+  // The next frame, it advances again.
+  nextFrame();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
+  render.send(END("AF"));
+  await flushed(render);
+  assert.equal(automationRows().filter((r) => r.event === "autoFollow.advance").length, 2);
+  assert.equal(state.viewItem, "AN");
   render.close();
   ws.close();
 });
