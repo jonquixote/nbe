@@ -84,6 +84,14 @@ monotonic clock (`performance.now()`), indexed from the clock's origin. The
 limiter keys on (rule, frame index). Two triggers that straddle a frame
 boundary may both fire; that is once per frame, which is what §13.3 #3 asks.
 
+**§10.7's limiter applies too** (found by WU7). A rule's action runs on
+connection `automation:<ruleId>`. `RateLimiter` allows 10 per burst, refilled
+at 5/s per connection per command family, so a rule sustains at most 5
+actions/s in one family. That is below once per frame (30/s). An action over
+the limit is refused `E_RATE_LIMITED` and audited as a refused
+`automation.action`, as an operator's command would be. This is recorded for
+the user, not changed (`docs/09-measurements.md`, WU7).
+
 **B5 — "pending".** Pending means fired but not yet dispatched: queued in the
 evaluator, as B5 decided. A hold cancels everything pending: `automation.hold
 { hold: true }` accepted → `holdEngaged()` in the same event-loop turn as the
@@ -135,7 +143,13 @@ than hidden.
 ## 6. "Observed" — the latency's starting point, per kind (WU7)
 
 `latencyMs` in each `automation.action` audit row is `dispatchedAt −
-observedAt`, where `observedAt` is:
+observedAt`. The row also carries `queuedAt` (WU7), the end of AC-25 #1's span:
+observed ≤ queued ≤ dispatched. Each `automation.cancelledByHold` row carries
+`heldAt`, `cancelledAt` and `latencyMs = cancelledAt − heldAt`, which is AC-25
+#2's number. An `audioLevel` row's trigger also carries the engine's `ts`
+(v0.4.7), so the span from crossing to queue can be measured across the
+process boundary. The measurements are in `docs/09-measurements.md` (WU7).
+`observedAt` is:
 
 | Kind | Observed when |
 |---|---|

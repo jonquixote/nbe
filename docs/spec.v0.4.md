@@ -35,6 +35,15 @@ the user's act.
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
 
+**Row 1, amended by WU7 (`fb1ef14`):** the frame gains `ts` (§5.9.3's row,
+§2c-visible), read once per block in `AudioDriver::detect_crossings`. It is
+guarded by `a_rising_crossing_is_reported_on_the_block_it_happens_in`, which
+asserts `ts` lies inside the block's cycle, and by the mirror's field test,
+which names `ts` (still 18 tests: the key joins an existing test). The
+readability test's frame carries it too. It is B1's acceptance evidence:
+crossing → queued p99 0.761 ms, with 600/600 within one frame, through the
+release binary (`docs/09-measurements.md`, WU7).
+
 **Row 1's guards, run at `6322f90`** (the landing `6158435`, plus `6322f90`, which makes
 the readability test fail on its assertion rather than a timeout):
 `prompt11_audio_level` ok. 6 passed; 0 failed · `mirror` ok. 18 passed; 0 failed ·
@@ -908,7 +917,7 @@ Accepted only from `render`-role sessions; from any other role they MUST be igno
 | `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
 | `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
 | `resyncRequest` | `{ v, kind, reason }` where `reason` is `seqGap` \| `reconnect` \| `internal` | The engine asks for a full snapshot. |
-| `audioLevelCrossing` | `{ v, kind, bus, thresholdDbfs, direction, levelDbfs, masterFrame }` where `direction` is `rising` \| `falling` | **New in v0.4.7.** A bus level crossed an `audioLevel` rule's threshold, on the audio block it happened in (§13.2). Consumed by the automation evaluator, never applied as state. |
+| `audioLevelCrossing` | `{ v, kind, ts, bus, thresholdDbfs, direction, levelDbfs, masterFrame }` where `direction` is `rising` \| `falling` and `ts` is Unix milliseconds, fractional, read when the crossing was computed | **New in v0.4.7.** A bus level crossed an `audioLevel` rule's threshold, on the audio block it happened in (§13.2). Consumed by the automation evaluator, never applied as state. *Amended by Prompt 11 WU7 (§2c), inside the candidate:* ~~`{ v, kind, bus, thresholdDbfs, direction, levelDbfs, masterFrame }`~~ *— without `ts`, the span from crossing to action crossed a process boundary with no clock on the far side, so AC-25 #1 could not be measured end to end. `ts` is `engineTelemetry`'s `ts` (§10.1, Unix milliseconds) at sub-millisecond resolution.* |
 
 Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
 

@@ -1762,6 +1762,39 @@ at `619846c`.
   while held, and the B5 test still passes. §13.5 gains the sentence it
   needed: hold is a state, not a command. The automation suite's CI floor
   rises 24 → 25.
+- **WU7** (`fb1ef14`, corrections `f03796f` and `fb7619f`): latency, measured.
+  - **The instrument.**
+    `packages/control-plane/src/automation-latency.measure.ts`, run with
+    `npm run measure:automation` and deliberately not part of `npm test`.
+    - Tier cp runs every trigger kind through its real source on the
+      production clock.
+    - Tier engine runs `audioLevel` end to end through the release binary.
+    - Every phase is counted two ways, and loads are printed at each tier's
+      start and end. A tier at 3.0 or above is VOID.
+    - The last line is `AUTOMATION: PASS|FAIL|VOID`. The soak runs it every
+      iteration (`docs/soak-protocol.md` §1).
+    - The wire gains `ts` on `audioLevelCrossing` (v0.4.7 row 1, amended),
+      and the audit rows gain `queuedAt` and the hold's `heldAt`,
+      `cancelledAt` and `latencyMs`.
+  - **The numbers** (`docs/09-measurements.md`, WU7; quiescent, loads pasted).
+    - Every kind is dispatched well within one frame of observation. The
+      worst max is timer's 3.594 ms, which includes the `setTimeout` callback's
+      own lateness.
+    - The hold cancels at p99 0.009 ms.
+    - **`audioLevel` from crossing to queue: p50 0.539, p99 0.761, max
+      19.656 ms, 600/600 within one frame.** That is B1's acceptance.
+  - **A defect in the instrument, found by its own check.** The first full
+    engine-tier run put the control plane on the wall clock as
+    `performance.timeOrigin + t`. Thirteen minutes into the process that sum
+    was about 3 ms off, so every span came out negative, and the verdict still
+    said PASS. `f03796f` recalibrates at a millisecond edge before every play
+    and fails a negative span. Both verdicts are falsified: a 40 ms stall
+    reads `OVER 1 FRAME`, and a skewed clock reads `DISAGREE: a span is
+    negative`, each exiting 1.
+  - **Finding for the user:** §10.7's command limiter (10 per burst, 5/s per
+    connection per family) binds a rule's actions, since each rule runs on its
+    own connection. A rule therefore sustains 5 actions/s in one family, below
+    once per frame. It is recorded, not changed.
 
 ## 12 — Benchmark
 
