@@ -149,7 +149,11 @@ observedAt`, where `observedAt` is:
 ## 7. What this runtime does not do
 
 - **No `rssKeyword`**: no source exists (§2).
-- **No ladder rung 2** (WU6): the tree has no runtime streaming decode to
-  evict loops to. This is blocked by §4a and reported with its options.
+- ~~**No ladder rung 2** (WU6): the tree has no runtime streaming decode to
+  evict loops to. This is blocked by §4a and reported with its options.~~
+  *Struck (§2c): the user decided rung 2 on 2026-09-27 — eviction only of
+  loops not on air, §10.5's freeze clause as the invariant — and WU6 landed it
+  (`d455aa0`, recorded `7303d4f`; SPEC v0.4.7 row 2). This line outlived the
+  decision by one commit; WU6's record did not reach this note.*
 - **No hysteresis on `audioLevel`**: none is specified, and the limiter bounds
   firing (v0.4.7).
