@@ -687,12 +687,12 @@ async function main(): Promise<number> {
     const worst = rs.reduce((a, b) => (b.max > a.max ? b : a));
     const head =
       name === "cp"
-        ? `cp worst max ${ms(worst.max)} ms (${worst.label.split(" ")[0]}) over ${rs.length} spans`
+        ? `cp worst max ${ms(worst.max)} ms (${worst.label.split(" (")[0]}) over ${rs.length} spans`
         : (() => {
             const q = rs.find((r) => r.label.includes("queued"))!;
             return `audioLevel crossing→queued p50 ${ms(q.p50)} p99 ${ms(q.p99)} max ${ms(q.max)} ms, ≤1 frame ${q.withinFrame}/${q.n}`;
           })();
-    const verdicts = [disagree ? "counts DISAGREE" : "counts agree", ...(over.length ? [`OVER 1 FRAME: ${over.map((r) => r.label.split(" ")[0]).join(", ")}`] : [])];
+    const verdicts = [disagree ? "counts DISAGREE" : "counts agree", ...(over.length ? [`OVER 1 FRAME: ${over.map((r) => r.label.split(" (")[0]).join(", ")}`] : [])];
     summary.push(`${head}; ${verdicts.join("; ")}; load ${before.split(" ")[0]}→${after.split(" ")[0]}${void_ ? " VOID" : ""}`);
   }
   const dir = join(REPO, "target/automation-latency");
