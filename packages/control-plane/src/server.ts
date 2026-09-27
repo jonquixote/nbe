@@ -329,6 +329,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       // the response's stateVersion and observable no later than it.
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
+      hotkeyFired(run.intentSource);
       return { ok: true, stateVersion: out.stateVersion, data: out.data };
     } catch (err) {
       const e = err instanceof CpError ? err : new CpError("E_ENGINE", String(err));
@@ -345,6 +346,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         stateVersionBefore: before,
         stateVersionAfter: state.stateVersion,
       });
+      // The binding fired whether or not the command it carried was accepted.
+      hotkeyFired(run.intentSource);
       return { ok: false, error: e };
     }
   }
@@ -396,7 +399,48 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     // restoring a held snapshot).
     if (!before.automationHold && state.automationHold) automation.holdEngaged();
     const observedAt = automation.now();
-    for (const e of stateChanges(before, snapshot(state))) automation.fire(e, cause, observedAt);
+    const after = snapshot(state);
+    for (const e of stateChanges(before, after)) automation.fire(e, cause, observedAt);
+    // B3: mediaStart is control-plane-side — the take whose item goes on air,
+    // applied. Only a take puts an item on air (§13.4.1's rows: view.take,
+    // view.cut; snapshot.recall is not a take).
+    if (command === "view.take" || command === "view.cut") {
+      for (const [itemRef, to] of after.itemStates) {
+        const from = before.itemStates.get(itemRef) ?? "READY";
+        const onAir = (s: string) => s === "LIVE" || s === "PLAYING";
+        if (onAir(to) && !onAir(from)) automation.fire({ kind: "mediaStart", itemRef }, cause, observedAt);
+      }
+    }
+  }
+
+  /**
+   * A command arrived carrying `intentSource` (`adapter/profile:intent`): the
+   * binding named by its intent id fired. `hotkey` rules on that binding fire
+   * whatever the carried command's own outcome — the actuation happened.
+   */
+  function hotkeyFired(intentSource: string | null): void {
+    if (!intentSource) return;
+    const bindingId = intentSource.slice(intentSource.lastIndexOf(":") + 1);
+    automation.fire({ kind: "hotkey", bindingId }, NO_CAUSE, automation.now());
+  }
+
+  /**
+   * `streamTransportState` as last observed on the §10.1 tick (v0.4.6):
+   * `streamHealth` fires on a change TO a transport state. The first value
+   * observed is the baseline and fires nothing — after a control-plane
+   * restart a stream already live is not news. `none` is a stub (no stream
+   * has started), never a state a rule names, but a change FROM it counts:
+   * the first stream going live fires a `live` rule.
+   */
+  let lastTransport: string | undefined;
+  function observeTransport(token: string | undefined): void {
+    if (token === undefined) return; // an engine build older than the field
+    const prev = lastTransport;
+    lastTransport = token;
+    if (prev === undefined || prev === token) return;
+    if (token === "live" || token === "reconnecting" || token === "closed") {
+      automation.fire({ kind: "streamHealth", state: token, from: prev }, NO_CAUSE, automation.now());
+    }
   }
 
   /** SPEC §5.4.1: one stateChange frame per accepted command, to observers. */
@@ -615,6 +659,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         const frame = engine.data;
         if (frame.kind === "engineTelemetry") {
           ingestEngineFrame(world, frame, Date.now());
+          observeTransport(frame.streamTransportState);
           // SPEC §5.9.4: the snapshot's `viewItemStartFrame` needs a clock,
           // and the engine owns the only one. Recording it here keeps the
           // field at worst one tick stale rather than an outage's length.
@@ -630,8 +675,23 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           // Handed over synchronously — the evaluator's one-frame budget
           // (AC-25 #1) starts when this frame arrives.
           for (const listener of engineEventListeners) listener(frame);
+          // The audioLevel adapter: the crossing is observed as it arrives;
+          // the engine computed it on the block it happened in (v0.4.7).
+          automation.fire(
+            {
+              kind: "audioLevel",
+              bus: frame.bus,
+              thresholdDbfs: frame.thresholdDbfs,
+              direction: frame.direction,
+              levelDbfs: frame.levelDbfs,
+              masterFrame: frame.masterFrame,
+            },
+            NO_CAUSE,
+            automation.now(),
+          );
         } else if (frame.kind === "itemEvent") {
           const before = state.stateVersion;
+          const snapBefore = snapshot(state);
           if (frame.event === "end") state.markDone(frame.itemRef);
           else if (frame.event === "missing") state.markMissing(frame.itemRef);
           else state.markError(frame.itemRef);
@@ -646,6 +706,19 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
             stateVersionBefore: before,
             stateVersionAfter: state.stateVersion,
           });
+          // The engine's item transitions are state changes too, and
+          // `PLAYING → DONE` is mediaEnd — the only point completion is true
+          // (a stopped item's late `end` is dropped by `markDone`; §13.4.1).
+          const observedAt = automation.now();
+          const snapAfter = snapshot(state);
+          for (const e of stateChanges(snapBefore, snapAfter)) automation.fire(e, NO_CAUSE, observedAt);
+          if (
+            frame.event === "end" &&
+            snapBefore.itemStates.get(frame.itemRef) === "PLAYING" &&
+            snapAfter.itemStates.get(frame.itemRef) === "DONE"
+          ) {
+            automation.fire({ kind: "mediaEnd", itemRef: frame.itemRef }, NO_CAUSE, observedAt);
+          }
         }
         return;
       }

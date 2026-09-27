@@ -23,6 +23,7 @@ process.env.NBE_PREFLIGHT_TIMEOUT_MS ??= "5000";
 
 const ADMIN = "admin-token";
 const OPERATOR = "operator-token";
+const RENDER = "render-token";
 
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
@@ -44,7 +45,7 @@ beforeEach(async () => {
   auditPath = join(tempDir("nbe-auto-audit-"), "audit.jsonl");
   server = await createControlPlaneServer({
     port: 0,
-    auth: { tokens: { [ADMIN]: "admin", [OPERATOR]: "operator" } },
+    auth: { tokens: { [ADMIN]: "admin", [OPERATOR]: "operator", [RENDER]: "render" } },
     audit: new AuditLog(auditPath),
     state,
     persistence: { onDirty: () => {}, flushNow: () => {} },
@@ -91,6 +92,8 @@ export function automationPackage(automation: unknown[], extra: Record<string, u
           { id: "A1", kind: "sceneRef", sceneRef: "SCN" },
           { id: "A2", kind: "sceneRef", sceneRef: "SCN" },
           { id: "A3", kind: "sceneRef", sceneRef: "SCN" },
+          // Timed: a take puts it PLAYING, and the engine's `end` makes it DONE.
+          { id: "AT", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60 },
         ],
       },
       control: {
@@ -442,5 +445,174 @@ test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", 
   assert.deepEqual(cancelled.map((r) => r.actor), ["automation:b", "automation:c"], "both pending actions cancelled, audited");
   assert.equal(state.markers.length, 0, "no cancelled action reached state");
   assert.equal(state.automationHold, true);
+  ws.close();
+});
+
+// ---------------------------------------------------------------------------
+// WU3 — the trigger adapters, each through its real source
+// ---------------------------------------------------------------------------
+
+/** A render-role session, for the engine frames that are trigger sources. */
+async function renderSession(): Promise<WebSocket> {
+  const r = conn("render", RENDER);
+  await connect(r);
+  return r;
+}
+
+function engineTelemetry(extra: Record<string, unknown>): string {
+  return JSON.stringify({
+    v: "0.3",
+    kind: "engineTelemetry",
+    ts: Date.now(),
+    masterClockFrame: 10,
+    droppedFramesTotal: 0,
+    renderGpuTimeMs: 1,
+    decodeSessions: 0,
+    vramUsedMib: 0,
+    textureCacheUsedMib: 0,
+    streamBufferMs: -1,
+    recordSpaceMib: 0,
+    masterClockDriftMs: 0,
+    fallbackActive: false,
+    degradationRung: 0,
+    ...extra,
+  });
+}
+
+/** Wait for the server to have processed everything sent on `ws` so far. */
+async function flushed(ws: WebSocket): Promise<void> {
+  await send(ws, "system.status", {}); // answered after every earlier frame on this socket
+  await server.automation.settled();
+}
+
+function firedTriggers(): unknown[] {
+  return automationRows()
+    .filter((r) => r.event === "automation.action" && r.outcome === "ok")
+    .map((r) => r.detail?.["trigger"]);
+}
+
+test("mediaStart fires when a take puts its item on air (B3: control-plane-side)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("start-a2", { kind: "mediaStart", params: { itemRef: "A2" } })]);
+  assert.equal((await send(ws, "view.cut", { itemRef: "A1" })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "preview.set", { itemRef: "A2" })).status, "ok");
+  assert.equal((await send(ws, "view.take", {})).status, "ok");
+  await server.automation.settled();
+  assert.deepEqual(firedTriggers(), [{ kind: "mediaStart", itemRef: "A2" }], "only A2's start, once");
+  ws.close();
+});
+
+test("mediaEnd fires on the engine's end of a PLAYING item — and not for a stopped one", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("end-at", { kind: "mediaEnd", params: { itemRef: "AT" } })]);
+  const render = await renderSession();
+  const end = JSON.stringify({ v: "0.3", kind: "itemEvent", itemRef: "AT", event: "end" });
+
+  // Stopped, then the engine's late end: PLAYING -> READY -> (end dropped).
+  assert.equal((await send(ws, "view.cut", { itemRef: "AT" })).status, "ok");
+  assert.equal(state.itemStates.get("AT"), "PLAYING");
+  assert.equal((await send(ws, "item.stop", { itemId: "AT" })).status, "ok");
+  render.send(end);
+  await flushed(render);
+  assert.deepEqual(firedTriggers(), [], "a stop is not a completion (§13.4.1's item.stop row)");
+
+  // Taken again, and completed: PLAYING -> DONE is mediaEnd.
+  nextFrame();
+  assert.equal((await send(ws, "view.cut", { itemRef: "AT" })).status, "ok");
+  render.send(end);
+  await flushed(render);
+  assert.equal(state.itemStates.get("AT"), "DONE");
+  assert.deepEqual(firedTriggers(), [{ kind: "mediaEnd", itemRef: "AT" }]);
+  render.close();
+  ws.close();
+});
+
+test("timer fires atMs of show clock after show.start", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("t50", { kind: "timer", params: { atMs: 50 } })], false);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(firedTriggers(), [], "the show clock has not started: no timer");
+  assert.equal((await send(ws, "show.start", {})).status, "ok");
+  const deadline = Date.now() + 3000;
+  while (firedTriggers().length === 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+    await server.automation.settled();
+  }
+  assert.deepEqual(firedTriggers(), [{ kind: "timer", ruleId: "t50" }]);
+  ws.close();
+});
+
+test("timeOfDay fires when the local wall clock reaches `at`", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const at = new Date(Date.now() + 2000);
+  const hhmmss = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+  const ws = await loadAndStart([markerRule("tod", { kind: "timeOfDay", params: { at: hhmmss } })]);
+  const deadline = Date.now() + 5000;
+  while (firedTriggers().length === 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+    await server.automation.settled();
+  }
+  assert.deepEqual(firedTriggers(), [{ kind: "timeOfDay", ruleId: "tod" }], `at ${hhmmss}`);
+  ws.close();
+});
+
+test("hotkey fires when its binding fires, whatever the carried command's outcome", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("hk", { kind: "hotkey", params: { bindingId: "take-key" } })]);
+  // The binding's own command is refused (no preview armed) — the key was
+  // still pressed.
+  const r = await send(ws, "view.take", {}, { intentSource: "keyboard/desk:take-key" });
+  assert.equal(r.status, "error");
+  await server.automation.settled();
+  assert.deepEqual(firedTriggers(), [{ kind: "hotkey", bindingId: "take-key" }]);
+  // Another binding does not fire this rule.
+  nextFrame();
+  await send(ws, "view.take", {}, { intentSource: "companion/xl:cmp-1" });
+  await server.automation.settled();
+  assert.equal(firedTriggers().length, 1);
+  ws.close();
+});
+
+test("streamHealth fires on a change TO its transport state; the first observation is a baseline", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([
+    markerRule("sh-live", { kind: "streamHealth", params: { state: "live" } }),
+    markerRule("sh-redial", { kind: "streamHealth", params: { state: "reconnecting" } }),
+  ]);
+  const render = await renderSession();
+  for (const [token, expect] of [
+    ["live", []], // baseline: the control plane has observed nothing before
+    ["live", []], // no change
+    ["reconnecting", [{ kind: "streamHealth", state: "reconnecting", from: "live" }]], // the redial
+    ["live", [{ kind: "streamHealth", state: "live", from: "reconnecting" }]],
+    ["none", []], // a stub, never a state
+  ] as const) {
+    const before = firedTriggers().length;
+    nextFrame();
+    render.send(engineTelemetry({ streamTransportState: token }));
+    await flushed(render);
+    assert.deepEqual(firedTriggers().slice(before), expect, `after ${token}`);
+  }
+  render.close();
+  ws.close();
+});
+
+test("audioLevel fires on the engine's matching crossing (v0.4.7) and not on another", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([
+    markerRule("hot-mic", { kind: "audioLevel", params: { bus: "mic", thresholdDbfs: -12 } }),
+  ]);
+  const render = await renderSession();
+  const crossing = (threshold: number, direction: string) =>
+    JSON.stringify({ v: "0.3", kind: "audioLevelCrossing", bus: "mic", thresholdDbfs: threshold, direction, levelDbfs: -3, masterFrame: 900 });
+  render.send(crossing(-12, "falling")); // the other direction
+  render.send(crossing(-20, "rising")); // another threshold
+  render.send(crossing(-12, "rising"));
+  await flushed(render);
+  assert.deepEqual(firedTriggers(), [
+    { kind: "audioLevel", bus: "mic", thresholdDbfs: -12, direction: "rising", levelDbfs: -3, masterFrame: 900 },
+  ]);
+  render.close();
   ws.close();
 });
