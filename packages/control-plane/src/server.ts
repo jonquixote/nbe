@@ -187,6 +187,13 @@ export interface ServerOptions {
   houseRate?: number;
   /** Warning sink; defaults to console.warn. Tests assert exact strings. */
   warn?: (message: string) => void;
+  /**
+   * The automation evaluator's monotonic clock (default `performance.now`).
+   * Test seam: the once-per-frame limiter keys on a frame index read from
+   * this clock, and a test that must put two triggers in ONE frame cannot
+   * rely on wall time never crossing a 33 ms boundary between them.
+   */
+  automationClock?: () => number;
 }
 
 export async function createControlPlaneServer(opts: ServerOptions): Promise<ControlPlaneServer> {
@@ -345,6 +352,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   // -- The automation evaluator (SPEC §13, AC-25) ---------------------------
   const automation = new AutomationEvaluator({
     state,
+    ...(opts.automationClock ? { clock: opts.automationClock } : {}),
     // A rule's action: the one command path, as `operator` — §13.1's "the
     // same preconditions as a human operator's commands".
     execute: async (req): Promise<ActionOutcome> => {
@@ -383,9 +391,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     else if (command === "show.unload") automation.unload();
     else if (command === "show.start") automation.showStarted();
     else if (command === "show.stop") automation.showStopped();
-    // §13.5 / AC-25 #2: a hold cancels every pending action, in this turn.
-    if (command === "automation.hold" && state.automationHold) automation.holdEngaged();
-    const observedAt = performance.now();
+    // §13.5 / AC-25 #2: a hold cancels every pending action, in this turn —
+    // whichever command engaged it (`automation.hold`, or a `snapshot.recall`
+    // restoring a held snapshot).
+    if (!before.automationHold && state.automationHold) automation.holdEngaged();
+    const observedAt = automation.now();
     for (const e of stateChanges(before, snapshot(state))) automation.fire(e, cause, observedAt);
   }
 

@@ -27,8 +27,19 @@ const OPERATOR = "operator-token";
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
 let auditPath: string;
+/**
+ * The evaluator's clock, frozen unless a test moves it: the limiter keys on
+ * a frame index read from this clock, and two triggers a millisecond apart
+ * can otherwise straddle a 33 ms boundary.
+ */
+let clockMs = 0;
+const FRAME_MS = 1000 / 30;
+const nextFrame = (): void => {
+  clockMs += FRAME_MS;
+};
 
 beforeEach(async () => {
+  clockMs = 0;
   state = new ControlPlaneState();
   auditPath = join(tempDir("nbe-auto-audit-"), "audit.jsonl");
   server = await createControlPlaneServer({
@@ -39,6 +50,7 @@ beforeEach(async () => {
     persistence: { onDirty: () => {}, flushNow: () => {} },
     showStopGraceMs: 150,
     warn: () => {},
+    automationClock: () => clockMs,
   });
 });
 
@@ -355,5 +367,80 @@ test("an automation action faces an operator's role check, not an admin's", asyn
   assert.ok(row);
   assert.equal(row.outcome, "rejected");
   assert.equal(row.errorCode, "E_AUTH", "the rule is refused as an operator is");
+  ws.close();
+});
+
+// ---------------------------------------------------------------------------
+// WU2 — the once-per-frame limiter, hold, and the pending queue (B5)
+// ---------------------------------------------------------------------------
+
+test("a rule that would fire twice in one frame fires once; the second is audited rate-limited", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("pv", { kind: "stateChange", params: { field: "previewItem" } })]);
+  // Two changes in the same frame (the clock is not moved between them).
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  assert.equal((await send(ws, "preview.set", { itemRef: "A2" })).status, "ok");
+  await server.automation.settled();
+  let rows = automationRows();
+  assert.equal(rows.filter((r) => r.event === "automation.action").length, 1, "fired once in the frame");
+  const limited = rows.filter((r) => r.event === "automation.rateLimited");
+  assert.equal(limited.length, 1, `the second is audited as rate-limited: ${JSON.stringify(rows)}`);
+  assert.equal(limited[0]!.actor, "automation:pv");
+  assert.equal(limited[0]!.outcome, "rejected");
+
+  // The next frame, it fires again: a limit per frame, not a latch.
+  nextFrame();
+  assert.equal((await send(ws, "preview.set", { itemRef: "A3" })).status, "ok");
+  await server.automation.settled();
+  rows = automationRows();
+  assert.equal(rows.filter((r) => r.event === "automation.action").length, 2, "a new frame fires again");
+  ws.close();
+});
+
+test("a held engine fires nothing — each suppression audited — and release resumes", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  const ws = await loadAndStart([markerRule("pv", { kind: "stateChange", params: { field: "previewItem" } })]);
+  assert.equal((await send(ws, "automation.hold", { hold: true })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  await server.automation.settled();
+  let rows = automationRows();
+  assert.equal(rows.filter((r) => r.event === "automation.action").length, 0, "held: nothing dispatched");
+  const suppressed = rows.filter((r) => r.event === "automation.suppressedByHold");
+  assert.equal(suppressed.length, 1, "the held trigger is audited");
+  assert.equal(suppressed[0]!.actor, "automation:pv");
+
+  assert.equal((await send(ws, "automation.hold", { hold: false })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "preview.set", { itemRef: "A2" })).status, "ok");
+  await server.automation.settled();
+  rows = automationRows();
+  assert.equal(rows.filter((r) => r.event === "automation.action").length, 1, "released: it fires");
+  ws.close();
+});
+
+test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // One trigger fires three rules, queued in manifest order: the first
+  // engages the hold, so the other two are PENDING — fired, not yet
+  // dispatched — when the hold lands. They must be cancelled, not run.
+  const ws = await loadAndStart([
+    {
+      id: "holder",
+      trigger: { kind: "stateChange", params: { field: "previewItem", to: "A1" } },
+      action: { command: "automation.hold", payload: { hold: true } },
+    },
+    markerRule("b", { kind: "stateChange", params: { field: "previewItem", to: "A1" } }),
+    markerRule("c", { kind: "stateChange", params: { field: "previewItem", to: "A1" } }),
+  ]);
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  await server.automation.settled();
+  const rows = automationRows();
+  const actions = rows.filter((r) => r.event === "automation.action");
+  assert.deepEqual(actions.map((r) => r.actor), ["automation:holder"], "only the hold itself dispatched");
+  const cancelled = rows.filter((r) => r.event === "automation.cancelledByHold");
+  assert.deepEqual(cancelled.map((r) => r.actor), ["automation:b", "automation:c"], "both pending actions cancelled, audited");
+  assert.equal(state.markers.length, 0, "no cancelled action reached state");
+  assert.equal(state.automationHold, true);
   ws.close();
 });

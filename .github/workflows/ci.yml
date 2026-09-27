@@ -745,7 +745,7 @@ jobs:
         # the wire, which needs nbe-preflight: without it they SKIP, and the
         # suite-wide floor above would stay green about nothing. This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
-        # a finding. `ran` grows with each work unit (WU1: 8).
+        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11).
         run: |
           set -u
           out=$(node --import tsx --test src/automation.test.ts 2>&1)
@@ -759,10 +759,10 @@ jobs:
           skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=8 exercised>=8)"
+          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=11 exercised>=11)"
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 8 ]; then echo "FAIL automation: expected at least 8 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 8 ]; then echo "FAIL automation: expected at least 8 tests to execute rather than skip, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 11 ]; then echo "FAIL automation: expected at least 11 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 11 ]; then echo "FAIL automation: expected at least 11 tests to execute rather than skip, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.

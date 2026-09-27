@@ -508,6 +508,11 @@ export class AutomationEvaluator {
     if (enqueued) this.scheduleDrain();
   }
 
+  /** The evaluator's monotonic clock: what `observedAt` and the frame are read on. */
+  now(): number {
+    return this.clock();
+  }
+
   /** Actions fired but not yet dispatched — B5's "pending". */
   get pendingCount(): number {
     return this.pending.length;
@@ -554,11 +559,9 @@ export class AutomationEvaluator {
     for (let p = this.pending.shift(); p; p = this.pending.shift()) {
       const actor = `automation:${p.rule.id}`;
       const detailBase = { ruleId: p.rule.id, trigger: p.event, chain: p.cause.chain, frame: p.frame };
-      if (this.deps.state.automationHold) {
-        // A hold that landed after this action was queued (B5): cancelled.
-        this.deps.audit({ event: "automation.cancelledByHold", outcome: "rejected", command: p.rule.action.command, actor, detail: detailBase });
-        continue;
-      }
+      // No hold re-check here: a hold is engaged only by an accepted command,
+      // and the command path cancels the queue in that command's own turn
+      // (`holdEngaged`), before this loop can take the next item.
       const dispatchedAt = this.clock();
       await this.deps.execute({
         command: p.rule.action.command,
