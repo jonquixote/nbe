@@ -32,6 +32,30 @@ the user's act.
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
 
+**Guards, run at `6322f90`** (the landing `6158435`, plus `6322f90`, which makes
+the readability test fail on its assertion rather than a timeout):
+`prompt11_audio_level` ok. 6 passed; 0 failed · `mirror` ok. 18 passed; 0 failed ·
+`nbe-preflight` `automation` ok. 2 passed; 0 failed · `nbe-core` `automation`
+ok. 4 passed · the control-plane readability test # pass 1; # fail 0.
+
+**Falsified at the landing tree**, each restored with `git checkout`:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| the engine stops emitting (push removed) | 4 of `prompt11_audio_level`'s 6 | `exactly one crossing, on the block it happened: []` |
+| a wire field renamed (`levelDbfs` → `peakDbfs`) | `rust_and_typescript_agree_on_the_audio_level_crossing_fields` | `left: {…"peakDbfs"…} right: {…"levelDbfs"…}` — the fixture's key diff |
+| the TypeScript schema dropped | the field and the kinds agreement tests | `TypeScript has an AudioLevelCrossingFrameSchema`; `` TypeScript has no `audioLevelCrossing` engine frame `` |
+| preflight's check removed | `a_malformed_audio_level_rule_fails_preflight_by_name` | `{ "thresholdDbfs": -12 } must fail preflight, not warn; errors []` |
+| bus-name validation removed | the same | `{ "bus": "program", "thresholdDbfs": -12 } must fail preflight, not warn; errors []` |
+| stale crossings replayed | `crossings_queued_during_an_outage_are_not_replayed` | `left: 0` (nothing discarded) |
+| the server's hand-off removed | the readability test | `exactly the well-formed render-session frame is consumed` — `0 !== 1` |
+
+*The work order read "the engine stops emitting → the mirror agreement test fails
+with the fixture diff". The tree splits that in two, and both halves are
+guarded. Stopping emission is caught by the emission tests, because the mirror
+checks the wire's shape, not whether the engine sends. A drift in the wire's
+shape is what the mirror catches, with the key diff above.*
+
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
 (`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting

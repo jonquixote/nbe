@@ -1574,6 +1574,25 @@ and stream threads, so their stops are bounded by the same 500 ms. ~~A loaded
 local run can flake them the same way, and the same doctrine applies.~~ Any run
 can trip that bound, loaded or not, until R11 is resolved.
 
+### Prompt 11 executed — branch `prompt11-watchdog` (from 2026-09-26)
+
+A running record, one line per work unit, completed as each lands. Base: `main`
+at `619846c`.
+
+- **Merge record** (`5e9afc9`): PR #33's merge, and main's CI run `36214380771`,
+  recorded in the v0.4.6 entry above.
+- **WU0** (`bb7d4a2`, record `7fb42ab`): R11's rebound. The exit wait hangs off
+  the exit event with an 1100 ms deadlock backstop, and a sighting carries its
+  phase capture. R11 is marked resolved (see Finding R11 under § 07).
+- **B1** (`6158435`, test fix `6322f90`, record below): the `audioLevelCrossing`
+  event. `nbe-core` reads the params, the engine compares measured levels
+  per block and emits, preflight refuses malformed rules, and the control plane
+  parses the frame and hands it to its consumer. SPEC v0.4.7 carries it, drafted
+  here and ratified by the user's merge. Guards and falsifications are in
+  v0.4.7's changelog. Found while landing it: crossings queued during an outage
+  would have replayed on reconnect, firing rules late. They are dropped at
+  connect.
+
 ## 12 — Benchmark
 
 **Reframed by H1.** The reference machine is Intel with discrete AMD graphics; ~~the spec declares Apple Silicon the primary target~~ — that was v0.3; SPEC v0.4 §0.1 assumption 2 names the Intel reference machine and says Apple Silicon "is welcome and supported, but MUST NOT be assumed" (corrected 2026-09-25, §2c). Every performance number to date — quality-profile capping, the 8 ms render budget, the degradation ladder's thresholds — is unvalidated on the declared target. 12 must state which architecture each measurement was taken on, and AC-5's 30-minute zero-drop soak must not be reported as met on an architecture the spec does not target. S1 is 12's problem too: `renderGpuTimeMs` is always 0, and it is the ladder's input, so the ladder is currently deciding on a constant. A benchmark prompt that inherits a stubbed GPU timer measures nothing.
