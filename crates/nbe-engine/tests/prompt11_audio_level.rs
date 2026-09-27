@@ -58,9 +58,11 @@ fn silence(driver: &mut AudioDriver, bus: BusId) {
     driver.graph.set_source(bus, Vec::new());
 }
 
-/// Every `audioLevelCrossing` frame queued so far, as
-/// `(bus, threshold, direction, level, masterFrame)`.
-fn crossings(outgoing: &OutgoingQueue) -> Vec<(String, f64, CrossingDirection, f64, u64)> {
+/// One queued crossing: `(bus, threshold, direction, level, masterFrame)`.
+type Crossing = (String, f64, CrossingDirection, f64, u64);
+
+/// Every `audioLevelCrossing` frame queued so far.
+fn crossings(outgoing: &OutgoingQueue) -> Vec<Crossing> {
     stamped_crossings(outgoing)
         .into_iter()
         .map(|(_, c)| c)
@@ -68,9 +70,7 @@ fn crossings(outgoing: &OutgoingQueue) -> Vec<(String, f64, CrossingDirection, f
 }
 
 /// As [`crossings`], each with its `ts` (Unix ms).
-fn stamped_crossings(
-    outgoing: &OutgoingQueue,
-) -> Vec<(f64, (String, f64, CrossingDirection, f64, u64))> {
+fn stamped_crossings(outgoing: &OutgoingQueue) -> Vec<(f64, Crossing)> {
     outgoing
         .drain()
         .into_iter()
