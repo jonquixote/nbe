@@ -30,6 +30,7 @@ the user's act.
 | 1 | **`audioLevel` rules fire on an engine-computed crossing** (Prompt 11's B1, decision (a): one evaluator, the `itemEvent` precedent). The rule's params are `{ bus, thresholdDbfs, direction? }`, and preflight refuses a rule whose params do not read. The engine compares each watched bus's measured peak with its threshold on every audio block — one block per house frame, so within AC-25 #1's one frame — and sends a new render-channel frame, `audioLevelCrossing`, which the control plane's evaluator matches to rules. Crossings queued while no control plane was connected are not replayed. Before this, `audioLevel` could not meet AC-25 #1 at all: bus levels reached the control plane once a second | 5.9.3 (new row), 13.2 (new note) | `prompt11_audio_level` (six tests on real metered levels, one entering through `show.load`), the mirror's `rust_and_typescript_agree_on_the_audio_level_crossing_fields` and `crossing_direction_tokens_are_stable`, the control-plane readability test `an audioLevelCrossing frame from the render node reaches the engine-event consumer intact`, and `nbe-preflight`'s `automation` suite |
 | 2 | **Ladder rung 2's domain: loops not on air** (the user's word of 2026-09-27, resolving Prompt 11's §4a stop). §10.5's "loop caches evict to streaming" applies only to loops not feeding the View. Evicting the loop on air would freeze it, and §10.5 says the View MUST NOT be degraded. Off-air loops shed under rung 2 and are re-acquired on the next take or preroll; both are recorded. Rung 2 is reached only from rung 1. Recorded as rejected by the user: (a) build read-ahead decode first — its own prompt, and scope expansion here; (c) defer — it leaves AC-27 short. Prompt 11's draft row "buildable — a mechanism exists to degrade to" is struck with the tree's correction (§2c): no streaming decode exists to evict *to*, and the rung's domain was always non-on-air loops | 10.5 (new note) | `prompt11_ladder`: `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`, `the_on_air_loop_stays_resident_under_consecutive_misses`, `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take`, `the_ladder_climbs_in_order_rung_1_before_rung_2` |
 | 3 | **The automation params contract** (Prompt 11 WU1). The schema types `trigger.params` and `conditions` as free objects, and §13.2 named each trigger without its parameters, so a rule whose params did not read could load and never fire. §13.2 gains the table preflight enforces, verbatim from `nbe_core::automation::validate_rule`, and preflight refuses a rule that does not read, by name. `rssKeyword` is refused outright: no RSS item is ever fetched (§13.4.1) | 13.2 (new table; the `rssKeyword` row), 13.4.1 (the `rssKeyword` reading and the `ticker.refreshRss` row, amended §2c-visible) | the shared 32-case fixture `crates/nbe-core/tests/fixtures/automation_rules.json`, read by `nbe-core`'s `every_fixture_rule_gets_its_verdict_from_the_rust_reading` and by the control plane's `every fixture rule gets its verdict from the control plane's reading, the same as preflight's` — a rule one side accepts and the other refuses fails both; `nbe-preflight`'s `every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name` |
+| 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -66,6 +67,14 @@ has changed since. `automation_rules` ok. 1 passed; 0 failed · `nbe-preflight`
 # pass 1; # fail 0. Its falsification is WU1's (`docs/prompt-map-07-13.md`,
 WU1's table): preflight's rule check removed, and the rss rule `must fail
 preflight` (left 0, right 2).
+
+**Row 4's guard, run at `35b829c`:** both hold tests, # pass 2; # fail 0.
+**Falsified at `6b3ab85`** by restoring the pre-`e985e40` shape, a cancel only
+on `automation.hold` (`command === "automation.hold" && …`). The recall test
+failed with `only the recall dispatched`: actual `['automation:recaller',
+'automation:b', 'automation:c']`, expected `['automation:recaller']`. The two
+actions pending behind the recall ran while held. The `automation.hold` test
+still passed, so the two tests split the paths. Restored with `git checkout`.
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2967,6 +2976,13 @@ recorded rather than decided here:
 1. all automation triggers are suppressed within 1 frame,
 2. `autoFollow` is suppressed,
 3. telemetry reports `automationHold: true`.
+
+**Hold is a state, not a command (normative, new in v0.4.7).** "Held" means
+`automationHold` is true, whichever accepted command set it: `automation.hold
+{ hold: true }`, or a `snapshot.recall` restoring a snapshot saved while held
+(§16.11 restores `automationHold` wholesale). Either one cancels every pending
+action in its own dispatch, as AC-25 #2 asks of `automation.hold`, and each
+cancellation is audited.
 
 ---
 

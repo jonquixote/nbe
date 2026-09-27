@@ -1752,6 +1752,16 @@ at `619846c`.
       (`render.rs`), and `telemetry.rs`, where `renderGpuTimeMs` is stubbed
       `0.0`, is unchanged since `619846c`.
     - One prompt, one PR: compliant.
+- **WU2's recall path, guarded** (`6b3ab85`; SPEC v0.4.7 row 4). WU2 fixed the
+  hold so that any command engaging it cancels pending actions, including a
+  `snapshot.recall` restoring a held snapshot. The fix was recorded, but no
+  test drove that path; the B5 test engages the hold through
+  `automation.hold` only. The guard makes a recall the first of three queued
+  actions. Falsified at `6b3ab85` by a cancel keyed on `automation.hold`: it
+  fails with `only the recall dispatched`, both pending markers dispatched
+  while held, and the B5 test still passes. §13.5 gains the sentence it
+  needed: hold is a state, not a command. The automation suite's CI floor
+  rises 24 → 25.
 
 ## 12 — Benchmark
 
