@@ -35,8 +35,15 @@ let auditPath: string;
  */
 let clockMs = 0;
 const FRAME_MS = 1000 / 30;
+/**
+ * Move the frozen clock into the NEXT frame — to its middle, not its edge.
+ * `clockMs += FRAME_MS` drifted: 1000/30 is not exact, so the tenth step
+ * floored into the ninth step's frame index (333.33…/33.33… → 9), and the
+ * limiter read two frames as one. A frame's middle is half a frame from
+ * either edge, far outside any rounding.
+ */
 const nextFrame = (): void => {
-  clockMs += FRAME_MS;
+  clockMs = (Math.floor(clockMs / FRAME_MS) + 1.5) * FRAME_MS;
 };
 
 beforeEach(async () => {
@@ -1057,3 +1064,4 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   assert.deepEqual(undemonstrated, [], "cells a row names that no probe demonstrated");
   render.close();
 });
+
