@@ -65,9 +65,10 @@ const LOAD_CEILING = 3.0;
  * Between triggers. Two floors: more than one frame, so each fires on a fresh
  * frame with an empty queue (§13.3 #3); and under §10.7's command limiter —
  * `RateLimiter` in server.ts, 10 per burst refilled at 5/s per connection per
- * command family — which a rule's action faces too, on connection
- * `automation:<ruleId>`. 5/s is one per 200 ms; 210 leaves the bucket
- * refilling faster than it drains.
+ * command family — which the harness's OWN operator commands face. 5/s is one
+ * per 200 ms; 210 leaves the bucket refilling faster than it drains. (Until
+ * §13.3's exemption, v0.4.7, a rule's action faced it too, on connection
+ * `automation:<ruleId>`; it no longer does.)
  */
 const PACE_MS = 210;
 

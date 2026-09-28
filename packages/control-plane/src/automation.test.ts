@@ -1065,3 +1065,41 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   render.close();
 });
 
+// ---------------------------------------------------------------------------
+// §13.3 (v0.4.7): a rule's actions are exempt from §10.7's command limiter
+// ---------------------------------------------------------------------------
+
+test("a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // §10.7's limiter admits 10 per burst and refills 5/s, per connection per
+  // command family. A rule dispatches on its own connection, so before the
+  // exemption its 11th action in a burst was refused E_RATE_LIMITED — below
+  // once per frame. The triggers are engine frames (audioLevelCrossing), which
+  // no limiter sees, one per frame: only the rule's own actions could be
+  // throttled.
+  const ws = await loadAndStart([markerRule("fast", { kind: "audioLevel", params: { bus: "mic", thresholdDbfs: -12 } })]);
+  const render = await renderSession();
+  const N = 30;
+  const started = performance.now();
+  for (let i = 0; i < N; i++) {
+    nextFrame(); // a new frame each time: §13.3 #3 admits every one
+    render.send(
+      JSON.stringify({ v: "0.3", kind: "audioLevelCrossing", ts: Date.now(), bus: "mic", thresholdDbfs: -12, direction: "rising", levelDbfs: -3, masterFrame: i }),
+    );
+    await flushed(render);
+  }
+  const seconds = (performance.now() - started) / 1000;
+  // The check discriminates only if the operator limiter WOULD have refused:
+  // it admits at most 10 + 5·seconds over the run.
+  assert.ok(10 + 5 * seconds < N, `ran ${seconds.toFixed(2)} s: too slow for the limiter to have refused any of ${N}`);
+  const rows = automationRows().filter((r) => r.event === "automation.action" && r.actor === "automation:fast");
+  assert.equal(rows.length, N, "every firing dispatched");
+  assert.deepEqual(
+    rows.filter((r) => r.outcome !== "ok").map((r) => r.errorCode ?? r.outcome),
+    [],
+    "no action refused — in particular none E_RATE_LIMITED",
+  );
+  assert.equal(state.markers.filter((m) => m.name === "by-fast").length, N, "every action reached state");
+  render.close();
+  ws.close();
+});

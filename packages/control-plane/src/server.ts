@@ -293,12 +293,22 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   }
   type CommandResult = { ok: true; stateVersion: number; data: Record<string, unknown> } | { ok: false; error: CpError };
 
+  // §13.3 (v0.4.7): a rule's action is exempt from §10.7's command limiter.
+  // That limiter (10 per burst, 5/s per connection per command family) is
+  // flood protection for sessions. Applied to a rule — which dispatches on its
+  // own connection, `automation:<ruleId>` — it refused the rule's 11th action
+  // in a burst, below §13.3 #3's once per frame (WU7's finding; the user's
+  // decision of 2026-09-27). Automation has its own bounds: once per frame
+  // per rule (§13.3 #3), preflight's cycle refusal (§13.4), and the runtime's
+  // self-trigger suppression.
+  const { rateLimiter: _sessionsOnly, ...automationDeps } = deps;
+
   async function runCommand(run: CommandRun): Promise<CommandResult> {
     const { envelope } = run;
     const before = state.stateVersion;
     const snapBefore = snapshot(state);
     try {
-      const out = await dispatch(deps, registry, {
+      const out = await dispatch(run.automation ? automationDeps : deps, registry, {
         connectionId: run.connectionId,
         role: run.role,
         envelope,
