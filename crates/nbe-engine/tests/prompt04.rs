@@ -280,7 +280,7 @@ async fn a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop() {
         "every late View frame is a dropped frame (SPEC §10.2)"
     );
     assert!(
-        state.fallback_active.load(Ordering::SeqCst),
+        state.fallback_active(),
         "sustained misses must engage the fallback slate (SPEC §10.3)"
     );
     assert_eq!(
@@ -329,7 +329,7 @@ async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
     );
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 1);
     assert!(
-        !state.fallback_active.load(Ordering::SeqCst),
+        !state.fallback_active(),
         "the tree does not slate a single frame missed by 1–2 frames; §10.3's words would"
     );
 }
@@ -361,7 +361,7 @@ async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
             "frame {f} is late by at most one frame: {late:?}"
         );
         assert_eq!(
-            state.fallback_active.load(Ordering::SeqCst),
+            state.fallback_active(),
             f == 2,
             "the slate engages on the third consecutive miss, not before (frame {f})"
         );
@@ -378,7 +378,7 @@ async fn an_on_time_frame_counts_nothing() {
     let report = render.render_frame(0, Some(Duration::from_secs(5)));
     assert!(report.view_late_by.is_none());
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);
-    assert!(!state.fallback_active.load(Ordering::SeqCst));
+    assert!(!state.fallback_active());
     assert_eq!(state.degradation_rung(), 0);
 }
 
@@ -422,7 +422,7 @@ async fn a_failed_view_render_puts_the_slate_on_air() {
     *state.view_item.lock().unwrap() = Some("A1".into());
 
     assert!(
-        !state.fallback_active.load(Ordering::SeqCst),
+        !state.fallback_active(),
         "precondition: the fallback must be off before the failure"
     );
 
@@ -430,7 +430,7 @@ async fn a_failed_view_render_puts_the_slate_on_air() {
     render.render_frame(0, None);
 
     assert!(
-        state.fallback_active.load(Ordering::SeqCst),
+        state.fallback_active(),
         "SPEC §10.3: a failed View render must put the fallback slate on air"
     );
 }
@@ -446,7 +446,7 @@ async fn fallback_renders_the_decoded_slate_pixels() {
     render.render_frame(0, None);
     assert_eq!(centre_px(&render.readback_view().await), [255, 0, 0, 255]);
 
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(1, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -467,7 +467,7 @@ async fn the_slate_renders_while_the_clock_is_stopped() {
         "clock has not started"
     );
 
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(0, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -497,7 +497,7 @@ async fn an_undecodable_fallback_becomes_a_generated_slate() {
     assert!(img.rgba.iter().any(|b| *b != 0), "slate must not be blank");
 
     let mut render = RenderLoop::new(state.clone()).await.unwrap();
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(0, None);
     let px = centre_px(&render.readback_view().await);
     assert_ne!(px, [0, 0, 0, 255], "the fixture must still yield a picture");

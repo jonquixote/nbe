@@ -373,6 +373,15 @@ pub struct EngineTelemetry {
     pub master_clock_drift_ms: f64,
     pub fallback_active: bool,
     pub degradation_rung: u32,
+    /// The watchdog's fault counter (SPEC §10.3, v0.4.7): trips since the
+    /// engine started. Additive and defaulted, `audioUnderrunsTotal`'s shape.
+    #[serde(default)]
+    pub watchdog_trips_total: u64,
+    /// Watchdog recoveries: a tripped slate cleared after the on-time run
+    /// (SPEC §10.3, v0.4.7). Trips − clears is 1 while the watchdog holds the
+    /// slate.
+    #[serde(default)]
+    pub watchdog_clears_total: u64,
     /// The **effective** profile from the startup probe, capped by the
     /// manifest's requested profile (SPEC §10.1.1, §10.5). `None` before the
     /// probe has run — the control plane then reports the requested profile.

@@ -522,6 +522,30 @@ jobs:
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL prompt11_ladder: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: the watchdog recovery suite actually ran (Prompt 11 WU8)
+        # Four tests on a real render loop: a tripped slate clears after K
+        # on-time frames; trips and clears are counted once each and ride the
+        # tick; one on-time frame does not clear (hysteresis) and a late frame
+        # restarts the run; the recovery never releases an operator's slate.
+        # They FAIL loudly without an adapter (prompt04's policy) and print no
+        # SKIP, so ran == exercised; floors equal at the full count (4).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_watchdog: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL prompt11_watchdog: expected at least 4 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL prompt11_watchdog: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5)
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);

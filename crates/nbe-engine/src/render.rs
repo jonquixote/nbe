@@ -492,7 +492,8 @@ impl RenderLoop {
                     tracing::error!(err = %e, frame, "view render failed; engaging fallback");
                     self.view_failing = true;
                 }
-                self.state.fallback_active.store(true, Ordering::SeqCst);
+                self.state
+                    .engage_fallback(crate::state::FallbackSource::Held);
             }
         }
         let elapsed = started.elapsed();
@@ -690,7 +691,7 @@ impl RenderLoop {
         // housekeeping drops (completed exits) defer to the first
         // non-fallback frame because overlay_draws — the only place that
         // drops — does not run while the slate is up.
-        let show_fallback = bus == Bus::View && self.state.fallback_active.load(Ordering::SeqCst);
+        let show_fallback = bus == Bus::View && self.state.fallback_active();
 
         let mut draws: Vec<(wgpu::Texture, LayerUniform)> = Vec::new();
         if show_fallback {

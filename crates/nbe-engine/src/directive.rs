@@ -1270,7 +1270,8 @@ impl DirectiveHandler {
     }
 
     fn on_fallback(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        self.state.fallback_active.store(true, Ordering::SeqCst);
+        self.state
+            .engage_fallback(crate::state::FallbackSource::Held);
         *self.state.view_item.lock().unwrap() = None; // on fallback, view shows the slate
         Ok(())
     }
@@ -1372,7 +1373,8 @@ impl DirectiveHandler {
             _ => self.state.clock.lock().unwrap().stop(),
         }
         if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
-            self.state.fallback_active.store(true, Ordering::SeqCst);
+            self.state
+                .engage_fallback(crate::state::FallbackSource::Held);
         }
         // The snapshot is authoritative about BOTH buses, including when a bus
         // is empty. Reading only the naming case left the previous item on air

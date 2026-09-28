@@ -65,7 +65,6 @@ fn clock_states_match_spec_11_4() {
 
 #[tokio::test]
 async fn show_load_makes_fallback_resident_and_missing_fallback_fails_loudly() {
-    use std::sync::atomic::Ordering;
     let (handler, state, _outgoing) = make_engine();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("media")).unwrap();
@@ -127,7 +126,7 @@ async fn show_load_makes_fallback_resident_and_missing_fallback_fails_loudly() {
         serde_json::json!({}),
     );
     assert!(handler.apply(&d2).await.is_err());
-    state.fallback_active.load(Ordering::SeqCst);
+    state.fallback_active();
 }
 
 #[tokio::test]
@@ -192,9 +191,7 @@ async fn resync_after_outage_is_snapshot_not_replay() {
     // Resync snapshot must be applied (not the missed 4, 5 or 6).
     assert_eq!(state.last_applied(), 7);
     assert!(state.is_running());
-    assert!(!state
-        .fallback_active
-        .load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!state.fallback_active());
     // The engine confirms by acking the snapshot's version.
     let out = outgoing.drain();
     assert!(out.iter().any(|f| matches!(f, nbe_protocol::EngineFrame::AppliedStateVersion { state_version, .. } if *state_version == 7))    );

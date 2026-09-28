@@ -211,3 +211,24 @@ test("idle reports -1 and drained-live reports 0: the field alone distinguishes 
   assert.equal(idleTick.streamState, "idle");
   assert.equal(liveTick.streamState, "live");
 });
+
+// ---------------------------------------------------------------------------
+// SPEC §10.3 (v0.4.7; Prompt 11 WU8): the watchdog's fault counter and its
+// recoveries are engine-owned, forwarded on the control plane's tick, and
+// stubbed 0 when no fresh engine report exists — never a stale count.
+// ---------------------------------------------------------------------------
+
+test("the watchdog's trips and clears reach the tick, and a stale report stubs them to 0", () => {
+  const state = new ControlPlaneState();
+  const frame = EngineTelemetryFrameSchema.parse({ ...engineFrame(-1), watchdogTripsTotal: 3, watchdogClearsTotal: 2 });
+
+  const fresh = newWorldTelemetry();
+  ingestEngineFrame(fresh, frame, Date.now());
+  const tick = buildTick(state, fresh, Date.now());
+  assert.deepEqual([tick.watchdogTripsTotal, tick.watchdogClearsTotal], [3, 2], "forwarded as the engine counted");
+
+  const stale = newWorldTelemetry();
+  ingestEngineFrame(stale, frame, Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000);
+  const old = buildTick(state, stale, Date.now());
+  assert.deepEqual([old.watchdogTripsTotal, old.watchdogClearsTotal], [0, 0], "a stale report is not forwarded");
+});

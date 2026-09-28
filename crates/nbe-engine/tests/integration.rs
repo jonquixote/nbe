@@ -6,7 +6,6 @@ use nbe_engine::channel::{self, EngineConfig};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{DirectiveFrame, PROTOCOL_VERSION};
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -123,6 +122,6 @@ async fn engine_connects_resyncs_applies_take() {
     // Outage loop: cut the task and assert its fallback is untouched and the
     // state is still there when the connection dies (local survivability).
     engine_task.abort();
-    assert!(!state.fallback_active.load(Ordering::SeqCst));
+    assert!(!state.fallback_active());
     drop(server_handle);
 }

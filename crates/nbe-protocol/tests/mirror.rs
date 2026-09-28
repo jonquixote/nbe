@@ -188,6 +188,9 @@ fn render_channel_frames_round_trip() {
             master_clock_drift_ms: 0.2,
             fallback_active: false,
             degradation_rung: 0,
+            // SPEC §10.3 (v0.4.7): sampled with values, per the rule below.
+            watchdog_trips_total: 3,
+            watchdog_clears_total: 2,
             quality_profile: Some(QualityProfile::Consumer),
             audio_underruns_total: 3,
             audio_drift_ms: 0.4,
@@ -359,6 +362,9 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         master_clock_drift_ms: 0.0,
         fallback_active: false,
         degradation_rung: 0,
+        // SPEC §10.3 (v0.4.7): sampled with values, per the rule below.
+        watchdog_trips_total: 3,
+        watchdog_clears_total: 2,
         quality_profile: Some(QualityProfile::Consumer),
         audio_underruns_total: 0,
         audio_drift_ms: 0.0,

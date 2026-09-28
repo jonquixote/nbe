@@ -318,7 +318,7 @@ async fn the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence() {
         render.injected_view_delay = late.then_some(JUST_LATE);
         render.render_frame(200 + f, Some(WIDE_BUDGET));
         assert!(
-            !state.fallback_active.load(Ordering::SeqCst),
+            !state.fallback_active(),
             "frame {f}: the watchdog must not have tripped"
         );
         assert!(
@@ -376,7 +376,7 @@ async fn the_on_air_loop_stays_resident_under_consecutive_misses() {
     }
     assert_eq!(state.rung(), Rung::LoopsShed);
     assert!(
-        state.fallback_active.load(Ordering::SeqCst),
+        state.fallback_active(),
         "consecutive misses engage the slate (§10.3)"
     );
     assert!(!sheds(&render).contains(&"loopA".to_string()));

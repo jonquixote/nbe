@@ -5,7 +5,7 @@
 use crate::clock::{ClockState, MasterClock};
 use nbe_protocol::EngineFrame;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -22,8 +22,21 @@ pub struct EngineState {
     pub package_path: Mutex<Option<String>>,
     /// resident fallback slate (path + loaded bytes), loaded at show.load
     pub fallback: Mutex<Option<FallbackSlate>>,
-    /// set when the fallback is what the engine is currently showing
-    pub fallback_active: AtomicBool,
+    /// Who holds the fallback slate on the View, as [`FallbackSource`] bits.
+    /// The slate is on air while ANY source holds it
+    /// ([`EngineState::fallback_active`]). Split by source (Prompt 11 WU8) so
+    /// the watchdog's recovery releases only the slate the watchdog raised —
+    /// never an operator's `view.fallback`. Bits are set and cleared with
+    /// `fetch_or` / `fetch_and`, so the directive thread engaging and the
+    /// render thread releasing cannot lose each other's write.
+    pub fallback_sources: AtomicU8,
+    /// SPEC §10.3's fault counter: watchdog trips (Prompt 11 WU8). On the
+    /// §10.1 tick as `watchdogTripsTotal`.
+    pub watchdog_trips_total: AtomicU64,
+    /// Watchdog recoveries — a tripped slate cleared after the on-time run
+    /// (WU8). On the tick as `watchdogClearsTotal`; trips − clears is 1 while
+    /// the watchdog holds the slate.
+    pub watchdog_clears_total: AtomicU64,
     /// engine start time (telemetry)
     pub started_at: Instant,
     /// The effective quality profile: probe capped by request. Written only
@@ -209,7 +222,9 @@ impl EngineState {
             last_applied_state_version: AtomicU64::new(0),
             package_path: Mutex::new(None),
             fallback: Mutex::new(None),
-            fallback_active: AtomicBool::new(false),
+            fallback_sources: AtomicU8::new(0),
+            watchdog_trips_total: AtomicU64::new(0),
+            watchdog_clears_total: AtomicU64::new(0),
             started_at: Instant::now(),
             quality_profile: std::sync::Mutex::new(None),
             probed_quality: std::sync::Mutex::new(None),
@@ -316,8 +331,31 @@ impl EngineState {
             preview_item_start_frame: self.preview_item_start_frame.load(Ordering::SeqCst),
             preview_item: self.preview_item.lock().unwrap().clone(),
             transition: self.transition.lock().unwrap().clone(),
-            fallback_active: self.fallback_active.load(Ordering::SeqCst),
+            fallback_active: self.fallback_active(),
         }
+    }
+
+    /// The fallback slate is on the View: some source holds it.
+    pub fn fallback_active(&self) -> bool {
+        self.fallback_sources.load(Ordering::SeqCst) != 0
+    }
+
+    /// Whether `source` is one of those holding the slate.
+    pub fn fallback_held_by(&self, source: FallbackSource) -> bool {
+        self.fallback_sources.load(Ordering::SeqCst) & source as u8 != 0
+    }
+
+    /// `source` puts the slate on the View (idempotent).
+    pub fn engage_fallback(&self, source: FallbackSource) {
+        self.fallback_sources
+            .fetch_or(source as u8, Ordering::SeqCst);
+    }
+
+    /// `source` lets go of the slate. It stays on air while another source
+    /// holds it.
+    pub fn release_fallback(&self, source: FallbackSource) {
+        self.fallback_sources
+            .fetch_and(!(source as u8), Ordering::SeqCst);
     }
 
     pub fn rung(&self) -> crate::render::Rung {
@@ -406,6 +444,20 @@ pub struct FrameSnapshot {
     pub preview_item: Option<String>,
     pub transition: Option<crate::scene::Transition>,
     pub fallback_active: bool,
+}
+
+/// Who put the fallback slate on the View (SPEC §10.3; Prompt 11 WU8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FallbackSource {
+    /// The operator's `view.fallback`, a resync snapshot that says so, or a
+    /// View render failure. Nothing in the engine releases these (WU6's
+    /// finding stands for them; the control plane's take clears its own
+    /// `fallbackActive`, not the engine's).
+    Held = 0b01,
+    /// The frame watchdog: engaged on a trip, released by its recovery
+    /// (`watchdog.rs`, `WATCHDOG_CLEAR_AFTER_ON_TIME`).
+    Watchdog = 0b10,
 }
 
 /// What the directive handler needs to emit back to the control plane.
