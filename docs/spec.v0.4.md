@@ -31,6 +31,7 @@ the user's act.
 | 2 | **Ladder rung 2's domain: loops not on air** (the user's word of 2026-09-27, resolving Prompt 11's §4a stop). §10.5's "loop caches evict to streaming" applies only to loops not feeding the View. Evicting the loop on air would freeze it, and §10.5 says the View MUST NOT be degraded. Off-air loops shed under rung 2 and are re-acquired on the next take or preroll; both are recorded. Rung 2 is reached only from rung 1. Recorded as rejected by the user: (a) build read-ahead decode first — its own prompt, and scope expansion here; (c) defer — it leaves AC-27 short. Prompt 11's draft row "buildable — a mechanism exists to degrade to" is struck with the tree's correction (§2c): no streaming decode exists to evict *to*, and the rung's domain was always non-on-air loops | 10.5 (new note) | `prompt11_ladder`: `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`, `the_on_air_loop_stays_resident_under_consecutive_misses`, `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take`, `the_ladder_climbs_in_order_rung_1_before_rung_2` |
 | 3 | **The automation params contract** (Prompt 11 WU1). The schema types `trigger.params` and `conditions` as free objects, and §13.2 named each trigger without its parameters, so a rule whose params did not read could load and never fire. §13.2 gains the table preflight enforces, verbatim from `nbe_core::automation::validate_rule`, and preflight refuses a rule that does not read, by name. `rssKeyword` is refused outright: no RSS item is ever fetched (§13.4.1) | 13.2 (new table; the `rssKeyword` row), 13.4.1 (the `rssKeyword` reading and the `ticker.refreshRss` row, amended §2c-visible) | the shared 32-case fixture `crates/nbe-core/tests/fixtures/automation_rules.json`, read by `nbe-core`'s `every_fixture_rule_gets_its_verdict_from_the_rust_reading` and by the control plane's `every fixture rule gets its verdict from the control plane's reading, the same as preflight's` — a rule one side accepts and the other refuses fails both; `nbe-preflight`'s `every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name` |
 | 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
+| 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -84,6 +85,21 @@ failed with `only the recall dispatched`: actual `['automation:recaller',
 'automation:b', 'automation:c']`, expected `['automation:recaller']`. The two
 actions pending behind the recall ran while held. The `automation.hold` test
 still passed, so the two tests split the paths. Restored with `git checkout`.
+
+**Row 5's guards, run at `4c6e176` (the landing), quiescent, load 2.37 → 2.39:**
+`prompt11_watchdog` ok. 4 passed; 0 failed · `prompt04` ok. 17 passed; 0 failed
+(the §10.3 pins among them) · `mirror` ok. 18 passed; 0 failed ·
+`telemetry.test.ts` # pass 5; # fail 0.
+
+**Row 5, falsified at `4c6e176`.** Each mutation was restored from a saved copy
+of `watchdog.rs`, with the tree clean after each:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) the recovery's `release_fallback(Watchdog)` removed | all 4 of `prompt11_watchdog` | `K = 30 consecutive on-time frames take the watchdog's slate down`; `the watchdog let go of its slate`; `K unbroken on-time frames clear it`; `assertion failed: !fields.fallback_active` |
+| (ii) both counters' increments dropped | 3 of 4 | `one trip per episode, not per frame` (left `(0, 0)`, right `(1, 0)`); the other two read left `(0, 0)`, right `(1, 1)` |
+| (iii) K = 1 | `one_on_time_frame_does_not_clear_and_a_late_frame_restarts_the_run` | `one on-time frame must NOT clear a tripped slate (K = 1)` |
+| (iv) the recovery clears EVERY source (`fallback_sources.store(0)`) | `the_recovery_never_releases_an_operators_slate` | `the operator's slate is still on air: the recovery releases only its own` |
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2147,6 +2163,8 @@ Telemetry fields:
   "fallbackActive": false,
   "qualityProfile": "consumer",
   "degradationRung": 0,
+  "watchdogTripsTotal": 0,
+  "watchdogClearsTotal": 0,
   "automationHold": false,
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
@@ -2161,6 +2179,14 @@ audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
 missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
+
+**The watchdog's counters (normative, new in v0.4.7).** `watchdogTripsTotal`
+is §10.3's fault counter: the watchdog's trips since the engine started, one per
+trip. `watchdogClearsTotal` counts its recoveries. While the watchdog holds the
+slate, trips − clears is 1. Both are engine-owned; with no fresh engine report
+the control plane emits `0` (§10.1.1's stub). They ride the tick beside
+`degradationRung`, which is §10.5's reporting shape for the ladder. The audit
+log (§10.7) is the control plane's, and the engine keeps none.
 
 **`streamBufferMs` and its NO-SESSION sentinel (normative, new in v0.4.6).**
 While a stream session exists, `streamBufferMs` is the stream transport's
@@ -2241,7 +2267,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 
@@ -2268,17 +2294,54 @@ The render node MUST implement a frame watchdog. It watches **video** frames:
 an audio fault is reported through Section 8.10 and never activates the
 fallback slate.
 
-If the render loop misses a deadline by more than:
+*Rewritten in v0.4.7 (§2c), on the user's decision (b) of 2026-09-27, which
+followed Prompt 11 WU5's finding. The section read:*
 
-```text
-1 frame
-```
+> ~~If the render loop misses a deadline by more than: `1 frame` the watchdog
+> MUST: 1. log fault, 2. increment fault counter, 3. activate fallback slate if
+> the fault affects VIEW.~~
 
-the watchdog MUST:
+*The tree never read it that way, and it differed in both directions (WU5,
+pinned by prompt04's `one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog`
+and `three_frames_each_late_by_under_one_budget_trip_the_watchdog`). A frame late
+by 1.5 budgets did not trip, and three frames each late by under one budget did.
+There was also no fault counter, and the slate never came down. The text below
+writes the accumulation as built and adds the two missing mechanisms.*
 
-1. log fault,
-2. increment fault counter,
-3. activate fallback slate if the fault affects VIEW.
+**The trip (normative).** For each View frame that misses its deadline, the
+watchdog counts `ceil(late ÷ budget)` missed frames. `late` is how far past the
+deadline the frame was submitted, and `budget` is one house frame. The counts
+are summed over consecutive late frames, and an on-time frame resets the sum to
+zero. When the sum exceeds **2**, the watchdog trips. Both directions follow,
+and both are pinned:
+
+- A single frame late by more than two budgets trips on its own.
+- A single frame late by more than one budget and at most two does **not**
+  trip: it counts 2, and 2 is not above 2.
+- Three consecutive frames, each late by at most one budget, trip on the third,
+  although none misses its deadline by more than a frame.
+
+**On a trip** the watchdog MUST:
+
+1. log the fault;
+2. increment its fault counter, `watchdogTripsTotal` on the §10.1 tick, once
+   per trip;
+3. activate the fallback slate on the View.
+
+A trip is one fault until it clears. Late frames while the watchdog holds the
+slate do not trip it again.
+
+**Recovery (normative).** After **K = 30 consecutive on-time View frames**, the
+watchdog MUST clear the slate it activated, log the recovery, and increment
+`watchdogClearsTotal`. K is one second at 30 fps, and it is the same evidence
+on which §10.5's ladder restores to nominal. Any late frame restarts the run,
+and one on-time frame clears nothing. The clear threshold sits an order of
+magnitude above the trip, so the slate cannot alternate with the program at
+frame rate.
+
+**The watchdog releases only its own slate.** A slate held by another source —
+the operator's `view.fallback`, a resync snapshot that says so, or a View render
+failure — stays on air through the watchdog's recovery.
 
 ## 10.4 Health endpoint
 

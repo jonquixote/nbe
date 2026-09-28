@@ -1884,6 +1884,49 @@ at `619846c`.
     Whichever is chosen, two things are still owed: a watchdog fault counter,
     and a rule for releasing the slate (§10.3 names activation only). The
     executor recommends (b), with both of those.
+    **Decided 2026-09-27: (b), plus both mechanisms**; built in WU8, below.
+- **WU8** (`4c6e176`): the watchdog's recovery half, on the user's decision
+  (b). SPEC v0.4.7 row 5 rewrites §10.3 to the accumulation as built, with
+  both directions written and the old text struck (§2c). Its guards and
+  falsifications (i)–(iv) are in the v0.4.7 block.
+  - **The fault counter** is `watchdogTripsTotal`, and `watchdogClearsTotal`
+    sits beside it. Each counts once per episode. Both ride the §10.1 tick,
+    because §10.5's precedent for the ladder is the tick (`degradationRung`).
+    The audit log (§10.7) belongs to the control plane, and the engine keeps
+    none. The tree decided this.
+  - **K = 30**, `WATCHDOG_CLEAR_AFTER_ON_TIME`. The trip accumulates over one
+    unbroken late run, and recovery is the same accumulation over an unbroken
+    on-time run. The clear threshold sits an order of magnitude above the
+    trip, which is the hysteresis: the fastest possible cycle is 1 frame to
+    trip and 30 to clear, and one on-time frame clears nothing. 30 is also the
+    tree's existing "pressure has cleared": the ladder's
+    `RESTORE_AFTER_ON_TIME` is 30, so the slate comes down on the frame the
+    ladder stands down.
+  - **The slate is held by source**: `fallback_sources` and
+    `FallbackSource::{Held, Watchdog}`, changed with `fetch_or` and
+    `fetch_and`. The recovery releases only the watchdog's own slate. Changing
+    the field's type made all twenty stale readers fail to compile, so none
+    could keep reading the old flag silently.
+  - **Open, for the user (out of WU8's scope, recorded rather than fixed).**
+    The `Held` sources are still never released by the engine. After an
+    operator's `view.fallback`, a take clears the control plane's
+    `fallbackActive` (`state.ts` `take`), but the engine's `on_take` releases
+    nothing. The View keeps the slate, and the engine's tick keeps reading
+    `fallbackActive: true`. This is WU6's finding, now narrowed to the sources
+    the watchdog does not own. The candidate fix is that the engine's take
+    releases `Held`, as the control plane's does.
+- **Flake sightings in this PR, each with a home (the register's rule).**
+  - *CI run `36356479347`*: a bound authored in this PR (the §10.3 pin) did not
+    survive a cold runner. CI caught it and `1fa7fe6` fixed it (WU5, above).
+    It is not a register entry: there was no recurrence, and the cause is
+    known.
+  - *`a_slow_exit_inside_the_backstop_is_a_clean_stop`*, 2026-09-27: one local
+    failure at load about 4.9, over the ceiling, whose message was not kept.
+    It is entered in R11's register row (`docs/soak-protocol.md` §5) because
+    its cause is not known.
+  - The two abandoned WU7 starts are voided in `docs/09-measurements.md`, each
+    with its reason: the executor's own CPU-bound `grep` (load 3.39), and a
+    start at load 3.25, over the ceiling.
 
 ## 12 — Benchmark
 
