@@ -1333,3 +1333,42 @@ Measured on the normative machine, loads pasted, counted two ways. AC-25 #1
 holds for every kind from its observation, and for `audioLevel` end to end
 through the release binary. AC-25 #2 holds, with p99 of 9 µs. The merge word
 remains the user's.
+
+
+## Re-measured after WU8 and the limiter exemption (`d0936a3`, 2026-09-27)
+
+WU8 added two fields to the engine's §10.1 tick. The exemption changed how a
+rule's action is dispatched: `runCommand` now drops the limiter for it. Both are
+on the measured path, so both tiers were re-run on the rebuilt release engine.
+Each tier was gated on the 1-minute load being under 2.2.
+
+Tier cp, load **1.92 → 1.54**, 613.5 s:
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| stateChange (command accepted → dispatched) | 300 | 0.028 | 0.032 | 0.064 | 0.350 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaStart (take accepted → dispatched) | 300 | 0.033 | 0.070 | 0.081 | 0.088 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaEnd (itemEvent end arrives → dispatched) | 300 | 0.019 | 0.021 | 0.034 | 0.063 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| hotkey (carrying command arrives → dispatched) | 300 | 0.023 | 0.027 | 0.036 | 0.045 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| audioLevel (crossing frame arrives → dispatched) | 300 | 0.019 | 0.021 | 0.023 | 0.036 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| streamHealth (tick arrives → dispatched) | 300 | 0.023 | 0.025 | 0.030 | 0.088 | 300/300 | live: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree; reconnecting: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree |
+| timer (scheduled instant → dispatched) | 300 | 2.728 | 3.220 | 3.268 | 3.715 | 300/300 | issued 300 · audit 300 · markers 300 — agree |
+| timeOfDay (scheduled instant → dispatched) | 60 | 1.188 | 2.548 | 3.126 | 3.126 | 60/60 | issued 60 · audit 60 · markers 60 — agree |
+| autoFollow (itemEvent end arrives → advance dispatched) | 300 | 0.026 | 0.034 | 0.067 | 0.247 | 300/300 | issued 300 · audit 300 · on air AN 300 — agree |
+| hold (accepted → pending cancelled, AC-25 #2) | 600 | 0.003 | 0.004 | 0.009 | 0.045 | 600/600 | pending 600 · cancelled rows 600 · markers 0 (must be 0) — agree |
+
+Tier engine, load **1.54 → 2.18**, 191.0 s. `clock alignment: 301 edge calibrations of Date.now() − performance.now(); offset range 4.463 ms over the tier, largest step between adjacent calibrations 0.041 ms — each span is within that step of exact`
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| crossing ts → frame arrives (engine → socket → consumer) | 600 | 0.475 | 0.536 | 0.595 | 0.717 | 600/600 | plays 300 · crossings 300↑ 300↓ · audit 600 (joined 600) · markers 300↑ 300↓ — agree |
+| crossing ts → queued (AC-25 #1's span) | 600 | 0.488 | 0.547 | 0.608 | 0.728 | 600/600 | same |
+| crossing ts → dispatched | 600 | 0.498 | 0.559 | 0.622 | 0.740 | 600/600 | same |
+
+`AUTOMATION: PASS — cp worst max 3.715 ms (timer) over 10 spans; counts agree; load 1.92→1.54 | audioLevel crossing→queued p50 0.488 p99 0.608 max 0.728 ms, ≤1 frame 600/600; counts agree; load 1.54→2.18`
+
+**AC-25 #1's one frame is re-proven end to end: `audioLevel` crossing →
+queued, 600/600 within a frame, p99 0.608 ms.** The first run's single
+19.656 ms max did not recur: this run's max is 0.728 ms. The dispatch spans
+are unchanged within noise, so dropping the limiter from a rule's dispatch
+costs nothing measurable.
