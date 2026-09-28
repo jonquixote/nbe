@@ -1915,6 +1915,22 @@ at `619846c`.
     `fallbackActive: true`. This is WU6's finding, now narrowed to the sources
     the watchdog does not own. The candidate fix is that the engine's take
     releases `Held`, as the control plane's does.
+- **The limiter exemption** (`0e3b69b`; seam fix `3270bc1`), on the user's
+  decision of 2026-09-27. A rule's actions, and autoFollow's, dispatch without
+  §10.7's per-connection command limiter; sessions keep it unchanged. The
+  bounds on automation are once per frame per rule (§13.3 #3), preflight's
+  cycle refusal (§13.4), and the runtime's self-trigger suppression. Nothing
+  else was needed, because a rule cannot flood through any of the three:
+  - it fires at most once per frame;
+  - it cannot re-trigger itself in the same dispatch, which the runtime
+    suppresses;
+  - it cannot loop through deferred effects, which preflight refuses.
+
+  SPEC §13.3 gains the sentence (v0.4.7 row 6), because the text implied the
+  opposite: §13.1's "same preconditions as a human operator's commands" reads
+  naturally as including the limiter. Falsified: with the limiter re-applied,
+  20 of 30 are refused `E_RATE_LIMITED`. The test found a defect in WU2's test
+  seam first (`nextFrame`'s float drift), fixed on its own in `3270bc1`.
 - **Flake sightings in this PR, each with a home (the register's rule).**
   - *CI run `36356479347`*: a bound authored in this PR (the §10.3 pin) did not
     survive a cold runner. CI caught it and `1fa7fe6` fixed it (WU5, above).

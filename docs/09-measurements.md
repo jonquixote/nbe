@@ -1318,7 +1318,9 @@ Both were restored with `git checkout`.
   from the code; no action refusal was observed, because the harness paces
   under the limit. The first pacing, 50 ms, was refused `E_RATE_LIMITED` on the
   operator's own `view.cut`. **Whether §10.7 should bind automation actions is
-  the user's question, not a drive-by fix.**
+  the user's question, not a drive-by fix.** *Decided 2026-09-27: rule actions
+  are exempt (SPEC §13.3, v0.4.7 row 6; `0e3b69b`). With the limiter re-applied,
+  the exemption's guard reads 20 of 30 actions refused `E_RATE_LIMITED`.*
 - **`streamHealth`'s engine → tick hop is outside every span above.** The
   transport state is observed once a second (design note §5), so a
   `streamHealth` rule fires within a frame of the tick and within a second of

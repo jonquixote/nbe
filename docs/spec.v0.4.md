@@ -32,6 +32,7 @@ the user's act.
 | 3 | **The automation params contract** (Prompt 11 WU1). The schema types `trigger.params` and `conditions` as free objects, and §13.2 named each trigger without its parameters, so a rule whose params did not read could load and never fire. §13.2 gains the table preflight enforces, verbatim from `nbe_core::automation::validate_rule`, and preflight refuses a rule that does not read, by name. `rssKeyword` is refused outright: no RSS item is ever fetched (§13.4.1) | 13.2 (new table; the `rssKeyword` row), 13.4.1 (the `rssKeyword` reading and the `ticker.refreshRss` row, amended §2c-visible) | the shared 32-case fixture `crates/nbe-core/tests/fixtures/automation_rules.json`, read by `nbe-core`'s `every_fixture_rule_gets_its_verdict_from_the_rust_reading` and by the control plane's `every fixture rule gets its verdict from the control plane's reading, the same as preflight's` — a rule one side accepts and the other refuses fails both; `nbe-preflight`'s `every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name` |
 | 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
 | 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
+| 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -100,6 +101,16 @@ of `watchdog.rs`, with the tree clean after each:
 | (ii) both counters' increments dropped | 3 of 4 | `one trip per episode, not per frame` (left `(0, 0)`, right `(1, 0)`); the other two read left `(0, 0)`, right `(1, 1)` |
 | (iii) K = 1 | `one_on_time_frame_does_not_clear_and_a_late_frame_restarts_the_run` | `one on-time frame must NOT clear a tripped slate (K = 1)` |
 | (iv) the recovery clears EVERY source (`fallback_sources.store(0)`) | `the_recovery_never_releases_an_operators_slate` | `the operator's slate is still on air: the recovery releases only its own` |
+
+**Row 6's guard, run at `0e3b69b` (the landing):** the automation suite #
+pass 29; # fail 0. **Falsified at `0e3b69b`** by re-applying the limiter to rule
+actions (`dispatch(deps, …)` for every command), restored from a saved copy.
+The test failed with `no action refused — in particular none E_RATE_LIMITED`:
+actual `['E_RATE_LIMITED'` × 20`]`, expected `[]`. The burst of 10 was
+admitted, and the other 20 were refused. The test's own guard found a
+test-seam defect first: `nextFrame()`'s `+= 1000/30` floored step ten into step
+nine's frame, so 29 of 30 dispatched. It was fixed on its own in `3270bc1`
+(WU2's seam; 28/28 at that commit).
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2956,6 +2967,20 @@ unaffected, because they report states that are still true.
 1. Rules evaluate against state changes, not per frame.
 2. Every automation action is written to the audit log (Section 10.7).
 3. Automation actions are rate-limited; a rule MUST NOT fire more than once per frame.
+
+**Rule actions and the command limiter (normative, new in v0.4.7).** The control
+plane rate-limits commands per connection per command family: 10 per burst,
+refilled at 5/s (`RateLimiter`, `server.ts`). This is flood protection for
+sessions. The tree applies it to every family, which is wider than §10.7's
+ticker sentence, and the tree wins. **A rule's actions are exempt.**
+Automation's rate limit is #3's once per frame per rule, and its other bounds
+are §13.4's cycle refusal and the runtime's self-trigger suppression. The "same
+preconditions as a human operator's commands" of §13.1 are the command's own —
+role, state and payload — not a session's flood protection. Before v0.4.7 the
+limiter bound a rule too, because a rule dispatches on its own connection
+(`automation:<ruleId>`). A rule could therefore sustain only 5 actions a second
+in a family, below once per frame, and its 11th action in a burst was refused
+(Prompt 11 WU7's finding).
 
 ## 13.4 Cycle detection
 

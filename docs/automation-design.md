@@ -84,13 +84,15 @@ monotonic clock (`performance.now()`), indexed from the clock's origin. The
 limiter keys on (rule, frame index). Two triggers that straddle a frame
 boundary may both fire; that is once per frame, which is what §13.3 #3 asks.
 
-**§10.7's limiter applies too** (found by WU7). A rule's action runs on
+~~**§10.7's limiter applies too** (found by WU7). A rule's action runs on
 connection `automation:<ruleId>`. `RateLimiter` allows 10 per burst, refilled
 at 5/s per connection per command family, so a rule sustains at most 5
-actions/s in one family. That is below once per frame (30/s). An action over
-the limit is refused `E_RATE_LIMITED` and audited as a refused
-`automation.action`, as an operator's command would be. This is recorded for
-the user, not changed (`docs/09-measurements.md`, WU7).
+actions/s in one family. That is below once per frame (30/s).~~ *(§2c: true
+until `0e3b69b`.)* **A rule's actions are exempt from the command limiter**,
+by the user's decision of 2026-09-27 (SPEC §13.3, v0.4.7 row 6).
+`runCommand` dispatches them without `rateLimiter`. Automation's bounds are its
+own: once per frame per rule, preflight's cycle refusal, and the runtime's
+self-trigger suppression. Sessions keep the limiter unchanged.
 
 **B5 — "pending".** Pending means fired but not yet dispatched: queued in the
 evaluator, as B5 decided. A hold cancels everything pending: `automation.hold
