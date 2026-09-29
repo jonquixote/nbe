@@ -1924,11 +1924,33 @@ at `619846c`.
     and does not release the watchdog's slate. It is guarded by
     `prompt11_slate` (3) and `slate-release.e2e.ts` (2, the real engine
     binary), and falsified (i)–(iii) in SPEC v0.4.7 row 7. WU6's finding is
-    now closed for every source: each has exactly one release path.
-    *Recorded, not fixed: a resync whose snapshot says `fallbackActive: false`
+    now closed for every source: ~~each has exactly one release path~~.
+    ~~*Recorded, not fixed: a resync whose snapshot says `fallbackActive: false`
     still does not release `Held`. A take missed during an outage is replayed
     as the snapshot's `viewItem`, but the slate stays until the next take or
-    cut. The operator can recover it, and the tick shows it.*
+    cut. The operator can recover it, and the tick shows it.*~~ **FIXED in PR
+    #34's fix round, `a8678d8`**, and wider than recorded. The two-key pass of
+    2026-09-29 found the control plane clearing `fallbackActive` in
+    `loadPackage` and `unloadPackage` as well as in `take`, while the engine
+    followed only the take. So view.fallback → show.stop → show.unload →
+    show.load aired the next show under the old show's slate. The invariant is
+    now release parity: the engine releases `Held` exactly where the control
+    plane clears the flag — take and cut, `show.load`, and a resync reporting
+    `false` (both branches pinned). The watchdog's slate keeps its one release,
+    the recovery. Guards: `prompt11_slate` 3 → 7 and `slate-release.e2e.ts`
+    2 → 4 (the pass's scenario, and a reload). Falsifications are in SPEC
+    v0.4.7 row 7.
+    - **`show.unload`, as the tree has it** (the tree wins over the order's
+      wording on two points). The control plane forwards `show.unload`, but the
+      engine has no route for it, so the directive is ignored. After an unload
+      with no following load, the engine keeps rendering whatever its View
+      last showed: the old show's item, or the slate if one was held. Nothing
+      is taken off air. The tick keeps reporting the engine's `fallbackActive`
+      while the control plane's state says `false`. With no package loaded
+      there is no take to recover with. The next `show.load` releases the
+      slate and clears the View, as does a resync reporting `false`.
+    - **Queued (not this PR):** route `show.unload` to the engine, clearing its
+      package, View, preview and `Held`, so an unloaded show goes off air.
 - **The limiter exemption** (`0e3b69b`; seam fix `3270bc1`), on the user's
   decision of 2026-09-27. A rule's actions, and autoFollow's, dispatch without
   §10.7's per-connection command limiter; sessions keep it unchanged. The

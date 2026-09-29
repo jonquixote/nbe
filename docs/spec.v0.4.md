@@ -33,7 +33,7 @@ the user's act.
 | 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
 | 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
 | 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
-| 7 | **A take or cut releases the operator's slate; each slate source has one release path** (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. `Held` is released by take and cut, and `Watchdog` by the recovery alone | 10.3 (one paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds |
+| 7 | **Release parity: the operator's slate comes down wherever the control plane clears `fallbackActive`** (*reworded before ratification, §2c: it read* ~~"A take or cut releases the operator's slate; each slate source has one release path"~~) (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. `Held` is released by take and cut, `show.load`, and a resync reporting `false` (the fix round, on the two-key pass of 2026-09-29), and `Watchdog` by the recovery alone | 10.3 (the release-parity paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds. The fix round adds `prompt11_slate` 3 → 7 (a resync reconciles both ways; a load releases; neither releases the watchdog's slate; a persisting render failure re-engages after every release) and the e2e 2 → 4 (unload then load; a reload) |
 | 8 | **§13.4.1's two missing edges, and a static reader for the table** (PR #34's fix round, on the two-key pass of 2026-09-29). `scene.arm` writes `previewItem` when the preview is empty, and `show.stop` writes `streamState` and `recordState`. Both edges are now in the data, so preflight refuses the self-cycles it admitted (exit 0 at `63720c3`). The table's "no missing edge" claim has a mechanism: a static scan of every handler set-compared with the data | 13.4.1 (the scene and show.stop rows; "Checked against the tree", struck §2c) | `effects-static.test.ts` (2: the vacuity pin and the set-compare); `nbe-preflight`'s `the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_clean_rule`; the runtime row check, now taking both paths |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
@@ -140,6 +140,20 @@ a saved copy:
 | (a) an edge deleted from the data (`scene.arm`'s `previewItem`) | the static set-compare | `scene.arm: writes previewItem but its row does not name it — a missing edge` |
 | (b) an undeclared write added to a handler (`element.toggle` writing `recordState`) | the static set-compare | `element.toggle: writes recordState but its row does not name it — a missing edge` |
 | (c) the `scene.arm` edge removed, preflight re-run | the preflight pin | `{ … "scene.arm" … } must fail preflight; errors []`, left `0`: the pass's own signature, exit 0 |
+
+**Row 7, the fix round's release parity, run at `a8678d8`/`990a22a`:**
+`prompt11_slate` ok. 7 passed; 0 failed · `slate-release.e2e.ts` # pass 4; #
+fail 0. **Falsified**, each mutation restored from a saved copy of
+`directive.rs` or `render.rs`, with the release engine rebuilt for the e2e and
+again after the restore:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) `on_show_load`'s release reverted | `a_show_load_releases_the_operators_slate`, the render-failure test's load step, and e2e 3 and 4 | Rust `the new show does not air under the old show's slate` (left `[12, 200, 90, 255]`). e2e: `after unload then load, …` and `after a reload, the engine and the control plane agree: no slate`, each with actual `{ controlPlane: false, engineConnected: true, engineReport: true }`. The first run failed e2e 4 only by cascade (test 3 left the show stopped); `990a22a` made each test start a running show, and the re-run shows test 4's own split brain |
+| (ii) the resync's `false` branch removed | `a_resync_reconciles_the_operators_slate_both_ways`, and the render-failure test's resync step | `a resync reporting false: …` left `([12, 200, 90, 255], true, true)` |
+| (ii-b) the resync's `true` branch removed | `a_resync_reconciles_the_operators_slate_both_ways` | `a resync reporting true: …` left `([0, 0, 255, 255], false, false)` |
+| (iii) the load and the false resync also release the watchdog's slate | `a_load_or_a_false_resync_does_not_release_the_watchdogs_slate` | `neither a load nor a false resync releases the watchdog's slate` |
+| (iv) a render failure engages only on its episode's first failed frame | `a_persisting_render_failure_re_engages_after_any_release` | `the View still fails after a take: the next failed frame re-engages the slate` |
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2383,13 +2397,22 @@ frame rate.
 the operator's `view.fallback`, a resync snapshot that says so, or a View render
 failure — stays on air through the watchdog's recovery.
 
-**Each slate source has exactly one release path (normative, new in v0.4.7,
-PR #34's fix round).** The operator's slate (`view.fallback`, a resync that
-says so, or a render failure) is released by a take or a cut (§13.4.1), exactly
-as the control plane's `take` clears `fallbackActive`. The watchdog's slate is
-released by its recovery, K on-time frames, and never by a take: new content
-does not cure lateness. A render failure that persists re-engages the slate on
-its next failed frame.
+**Release parity (normative, new in v0.4.7, PR #34's fix round).** The
+operator's slate (`view.fallback`, a resync that says so, or a render failure)
+is released exactly where the control plane clears `fallbackActive`: a take or
+a cut (§13.4.1), a `show.load`, or a resync that reports `false`. The
+watchdog's slate has exactly one release path, its recovery (K on-time frames),
+and none of the operator's releases touches it: new content does not cure
+lateness. A render failure that persists re-engages the slate on its next
+failed frame, after any release.
+
+*Reworded before ratification (§2c). The paragraph read:* ~~"**Each slate
+source has exactly one release path** … The operator's slate … is released by a
+take or a cut (§13.4.1), exactly as the control plane's `take` clears
+`fallbackActive`."~~ *The two-key pass of 2026-09-29 found the control plane
+clearing the flag in two more places the engine did not follow:
+`loadPackage` / `unloadPackage`, and the resync snapshot. A new show aired
+under the old show's slate.*
 
 ## 10.4 Health endpoint
 
