@@ -839,11 +839,13 @@ jobs:
           if [ "$ran" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to execute rather than skip, got $exercised"; exit 1; fi
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
-        # Two floors, rule 8. Reads every command handler's writes to the
-        # fields a stateChange rule can name — directly, through state methods
-        # and local helpers — and set-compares them with the effects data; a
-        # vacuity test pins that the scanner still sees the writes it must.
-        # Static: no preflight, no skip path, so floors equal at the full count.
+        # Two floors, rule 8. Reads every REGISTERED command's handler writes
+        # to the fields a stateChange rule can name — directly, through state
+        # methods and local helpers — and set-compares them with the effects
+        # data; the vacuity test holds scanned == buildRegistry == effects
+        # data, three ways (the re-pass's S-1), and pins that the scanner still
+        # sees the writes it must. Static: no preflight, no skip path, so
+        # floors equal at the full count (2, unchanged by S-1).
         run: |
           set -u
           out=$(node --import tsx --test src/effects-static.test.ts 2>&1)

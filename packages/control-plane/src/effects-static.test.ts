@@ -16,10 +16,22 @@
 //! Over-approximating, deliberately: a name match is a call. A write the
 //! scanner cannot see (a new indirection) is its blind spot; the vacuity test
 //! pins that it still sees the writes it must.
+//!
+//! WHICH commands: the server's own dispatch table. The re-pass of 2026-09-29
+//! (S-1) found the scan enumerating `commands/*.ts` instead, so a command
+//! wired into `buildRegistry` from anywhere else — and missing from the
+//! effects data — was invisible to both. The key set is now read from
+//! `buildRegistry` (dispatch.ts, what `createControlPlaneServer` dispatches
+//! through), handler bodies are found in every non-test source file under
+//! `src/`, and the vacuity test holds scanned == registry == effects data,
+//! three ways: a command registered anywhere fails the scan until its
+//! effects row exists.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+
+import { buildRegistry, type DispatchDeps } from "./dispatch.js";
 
 const SRC = new URL("./", import.meta.url);
 const read = (rel: string): string => readFileSync(new URL(rel, SRC), "utf8");
@@ -80,8 +92,14 @@ function close(units: Map<string, Unit>): Map<string, Set<string>> {
 function handlerWrites(): Map<string, Set<string>> {
   const methods = stateMethods();
   const out = new Map<string, Set<string>>();
-  for (const file of readdirSync(new URL("commands/", SRC)).filter((f) => f.endsWith(".ts"))) {
-    const src = read(`commands/${file}`);
+  // Every non-test source file under src/: a handler may be registered from
+  // anywhere `buildRegistry` reaches, not only commands/.
+  const files = (readdirSync(SRC, { recursive: true }) as string[]).filter(
+    (f) => f.endsWith(".ts") && !/\.(test|e2e|measure|d)\.ts$/.test(f),
+  );
+  for (const file of files) {
+    const src = read(file);
+    if (!/reg\.set\("/.test(src)) continue;
     // The file's local helpers (top-level functions), followed transitively.
     const helpers = new Map<string, Unit>();
     for (const m of src.matchAll(/\n(?:export )?(?:async )?function (\w+)\([^)]*\)[^{]*\{/g)) {
@@ -131,7 +149,18 @@ const EXCEPTIONS: Record<string, { why: string; premise: () => boolean }> = {
 
 test("the scanner reads every registered handler and sees the writes it must (guards the test below)", () => {
   const writes = handlerWrites();
-  assert.deepEqual([...writes.keys()].sort(), Object.keys(EFFECTS.commands).sort(), "one handler per §16 command, 55");
+  // Three ways: what the scanner found in the source, what the server
+  // actually dispatches, and what §13.4.1's data covers. Each difference is
+  // named, with the side it is missing from.
+  const scanned = new Set(writes.keys());
+  const registry = new Set<string>(buildRegistry({} as DispatchDeps).keys());
+  const data = new Set(Object.keys(EFFECTS.commands));
+  const differences: string[] = [];
+  for (const [name, set] of [["the scan", scanned], ["the registry", registry], ["the effects data", data]] as const) {
+    for (const k of new Set([...scanned, ...registry, ...data])) if (!set.has(k)) differences.push(`${k}: missing from ${name}`);
+  }
+  assert.deepEqual(differences.sort(), [], "scanned handlers, the dispatch registry and the effects data disagree");
+  assert.equal(registry.size, 55, "§16's 55 commands");
   // Writes reached each way: directly, through a state method, through a
   // method conditionally — the pass's two finds among them.
   const must: Record<string, string[]> = {
