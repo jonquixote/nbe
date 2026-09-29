@@ -1907,14 +1907,24 @@ at `619846c`.
     `fetch_and`. The recovery releases only the watchdog's own slate. Changing
     the field's type made all twenty stale readers fail to compile, so none
     could keep reading the old flag silently.
-  - **Open, for the user (out of WU8's scope, recorded rather than fixed).**
-    The `Held` sources are still never released by the engine. After an
-    operator's `view.fallback`, a take clears the control plane's
+  - ~~**Open, for the user (out of WU8's scope, recorded rather than
+    fixed).** The `Held` sources are still never released by the engine.
+    After an operator's `view.fallback`, a take clears the control plane's
     `fallbackActive` (`state.ts` `take`), but the engine's `on_take` releases
     nothing. The View keeps the slate, and the engine's tick keeps reading
     `fallbackActive: true`. This is WU6's finding, now narrowed to the sources
     the watchdog does not own. The candidate fix is that the engine's take
-    releases `Held`, as the control plane's does.
+    releases `Held`, as the control plane's does.~~ **FIXED in PR #34's fix
+    round, `5942305`** (the user's word of 2026-09-27: fixed in this PR,
+    before the two-key pass). `on_take` releases `Held` for both take and cut,
+    and does not release the watchdog's slate. It is guarded by
+    `prompt11_slate` (3) and `slate-release.e2e.ts` (2, the real engine
+    binary), and falsified (i)–(iii) in SPEC v0.4.7 row 7. WU6's finding is
+    now closed for every source: each has exactly one release path.
+    *Recorded, not fixed: a resync whose snapshot says `fallbackActive: false`
+    still does not release `Held`. A take missed during an outage is replayed
+    as the snapshot's `viewItem`, but the slate stays until the next take or
+    cut. The operator can recover it, and the tick shows it.*
 - **The limiter exemption** (`0e3b69b`; seam fix `3270bc1`), on the user's
   decision of 2026-09-27. A rule's actions, and autoFollow's, dispatch without
   §10.7's per-connection command limiter; sessions keep it unchanged. The

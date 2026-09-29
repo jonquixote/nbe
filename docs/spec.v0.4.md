@@ -33,6 +33,7 @@ the user's act.
 | 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
 | 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
 | 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
+| 7 | **A take or cut releases the operator's slate; each slate source has one release path** (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. `Held` is released by take and cut, and `Watchdog` by the recovery alone | 10.3 (one paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -111,6 +112,22 @@ admitted, and the other 20 were refused. The test's own guard found a
 test-seam defect first: `nextFrame()`'s `+= 1000/30` floored step ten into step
 nine's frame, so 29 of 30 dispatched. It was fixed on its own in `3270bc1`
 (WU2's seam; 28/28 at that commit).
+
+**Row 7's guards, run at `5942305` (the landing).** The load was 3.94 → 3.31,
+over the ceiling, so these are counts, not timing; the quiescent run is in PR
+#34's gate. `prompt11_slate` ok. 3 passed; 0 failed · `slate-release.e2e.ts` #
+pass 2; # fail 0 · `prompt11_watchdog` ok. 4 passed; 0 failed
+(`the_recovery_never_releases_an_operators_slate` among them).
+
+**Row 7, falsified at `5942305`.** Each mutation was restored from a saved copy
+of `directive.rs`, with the tree clean after each:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) the release reverted, which is the pre-fix tree | both `prompt11_slate` split-brain tests, and both e2e tests (release engine rebuilt) | Rust: `after the take: (View centre pixel, slate on air, tick fallbackActive)` — left `([12, 200, 90, 255], true, true)`, right `([0, 0, 255, 255], false, false)`, and the same for the cut. e2e: `after the take, the engine and the control plane agree: no slate` — actual `{ controlPlane: false, engineConnected: true, engineReport: true }`, the split brain on the wire, and the same after the cut |
+| (ii) the release only when the directive is named `view.take` | `a_cut_releases_the_operators_slate_too` only | `after the cut: …` left `([12, 200, 90, 255], true, true)`. The e2e cut still passes, because the control plane forwards its cut as `view.take`: the engine's `view.cut` route is guarded by the Rust test alone |
+| (iii) the take also releases the watchdog's slate | `a_take_does_not_release_the_watchdogs_slate` | `a take must not release the watchdog's slate` |
+| (iv) — WU8's pin, unchanged | `the_recovery_never_releases_an_operators_slate` passes at `5942305` | orthogonal release paths, each pinned |
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -2354,6 +2371,14 @@ frame rate.
 the operator's `view.fallback`, a resync snapshot that says so, or a View render
 failure — stays on air through the watchdog's recovery.
 
+**Each slate source has exactly one release path (normative, new in v0.4.7,
+PR #34's fix round).** The operator's slate (`view.fallback`, a resync that
+says so, or a render failure) is released by a take or a cut (§13.4.1), exactly
+as the control plane's `take` clears `fallbackActive`. The watchdog's slate is
+released by its recovery, K on-time frames, and never by a take: new content
+does not cure lateness. A render failure that persists re-engages the slate on
+its next failed frame.
+
 ## 10.4 Health endpoint
 
 The control plane MUST expose:
@@ -3033,7 +3058,7 @@ does. The trigger readings the cells assume:
 
 | Commands | `stateChange` | `mediaStart` | `mediaEnd` | Other triggers | Derived from |
 |---|---|---|---|---|---|
-| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first. *Amended in Prompt 11 WU5 (§2c), from the tree:* the take also clears `previewItem` when the previewed item is taken, and clears `fallbackActive` (`state.ts` `take`: `if (this.previewItem === itemRef) this.previewItem = null; this.fallbackActive = false`) | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel`, **deferred** — the take swaps the clip bus's source, and the crossing arrives on a later engine frame (`server.ts`, `audioLevelCrossing` → `NO_CAUSE`). *~~`audioLevel` —~~ amended in WU5 (§2c): the cell did not say deferred* | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
+| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first. *Amended in Prompt 11 WU5 (§2c), from the tree:* the take also clears `previewItem` when the previewed item is taken, and clears `fallbackActive` (`state.ts` `take`: `if (this.previewItem === itemRef) this.previewItem = null; this.fallbackActive = false`). *And on the engine (PR #34's fix round, §2c): this sentence was written ahead of the engine. Until `5942305`, the engine kept the operator's slate on air after a take, and its tick kept reporting `fallbackActive: true`. Now `on_take` (`directive.rs`), which handles both `view.take` and `view.cut` and is where the control plane's cut arrives as `view.take`, releases `FallbackSource::Held`. It does not release the watchdog's slate (§10.3)* | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel`, **deferred** — the take swaps the clip bus's source, and the crossing arrives on a later engine frame (`server.ts`, `audioLevelCrossing` → `NO_CAUSE`). *~~`audioLevel` —~~ amended in WU5 (§2c): the cell did not say deferred* | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` (incl. its `release_fallback(Held)`) → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
 | `item.stop` | yes — `PLAYING → READY` | no | **no** — a stop is not a completion: the item leaves `PLAYING` for `READY`, never `DONE` | — | §16.4 cell; `state.ts` `stopItem`, `markDone` (accepts only `PLAYING`); `directive.rs` routing (`item.stop` is not routed) |
 | `show.start` | yes — show `LOADED → RUNNING`, clock `STOPPED → RUNNING` | no | no | `timer`, deferred — the show clock starts | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_start` |
 | `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth`, **deferred** — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1), observed on the next §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell did not say deferred* | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
