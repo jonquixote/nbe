@@ -79,6 +79,19 @@ async function engineReports(want: boolean, from: number): Promise<Record<string
   return last ?? {};
 }
 
+/** The next `n` ticks after `from` that carry a fresh engine report. */
+async function nextReports(from: number, n: number): Promise<Record<string, unknown>[]> {
+  const deadline = Date.now() + REPORT_MS + n * 1000;
+  for (;;) {
+    const fresh = ticks
+      .slice(from)
+      .map((t) => t["data"] as Record<string, unknown>)
+      .filter((d) => d?.["engineConnected"] === true);
+    if (fresh.length >= n || Date.now() > deadline) return fresh.slice(0, n);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 function writePackage(): string {
   const dir = tempDir("nbe-slate-pkg-");
   mkdirSync(join(dir, "media"), { recursive: true });
@@ -197,4 +210,52 @@ test("[PR34] view.fallback then view.cut: the cut releases the slate too", async
     { engineConnected: true, engineReport: false, controlPlane: false },
     "after the cut, the engine and the control plane agree: no slate",
   );
+});
+
+// PR #34's fix round, release parity: the control plane's `loadPackage`
+// clears `fallbackActive`, so the engine must let go of the operator's slate
+// on `show.load` too — the two-key pass of 2026-09-29 found a new show airing
+// under the old show's slate. Asserted after the load, and again after
+// show.start with NO take in between (a take would release it anyway and
+// hide the load's own release).
+
+async function slateThenStop(): Promise<void> {
+  const from = ticks.length;
+  await ok("view.fallback", {});
+  const up = await engineReports(true, from);
+  assert.equal(up["fallbackActive"], true, `precondition: the engine reports the slate: ${JSON.stringify(up)}`);
+  assert.equal(state.fallbackActive, true, "precondition: the control plane holds it too");
+  await ok("show.stop", {});
+}
+
+async function airsWithoutTheSlate(what: string): Promise<void> {
+  let from = ticks.length;
+  const down = await engineReports(false, from);
+  assert.deepEqual(
+    { engineConnected: down["engineConnected"], engineReport: down["fallbackActive"], controlPlane: state.fallbackActive },
+    { engineConnected: true, engineReport: false, controlPlane: false },
+    `after ${what}, the engine and the control plane agree: no slate`,
+  );
+  from = ticks.length;
+  await ok("show.start", {});
+  const aired = await nextReports(from, 2);
+  assert.ok(aired.length === 2, `two fresh engine reports after show.start, saw ${aired.length}`);
+  assert.deepEqual(
+    aired.map((d) => d["fallbackActive"]),
+    [false, false],
+    `the new show airs without the slate after ${what} (no take in between)`,
+  );
+}
+
+test("[PR34] view.fallback, show.stop, show.unload, show.load: the new show airs without the slate", async () => {
+  await slateThenStop();
+  await ok("show.unload", {});
+  await ok("show.load", { packagePath: writePackage() });
+  await airsWithoutTheSlate("unload then load");
+});
+
+test("[PR34] view.fallback, show.stop, show.load (reload): the reloaded show airs without the slate", async () => {
+  await slateThenStop();
+  await ok("show.load", { packagePath: writePackage(), mode: "reload" });
+  await airsWithoutTheSlate("a reload");
 });

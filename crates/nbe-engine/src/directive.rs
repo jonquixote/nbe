@@ -344,6 +344,12 @@ impl DirectiveHandler {
         *self.state.view_item.lock().unwrap() = None;
         *self.state.preview_item.lock().unwrap() = None;
         *self.state.transition.lock().unwrap() = None;
+        // Release parity (PR #34's fix round): the control plane's
+        // `loadPackage` clears `fallbackActive`, so the engine lets go of the
+        // operator's slate here too — a new show must not air under the old
+        // show's slate. Never the watchdog's: its release is its recovery.
+        self.state
+            .release_fallback(crate::state::FallbackSource::Held);
         info!(path, "show.load: package indexed, fallback resident");
         Ok(())
     }
@@ -1382,9 +1388,18 @@ impl DirectiveHandler {
             "RUNNING" => self.state.clock.lock().unwrap().start(),
             _ => self.state.clock.lock().unwrap().stop(),
         }
-        if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
-            self.state
-                .engage_fallback(crate::state::FallbackSource::Held);
+        // The snapshot is the control plane's state, so it reconciles the flag
+        // both ways (PR #34's fix round): `true` engages the operator's slate,
+        // `false` releases it — a take or a load the engine missed during an
+        // outage is replayed here. Never the watchdog's slate.
+        match snapshot.get("fallbackActive").and_then(|v| v.as_bool()) {
+            Some(true) => self
+                .state
+                .engage_fallback(crate::state::FallbackSource::Held),
+            Some(false) => self
+                .state
+                .release_fallback(crate::state::FallbackSource::Held),
+            None => {}
         }
         // The snapshot is authoritative about BOTH buses, including when a bus
         // is empty. Reading only the naming case left the previous item on air

@@ -259,3 +259,156 @@ async fn a_take_does_not_release_the_watchdogs_slate() {
         "the next frame shows the take's content"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PR #34's fix round, release parity: the engine releases the operator's slate
+// exactly where the control plane clears `fallbackActive` — take/cut,
+// `show.load` (`loadPackage`), and a resync that reports `false`. The
+// watchdog's slate is released by none of them.
+// ---------------------------------------------------------------------------
+
+/// The snapshot a control plane sends on resync (§5.9.4), A2 on the View.
+fn resync(sv: u64, fallback_active: bool) -> DirectiveFrame {
+    directive(
+        nbe_protocol::command::RESYNC,
+        sv,
+        serde_json::json!({}),
+        serde_json::json!({
+            "showState": "RUNNING",
+            "viewItem": "A2",
+            "viewItemStartFrame": 0,
+            "previewItem": null,
+            "itemStates": { "A2": "LIVE" },
+            "sceneStates": {},
+            "visibleOverlays": [],
+            "automationHold": false,
+            "fallbackActive": fallback_active,
+            "stateVersion": sv
+        }),
+    )
+}
+
+fn load(dir: &std::path::Path, sv: u64) -> DirectiveFrame {
+    directive(
+        "show.load",
+        sv,
+        serde_json::json!({}),
+        serde_json::json!({ "packagePath": dir.to_string_lossy() }),
+    )
+}
+
+#[tokio::test]
+async fn a_resync_reconciles_the_operators_slate_both_ways() {
+    let (_dir, state, handler, mut render) = engine().await;
+
+    // `true`: the control plane holds the slate; the engine engages it.
+    handler.apply(&resync(2, true)).await.unwrap();
+    assert_eq!(
+        (
+            view_at(&mut render, 1).await,
+            state.fallback_held_by(FallbackSource::Held),
+            tick_fallback(&state)
+        ),
+        (SLATE, true, true),
+        "a resync reporting true: (View centre pixel, operator's slate held, tick fallbackActive)"
+    );
+
+    // `false`: a release the engine missed (a take during an outage) is
+    // replayed by the snapshot; the engine lets go.
+    handler.apply(&resync(3, false)).await.unwrap();
+    assert_eq!(
+        (
+            view_at(&mut render, 2).await,
+            state.fallback_held_by(FallbackSource::Held),
+            tick_fallback(&state)
+        ),
+        (BLUE, false, false),
+        "a resync reporting false: (View centre pixel, operator's slate held, tick fallbackActive)"
+    );
+}
+
+#[tokio::test]
+async fn a_show_load_releases_the_operators_slate() {
+    let (dir, state, handler, mut render) = engine().await;
+    operator_slate(&state, &handler, &mut render).await;
+
+    // As the control plane's `loadPackage` clears `fallbackActive`.
+    handler.apply(&load(dir.path(), 3)).await.unwrap();
+    let px = view_at(&mut render, 2).await;
+    assert_ne!(
+        px, SLATE,
+        "the new show does not air under the old show's slate"
+    );
+    assert_eq!(
+        (state.fallback_active(), tick_fallback(&state)),
+        (false, false),
+        "after the load: (slate on air, tick fallbackActive)"
+    );
+}
+
+#[tokio::test]
+async fn a_load_or_a_false_resync_does_not_release_the_watchdogs_slate() {
+    let (dir, state, handler, mut render) = engine().await;
+
+    render.injected_view_delay = Some(TRIP_WORK);
+    let late = render.render_frame(1, Some(TRIP_BUDGET)).view_late_by;
+    assert!(late.is_some_and(|l| l > 2 * TRIP_BUDGET), "{late:?}");
+    assert!(state.fallback_held_by(FallbackSource::Watchdog));
+
+    handler.apply(&load(dir.path(), 2)).await.unwrap();
+    handler.apply(&resync(3, false)).await.unwrap();
+    assert!(
+        state.fallback_held_by(FallbackSource::Watchdog) && tick_fallback(&state),
+        "neither a load nor a false resync releases the watchdog's slate"
+    );
+    for f in 0..K - 1 {
+        assert_eq!(
+            view_at(&mut render, 2 + f).await,
+            SLATE,
+            "on-time frame {} of K = {K}: the watchdog's slate stays",
+            f + 1
+        );
+    }
+    view_at(&mut render, 2 + K).await;
+    assert!(
+        !state.fallback_active() && !tick_fallback(&state),
+        "released by its recovery alone, on the K-th on-time frame's report"
+    );
+}
+
+#[tokio::test]
+async fn a_persisting_render_failure_re_engages_after_any_release() {
+    let (dir, state, handler, mut render) = engine().await;
+    render.fail_view = true;
+    render.render_frame(1, Some(ON_TIME));
+    assert!(
+        state.fallback_held_by(FallbackSource::Held),
+        "precondition: the failure engaged the slate"
+    );
+
+    let releases: [(&str, DirectiveFrame); 3] = [
+        (
+            "a take",
+            directive(
+                "view.take",
+                2,
+                serde_json::json!({ "itemRef": "A2" }),
+                serde_json::json!({ "transition": "cut" }),
+            ),
+        ),
+        ("a show.load", load(dir.path(), 3)),
+        ("a resync reporting false", resync(4, false)),
+    ];
+    for (i, (what, d)) in releases.into_iter().enumerate() {
+        handler.apply(&d).await.unwrap();
+        assert!(
+            !state.fallback_held_by(FallbackSource::Held),
+            "{what} released the operator's slate"
+        );
+        render.render_frame(2 + i as u64, Some(ON_TIME));
+        assert!(
+            state.fallback_held_by(FallbackSource::Held),
+            "the View still fails after {what}: the next failed frame re-engages the slate"
+        );
+    }
+}

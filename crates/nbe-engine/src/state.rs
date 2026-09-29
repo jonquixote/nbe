@@ -451,9 +451,11 @@ pub struct FrameSnapshot {
 #[repr(u8)]
 pub enum FallbackSource {
     /// The operator's `view.fallback`, a resync snapshot that says so, or a
-    /// View render failure. Released by a take or cut (`on_take`), as the
-    /// control plane's `take` clears `fallbackActive` (PR #34's fix round). A
-    /// render failure that persists re-engages it on the next failed frame.
+    /// View render failure. Released exactly where the control plane clears
+    /// `fallbackActive`: a take or cut (`on_take`), a `show.load`
+    /// (`on_show_load`), and a resync that reports `false` (`on_resync`) —
+    /// PR #34's fix round. A render failure that persists re-engages it on the
+    /// next failed frame.
     Held = 0b01,
     /// The frame watchdog: engaged on a trip, released by its recovery
     /// (`watchdog.rs`, `WATCHDOG_CLEAR_AFTER_ON_TIME`).

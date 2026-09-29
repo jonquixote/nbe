@@ -547,11 +547,14 @@ jobs:
             echo "FAIL prompt11_watchdog: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the slate-release suite actually ran (PR #34 fix round)
-        # Three tests on a real render loop: view.fallback then take (View
+        # Seven tests on a real render loop: view.fallback then take (View
         # pixels, the slate bit and the tick together); the engine's view.cut
-        # route releases too; a take does NOT release the watchdog's slate.
-        # prompt04's policy — no adapter fails loudly, no SKIP — so floors
-        # equal at the full count (3).
+        # route releases too; a take does NOT release the watchdog's slate;
+        # and release parity (the fix round) — a resync reconciles both ways,
+        # a show.load releases, neither releases the watchdog's slate, and a
+        # persisting render failure re-engages after every release. prompt04's
+        # policy — no adapter fails loudly, no SKIP — so floors equal at the
+        # full count (7; 3 at 5942305).
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt11_slate -- --nocapture 2>&1)
@@ -562,12 +565,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "prompt11_slate: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
-          if [ "$ran" -lt 3 ]; then
-            echo "FAIL prompt11_slate: expected at least 3 tests to run, got $ran"; exit 1
+          echo "prompt11_slate: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=7 exercised>=7)"
+          if [ "$ran" -lt 7 ]; then
+            echo "FAIL prompt11_slate: expected at least 7 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 3 ]; then
-            echo "FAIL prompt11_slate: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 7 ]; then
+            echo "FAIL prompt11_slate: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round)"
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
@@ -864,7 +867,8 @@ jobs:
         run: cargo build -p nbe-engine --release
       - name: the slate-release end-to-end actually ran (PR #34)
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
-        # not a pass), and zero failures. The file never skips: a missing
+        # not a pass), and zero failures. 4 tests: take, cut, and (the fix
+        # round) unload-then-load and reload — 2 at 5942305. The file never skips: a missing
         # engine binary fails its `before`, which fails both tests.
         run: |
           set -u
@@ -875,10 +879,10 @@ jobs:
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "slate-release e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          echo "slate-release e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL slate-release e2e: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 2 ]; then echo "FAIL slate-release e2e: expected at least 2 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 2 ]; then echo "FAIL slate-release e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.
