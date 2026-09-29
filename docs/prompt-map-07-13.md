@@ -1813,8 +1813,12 @@ at `619846c`.
   - **The runtime suppresses a self-trigger.** It checks whether the rule is in
     the event's cause chain, and audits `automation.suppressedSelfTrigger`.
   - **§13.4.1, row by row.** The runtime check executes all 55 commands
-    against watchers. It found **no missing edge**, since no command raised a
-    trigger its row does not name. 47 commands are accepted, and every row has
+    against watchers. ~~It found **no missing edge**, since no command raised a
+    trigger its row does not name.~~ *Struck (§2c): the two-key pass of
+    2026-09-29 found two. `scene.arm` writes `previewItem` when the preview is
+    empty, and `show.stop` writes `streamState` and `recordState`. The probe had
+    taken neither path, and a probe sees only the path it takes. Fixed in PR
+    #34's fix round (`6557ae6`), with a static reader of every handler.* 47 commands are accepted, and every row has
     one. The rows the tree contradicted are amended in place with citations
     (SPEC §13.4.1, "Checked against the tree"):
     - nine groups whose "yes" changes no field a rule can name;

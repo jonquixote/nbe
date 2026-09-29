@@ -34,6 +34,7 @@ the user's act.
 | 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
 | 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
 | 7 | **A take or cut releases the operator's slate; each slate source has one release path** (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. `Held` is released by take and cut, and `Watchdog` by the recovery alone | 10.3 (one paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds |
+| 8 | **§13.4.1's two missing edges, and a static reader for the table** (PR #34's fix round, on the two-key pass of 2026-09-29). `scene.arm` writes `previewItem` when the preview is empty, and `show.stop` writes `streamState` and `recordState`. Both edges are now in the data, so preflight refuses the self-cycles it admitted (exit 0 at `63720c3`). The table's "no missing edge" claim has a mechanism: a static scan of every handler set-compared with the data | 13.4.1 (the scene and show.stop rows; "Checked against the tree", struck §2c) | `effects-static.test.ts` (2: the vacuity pin and the set-compare); `nbe-preflight`'s `the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_clean_rule`; the runtime row check, now taking both paths |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -128,6 +129,17 @@ of `directive.rs`, with the tree clean after each:
 | (ii) the release only when the directive is named `view.take` | `a_cut_releases_the_operators_slate_too` only | `after the cut: …` left `([12, 200, 90, 255], true, true)`. The e2e cut still passes, because the control plane forwards its cut as `view.take`: the engine's `view.cut` route is guarded by the Rust test alone |
 | (iii) the take also releases the watchdog's slate | `a_take_does_not_release_the_watchdogs_slate` | `a take must not release the watchdog's slate` |
 | (iv) — WU8's pin, unchanged | `the_recovery_never_releases_an_operators_slate` passes at `5942305` | orthogonal release paths, each pinned |
+
+**Row 8's guards, run at `6557ae6` (the landing):** `effects-static.test.ts`
+# pass 2; # fail 0 · the runtime row check ok · `nbe-preflight` `automation`
+ok. 5 passed; 0 failed. **Falsified at `6557ae6`**, each mutation restored from
+a saved copy:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| (a) an edge deleted from the data (`scene.arm`'s `previewItem`) | the static set-compare | `scene.arm: writes previewItem but its row does not name it — a missing edge` |
+| (b) an undeclared write added to a handler (`element.toggle` writing `recordState`) | the static set-compare | `element.toggle: writes recordState but its row does not name it — a missing edge` |
+| (c) the `scene.arm` edge removed, preflight re-run | the preflight pin | `{ … "scene.arm" … } must fail preflight; errors []`, left `0`: the pass's own signature, exit 0 |
 
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
@@ -3061,10 +3073,10 @@ does. The trigger readings the cells assume:
 | `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first. *Amended in Prompt 11 WU5 (§2c), from the tree:* the take also clears `previewItem` when the previewed item is taken, and clears `fallbackActive` (`state.ts` `take`: `if (this.previewItem === itemRef) this.previewItem = null; this.fallbackActive = false`). *And on the engine (PR #34's fix round, §2c): this sentence was written ahead of the engine. Until `5942305`, the engine kept the operator's slate on air after a take, and its tick kept reporting `fallbackActive: true`. Now `on_take` (`directive.rs`), which handles both `view.take` and `view.cut` and is where the control plane's cut arrives as `view.take`, releases `FallbackSource::Held`. It does not release the watchdog's slate (§10.3)* | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel`, **deferred** — the take swaps the clip bus's source, and the crossing arrives on a later engine frame (`server.ts`, `audioLevelCrossing` → `NO_CAUSE`). *~~`audioLevel` —~~ amended in WU5 (§2c): the cell did not say deferred* | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` (incl. its `release_fallback(Held)`) → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
 | `item.stop` | yes — `PLAYING → READY` | no | **no** — a stop is not a completion: the item leaves `PLAYING` for `READY`, never `DONE` | — | §16.4 cell; `state.ts` `stopItem`, `markDone` (accepts only `PLAYING`); `directive.rs` routing (`item.stop` is not routed) |
 | `show.start` | yes — show `LOADED → RUNNING`, clock `STOPPED → RUNNING` | no | no | `timer`, deferred — the show clock starts | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_start` |
-| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth`, **deferred** — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1), observed on the next §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell did not say deferred* | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
+| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced: **`showState`, `streamState`, `recordState`**. The last two are set idle unconditionally (`commands/show.ts`), so they change whenever an output was active. *Amended in PR #34's fix round (§2c): the effects data listed `showState` only, and WU5's probe stopped a show whose outputs were already idle* | no | no — pending ends are dropped while the show is not running | `streamHealth`, **deferred** — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1), observed on the next §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell did not say deferred* | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
 | `show.load`, `show.unload`, `show.preflight` | `show.load`: yes — `→ LOADED` with item and scene states cleared, seen by the NEW package's rules (the evaluator loads them before the diff, `server.ts` `afterAccepted`). *Amended in Prompt 11 WU5 (§2c):* `show.unload` ~~yes — `→ UNLOADED`~~ **fires no `stateChange` rule** — the evaluator unloads the package's rules in the same turn, before the diff (`afterAccepted`: `automation.unload()`), so nothing is left to hear it; `show.preflight` ~~preflight state set~~ fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those) (it sets `preflightPassed` and `lastError`, `commands/show.ts`) | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
 | `preview.set`, `item.arm`, `item.unarm`, `item.reset` | yes — the §17 item transitions their cells name | no — nothing goes on air | no | — | §16.2, §16.4 cells; `commands/view.ts`, `commands/sequence.ts`; `state.ts` `armItem`, `unarmItem`, `resetItem` |
-| `scene.arm`, `scene.apply` | ~~yes~~ — scene `ARMED`, or applied to its target bus; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene`, `applyScene` (scene states only) |
+| `scene.arm`, `scene.apply` | ~~yes~~ — scene `ARMED`, or applied to its target bus; ~~fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those)~~. *Amended in Prompt 11 WU5 (§2c); that amendment struck in PR #34's fix round:* **`scene.arm`: `previewItem`, only when the preview is empty** (`state.ts` `armScene`: `if (this.previewItem == null) this.previewItem = sceneId`). A conditional write is still an edge, because cycle detection asks what a command CAN cause. `scene.apply` changes scene states only, which no rule can name. *The two-key pass of 2026-09-29 found the WU5 wording wrong: WU5's probe ran with the preview already set* | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene` (~~scene states only~~ scene states, and an empty preview), `applyScene` (scene states only) |
 | `snapshot.recall` | yes — view state, item states, overlays and `automationHold` restored wholesale | **no under B3** — it is not a take; but it can set `viewItem` without one, so an evaluator that keys `mediaStart` on `viewItem` would put it in this column | no | — | §16.11 cell; `state.ts` `recallSnapshot`; `directive.rs` routing (not routed) |
 | `view.fallback` | yes — `fallbackActive` | no — the fallback slate is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_fallback` |
 | `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth`, **deferred** — start takes `streamTransportState` to `reconnecting` and then `live`; stop takes it to `closed`; each is observed on a later §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell read* ~~"`streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`"~~ *— `reconnecting` is no more same-dispatch than `live`* | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
@@ -3103,18 +3115,33 @@ Rows the tree contradicted are amended in place above, each with its code
 citation (§2c). There are three kinds:
 
 - **`stateChange` "yes" where no rule can hear it.** The change touches no
-  field a rule can name, since v0.4.7's params table: `scene.*`, the soundboard
-  and audio row, the element and graphics row, the ticker queue row, `guest.*`,
-  `automation.enable` and `automation.disable`, and `show.preflight`.
+  field a rule can name, since v0.4.7's params table: ~~`scene.*`~~
+  `scene.apply`, the soundboard and audio row, the element and graphics row,
+  the ticker queue row, `guest.*`, `automation.enable` and
+  `automation.disable`, and `show.preflight`. *(§2c, PR #34's fix round:
+  `scene.arm` writes `previewItem` when the preview is empty.)*
 - **`show.unload`.** Its rules unload before the diff.
 - **Effects that arrive after the command's dispatch are marked deferred:**
   `audioLevel`, and `streamHealth`, which is observed on the tick.
 
 Take and cut also clear `previewItem` and `fallbackActive`, which the take row
 now says. The same-dispatch cells the check confirmed unchanged are
-`item.stop`; `show.start`; `show.stop`; `preview.set`, `item.arm`,
+`item.stop`; `show.start`; ~~`show.stop`~~; `preview.set`, `item.arm`,
 `item.unarm` and `item.reset`; `snapshot.recall`; `view.fallback`;
 `stream.*`; `record.*`; `automation.hold`; and the two "frame only" rows.
+
+**Struck by the two-key pass of 2026-09-29 (§2c).** `show.stop` was never
+"confirmed". Its probe ran with the outputs idle, so its `streamState` and
+`recordState` writes never fired. `scene.arm`'s probe ran with the preview
+set, so its `previewItem` write never fired either. A runtime probe sees only
+the path it takes, so "no missing edge" was a claim with no mechanism behind
+it. PR #34's fix round added the two edges and gave the table a static reader.
+`packages/control-plane/src/effects-static.test.ts` reads every command
+handler's writes to rule-nameable fields. It follows them directly, through the
+`ControlPlaneState` methods the handler calls, and through the file's local
+helpers, each transitively. It set-compares the result with the data. The one
+exception, `show.unload`, is a premise the test re-checks: its rules unload
+before the diff. The runtime check now also takes the two paths it missed.
 
 Two things the derivation turned up, both recorded rather than decided here:
 
