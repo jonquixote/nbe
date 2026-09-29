@@ -1986,6 +1986,15 @@ at `619846c`.
   - **B-5**, the §10.3 pins' stale message and comment: `bcaa54c`, which also
     corrects the take-payload comment in `prompt11_slate`.
   - **D**, the `telemetry.rs` sentence under C1: struck above (§2c).
+- **The re-pass of 2026-09-29, and PR #34's last round.** Two text-or-guard
+  findings, both touching text the merge ratifies:
+  - **S-1** (`6bd5a11`): the static scan enumerated `commands/*.ts` instead of
+    the dispatch table. It now reads `buildRegistry` and holds scanned ==
+    registry == data. The re-pass's `marker.flag`, which passed 2/2 at
+    `99586ee`, now fails naming it. v0.4.7 row 8 reads "every registered
+    command".
+  - **T-1** (record below): §10.3's release-parity paragraph said "exactly
+    where the control plane clears", which was false for `unloadPackage`.
 - **Flake sightings in this PR, each with a home (the register's rule).**
   - *CI run `36356479347`*: a bound authored in this PR (the §10.3 pin) did not
     survive a cold runner. CI caught it and `1fa7fe6` fixed it (WU5, above).
