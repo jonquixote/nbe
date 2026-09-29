@@ -290,14 +290,14 @@ async fn a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop() {
     );
 }
 
-// Prompt 11 WU5 — §10.3's threshold, as the tree reads it. §10.3: a render
-// loop that "misses a deadline by more than 1 frame" MUST log the fault,
-// count it, and activate the slate if the View is affected. The tree sums
-// `ceil(late / budget)` over consecutive late View frames and trips when the
-// sum exceeds 2 (`render.rs`: `Watchdog::new(state, 2)`; the deadline arm).
-// The two disagree in both directions. These pin the tree's side, so the
-// answer recorded in docs/prompt-map-07-13.md (WU5) fails loudly if either
-// half changes. Which one moves is the user's spec-revision question.
+// SPEC §10.3's trip, both directions (v0.4.7 row 5; the user's decision (b),
+// 2026-09-27). The watchdog sums `ceil(late / budget)` over consecutive late
+// View frames and trips when the sum exceeds 2 (`render.rs`:
+// `Watchdog::new(state, 2)`; the deadline arm): a single frame late by 1–2
+// budgets does not trip, and three frames each under one budget late trip on
+// the third. These pin that law. History: they were written in Prompt 11 WU5
+// as evidence, when §10.3 still read "misses a deadline by more than 1 frame"
+// and the tree disagreed with it both ways (docs/prompt-map-07-13.md, WU5).
 
 #[tokio::test]
 async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
@@ -330,7 +330,7 @@ async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 1);
     assert!(
         !state.fallback_active(),
-        "the tree does not slate a single frame missed by 1–2 frames; §10.3's words would"
+        "a single frame late by 1–2 budgets counts 2, which is not above 2: no trip (§10.3, v0.4.7)"
     );
 }
 

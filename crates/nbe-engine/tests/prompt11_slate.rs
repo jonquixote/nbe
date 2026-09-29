@@ -165,8 +165,8 @@ async fn view_fallback_then_take_puts_the_content_back_and_the_tick_agrees() {
     assert_eq!(view_at(&mut render, 0).await, RED);
     operator_slate(&state, &handler, &mut render).await;
 
-    // What the control plane forwards for `view.take` (the payload's
-    // `transition` defaults to "cut" in its schema).
+    // What the control plane forwards for a take: a `view.take` directive whose
+    // payload is `resolveTransition`'s output (commands/view.ts) — a cut here.
     handler
         .apply(&directive(
             "view.take",
