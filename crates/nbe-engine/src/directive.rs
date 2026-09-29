@@ -706,6 +706,16 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(start_frame, std::sync::atomic::Ordering::SeqCst);
+            // §13.4.1's take/cut row, made true on the engine (PR #34's fix
+            // round): a take clears the fallback flag, exactly as the control
+            // plane's `take` clears `fallbackActive` — the operator's slate
+            // (`Held`) comes down with the content that replaces it. The
+            // watchdog's slate does NOT: lateness is not cured by new content,
+            // and its release is the watchdog's recovery (K = 30 on-time
+            // frames). One release path per source, through WU8's atomic
+            // source tracking.
+            self.state
+                .release_fallback(crate::state::FallbackSource::Held);
 
             // SPEC §8.7.3: the take's audio object decides what the clip bus
             // does. `follow` takes the item's own audioPolicy (AFV).
