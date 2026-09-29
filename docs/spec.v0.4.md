@@ -35,6 +35,7 @@ the user's act.
 | 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
 | 7 | **Release parity: the operator's slate comes down wherever the control plane's clear of `fallbackActive` reaches the engine** (*reworded before ratification, §2c: it read* ~~"A take or cut releases the operator's slate; each slate source has one release path"~~*, then* ~~"… wherever the control plane clears `fallbackActive`"~~ *— the re-pass's T-1: false for `unloadPackage`*) (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. The engine's three release points for `Held` are take and cut, `show.load`, and a resync reporting `false` (the fix round, on the two-key pass of 2026-09-29); a resync is a replay of the control plane's state. `Watchdog` is released by the recovery alone. The gap is stated: the control plane's clear in `unloadPackage` does not reach the engine, because `show.unload` has no route. The old View stays on air until the next load or a false resync, and routing it is queued | 10.3 (the release-parity paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds. The fix round adds `prompt11_slate` 3 → 7 (a resync reconciles both ways; a load releases; neither releases the watchdog's slate; a persisting render failure re-engages after every release) and the e2e 2 → 4 (unload then load; a reload) |
 | 8 | **§13.4.1's two missing edges, and a static reader for the table** (PR #34's fix round, on the two-key pass of 2026-09-29). `scene.arm` writes `previewItem` when the preview is empty, and `show.stop` writes `streamState` and `recordState`. Both edges are now in the data, so preflight refuses the self-cycles it admitted (exit 0 at `63720c3`). The table's "no missing edge" claim has a mechanism: a static scan of **every registered command**. Its key set is read from the server's own dispatch table (`buildRegistry`, dispatch.ts), and its handler bodies are found anywhere under `src/`. It holds scanned == registry == data three ways and set-compares every handler's writes with the data. *Reworded before ratification (§2c, the re-pass's S-1): it read* ~~"a static scan of every handler set-compared with the data"~~ *— the scan had enumerated `commands/*.ts`, so a command registered anywhere else and missing from the data was invisible to both* | 13.4.1 (the scene and show.stop rows; "Checked against the tree", struck §2c) | `effects-static.test.ts` (2: the vacuity pin and the set-compare); `nbe-preflight`'s `the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_clean_rule`; the runtime row check, now taking both paths |
+| 9 | **§13.4.1, the command → trigger effect table, is RATIFIED** (the user's word of 2026-09-29, riding PR #34's merge). It was drafted as a candidate in v0.4.6 (row 4). It is ratified as written at this commit: 55 commands in 19 row groups, with its conditional edges and its deferred cells. From here a row change is a spec change. No row's content changed in the flip | 13.4.1 (the header; the struck candidate note), and the struck "not ratified" lines of v0.4.6 | counted two ways (55/55, set-equal with the §16 parse and the effects data); `effects-static.test.ts` (scanned == registry == data); the runtime row check; the preflight missing-edges pins |
 
 No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
 object, and the params contract is spec text, not a schema edit.
@@ -167,16 +168,17 @@ v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wir
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
 (`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting
 phase: the words predate the text, so each ratified row is ratified on landing,
-lands with its mechanism, and had its guard run at its landing commit. One row
+lands with its mechanism, and had its guard run at its landing commit. ~~One row
 is not ratified: row 4 is drafted as an UNRATIFIED candidate, because its
-mechanism is Prompt 11's to build.
+mechanism is Prompt 11's to build.~~ *(§2c: row 4, §13.4.1, was ratified by the
+user's word of 2026-09-29, riding PR #34's merge; struck in the §13.4.1 flip (PR #34, 2026-09-29; SPEC v0.4.7 row 9).)*
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
 | 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
 | 2 | **`streamTransportState` on the wire** (B2). The engine publishes its stream transport's `PublisherState` on the §10.1 tick as exactly `"live"` / `"reconnecting"` / `"closed"`, always emitted and stubbed `"none"` before any stream has started (the `recordTapPath` precedent), `"closed"` after a stream stops. It is split from the commanded `streamState` by §9.5's survival shape: `streamState` stays `live` through a redial, and this field says what the socket is doing. Before it, a redial was visible to no telemetry consumer and no soak. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 10.1 (field block, new note), 10.1.1 (ownership) | `transport_tokens_are_stable`, `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts`, `an engineTelemetry tick carrying streamTransportState parses and the field is readable`, and `transport_death_leaves_the_loop_untouched` (the redial, on the wire) |
 | 3 | **`streamBufferMs` is `-1` with no session** — the NO-SESSION sentinel, on the engine AND the control plane (which also emits it with no fresh engine report). `streamState` on the same tick carries idle vs live, but it is commanded, not measured; the sentinel exists so that "no measurement exists" is diagnosable from "the buffer is empty". PR #30 shipped it inside its feature PR, the repair round reverted it (`f8ff895`) as a ratified field's meaning changed without the user's word, and it was drafted UNRATIFIED in `docs/v0.5-outline.md` §7. The code flip reverts the revert; the three engine tests and two control-plane tests that pinned `0.0` are rewritten to pin the `-1.0` / `0.0` distinction, the retired pins kept visible (§2c). §10.1 had never stated a no-session value — the repair round's "§10.1 law: 0" was code-comment inference — so this row writes the sentence rather than amending one | 10.1 (new note) | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub`, `idle reports -1 and drained-live reports 0: the field alone distinguishes them` |
-| 4 | **The command → trigger effect table — drafted UNRATIFIED** (B4). §13.4 wants *transitive* cycle rejection at preflight and no section said which commands can cause which §13.2 triggers. §13.4.1 derives it from the tree by enumerating all 55 §16 commands; every row cites the §16 cell, handler and engine route it was read from. **A candidate, not law:** its mechanism is Prompt 11's WU5, and the user ratifies it separately, never inside that feature PR. It records two things for WU3/WU5 rather than deciding them: `item.stop` has no engine effect (a stopped timed item keeps its scheduled `end`; the `mediaEnd` reading keyed on `markDone` is what drops it), and a *deferred* edge — a take of a timed item causing `mediaEnd` one duration later — is an edge whose static verdict is WU5's | 13.4.1 (new, UNRATIFIED) | — (no guard until WU5 ships the check it serves; a candidate is guarded when its mechanism lands) |
+| 4 | **The command → trigger effect table — drafted ~~UNRATIFIED~~** *(ratified 2026-09-29: v0.4.7 row 9, struck in the flip, §2c)* (B4). §13.4 wants *transitive* cycle rejection at preflight and no section said which commands can cause which §13.2 triggers. §13.4.1 derives it from the tree by enumerating all 55 §16 commands; every row cites the §16 cell, handler and engine route it was read from. ~~**A candidate, not law:** its mechanism is Prompt 11's WU5, and the user ratifies it separately, never inside that feature PR.~~ *(§2c: WU5 built its mechanism, and the user ratified it on 2026-09-29, riding PR #34's merge; struck in the §13.4.1 flip, v0.4.7 row 9.)* It records two things for WU3/WU5 rather than deciding them: `item.stop` has no engine effect (a stopped timed item keeps its scheduled `end`; the `mediaEnd` reading keyed on `markDone` is what drops it), and a *deferred* edge — a take of a timed item causing `mediaEnd` one duration later — is an edge whose static verdict is WU5's | 13.4.1 (new, ~~UNRATIFIED~~ ratified 2026-09-29) | ~~— (no guard until WU5 ships the check it serves; a candidate is guarded when its mechanism lands)~~ guarded since PR #34 (v0.4.7 rows 8 and 9) |
 
 **Row 2's two control-plane choices, and the rule each followed.** The schema
 takes the field `.optional()` — the `recordTapPath` landing's *final* shape
@@ -230,8 +232,10 @@ Row 3's flip was falsified the same way at `00d8b46`, once per side:
 | control-plane stub back to `?? 0` | `ticks carry streamState and streamBufferMs in every phase, stubbed lawfully` | `no engine report: no measurement exists` — `0 !== -1` |
 
 Rows 1–3 are ratified as their own change, not inside a feature PR (§4's
-counter-precedent). **Row 4 is not ratified**: §13.4.1 carries its UNRATIFIED
-mark until the user ratifies it, after Prompt 11's WU5 gives it a guard. B1 (the
+counter-precedent). ~~**Row 4 is not ratified**: §13.4.1 carries its UNRATIFIED
+mark until the user ratifies it, after Prompt 11's WU5 gives it a guard.~~
+*(§2c: WU5 gave it its guards, and the user ratified it on 2026-09-29, riding
+PR #34's merge; struck in the §13.4.1 flip (PR #34, 2026-09-29; SPEC v0.4.7 row 9).)* B1 (the
 engine level-crossing event) is also a candidate, but its mechanism is Prompt
 11's to build and it ships there, so it has no row here; C1, B3 and B5 are
 decisions for Prompt 11's executor, recorded in `docs/prompt-map-07-13.md`, and
@@ -3084,13 +3088,46 @@ in a family, below once per frame, and its 11th action in a burst was refused
 
 Preflight MUST statically reject rules whose action can re-trigger themselves directly or transitively. The runtime MUST also suppress a rule that fires itself.
 
-### 13.4.1 Command → trigger effects — **UNRATIFIED** (candidate, drafted in v0.4.6)
+### 13.4.1 Command → trigger effects — ~~**UNRATIFIED** (candidate, drafted in v0.4.6)~~ **RATIFIED 2026-09-29** (the user's word; rides PR #34's merge)
 
-*Not normative. Drafted 2026-09-25 from the user's decision B4 on Prompt 11
+~~*Not normative. Drafted 2026-09-25 from the user's decision B4 on Prompt 11
 (`agents/prompts/11-watchdog.md` §3). It is a **candidate**: its mechanism —
 preflight's transitive cycle check — is Prompt 11's WU5, and it is ratified by
 the user as its own change, never inside that feature PR (§4's
-counter-precedent). Until then it is a derivation, not law.*
+counter-precedent). Until then it is a derivation, not law.*~~ *(§2c, struck in
+the flip.)*
+
+**Ratified by the user's word of 2026-09-29, riding PR #34's merge (normative;
+v0.4.7 row 9).** The table was drafted 2026-09-25 from the user's decision B4
+as a candidate. The struck note planned its ratification as its own change,
+never inside the feature PR. The user's word has it ride PR #34's merge
+instead, and that is recorded here rather than smoothed over.
+
+**What is ratified.** The table as written at this commit: 55 commands in 19 row
+groups. That includes its conditional edges, such as `scene.arm`'s
+`previewItem`, which it writes only when the preview is empty. It also includes
+its deferred cells: `audioLevel` and `streamHealth` are marked deferred, and
+those marks are ratified with the table.
+
+**What stands behind it.**
+
+- **Counted two ways:** 55/55 commands, set-equal with the §16 parse and with
+  the effects data (`crates/nbe-core/src/automation_effects.json`, the table as
+  data).
+- **Read against the tree:** every row, across PR #34's two-key pass and
+  re-pass (2026-09-29).
+- **Guarded by three tests:**
+  - `effects-static.test.ts` — scanned == registry == data, three ways, with
+    the server's dispatch table as its key set;
+  - the runtime row check (`automation.test.ts`, "§13.4.1, row by row"), which
+    now takes the two paths it had missed;
+  - the preflight missing-edges pins (`nbe-preflight` `automation`).
+
+**What ratification means.** A row change is now a spec change and rides a
+revision. The guards fail CI when the table's data drifts from the tree: the
+static scan covers every `stateChange` cell, and the runtime row check covers
+every same-dispatch cell a probe reaches. The rows below mirror that data file,
+and their prose is kept in step with it by hand, as every row of this spec is.
 
 The rule above asks preflight to reject *transitive* re-triggers, which needs to
 know which commands can cause which §13.2 triggers. No section said. This table

@@ -1479,7 +1479,7 @@ The watchdog itself exists and is gated (pass 4 confirmed deadline accounting an
 | **B1** | `audioLevel` must fire within one frame; bus levels reach the control plane at 1 Hz | engine level-crossing event (wire candidate, UNRATIFIED) |
 | **B2** | `streamHealth` needs transport state, which is not on the wire | ratify `streamTransportState` (v0.5 §7) |
 | **B3** | `mediaStart` has no engine event | control-plane-side (the take applied) for v1 |
-| **B4** | §13.4 transitive cycle rejection needs a command → trigger effect table the spec lacks | draft the table as an UNRATIFIED candidate |
+| **B4** | §13.4 transitive cycle rejection needs a command → trigger effect table the spec lacks | draft the table as an UNRATIFIED candidate *(the recommendation as made; the table was drafted so, and ratified 2026-09-29 — SPEC v0.4.7 row 9)* |
 | **B5** | AC-25 #2's "pending actions" — rules have no delay | fired-but-not-dispatched within the current frame |
 
 ~~**Prompt 11 is BLOCKED on C1 and B1–B5.**~~ *Unblocked 2026-09-25 — the user spoke all six; see the next entry.* They are the user's words, landed the way SPEC-REV landed Prompt 10's four blockers (v0.4.5), before any executor starts. One finding to settle during execution, not assumed: §10.3 says "more than 1 frame", the built watchdog trips when accumulated `ceil(late / budget)` exceeds 2.
@@ -1504,7 +1504,7 @@ merge.
 | **B1** | The engine level-crossing event; its mechanism is Prompt 11's to build and it ships there as a candidate | **Candidate, home: Prompt 11's feature PR** — marked UNRATIFIED with its guards there, ratified by the user separately. No v0.4.6 row |
 | **B2** | Ratify `streamTransportState` | **Landed, v0.4.6 row 2** — §10.1 field, note and §10.1.1 ownership; engine, protocol, control-plane schema and `buildTick`; token, completeness, readability and redial-on-the-wire guards; the mirror fixture samples `"reconnecting"`; the soak captures distinct values. Landing `f15b617`, record `9d1dfed` |
 | **B3** | Control-plane-side `mediaStart` | **Recorded for the executor** — the take applied. §13.4.1's `mediaStart` column uses it |
-| **B4** | The command → trigger effect table, as a candidate | **Candidate, drafted UNRATIFIED in SPEC §13.4.1** (v0.4.6 row 4, `69a2b54`): all 55 §16 commands with citations. Its mechanism — WU5's transitive check — ships with Prompt 11's feature PR, and the table is ratified separately |
+| **B4** | The command → trigger effect table, as a candidate | ~~**Candidate, drafted UNRATIFIED in SPEC §13.4.1**~~ Drafted in SPEC §13.4.1 (v0.4.6 row 4, `69a2b54`): all 55 §16 commands with citations. Its mechanism — WU5's transitive check — ships with Prompt 11's feature PR, ~~and the table is ratified separately~~. **RATIFIED by the user's word of 2026-09-29, riding PR #34's merge** (SPEC v0.4.7 row 9; struck in the §13.4.1 flip, §2c) |
 | **B5** | "Pending" = fired-but-not-dispatched within the frame | **Recorded for the executor** — pinned by a test in WU2 |
 
 The same order settled two Prompt 10 candidates from `docs/v0.5-outline.md` §7:

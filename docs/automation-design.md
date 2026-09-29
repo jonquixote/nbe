@@ -1,7 +1,8 @@
 # The automation engine runtime — design note (Prompt 11, gate G1)
 
 SPEC §13 (the rule model), AC-25 (automation), §13.4.1 (the command → trigger
-effect table, UNRATIFIED), v0.4.7 (the `audioLevelCrossing` candidate).
+effect table, ~~UNRATIFIED~~ RATIFIED 2026-09-29, riding PR #34's merge — struck
+in the §13.4.1 flip (PR #34, 2026-09-29; SPEC v0.4.7 row 9), §2c), v0.4.7 (the `audioLevelCrossing` candidate).
 Written with WU1 (2026-09-27); each section names the work unit that lands
 it. Where this note and the tree disagree, the tree wins and this note is the
 defect.
