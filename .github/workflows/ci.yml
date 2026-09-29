@@ -569,11 +569,11 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL prompt11_slate: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5)
+      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round)"
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
         # a complete one passes. Hardware-free: floors equal. Were 2/2 at B1,
-        # 3/3 at WU1.
+        # 3/3 at WU1, 4/4 at WU5; 5/5 since the fix round's missing-edge pins.
         run: |
           set -u
           out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
@@ -584,12 +584,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
-          if [ "$ran" -lt 4 ]; then
-            echo "FAIL preflight automation: expected at least 4 tests to run, got $ran"; exit 1
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=5)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL preflight automation: expected at least 5 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 4 ]; then
-            echo "FAIL preflight automation: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 5 ]; then
+            echo "FAIL preflight automation: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
         # nbe-core's reading of every trigger kind, held to the fixture the
@@ -835,6 +835,25 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to execute rather than skip, got $exercised"; exit 1; fi
+      - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
+        # Two floors, rule 8. Reads every command handler's writes to the
+        # fields a stateChange rule can name — directly, through state methods
+        # and local helpers — and set-compares them with the effects data; a
+        # vacuity test pins that the scanner still sees the writes it must.
+        # Static: no preflight, no skip path, so floors equal at the full count.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/effects-static.test.ts 2>&1)
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "effects static scan: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL effects static scan: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to execute, got $exercised"; exit 1; fi
       # PR #34's fix round: the operator's slate, end to end — the real engine
       # binary under the real control plane, asserting the engine's report and
       # the control plane's state together after a take and after a cut. Not in

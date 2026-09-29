@@ -220,3 +220,77 @@ fn a_rule_cycle_fails_preflight_with_the_cycle_named() {
     let (code, report) = run(&root);
     assert_eq!(code, 0, "an acyclic rule passes; report {report}");
 }
+
+#[test]
+fn the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_clean_rule() {
+    // PR #34's fix round. The pass of 2026-09-29 found preflight admitting two
+    // self-cycles (exit 0): `scene.arm` writes `previewItem` when the preview is
+    // empty, and `show.stop` writes `streamState` and `recordState`. Both edges
+    // are now in §13.4.1's data, and these pin the refusals.
+    let dir = tempfile::tempdir().unwrap();
+    for (rule, needle) in [
+        (
+            r#"{ "id": "arm", "trigger": { "kind": "stateChange", "params": { "field": "previewItem" } },
+                 "action": { "command": "scene.arm", "payload": { "sceneId": "SCN" } } }"#,
+            "`arm` → `arm` (`arm`: `scene.arm` changes `previewItem`)",
+        ),
+        (
+            r#"{ "id": "stop", "trigger": { "kind": "stateChange", "params": { "field": "streamState" } },
+                 "action": { "command": "show.stop" } }"#,
+            "`stop` → `stop` (`stop`: `show.stop` changes `streamState`)",
+        ),
+        (
+            r#"{ "id": "stop", "trigger": { "kind": "stateChange", "params": { "field": "recordState" } },
+                 "action": { "command": "show.stop" } }"#,
+            "`stop` → `stop` (`stop`: `show.stop` changes `recordState`)",
+        ),
+        (
+            // The control: refused before the pass, and still.
+            r#"{ "id": "pv", "trigger": { "kind": "stateChange", "params": { "field": "previewItem" } },
+                 "action": { "command": "preview.set", "payload": { "itemRef": "A1" } } }"#,
+            "`pv` → `pv` (`pv`: `preview.set` changes `previewItem`)",
+        ),
+    ] {
+        let root = package(dir.path(), rule);
+        let (code, report) = run(&root);
+        let errs = errors(&report);
+        assert_eq!(code, 2, "{rule} must fail preflight; errors {errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("automationRule: ") && e.contains(needle)),
+            "expected the cycle named, {needle:?}; got {errs:?}"
+        );
+    }
+
+    // A legitimate, non-cyclic rule on every field a stateChange rule can
+    // name: the new edges must not turn clean rules into refusals.
+    let clean = [
+        "showState",
+        "viewItem",
+        "previewItem",
+        "streamState",
+        "recordState",
+        "automationHold",
+        "fallbackActive",
+    ]
+    .iter()
+    .map(|f| {
+        format!(
+            r#"{{ "id": "on-{f}", "trigger": {{ "kind": "stateChange", "params": {{ "field": "{f}" }} }},
+                 "action": {{ "command": "marker.add", "payload": {{ "name": "{f}" }} }} }}"#
+        )
+    })
+    .chain(std::iter::once(
+        r#"{ "id": "on-itemState", "trigger": { "kind": "stateChange", "params": { "field": "itemState", "itemRef": "A1" } },
+             "action": { "command": "marker.add", "payload": { "name": "itemState" } } }"#
+            .to_string(),
+    ))
+    .collect::<Vec<_>>()
+    .join(",");
+    let root = package(dir.path(), &clean);
+    let (code, report) = run(&root);
+    assert_eq!(
+        code, 0,
+        "a clean rule on each of the eight fields passes; report {report}"
+    );
+}

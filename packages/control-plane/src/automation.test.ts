@@ -984,7 +984,14 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   await probe("record.stop", {});
   await probe("stream.start", {});
   await probe("stream.stop", {});
-  // The rows whose cells change nothing a stateChange rule can name.
+  // `scene.arm` writes `previewItem` only when the preview is empty
+  // (`armScene`) — the path the two-key pass of 2026-09-29 found this probe
+  // never took (A1 was still in preview). Empty it first: a cut of the
+  // previewed item clears the preview.
+  await setup("view.cut", { itemRef: "A1" });
+  assert.equal(state.previewItem, null, "precondition: the preview is empty for scene.arm");
+  // The rows whose cells change nothing a stateChange rule can name — and
+  // `scene.arm`, first, whose one cell is conditional.
   for (const [command, payload] of [
     ["scene.arm", { sceneId: "SCN" }],
     ["scene.apply", { sceneId: "SCN", target: "preview" }],
@@ -1025,6 +1032,11 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   ] as const) {
     await probe(command, payload as Record<string, unknown>);
   }
+  // `show.stop` sets `streamState` and `recordState` idle unconditionally
+  // (commands/show.ts); they change only if an output was active — the path
+  // the pass found this probe never took. Start both first.
+  await setup("record.start", {});
+  await setup("stream.start", {});
   await probe("show.stop", {});
   await probe("show.unload", {});
 

@@ -51,6 +51,11 @@ pub struct CommandEffects {
     /// The payload key naming the one item whose start and end it can cause.
     #[serde(default)]
     pub item: Option<String>,
+    /// A condition on a cell, named (e.g. `scene.arm` sets `previewItem` only
+    /// when the preview is empty). Documentation only: a conditional write is
+    /// still an edge — cycle detection asks what a command CAN cause.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize)]
