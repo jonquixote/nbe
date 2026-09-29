@@ -1749,8 +1749,13 @@ at `619846c`.
       runs last.
     - Unit 2: rung 2 is landed (WU6, `d455aa0`). §10.3's answer is WU5's.
     - The out-of-scope items stay out. `Rung` ends at `LoopsShed = 2`
-      (`render.rs`), and `telemetry.rs`, where `renderGpuTimeMs` is stubbed
-      `0.0`, is unchanged since `619846c`.
+      (`render.rs`), and ~~`telemetry.rs`, where `renderGpuTimeMs` is stubbed
+      `0.0`, is unchanged since `619846c`~~ the §10.1 stub lines in
+      `telemetry.rs` (`renderGpuTimeMs`, `vramUsedMib`,
+      `textureCacheUsedMib`, `masterClockDriftMs`) are unchanged since
+      `619846c`. *(§2c, on the two-key pass of 2026-09-29: the file itself
+      changed at `4c6e176`, when WU8 added the watchdog counters and the
+      `fallback_active()` read; the stubs did not, so the substance holds.)*
     - One prompt, one PR: compliant.
 - **WU2's recall path, guarded** (`6b3ab85`; SPEC v0.4.7 row 4). WU2 fixed the
   hold so that any command engaging it cancels pending actions, including a
@@ -1967,6 +1972,20 @@ at `619846c`.
   naturally as including the limiter. Falsified: with the limiter re-applied,
   20 of 30 are refused `E_RATE_LIMITED`. The test found a defect in WU2's test
   seam first (`nextFrame`'s float drift), fixed on its own in `3270bc1`.
+- **The two-key pass of 2026-09-29, and PR #34's fix round.** Two blockers
+  are fixed and recorded above and in SPEC v0.4.7 rows 7 and 8: the missing
+  cycle edges (`6557ae6`, record `2d036a8`) and release parity (`a8678d8`,
+  `990a22a`, record `1c14b4c`). The ride-alongs:
+  - **A-1, floor arithmetic `2d6a9a4` omitted.** WU1's landing introduced two
+    gates by name without their numbers: the automation suite at ran ≥ 6 /
+    exercised ≥ 6 (WU1's six tests at that commit), and `automation_rules` at
+    1/1 (one fixture test). The 6 appears in the next commit's arithmetic,
+    `2eedec7`'s "CI floor 6 -> 8". History is not rewritten; this line carries
+    the omission.
+  - **A-2**, the truncated CI step names: quoted in `5496554`.
+  - **B-5**, the §10.3 pins' stale message and comment: `bcaa54c`, which also
+    corrects the take-payload comment in `prompt11_slate`.
+  - **D**, the `telemetry.rs` sentence under C1: struck above (§2c).
 - **Flake sightings in this PR, each with a home (the register's rule).**
   - *CI run `36356479347`*: a bound authored in this PR (the §10.3 pin) did not
     survive a cold runner. CI caught it and `1fa7fe6` fixed it (WU5, above).
