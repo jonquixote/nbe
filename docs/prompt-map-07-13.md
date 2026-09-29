@@ -1993,8 +1993,14 @@ at `619846c`.
     registry == data. The re-pass's `marker.flag`, which passed 2/2 at
     `99586ee`, now fails naming it. v0.4.7 row 8 reads "every registered
     command".
-  - **T-1** (record below): §10.3's release-parity paragraph said "exactly
-    where the control plane clears", which was false for `unloadPackage`.
+  - **T-1** (this record): §10.3's release-parity paragraph said "exactly
+    where the control plane clears", which was false for `unloadPackage`. It
+    now says the operator's slate is released wherever the control plane's
+    clear reaches the engine, at the engine's three release points (take/cut,
+    `show.load`, a resync reporting `false`; a resync is a replay, not a
+    clear site). It states the unload gap in the same paragraph and quotes the
+    queue line above. v0.4.7 row 7's title and text say the same. Text only;
+    no behaviour changed.
 - **Flake sightings in this PR, each with a home (the register's rule).**
   - *CI run `36356479347`*: a bound authored in this PR (the §10.3 pin) did not
     survive a cold runner. CI caught it and `1fa7fe6` fixed it (WU5, above).
