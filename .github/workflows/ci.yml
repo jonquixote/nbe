@@ -546,7 +546,7 @@ jobs:
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL prompt11_watchdog: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: the slate-release suite actually ran (PR #34 fix round)
+      - name: "the slate-release suite actually ran (PR #34 fix round)"
         # Seven tests on a real render loop: view.fallback then take (View
         # pixels, the slate bit and the tick together); the engine's view.cut
         # route releases too; a take does NOT release the watchdog's slate;
@@ -862,10 +862,10 @@ jobs:
       # the control plane's state together after a take and after a cut. Not in
       # `npm test`: it needs the engine, which this job builds here (release,
       # the binary the rehearsal and the soak run).
-      - name: build the engine for the slate-release end-to-end (PR #34)
+      - name: "build the engine for the slate-release end-to-end (PR #34)"
         working-directory: .
         run: cargo build -p nbe-engine --release
-      - name: the slate-release end-to-end actually ran (PR #34)
+      - name: "the slate-release end-to-end actually ran (PR #34)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
         # not a pass), and zero failures. 4 tests: take, cut, and (the fix
         # round) unload-then-load and reload — 2 at 5942305. The file never skips: a missing
