@@ -220,6 +220,10 @@ test("[PR34] view.fallback then view.cut: the cut releases the slate too", async
 // hide the load's own release).
 
 async function slateThenStop(): Promise<void> {
+  // Each parity test starts from a running show, whatever the test before it
+  // left: fix round falsification (i) found test 4 failing only because test
+  // 3 had aborted with the show stopped — a cascade, not its own signature.
+  if (state.showState !== "RUNNING") await ok("show.start", {});
   const from = ticks.length;
   await ok("view.fallback", {});
   const up = await engineReports(true, from);
