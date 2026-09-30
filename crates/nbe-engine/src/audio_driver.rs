@@ -14,7 +14,9 @@
 
 use crate::audio::{AudioGraph, CHANNELS, SAMPLE_RATE};
 use crate::audio_control::{self, AudioCommand};
-use crate::state::SharedEngineState;
+use crate::state::{SharedEngineState, SharedOutgoing};
+use nbe_core::automation::{AudioLevelWatch, CrossingDirection, LEVEL_FLOOR_DBFS};
+use nbe_protocol::EngineFrame;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -100,6 +102,20 @@ pub struct AudioDriver {
     /// Blocks elapsed in the current window, and how many make one.
     window_blocks: u32,
     blocks_per_window: u32,
+    /// Where crossings go: the render channel's outbound queue (B1). `None`
+    /// for a driver nobody listens to — crossings are still detected and
+    /// counted, just not sent.
+    events: Option<SharedOutgoing>,
+    /// The `audioLevel` watches in force, swapped in by pointer from
+    /// `EngineState::audio_level_watches` (set at `show.load`).
+    watches: Arc<Vec<AudioLevelWatch>>,
+    /// Per watch: was the bus at-or-above the threshold on the last block.
+    /// Starts below (a fresh show is silent), so a rule never fires on a
+    /// level that was already present when it was installed.
+    above: Vec<bool>,
+    /// Crossings detected since this driver started — observable to tests
+    /// whether or not anyone is listening.
+    crossings: u64,
 }
 
 /// Whether the wanted tap differs from the attached one (by pointer).
@@ -138,7 +154,24 @@ impl AudioDriver {
                 block_frames,
                 Duration::from_millis(DEFAULT_METER_WINDOW_MS),
             ),
+            events: None,
+            watches: Arc::new(Vec::new()),
+            above: Vec::new(),
+            crossings: 0,
         }
+    }
+
+    /// Send `audioLevelCrossing` frames to `outgoing` (B1). The production
+    /// driver always has this ([`spawn_with_events`]); a test that only
+    /// meters can go without.
+    pub fn with_events(mut self, outgoing: SharedOutgoing) -> Self {
+        self.events = Some(outgoing);
+        self
+    }
+
+    /// Crossings detected so far.
+    pub fn crossings(&self) -> u64 {
+        self.crossings
     }
 
     /// Pick up soundboard assets when a new package loads (SPEC §8.4).
@@ -241,7 +274,11 @@ impl AudioDriver {
             self.graph.drift_ms(master_frame).to_bits(),
             Ordering::SeqCst,
         );
-        for (bus, peak) in self.graph.bus_peaks() {
+        // The block's own peaks, read once: the crossing check wants THIS
+        // block (render cadence, B1), the telemetry window wants them merged.
+        let block_peaks = self.graph.bus_peaks();
+        self.detect_crossings(&block_peaks, master_frame);
+        for (bus, peak) in block_peaks {
             let slot = self.window_peaks.entry(bus).or_insert(f64::NEG_INFINITY);
             if peak > *slot {
                 *slot = peak;
@@ -256,6 +293,59 @@ impl AudioDriver {
         if self.window_blocks >= self.blocks_per_window {
             *self.state.bus_peaks.lock().unwrap() = std::mem::take(&mut self.window_peaks);
             self.window_blocks = 0;
+        }
+    }
+
+    /// B1 (SPEC v0.4.7 candidate): compare this block's peak on each watched
+    /// bus with its threshold, and report a crossing the moment it happens —
+    /// on the block, which is one house frame, so the control plane hears of
+    /// it within the frame AC-25 #1 allows rather than on the next 1 Hz tick.
+    ///
+    /// `rising` fires on below → at-or-above; `falling` on at-or-above →
+    /// below. No hysteresis: a level hovering on a threshold crosses on every
+    /// block it changes side, and the evaluator's once-per-frame limiter
+    /// (§13.3 #3) is what bounds the firing, not a band invented here.
+    fn detect_crossings(&mut self, block_peaks: &BTreeMap<String, f64>, master_frame: u64) {
+        let current = self.state.audio_level_watches.lock().unwrap().clone();
+        if !Arc::ptr_eq(&current, &self.watches) {
+            self.above = vec![false; current.len()];
+            self.watches = current;
+        }
+        // One stamp per block: every crossing on it was computed now.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        for (i, w) in self.watches.iter().enumerate() {
+            let level = block_peaks
+                .get(&w.bus)
+                .copied()
+                .unwrap_or(LEVEL_FLOOR_DBFS)
+                .max(LEVEL_FLOOR_DBFS);
+            let now_above = level >= w.threshold_dbfs;
+            let was_above = std::mem::replace(&mut self.above[i], now_above);
+            let crossed = match w.direction {
+                CrossingDirection::Rising => !was_above && now_above,
+                CrossingDirection::Falling => was_above && !now_above,
+            };
+            if !crossed {
+                continue;
+            }
+            self.crossings += 1;
+            if let Some(q) = &self.events {
+                q.push(EngineFrame::AudioLevelCrossing {
+                    v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                    ts,
+                    bus: w.bus.clone(),
+                    threshold_dbfs: w.threshold_dbfs,
+                    direction: match w.direction {
+                        CrossingDirection::Rising => nbe_protocol::CrossingDirection::Rising,
+                        CrossingDirection::Falling => nbe_protocol::CrossingDirection::Falling,
+                    },
+                    level_dbfs: level,
+                    master_frame,
+                });
+            }
         }
     }
 
@@ -312,12 +402,33 @@ impl AudioThread {
 }
 
 pub fn spawn(state: SharedEngineState, house_rate: u32) -> AudioThread {
+    spawn_driver(state, house_rate, None)
+}
+
+/// [`spawn`], with `audioLevelCrossing` frames going to the render channel's
+/// outbound queue (B1). What the engine binary runs.
+pub fn spawn_with_events(
+    state: SharedEngineState,
+    house_rate: u32,
+    outgoing: SharedOutgoing,
+) -> AudioThread {
+    spawn_driver(state, house_rate, Some(outgoing))
+}
+
+fn spawn_driver(
+    state: SharedEngineState,
+    house_rate: u32,
+    outgoing: Option<SharedOutgoing>,
+) -> AudioThread {
     let block_frames = SAMPLE_RATE as usize / house_rate.max(1) as usize;
-    let driver = AudioDriver::new(
+    let mut driver = AudioDriver::new(
         state.clone(),
         Box::new(NullSink::new(block_frames)),
         house_rate,
     );
+    if let Some(q) = outgoing {
+        driver = driver.with_events(q);
+    }
     // A DEDICATED OS THREAD, not a task on the shared runtime.
     //
     // This was `tokio::spawn`, which put the audio cadence on the same worker

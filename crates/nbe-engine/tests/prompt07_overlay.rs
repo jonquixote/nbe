@@ -840,9 +840,8 @@ async fn fallback_covers_overlays() {
     // preserved), so clearing the flag brings every overlay straight back,
     // steady. No recovery directive exists; the test clears the flag
     // directly, which is exactly what the flag's owner would do.
-    state
-        .fallback_active
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    // The slate came from `view.fallback` — the operator's source (WU8).
+    state.release_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(3, None);
     let after = render.readback_view().await;
     assert_eq!(px_at(&after, 0.9, 0.85), GREEN, "bug returns on recovery");

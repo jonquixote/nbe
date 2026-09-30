@@ -75,14 +75,51 @@ pub enum Bus {
     Preview,
 }
 
-/// Degradation ladder rungs implemented in this prompt (SPEC §10.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Degradation ladder rungs implemented so far (SPEC §10.5). The rungs are
+/// cumulative — rung 2 keeps rung 1's half-rate preview — and ordered: rung
+/// 2 is only ever reached from rung 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rung {
     /// Healthy: preview renders every frame.
     Nominal = 0,
     /// Under View deadline pressure: preview renders every other frame. The
     /// View is never degraded.
     PreviewHalfRate = 1,
+    /// §10.5 rung 2, "loop caches evict to streaming" (Prompt 11 WU6; the
+    /// user's word of 2026-09-27): the VRAM ring of every loop NOT feeding
+    /// the View is shed. **Never the View's** — §10.5's "the View MUST NOT be
+    /// degraded" is the invariant, so no eviction can freeze what is on air.
+    /// A shed loop is re-acquired (re-uploaded from its decoded frames) on the
+    /// next take that needs it, or on preroll once the pressure has cleared.
+    LoopsShed = 2,
+}
+
+/// Consecutive late View frames that engage rung 1 (preview half rate).
+pub const RUNG1_AFTER_LATE: u32 = 2;
+/// Late View frames, counted from the moment rung 1 engaged, that engage rung
+/// 2 (off-air loops shed): rung 1 was in force and the View still missed this
+/// many more deadlines. Counted since rung 1, NOT consecutively — the
+/// watchdog trips on three consecutive misses (§10.3, threshold 2), so a
+/// consecutive rung-2 threshold would sit behind the fallback slate and never
+/// do anything; sustained-but-intermittent pressure is the ladder's domain.
+pub const RUNG2_AFTER_LATE: u32 = 2;
+/// Consecutive on-time frames that restore the ladder to nominal.
+pub const RESTORE_AFTER_ON_TIME: u32 = 30;
+
+/// A loop cache the ladder shed or re-acquired, for the record (§10.5/AC-27:
+/// each rung's effect is observable). Kept on the render loop, counted in
+/// engine state (`loops_shed_total`, `loops_reacquired_total`), and logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopCacheEvent {
+    /// The ring of an off-air loop was dropped under rung 2.
+    Shed { frame: u64, asset_id: String },
+    /// A shed ring was re-uploaded: `take` when the View needed it, `preroll`
+    /// when the preview did after the pressure cleared.
+    Reacquired {
+        frame: u64,
+        asset_id: String,
+        reason: &'static str,
+    },
 }
 
 /// What one frame did, for the caller's accounting and for tests.
@@ -103,8 +140,11 @@ pub struct RenderLoop {
     /// generation changes, never per frame.
     textures: HashMap<String, wgpu::Texture>,
     /// Uploaded video ring buffers by asset id (SPEC §12.7). Built at load
-    /// time; the render loop only indexes into them.
+    /// time; the render loop only indexes into them — except under ladder
+    /// rung 2, which sheds off-air rings and re-acquires them on demand.
     video_rings: HashMap<String, VideoRing>,
+    /// Every shed and re-acquire rung 2 caused, in order (WU6's record).
+    pub loop_cache_events: Vec<LoopCacheEvent>,
     /// The uploaded fallback slate.
     fallback_tex: wgpu::Texture,
     /// 1x1 white texture; solid layers are this modulated by a colour.
@@ -144,6 +184,8 @@ pub struct RenderLoop {
     pub fail_view: bool,
     consecutive_late: u32,
     consecutive_on_time: u32,
+    /// Late frames since rung 1 engaged (rung 2's count; reset at nominal).
+    late_at_rung1: u32,
     /// True while the View is in a failure episode, so the log is written
     /// once per episode rather than once per frame.
     view_failing: bool,
@@ -209,6 +251,7 @@ impl RenderLoop {
             watchdog,
             textures: HashMap::new(),
             video_rings: HashMap::new(),
+            loop_cache_events: Vec::new(),
             fallback_tex,
             white,
             fonts: std::sync::Mutex::new(crate::text::FontBook::from_packaged(Vec::new())),
@@ -226,6 +269,7 @@ impl RenderLoop {
             fail_view: false,
             consecutive_late: 0,
             consecutive_on_time: 0,
+            late_at_rung1: 0,
             view_failing: false,
             view_surface: None,
         };
@@ -273,36 +317,19 @@ impl RenderLoop {
         // Video rings: one texture per resident frame, uploaded once at the
         // load boundary. `textureSlot = sourceIndex mod P` indexes them.
         self.video_rings.clear();
-        {
-            let library = self.state.video.lock().unwrap();
-            for (asset_id, asset) in &library.assets {
-                let mut textures = Vec::with_capacity(asset.frames.len());
-                for f in &asset.frames {
-                    let tex = self.gpu.make_texture(f.width, f.height, asset_id);
-                    self.gpu.upload_rgba(&tex, f.width, f.height, &f.rgba);
-                    textures.push(tex);
-                }
-                tracing::info!(
-                    asset = %asset_id,
-                    frames = textures.len(),
-                    period = asset.period_frames,
-                    policy = ?asset.plan.cache_policy_selected,
-                    "video ring resident"
-                );
-                self.video_rings.insert(
-                    asset_id.to_string(),
-                    VideoRing {
-                        textures,
-                        period_frames: asset.period_frames,
-                        // Rounded: a source rate is a nominal cadence, and a
-                        // 23.976 source is a 24 fps cadence with a pulldown
-                        // pattern (SPEC §18), not 23 frames per second.
-                        source_frame_rate: asset.source_frame_rate.round().max(1.0) as u32,
-                    },
-                );
-            }
+        self.loop_cache_events.clear();
+        let ids: Vec<String> = self
+            .state
+            .video
+            .lock()
+            .unwrap()
+            .assets
+            .keys()
+            .cloned()
+            .collect();
+        for asset_id in ids {
+            self.upload_ring(&asset_id);
         }
-
         // Step 4: the fallback slate is uploaded at load time. Its bytes come
         // from Prompt 03's residency load; an asset that will not decode
         // becomes a generated slate rather than nothing on air.
@@ -314,6 +341,99 @@ impl RenderLoop {
             .upload_rgba(&self.fallback_tex, slate.width, slate.height, &slate.rgba);
     }
 
+    /// Upload one video asset's decoded frames as its VRAM ring (SPEC §12.7).
+    /// At load for every asset; again when ladder rung 2 shed it and a take
+    /// or a preroll needs it back. `false` if the asset is not in the library.
+    fn upload_ring(&mut self, asset_id: &str) -> bool {
+        let library = self.state.video.lock().unwrap();
+        let Some(asset) = library.assets.get(asset_id) else {
+            return false;
+        };
+        let mut textures = Vec::with_capacity(asset.frames.len());
+        for f in &asset.frames {
+            let tex = self.gpu.make_texture(f.width, f.height, asset_id);
+            self.gpu.upload_rgba(&tex, f.width, f.height, &f.rgba);
+            textures.push(tex);
+        }
+        tracing::info!(
+            asset = %asset_id,
+            frames = textures.len(),
+            period = asset.period_frames,
+            policy = ?asset.plan.cache_policy_selected,
+            "video ring resident"
+        );
+        self.video_rings.insert(
+            asset_id.to_string(),
+            VideoRing {
+                textures,
+                period_frames: asset.period_frames,
+                // Rounded: a source rate is a nominal cadence, and a
+                // 23.976 source is a 24 fps cadence with a pulldown
+                // pattern (SPEC §18), not 23 frames per second.
+                source_frame_rate: asset.source_frame_rate.round().max(1.0) as u32,
+            },
+        );
+        true
+    }
+
+    /// The video assets `bus` draws at `frame` — both sides of a transition
+    /// in flight on the View. What "on air" means for rung 2.
+    fn video_assets_for(&self, bus: Bus, frame: u64) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for bus_scene in self.scene_for(bus, frame) {
+            for layer in &bus_scene.scene.layers {
+                if let crate::scene::LayerSource::Video { asset_id, .. } = &layer.source {
+                    out.insert(asset_id.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The loops resident in VRAM now (tests and the record).
+    pub fn resident_loops(&self) -> std::collections::BTreeSet<String> {
+        self.video_rings.keys().cloned().collect()
+    }
+
+    /// Rung 2: shed the ring of every loop NOT feeding the View at `frame`.
+    /// The View's loops are excluded first, so the invariant — no eviction
+    /// can freeze what is on air (§10.5) — holds by construction here, and
+    /// is guarded by `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`.
+    fn shed_off_air_loops(&mut self, frame: u64) {
+        let on_air = self.video_assets_for(Bus::View, frame);
+        let off_air: Vec<String> = self
+            .video_rings
+            .keys()
+            .filter(|a| !on_air.contains(*a))
+            .cloned()
+            .collect();
+        for asset_id in off_air {
+            self.video_rings.remove(&asset_id);
+            self.state.loops_shed_total.fetch_add(1, Ordering::SeqCst);
+            tracing::warn!(asset = %asset_id, frame, "ladder rung 2: off-air loop cache shed");
+            self.loop_cache_events
+                .push(LoopCacheEvent::Shed { frame, asset_id });
+        }
+    }
+
+    /// Re-upload every loop `bus` needs at `frame` that is not resident.
+    fn reacquire_for(&mut self, bus: Bus, frame: u64, reason: &'static str) {
+        for asset_id in self.video_assets_for(bus, frame) {
+            if self.video_rings.contains_key(&asset_id) || !self.upload_ring(&asset_id) {
+                continue;
+            }
+            self.state
+                .loops_reacquired_total
+                .fetch_add(1, Ordering::SeqCst);
+            tracing::info!(asset = %asset_id, frame, reason, "loop cache re-acquired");
+            self.loop_cache_events.push(LoopCacheEvent::Reacquired {
+                frame,
+                asset_id,
+                reason,
+            });
+        }
+    }
+
     /// Render one master-clock frame on both buses.
     ///
     /// The View renders unconditionally — including while the clock is
@@ -321,10 +441,25 @@ impl RenderLoop {
     pub fn render_frame(&mut self, frame: u64, deadline: Option<Duration>) -> FrameReport {
         self.sync_package();
 
-        let preview_due = match self.state.rung() {
+        let rung = self.state.rung();
+        // The View always has its loops: a take of a shed loop re-acquires it
+        // here, before the View draws (rung 2 never sheds what is on air, so
+        // this only ever re-uploads a loop that was off air when it was shed).
+        self.reacquire_for(Bus::View, frame, "take");
+        if rung >= Rung::LoopsShed {
+            self.shed_off_air_loops(frame);
+        }
+
+        let preview_due = match rung {
             Rung::Nominal => true,
-            Rung::PreviewHalfRate => frame.is_multiple_of(2),
+            Rung::PreviewHalfRate | Rung::LoopsShed => frame.is_multiple_of(2),
         };
+        // Preview re-prerolls its loops only once rung 2 has cleared; under
+        // rung 2 it draws without them (the preview may degrade; the View
+        // may not).
+        if preview_due && rung < Rung::LoopsShed {
+            self.reacquire_for(Bus::Preview, frame, "preroll");
+        }
 
         // Preview first, and never allowed to affect the View: its failure is
         // counted and swallowed here (SPEC §10.2 — preview misses are logged,
@@ -357,7 +492,8 @@ impl RenderLoop {
                     tracing::error!(err = %e, frame, "view render failed; engaging fallback");
                     self.view_failing = true;
                 }
-                self.state.fallback_active.store(true, Ordering::SeqCst);
+                self.state
+                    .engage_fallback(crate::state::FallbackSource::Held);
             }
         }
         let elapsed = started.elapsed();
@@ -391,18 +527,35 @@ impl RenderLoop {
     }
 
     /// Degradation ladder: preview yields first, the View never does.
+    ///
+    /// A ladder, in order (§10.5, AC-27): rung 1 after `RUNG1_AFTER_LATE`
+    /// consecutive late frames; rung 2 only FROM rung 1, after
+    /// `RUNG2_AFTER_LATE` further late frames while rung 1 was in force — it
+    /// did not relieve the pressure. `RESTORE_AFTER_ON_TIME` consecutive
+    /// on-time frames restore nominal.
     fn update_rung(&mut self, late: bool) {
         if late {
             self.consecutive_late += 1;
             self.consecutive_on_time = 0;
-            if self.consecutive_late >= 2 {
-                self.state.set_rung(Rung::PreviewHalfRate);
+            match self.state.rung() {
+                Rung::Nominal if self.consecutive_late >= RUNG1_AFTER_LATE => {
+                    self.state.set_rung(Rung::PreviewHalfRate);
+                    self.late_at_rung1 = 0;
+                }
+                Rung::PreviewHalfRate => {
+                    self.late_at_rung1 += 1;
+                    if self.late_at_rung1 >= RUNG2_AFTER_LATE {
+                        self.state.set_rung(Rung::LoopsShed);
+                    }
+                }
+                _ => {}
             }
         } else {
             self.consecutive_on_time += 1;
             self.consecutive_late = 0;
-            if self.consecutive_on_time >= 30 {
+            if self.consecutive_on_time >= RESTORE_AFTER_ON_TIME {
                 self.state.set_rung(Rung::Nominal);
+                self.late_at_rung1 = 0;
             }
         }
     }
@@ -538,7 +691,7 @@ impl RenderLoop {
         // housekeeping drops (completed exits) defer to the first
         // non-fallback frame because overlay_draws — the only place that
         // drops — does not run while the slate is up.
-        let show_fallback = bus == Bus::View && self.state.fallback_active.load(Ordering::SeqCst);
+        let show_fallback = bus == Bus::View && self.state.fallback_active();
 
         let mut draws: Vec<(wgpu::Texture, LayerUniform)> = Vec::new();
         if show_fallback {

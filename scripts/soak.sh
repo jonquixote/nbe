@@ -140,6 +140,8 @@ LAST_RECONNECT_LINE=""
 LAST_G1_LINE=""
 LAST_VT_LINE=""
 LAST_MEDIAMTX=""
+# The last iteration's automation latency line (Prompt 11 WU7).
+LAST_AUTOMATION_LINE=""
 
 for i in $(seq 1 "$ITERATIONS"); do
   say "--- iteration $i/$ITERATIONS"
@@ -200,6 +202,24 @@ for i in $(seq 1 "$ITERATIONS"); do
     grep -q "^$need" "$ITER/stream-evidence.txt" \
       || { say "  stream evidence missing: '$need' — the row it backs has no record this iteration"; FAILED=1; }
   done
+
+  # Automation latency (AC-25 #1, #2; Prompt 11 WU7): every trigger kind on the
+  # control plane's production clock, and audioLevel end to end from the
+  # release engine's crossing to the queued action. Not in `npm test` — a
+  # timing claim from a shared runner is noise (R9) — so this is its home.
+  # The harness exits 1 on counts that disagree or a span over one frame; a
+  # mid-run load spike VOIDs its timing, and a VOID record is no record.
+  ( cd packages/control-plane && npm run -s measure:automation -- --engine "$REPO/target/release/nbe-engine" ) \
+    >"$ITER/automation-latency.log" 2>&1
+  AUTO_RC=$?
+  AUTOMATION_LINE="$(grep -h '^AUTOMATION:' "$ITER/automation-latency.log" | tail -1)"
+  say "  ${AUTOMATION_LINE:-automation latency: NO AUTOMATION LINE (see $ITER/automation-latency.log)}"
+  if [ "$AUTO_RC" -ne 0 ] || [ -z "$AUTOMATION_LINE" ]; then
+    say "  FAIL automation latency (exit $AUTO_RC; see $ITER/automation-latency.log)"; FAILED=1
+  elif echo "$AUTOMATION_LINE" | grep -q '^AUTOMATION: VOID'; then
+    say "  VOID-ish: automation latency measured above the load ceiling"; FAILED=1
+  fi
+  LAST_AUTOMATION_LINE="$AUTOMATION_LINE"
 
   # The rehearsal: thresholds, recording end-to-end, AC-6.
   ( cd packages/control-plane && npm run test:rehearsal ) >"$ITER/rehearsal.log" 2>&1
@@ -327,12 +347,16 @@ cat >"$OUT/soak.json" <<JSON
     "mediamtx": "${LAST_MEDIAMTX:-}",
     "transport_states_last_iteration": "${LAST_TRANSPORT_STATES:-}"
   },
+  "automation": {
+    "latency_last_iteration": "${LAST_AUTOMATION_LINE:-}"
+  },
   "outcome": "$([ "$FAILED" -eq 0 ] && echo PASS || echo FAIL)"
 }
 JSON
 say "=== soak.json written"
 say "=== record tap: ${LAST_TAP_PATHS:-<none>} (${LAST_TAP_REASONS:-<none>})"
 say "=== stream transport: ${LAST_TRANSPORT_STATES:-<none>}"
+say "=== ${LAST_AUTOMATION_LINE:-automation latency: <none>}"
 say "=== R7 watch list: $R7_HITS sighting(s) in $ITERATIONS iterations"
 
 if [ "$FAILED" -eq 0 ]; then

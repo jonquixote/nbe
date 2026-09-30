@@ -527,6 +527,101 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
         }
     }
 
+    // Prompt 11 (WU1, and B1 before it): every automation rule must read. A
+    // rule whose trigger params or conditions the evaluator cannot evaluate
+    // — an unmetered bus, a typo'd key, a hotkey on a non-hotkey binding, an
+    // rssKeyword rule with no RSS source — would never fire, and a rule
+    // accepted and silently inert is what Prompt 11 §9 forbids. The decision
+    // is preflight's (Addendum 02a §1.4); the control plane's reading holds
+    // the same verdicts (`nbe-core/tests/fixtures/automation_rules.json`).
+    // The action is a command, checked the way a control binding's is: a
+    // registered command, with its required keys. (A manifest whose
+    // automation does not parse at all is the schema's refusal, above.)
+    let rules: Vec<nbe_core::manifest::AutomationRule> = manifest_json
+        .get("automation")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let refs = nbe_core::automation::RuleRefs {
+        items: manifest_json
+            .get("rundown")
+            .and_then(|r| r.get("items"))
+            .and_then(|i| i.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect(),
+        bindings: manifest_json
+            .get("control")
+            .and_then(|c| c.get("bindings"))
+            .and_then(|b| b.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|b| {
+                let id = b.get("id").and_then(|v| v.as_str())?;
+                let kind = b
+                    .get("trigger")
+                    .and_then(|t| t.get("kind"))
+                    .and_then(|k| k.as_str())
+                    .map(String::from);
+                Some((id.to_string(), kind))
+            })
+            .collect(),
+    };
+    for rule in &rules {
+        if let Err(e) = nbe_core::automation::validate_rule(rule, &refs) {
+            had_errors = true;
+            report.push_error(format!("automationRule: {e} (SPEC §13.2)"));
+            continue;
+        }
+        let Some(action) = canonical_action(&rule.action.command) else {
+            had_errors = true;
+            report.push_error(format!(
+                "automationRule: automation rule `{}`: action command `{}` is not a command (SPEC §13.1)",
+                rule.id, rule.action.command
+            ));
+            continue;
+        };
+        for key in required_payload_keys(action) {
+            if !rule
+                .action
+                .payload
+                .as_ref()
+                .is_some_and(|p| p.contains_key(*key))
+            {
+                had_errors = true;
+                report.push_error(format!(
+                    "automationRule: automation rule `{}`: action {action} is missing required payload field `{key}` (SPEC §13.1)",
+                    rule.id
+                ));
+            }
+        }
+    }
+    // SPEC §13.4 / AC-25 #3: a rule whose action can re-trigger it, directly
+    // or through other rules, is refused by name — over §13.4.1's effects as
+    // data (`nbe_core::automation_effects`), with each action read under its
+    // canonical name so an alias cannot hide an edge.
+    let canonical_rules: Vec<_> = rules
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            if let Some(c) = canonical_action(&r.action.command) {
+                r.action.command = c.to_string();
+            }
+            r
+        })
+        .collect();
+    if let Some(cycle) = nbe_core::automation_effects::find_cycle(&canonical_rules) {
+        had_errors = true;
+        report.push_error(format!(
+            "automationRule: {} (SPEC §13.4)",
+            nbe_core::automation_effects::describe_cycle(&cycle)
+        ));
+    }
+
     // SPEC §12.4: the absolute short-loop frame cap. Checked before the
     // resource arithmetic so a package past the bound is refused by name
     // rather than saturating into a number that means nothing.
@@ -1017,5 +1112,34 @@ fn main() -> ExitCode {
             report_path.display()
         );
         ExitCode::from(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::REGISTERED_COMMANDS;
+
+    /// §13.4.1's data must name exactly the commands a rule's action can name:
+    /// a registered command with no effects row would cause nothing in the
+    /// cycle check — a missing edge, the unsafe direction.
+    #[test]
+    fn every_registered_command_has_an_effects_row_and_no_other_does() {
+        let effects: std::collections::BTreeSet<&str> =
+            nbe_core::automation_effects::command_effects()
+                .keys()
+                .map(String::as_str)
+                .collect();
+        let registered: std::collections::BTreeSet<&str> =
+            REGISTERED_COMMANDS.iter().copied().collect();
+        assert_eq!(
+            registered.difference(&effects).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "registered commands with no §13.4.1 row"
+        );
+        assert_eq!(
+            effects.difference(&registered).collect::<Vec<_>>(),
+            Vec::<&&str>::new(),
+            "§13.4.1 rows naming no registered command"
+        );
     }
 }

@@ -608,9 +608,7 @@ fn an_underrun_is_counted_and_never_blacks_the_view() {
     // fallback slate on air. Cutting the picture because audio glitched turns
     // a small fault into a visible one.
     assert!(
-        !state
-            .fallback_active
-            .load(std::sync::atomic::Ordering::SeqCst),
+        !state.fallback_active(),
         "an audio underrun must not activate the video fallback"
     );
 
@@ -1225,9 +1223,7 @@ fn a_sink_that_cannot_take_a_block_is_an_underrun_and_not_a_video_fault() {
         "a block the sink refused is an underrun (SPEC §8.10)"
     );
     assert!(
-        !state
-            .fallback_active
-            .load(std::sync::atomic::Ordering::SeqCst),
+        !state.fallback_active(),
         "SPEC §10.3: an audio fault must never put the fallback slate on air"
     );
 }

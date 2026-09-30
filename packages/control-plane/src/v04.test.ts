@@ -31,6 +31,8 @@ function pkg(houseRate = 30): PackageInfo {
     guests: new Set(),
     fallbackAssetId: undefined,
     automationRules: [],
+    automation: [],
+    bindings: new Map(),
   } as unknown as PackageInfo;
 }
 

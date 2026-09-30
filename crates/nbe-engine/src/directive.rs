@@ -187,6 +187,31 @@ impl DirectiveHandler {
             });
         *self.state.record_dir.lock().unwrap() = record_dir;
 
+        // B1 (SPEC v0.4.7 candidate): the `audioLevel` rules' watches. The
+        // crossing is computed here, in the engine, on the audio block — the
+        // control plane only ever sees 1 Hz levels. A rule whose params do not
+        // read is skipped LOUDLY: preflight refuses it before load, so one
+        // arriving here means a package preflight never saw.
+        let rules: Vec<nbe_core::manifest::AutomationRule> = manifest
+            .get("automation")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap_or_else(|e| {
+                tracing::error!(err = %e, "show.load: automation rules do not parse; no audioLevel watches");
+                None
+            })
+            .unwrap_or_default();
+        let (watches, errors) = nbe_core::automation::audio_level_watches(&rules);
+        for e in &errors {
+            tracing::error!(err = %e, "show.load: audioLevel rule skipped (preflight should have refused it)");
+        }
+        info!(
+            watches = watches.len(),
+            "show.load: audioLevel watches installed"
+        );
+        *self.state.audio_level_watches.lock().unwrap() = Arc::new(watches);
+
         // Prompt 05: decode the package's video assets here, at load time.
         // A genuine decode failure IS a fault — unlike Prompt 04's scope
         // boundary — and is reported as `itemEvent: decodeError` so the
@@ -319,6 +344,12 @@ impl DirectiveHandler {
         *self.state.view_item.lock().unwrap() = None;
         *self.state.preview_item.lock().unwrap() = None;
         *self.state.transition.lock().unwrap() = None;
+        // Release parity (PR #34's fix round): the control plane's
+        // `loadPackage` clears `fallbackActive`, so the engine lets go of the
+        // operator's slate here too — a new show must not air under the old
+        // show's slate. Never the watchdog's: its release is its recovery.
+        self.state
+            .release_fallback(crate::state::FallbackSource::Held);
         info!(path, "show.load: package indexed, fallback resident");
         Ok(())
     }
@@ -681,6 +712,16 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(start_frame, std::sync::atomic::Ordering::SeqCst);
+            // §13.4.1's take/cut row, made true on the engine (PR #34's fix
+            // round): a take clears the fallback flag, exactly as the control
+            // plane's `take` clears `fallbackActive` — the operator's slate
+            // (`Held`) comes down with the content that replaces it. The
+            // watchdog's slate does NOT: lateness is not cured by new content,
+            // and its release is the watchdog's recovery (K = 30 on-time
+            // frames). One release path per source, through WU8's atomic
+            // source tracking.
+            self.state
+                .release_fallback(crate::state::FallbackSource::Held);
 
             // SPEC §8.7.3: the take's audio object decides what the clip bus
             // does. `follow` takes the item's own audioPolicy (AFV).
@@ -1245,7 +1286,8 @@ impl DirectiveHandler {
     }
 
     fn on_fallback(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        self.state.fallback_active.store(true, Ordering::SeqCst);
+        self.state
+            .engage_fallback(crate::state::FallbackSource::Held);
         *self.state.view_item.lock().unwrap() = None; // on fallback, view shows the slate
         Ok(())
     }
@@ -1346,8 +1388,18 @@ impl DirectiveHandler {
             "RUNNING" => self.state.clock.lock().unwrap().start(),
             _ => self.state.clock.lock().unwrap().stop(),
         }
-        if snapshot.get("fallbackActive").and_then(|v| v.as_bool()) == Some(true) {
-            self.state.fallback_active.store(true, Ordering::SeqCst);
+        // The snapshot is the control plane's state, so it reconciles the flag
+        // both ways (PR #34's fix round): `true` engages the operator's slate,
+        // `false` releases it — a take or a load the engine missed during an
+        // outage is replayed here. Never the watchdog's slate.
+        match snapshot.get("fallbackActive").and_then(|v| v.as_bool()) {
+            Some(true) => self
+                .state
+                .engage_fallback(crate::state::FallbackSource::Held),
+            Some(false) => self
+                .state
+                .release_fallback(crate::state::FallbackSource::Held),
+            None => {}
         }
         // The snapshot is authoritative about BOTH buses, including when a bus
         // is empty. Reading only the naming case left the previous item on air

@@ -18,20 +18,167 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.7 — **drafted in Prompt 11's PR (2026-09-27); ratified by the user's
+merge of that PR.** The user's word in Prompt 11's execution order: B1 "lands
+with the full audit trio … and the user's merge is the ratification word". Until that merge, this
+entry and the passages it names are a candidate. Prompt 11 §9 forbids the
+executor ratifying inside a feature PR, and the executor does not; the merge is
+the user's act.
+
+| # | Change | Sections | Guarded by |
+|---|---|---|---|
+| 1 | **`audioLevel` rules fire on an engine-computed crossing** (Prompt 11's B1, decision (a): one evaluator, the `itemEvent` precedent). The rule's params are `{ bus, thresholdDbfs, direction? }`, and preflight refuses a rule whose params do not read. The engine compares each watched bus's measured peak with its threshold on every audio block — one block per house frame, so within AC-25 #1's one frame — and sends a new render-channel frame, `audioLevelCrossing`, which the control plane's evaluator matches to rules. Crossings queued while no control plane was connected are not replayed. Before this, `audioLevel` could not meet AC-25 #1 at all: bus levels reached the control plane once a second | 5.9.3 (new row), 13.2 (new note) | `prompt11_audio_level` (six tests on real metered levels, one entering through `show.load`), the mirror's `rust_and_typescript_agree_on_the_audio_level_crossing_fields` and `crossing_direction_tokens_are_stable`, the control-plane readability test `an audioLevelCrossing frame from the render node reaches the engine-event consumer intact`, and `nbe-preflight`'s `automation` suite |
+| 2 | **Ladder rung 2's domain: loops not on air** (the user's word of 2026-09-27, resolving Prompt 11's §4a stop). §10.5's "loop caches evict to streaming" applies only to loops not feeding the View. Evicting the loop on air would freeze it, and §10.5 says the View MUST NOT be degraded. Off-air loops shed under rung 2 and are re-acquired on the next take or preroll; both are recorded. Rung 2 is reached only from rung 1. Recorded as rejected by the user: (a) build read-ahead decode first — its own prompt, and scope expansion here; (c) defer — it leaves AC-27 short. Prompt 11's draft row "buildable — a mechanism exists to degrade to" is struck with the tree's correction (§2c): no streaming decode exists to evict *to*, and the rung's domain was always non-on-air loops | 10.5 (new note) | `prompt11_ladder`: `the_on_air_loop_is_never_shed_and_the_view_keeps_its_cadence`, `the_on_air_loop_stays_resident_under_consecutive_misses`, `an_off_air_loop_sheds_under_rung_2_and_is_reacquired_on_take`, `the_ladder_climbs_in_order_rung_1_before_rung_2` |
+| 3 | **The automation params contract** (Prompt 11 WU1). The schema types `trigger.params` and `conditions` as free objects, and §13.2 named each trigger without its parameters, so a rule whose params did not read could load and never fire. §13.2 gains the table preflight enforces, verbatim from `nbe_core::automation::validate_rule`, and preflight refuses a rule that does not read, by name. `rssKeyword` is refused outright: no RSS item is ever fetched (§13.4.1) | 13.2 (new table; the `rssKeyword` row), 13.4.1 (the `rssKeyword` reading and the `ticker.refreshRss` row, amended §2c-visible) | the shared 32-case fixture `crates/nbe-core/tests/fixtures/automation_rules.json`, read by `nbe-core`'s `every_fixture_rule_gets_its_verdict_from_the_rust_reading` and by the control plane's `every fixture rule gets its verdict from the control plane's reading, the same as preflight's` — a rule one side accepts and the other refuses fails both; `nbe-preflight`'s `every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name` |
+| 4 | **Hold is a state: whichever accepted command engages it cancels pending actions** (Prompt 11 WU2). §13.5 and AC-25 #2 speak of `automation.hold`, but `snapshot.recall` restores `automationHold` wholesale (§16.11), so recalling a snapshot saved while held engages the hold with no `automation.hold`. The tree cancels pending actions on the state's rising edge, in the engaging command's own turn (`server.ts` `afterAccepted`, `!before.automationHold && state.automationHold`; fixed in `e985e40`, which first handled only `automation.hold`) | 13.5 (new paragraph) | `automation.test.ts`: `a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)` (`6b3ab85`), beside `a hold cancels every pending action before it dispatches (B5, AC-25 #2)` for the command's path |
+| 5 | **§10.3 rewritten to the watchdog as built, plus its recovery half** (the user's decision (b), 2026-09-27, on Prompt 11 WU5's finding). The trip is the accumulation the tree implements: `ceil(late ÷ budget)` summed over consecutive late View frames, tripping above 2. Both directions are written, because both are pinned. §10.3's fault counter, which did not exist, is `watchdogTripsTotal` on the §10.1 tick, beside `watchdogClearsTotal`. The watchdog's slate, which never came down, clears after K = 30 consecutive on-time frames, with hysteresis. The watchdog releases only its own slate | 10.3 (rewritten, old text struck), 10.1 (two fields, the counters note), 10.1.1 (ownership row) | `prompt11_watchdog` (4, the real render loop): recovery after K, counts once per episode and on the tick, one on-time frame does not clear and a late frame restarts the run, and the operator's slate survives the recovery. prompt04's two §10.3 pins (`5538bdd`, hardened `1fa7fe6`). `telemetry.test.ts`: the counters reach the control plane's tick and are stubbed when stale. The mirror's telemetry fixture samples both fields |
+| 6 | **Rule actions are exempt from the command limiter** (the user's decision of 2026-09-27, on Prompt 11 WU7's finding). The per-connection, per-family limiter (10 per burst, 5/s) bound a rule's actions below §13.3 #3's once per frame. Automation's bounds are its own: once per frame, the cycle refusal, and self-trigger suppression | 13.3 (new paragraph) | `automation.test.ts`: `a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)`. The test asserts its own discrimination: the limiter would have admitted at most 10 + 5·seconds < 30 |
+| 7 | **Release parity: the operator's slate comes down wherever the control plane's clear of `fallbackActive` reaches the engine** (*reworded before ratification, §2c: it read* ~~"A take or cut releases the operator's slate; each slate source has one release path"~~*, then* ~~"… wherever the control plane clears `fallbackActive`"~~ *— the re-pass's T-1: false for `unloadPackage`*) (the user's word of 2026-09-27, PR #34's fix round). The engine kept the operator's slate after a take, while the control plane's `fallbackActive` cleared: a split brain. §13.4.1's take/cut row already said take clears the flag; the engine now makes it true. The engine's three release points for `Held` are take and cut, `show.load`, and a resync reporting `false` (the fix round, on the two-key pass of 2026-09-29); a resync is a replay of the control plane's state. `Watchdog` is released by the recovery alone. The gap is stated: the control plane's clear in `unloadPackage` does not reach the engine, because `show.unload` has no route. The old View stays on air until the next load or a false resync, and routing it is queued | 10.3 (the release-parity paragraph), 13.4.1 (the take/cut row's engine citation, §2c) | `prompt11_slate` (3, the real render loop): pixel, slate bit and tick asserted in one tuple after view.fallback then take; the engine's `view.cut` route; a take leaves the watchdog's slate up. `slate-release.e2e.ts` (2, the real engine binary under the real control plane): the engine's report and the control plane's state asserted together after a take and after a cut. WU8's `the_recovery_never_releases_an_operators_slate` still holds. The fix round adds `prompt11_slate` 3 → 7 (a resync reconciles both ways; a load releases; neither releases the watchdog's slate; a persisting render failure re-engages after every release) and the e2e 2 → 4 (unload then load; a reload) |
+| 8 | **§13.4.1's two missing edges, and a static reader for the table** (PR #34's fix round, on the two-key pass of 2026-09-29). `scene.arm` writes `previewItem` when the preview is empty, and `show.stop` writes `streamState` and `recordState`. Both edges are now in the data, so preflight refuses the self-cycles it admitted (exit 0 at `63720c3`). The table's "no missing edge" claim has a mechanism: a static scan of **every registered command**. Its key set is read from the server's own dispatch table (`buildRegistry`, dispatch.ts), and its handler bodies are found anywhere under `src/`. It holds scanned == registry == data three ways and set-compares every handler's writes with the data. *Reworded before ratification (§2c, the re-pass's S-1): it read* ~~"a static scan of every handler set-compared with the data"~~ *— the scan had enumerated `commands/*.ts`, so a command registered anywhere else and missing from the data was invisible to both* | 13.4.1 (the scene and show.stop rows; "Checked against the tree", struck §2c) | `effects-static.test.ts` (2: the vacuity pin and the set-compare); `nbe-preflight`'s `the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_clean_rule`; the runtime row check, now taking both paths |
+| 9 | **§13.4.1, the command → trigger effect table, is RATIFIED** (the user's word of 2026-09-29, riding PR #34's merge). It was drafted as a candidate in v0.4.6 (row 4). It is ratified as written at this commit: 55 commands in 19 row groups, with its conditional edges and its deferred cells. From here a row change is a spec change. No row's content changed in the flip | 13.4.1 (the header; the struck candidate note), and the struck "not ratified" lines of v0.4.6 | counted two ways (55/55, set-equal with the §16 parse and the effects data); `effects-static.test.ts` (scanned == registry == data); the runtime row check; the preflight missing-edges pins |
+
+No schema change: `schemas/manifest.v0.4.json` types `trigger.params` as a free
+object, and the params contract is spec text, not a schema edit.
+
+**Row 1, amended by WU7 (`fb1ef14`):** the frame gains `ts` (§5.9.3's row,
+§2c-visible), read once per block in `AudioDriver::detect_crossings`. It is
+guarded by `a_rising_crossing_is_reported_on_the_block_it_happens_in`, which
+asserts `ts` lies inside the block's cycle, and by the mirror's field test,
+which names `ts` (still 18 tests: the key joins an existing test). The
+readability test's frame carries it too. It is B1's acceptance evidence:
+crossing → queued p99 0.761 ms, with 600/600 within one frame, through the
+release binary (`docs/09-measurements.md`, WU7).
+
+**Row 1's guards, run at `6322f90`** (the landing `6158435`, plus `6322f90`, which makes
+the readability test fail on its assertion rather than a timeout):
+`prompt11_audio_level` ok. 6 passed; 0 failed · `mirror` ok. 18 passed; 0 failed ·
+`nbe-preflight` `automation` ok. 2 passed; 0 failed · `nbe-core` `automation`
+ok. 4 passed · the control-plane readability test # pass 1; # fail 0.
+
+**Row 1, falsified at its landing tree**, each restored with `git checkout`:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| the engine stops emitting (push removed) | 4 of `prompt11_audio_level`'s 6 | `exactly one crossing, on the block it happened: []` |
+| a wire field renamed (`levelDbfs` → `peakDbfs`) | `rust_and_typescript_agree_on_the_audio_level_crossing_fields` | `left: {…"peakDbfs"…} right: {…"levelDbfs"…}` — the fixture's key diff |
+| the TypeScript schema dropped | the field and the kinds agreement tests | `TypeScript has an AudioLevelCrossingFrameSchema`; `` TypeScript has no `audioLevelCrossing` engine frame `` |
+| preflight's check removed | `a_malformed_audio_level_rule_fails_preflight_by_name` | `{ "thresholdDbfs": -12 } must fail preflight, not warn; errors []` |
+| bus-name validation removed | the same | `{ "bus": "program", "thresholdDbfs": -12 } must fail preflight, not warn; errors []` |
+| stale crossings replayed | `crossings_queued_during_an_outage_are_not_replayed` | `left: 0` (nothing discarded) |
+| the server's hand-off removed | the readability test | `exactly the well-formed render-session frame is consumed` — `0 !== 1` |
+
+*The work order read "the engine stops emitting → the mirror agreement test fails
+with the fixture diff". The tree splits that in two, and both halves are
+guarded. Stopping emission is caught by the emission tests, because the mirror
+checks the wire's shape, not whether the engine sends. A drift in the wire's
+shape is what the mirror catches, with the key diff above.*
+
+**Row 3's guards, run at `fb7619f`.** The table was written from
+`validate_rule` as it landed in WU1 (`2d6a9a4`); neither it nor the fixture
+has changed since. `automation_rules` ok. 1 passed; 0 failed · `nbe-preflight`
+`automation` ok. 3 passed; 0 failed ·
+`every fixture rule gets its verdict from the control plane's reading, the same as preflight's`
+# pass 1; # fail 0. Its falsification is WU1's (`docs/prompt-map-07-13.md`,
+WU1's table): preflight's rule check removed, and the rss rule `must fail
+preflight` (left 0, right 2).
+
+**Row 4's guard, run at `35b829c`:** both hold tests, # pass 2; # fail 0.
+**Falsified at `6b3ab85`** by restoring the pre-`e985e40` shape, a cancel only
+on `automation.hold` (`command === "automation.hold" && …`). The recall test
+failed with `only the recall dispatched`: actual `['automation:recaller',
+'automation:b', 'automation:c']`, expected `['automation:recaller']`. The two
+actions pending behind the recall ran while held. The `automation.hold` test
+still passed, so the two tests split the paths. Restored with `git checkout`.
+
+**Row 5's guards, run at `4c6e176` (the landing), quiescent, load 2.37 → 2.39:**
+`prompt11_watchdog` ok. 4 passed; 0 failed · `prompt04` ok. 17 passed; 0 failed
+(the §10.3 pins among them) · `mirror` ok. 18 passed; 0 failed ·
+`telemetry.test.ts` # pass 5; # fail 0.
+
+**Row 5, falsified at `4c6e176`.** Each mutation was restored from a saved copy
+of `watchdog.rs`, with the tree clean after each:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) the recovery's `release_fallback(Watchdog)` removed | all 4 of `prompt11_watchdog` | `K = 30 consecutive on-time frames take the watchdog's slate down`; `the watchdog let go of its slate`; `K unbroken on-time frames clear it`; `assertion failed: !fields.fallback_active` |
+| (ii) both counters' increments dropped | 3 of 4 | `one trip per episode, not per frame` (left `(0, 0)`, right `(1, 0)`); the other two read left `(0, 0)`, right `(1, 1)` |
+| (iii) K = 1 | `one_on_time_frame_does_not_clear_and_a_late_frame_restarts_the_run` | `one on-time frame must NOT clear a tripped slate (K = 1)` |
+| (iv) the recovery clears EVERY source (`fallback_sources.store(0)`) | `the_recovery_never_releases_an_operators_slate` | `the operator's slate is still on air: the recovery releases only its own` |
+
+**Row 6's guard, run at `0e3b69b` (the landing):** the automation suite #
+pass 29; # fail 0. **Falsified at `0e3b69b`** by re-applying the limiter to rule
+actions (`dispatch(deps, …)` for every command), restored from a saved copy.
+The test failed with `no action refused — in particular none E_RATE_LIMITED`:
+actual `['E_RATE_LIMITED'` × 20`]`, expected `[]`. The burst of 10 was
+admitted, and the other 20 were refused. The test's own guard found a
+test-seam defect first: `nextFrame()`'s `+= 1000/30` floored step ten into step
+nine's frame, so 29 of 30 dispatched. It was fixed on its own in `3270bc1`
+(WU2's seam; 28/28 at that commit).
+
+**Row 7's guards, run at `5942305` (the landing).** The load was 3.94 → 3.31,
+over the ceiling, so these are counts, not timing; the quiescent run is in PR
+#34's gate. `prompt11_slate` ok. 3 passed; 0 failed · `slate-release.e2e.ts` #
+pass 2; # fail 0 · `prompt11_watchdog` ok. 4 passed; 0 failed
+(`the_recovery_never_releases_an_operators_slate` among them).
+
+**Row 7, falsified at `5942305`.** Each mutation was restored from a saved copy
+of `directive.rs`, with the tree clean after each:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) the release reverted, which is the pre-fix tree | both `prompt11_slate` split-brain tests, and both e2e tests (release engine rebuilt) | Rust: `after the take: (View centre pixel, slate on air, tick fallbackActive)` — left `([12, 200, 90, 255], true, true)`, right `([0, 0, 255, 255], false, false)`, and the same for the cut. e2e: `after the take, the engine and the control plane agree: no slate` — actual `{ controlPlane: false, engineConnected: true, engineReport: true }`, the split brain on the wire, and the same after the cut |
+| (ii) the release only when the directive is named `view.take` | `a_cut_releases_the_operators_slate_too` only | `after the cut: …` left `([12, 200, 90, 255], true, true)`. The e2e cut still passes, because the control plane forwards its cut as `view.take`: the engine's `view.cut` route is guarded by the Rust test alone |
+| (iii) the take also releases the watchdog's slate | `a_take_does_not_release_the_watchdogs_slate` | `a take must not release the watchdog's slate` |
+| (iv) — WU8's pin, unchanged | `the_recovery_never_releases_an_operators_slate` passes at `5942305` | orthogonal release paths, each pinned |
+
+**Row 8's guards, run at `6557ae6` (the landing):** `effects-static.test.ts`
+# pass 2; # fail 0 · the runtime row check ok · `nbe-preflight` `automation`
+ok. 5 passed; 0 failed. **Falsified at `6557ae6`**, each mutation restored from
+a saved copy:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| (a) an edge deleted from the data (`scene.arm`'s `previewItem`) | the static set-compare | `scene.arm: writes previewItem but its row does not name it — a missing edge` |
+| (b) an undeclared write added to a handler (`element.toggle` writing `recordState`) | the static set-compare | `element.toggle: writes recordState but its row does not name it — a missing edge` |
+| (c) the `scene.arm` edge removed, preflight re-run | the preflight pin | `{ … "scene.arm" … } must fail preflight; errors []`, left `0`: the pass's own signature, exit 0 |
+
+**Row 8's registry read (S-1, `6bd5a11`)**, falsified the same way:
+
+| Mutation | Guard that failed | Signature |
+|---|---|---|
+| the re-pass's own demonstration: `marker.flag`, writing `recordState`, wired into `buildRegistry` from outside `commands/` (it passed 2/2 at `99586ee`, the defect's signature) | the three-way vacuity test | `scanned handlers, the dispatch registry and the effects data disagree` — `marker.flag: missing from the effects data` |
+| the same, with an empty effects row for `marker.flag` | both tests | `marker.flag: writes recordState but its row does not name it — a missing edge` (its body is scanned outside `commands/`), and the registry pin reads `56` |
+| a key deleted from the data (`marker.add`) | the three-way vacuity test | `marker.add: missing from the effects data` |
+
+**Row 7, the fix round's release parity, run at `a8678d8`/`990a22a`:**
+`prompt11_slate` ok. 7 passed; 0 failed · `slate-release.e2e.ts` # pass 4; #
+fail 0. **Falsified**, each mutation restored from a saved copy of
+`directive.rs` or `render.rs`, with the release engine rebuilt for the e2e and
+again after the restore:
+
+| Mutation | Guards that failed | Signature |
+|---|---|---|
+| (i) `on_show_load`'s release reverted | `a_show_load_releases_the_operators_slate`, the render-failure test's load step, and e2e 3 and 4 | Rust `the new show does not air under the old show's slate` (left `[12, 200, 90, 255]`). e2e: `after unload then load, …` and `after a reload, the engine and the control plane agree: no slate`, each with actual `{ controlPlane: false, engineConnected: true, engineReport: true }`. The first run failed e2e 4 only by cascade (test 3 left the show stopped); `990a22a` made each test start a running show, and the re-run shows test 4's own split brain |
+| (ii) the resync's `false` branch removed | `a_resync_reconciles_the_operators_slate_both_ways`, and the render-failure test's resync step | `a resync reporting false: …` left `([12, 200, 90, 255], true, true)` |
+| (ii-b) the resync's `true` branch removed | `a_resync_reconciles_the_operators_slate_both_ways` | `a resync reporting true: …` left `([0, 0, 255, 255], false, false)` |
+| (iii) the load and the false resync also release the watchdog's slate | `a_load_or_a_false_resync_does_not_release_the_watchdogs_slate` | `neither a load nor a false resync releases the watchdog's slate` |
+| (iv) a render failure engages only on its episode's first failed frame | `a_persisting_render_failure_re_engages_after_any_release` | `the View still fails after a take: the next failed frame re-engages the slate` |
+
 v0.4.6 — **RATIFIED 2026-09-25.** Prompt 11's decisions, and the Prompt 10 wire
 candidates they settle. The user spoke Prompt 11's six decisions on 2026-09-25
 (`agents/prompts/11-watchdog.md` §1 and §3). As in v0.4.5 there was no drafting
 phase: the words predate the text, so each ratified row is ratified on landing,
-lands with its mechanism, and had its guard run at its landing commit. One row
+lands with its mechanism, and had its guard run at its landing commit. ~~One row
 is not ratified: row 4 is drafted as an UNRATIFIED candidate, because its
-mechanism is Prompt 11's to build.
+mechanism is Prompt 11's to build.~~ *(§2c: row 4, §13.4.1, was ratified by the
+user's word of 2026-09-29, riding PR #34's merge; struck in the §13.4.1 flip (PR #34, 2026-09-29; SPEC v0.4.7 row 9).)*
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
 | 1 | **`stream.start`'s refusal order is law.** Configuration (`tapPath`) first, then the zero-copy chain (`E_NO_ZEROCOPY`), then the encoder (`E_NO_HARDWARE_ENCODER`). The order was pinned by a test since PR #30's repair round and stated nowhere in §16.14, whose precondition cell lists the encoder first and orders nothing. Its grounds are the honest ones: a configuration refusal is machine-independent, and this is the only order the CI runner (a chain, no encoder) can observe. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 16.14 | `stream_start_refusal_order_is_config_then_chain_then_encoder` |
 | 2 | **`streamTransportState` on the wire** (B2). The engine publishes its stream transport's `PublisherState` on the §10.1 tick as exactly `"live"` / `"reconnecting"` / `"closed"`, always emitted and stubbed `"none"` before any stream has started (the `recordTapPath` precedent), `"closed"` after a stream stops. It is split from the commanded `streamState` by §9.5's survival shape: `streamState` stays `live` through a redial, and this field says what the socket is doing. Before it, a redial was visible to no telemetry consumer and no soak. Drafted UNRATIFIED in `docs/v0.5-outline.md` §7 | 10.1 (field block, new note), 10.1.1 (ownership) | `transport_tokens_are_stable`, `the_transport_field_is_always_on_the_wire_and_stubs_before_any_stream_starts`, `an engineTelemetry tick carrying streamTransportState parses and the field is readable`, and `transport_death_leaves_the_loop_untouched` (the redial, on the wire) |
 | 3 | **`streamBufferMs` is `-1` with no session** — the NO-SESSION sentinel, on the engine AND the control plane (which also emits it with no fresh engine report). `streamState` on the same tick carries idle vs live, but it is commanded, not measured; the sentinel exists so that "no measurement exists" is diagnosable from "the buffer is empty". PR #30 shipped it inside its feature PR, the repair round reverted it (`f8ff895`) as a ratified field's meaning changed without the user's word, and it was drafted UNRATIFIED in `docs/v0.5-outline.md` §7. The code flip reverts the revert; the three engine tests and two control-plane tests that pinned `0.0` are rewritten to pin the `-1.0` / `0.0` distinction, the retired pins kept visible (§2c). §10.1 had never stated a no-session value — the repair round's "§10.1 law: 0" was code-comment inference — so this row writes the sentence rather than amending one | 10.1 (new note) | `prestart_tick_carries_stream_buffer_ms_stub_not_absence`, `refused_start_leaves_a_lawful_stub_tick`, `live_tick_wires_the_session_counter_and_stop_returns_to_stub`, `idle reports -1 and drained-live reports 0: the field alone distinguishes them` |
-| 4 | **The command → trigger effect table — drafted UNRATIFIED** (B4). §13.4 wants *transitive* cycle rejection at preflight and no section said which commands can cause which §13.2 triggers. §13.4.1 derives it from the tree by enumerating all 55 §16 commands; every row cites the §16 cell, handler and engine route it was read from. **A candidate, not law:** its mechanism is Prompt 11's WU5, and the user ratifies it separately, never inside that feature PR. It records two things for WU3/WU5 rather than deciding them: `item.stop` has no engine effect (a stopped timed item keeps its scheduled `end`; the `mediaEnd` reading keyed on `markDone` is what drops it), and a *deferred* edge — a take of a timed item causing `mediaEnd` one duration later — is an edge whose static verdict is WU5's | 13.4.1 (new, UNRATIFIED) | — (no guard until WU5 ships the check it serves; a candidate is guarded when its mechanism lands) |
+| 4 | **The command → trigger effect table — drafted ~~UNRATIFIED~~** *(ratified 2026-09-29: v0.4.7 row 9, struck in the flip, §2c)* (B4). §13.4 wants *transitive* cycle rejection at preflight and no section said which commands can cause which §13.2 triggers. §13.4.1 derives it from the tree by enumerating all 55 §16 commands; every row cites the §16 cell, handler and engine route it was read from. ~~**A candidate, not law:** its mechanism is Prompt 11's WU5, and the user ratifies it separately, never inside that feature PR.~~ *(§2c: WU5 built its mechanism, and the user ratified it on 2026-09-29, riding PR #34's merge; struck in the §13.4.1 flip, v0.4.7 row 9.)* It records two things for WU3/WU5 rather than deciding them: `item.stop` has no engine effect (a stopped timed item keeps its scheduled `end`; the `mediaEnd` reading keyed on `markDone` is what drops it), and a *deferred* edge — a take of a timed item causing `mediaEnd` one duration later — is an edge whose static verdict is WU5's | 13.4.1 (new, ~~UNRATIFIED~~ ratified 2026-09-29) | ~~— (no guard until WU5 ships the check it serves; a candidate is guarded when its mechanism lands)~~ guarded since PR #34 (v0.4.7 rows 8 and 9) |
 
 **Row 2's two control-plane choices, and the rule each followed.** The schema
 takes the field `.optional()` — the `recordTapPath` landing's *final* shape
@@ -85,8 +232,10 @@ Row 3's flip was falsified the same way at `00d8b46`, once per side:
 | control-plane stub back to `?? 0` | `ticks carry streamState and streamBufferMs in every phase, stubbed lawfully` | `no engine report: no measurement exists` — `0 !== -1` |
 
 Rows 1–3 are ratified as their own change, not inside a feature PR (§4's
-counter-precedent). **Row 4 is not ratified**: §13.4.1 carries its UNRATIFIED
-mark until the user ratifies it, after Prompt 11's WU5 gives it a guard. B1 (the
+counter-precedent). ~~**Row 4 is not ratified**: §13.4.1 carries its UNRATIFIED
+mark until the user ratifies it, after Prompt 11's WU5 gives it a guard.~~
+*(§2c: WU5 gave it its guards, and the user ratified it on 2026-09-29, riding
+PR #34's merge; struck in the §13.4.1 flip (PR #34, 2026-09-29; SPEC v0.4.7 row 9).)* B1 (the
 engine level-crossing event) is also a candidate, but its mechanism is Prompt
 11's to build and it ships there, so it has no row here; C1, B3 and B5 are
 decisions for Prompt 11's executor, recorded in `docs/prompt-map-07-13.md`, and
@@ -850,6 +999,7 @@ Accepted only from `render`-role sessions; from any other role they MUST be igno
 | `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
 | `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
 | `resyncRequest` | `{ v, kind, reason }` where `reason` is `seqGap` \| `reconnect` \| `internal` | The engine asks for a full snapshot. |
+| `audioLevelCrossing` | `{ v, kind, ts, bus, thresholdDbfs, direction, levelDbfs, masterFrame }` where `direction` is `rising` \| `falling` and `ts` is Unix milliseconds, fractional, read when the crossing was computed | **New in v0.4.7.** A bus level crossed an `audioLevel` rule's threshold, on the audio block it happened in (§13.2). Consumed by the automation evaluator, never applied as state. *Amended by Prompt 11 WU7 (§2c), inside the candidate:* ~~`{ v, kind, bus, thresholdDbfs, direction, levelDbfs, masterFrame }`~~ *— without `ts`, the span from crossing to action crossed a process boundary with no clock on the far side, so AC-25 #1 could not be measured end to end. `ts` is `engineTelemetry`'s `ts` (§10.1, Unix milliseconds) at sub-millisecond resolution.* |
 
 Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
 
@@ -2079,6 +2229,8 @@ Telemetry fields:
   "fallbackActive": false,
   "qualityProfile": "consumer",
   "degradationRung": 0,
+  "watchdogTripsTotal": 0,
+  "watchdogClearsTotal": 0,
   "automationHold": false,
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
@@ -2093,6 +2245,14 @@ audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
 missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
+
+**The watchdog's counters (normative, new in v0.4.7).** `watchdogTripsTotal`
+is §10.3's fault counter: the watchdog's trips since the engine started, one per
+trip. `watchdogClearsTotal` counts its recoveries. While the watchdog holds the
+slate, trips − clears is 1. Both are engine-owned; with no fresh engine report
+the control plane emits `0` (§10.1.1's stub). They ride the tick beside
+`degradationRung`, which is §10.5's reporting shape for the ladder. The audit
+log (§10.7) is the control plane's, and the engine keeps none.
 
 **`streamBufferMs` and its NO-SESSION sentinel (normative, new in v0.4.6).**
 While a stream session exists, `streamBufferMs` is the stream transport's
@@ -2173,7 +2333,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 
@@ -2200,17 +2360,101 @@ The render node MUST implement a frame watchdog. It watches **video** frames:
 an audio fault is reported through Section 8.10 and never activates the
 fallback slate.
 
-If the render loop misses a deadline by more than:
+*Rewritten in v0.4.7 (§2c), on the user's decision (b) of 2026-09-27, which
+followed Prompt 11 WU5's finding. The section read:*
 
-```text
-1 frame
-```
+> ~~If the render loop misses a deadline by more than: `1 frame` the watchdog
+> MUST: 1. log fault, 2. increment fault counter, 3. activate fallback slate if
+> the fault affects VIEW.~~
 
-the watchdog MUST:
+*The tree never read it that way, and it differed in both directions (WU5,
+pinned by prompt04's `one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog`
+and `three_frames_each_late_by_under_one_budget_trip_the_watchdog`). A frame late
+by 1.5 budgets did not trip, and three frames each late by under one budget did.
+There was also no fault counter, and the slate never came down. The text below
+writes the accumulation as built and adds the two missing mechanisms.*
 
-1. log fault,
-2. increment fault counter,
-3. activate fallback slate if the fault affects VIEW.
+**The trip (normative).** For each View frame that misses its deadline, the
+watchdog counts `ceil(late ÷ budget)` missed frames. `late` is how far past the
+deadline the frame was submitted, and `budget` is one house frame. The counts
+are summed over consecutive late frames, and an on-time frame resets the sum to
+zero. When the sum exceeds **2**, the watchdog trips. Both directions follow,
+and both are pinned:
+
+- A single frame late by more than two budgets trips on its own.
+- A single frame late by more than one budget and at most two does **not**
+  trip: it counts 2, and 2 is not above 2.
+- Three consecutive frames, each late by at most one budget, trip on the third,
+  although none misses its deadline by more than a frame.
+
+**On a trip** the watchdog MUST:
+
+1. log the fault;
+2. increment its fault counter, `watchdogTripsTotal` on the §10.1 tick, once
+   per trip;
+3. activate the fallback slate on the View.
+
+A trip is one fault until it clears. Late frames while the watchdog holds the
+slate do not trip it again.
+
+**Recovery (normative).** After **K = 30 consecutive on-time View frames**, the
+watchdog MUST clear the slate it activated, log the recovery, and increment
+`watchdogClearsTotal`. K is one second at 30 fps, and it is the same evidence
+on which §10.5's ladder restores to nominal. Any late frame restarts the run,
+and one on-time frame clears nothing. The clear threshold sits an order of
+magnitude above the trip, so the slate cannot alternate with the program at
+frame rate.
+
+**The watchdog releases only its own slate.** A slate held by another source —
+the operator's `view.fallback`, a resync snapshot that says so, or a View render
+failure — stays on air through the watchdog's recovery.
+
+**Release parity (normative, new in v0.4.7, PR #34's fix round).** When the
+control plane clears `fallbackActive`, the operator's slate (`view.fallback`, a
+resync that says so, or a render failure) is released wherever that clear
+reaches the engine. The engine has three release points:
+
+1. a take or a cut (§13.4.1);
+2. a `show.load`;
+3. a resync that reports `false`.
+
+A resync is a replay of the control plane's state, not a place where the
+control plane clears the flag. It is how a take or a load the engine missed
+reaches it.
+
+**The gap, stated.** The control plane also clears `fallbackActive` in
+`unloadPackage` (`state.ts`, line 417 at `99586ee`, on `show.unload`), and that
+clear does not reach the engine: `show.unload` has no engine route, so the
+directive is ignored. After an unload with no following load:
+
+- The old View stays on air: the last item, or the slate if one was held.
+- The engine's tick keeps reporting its `fallbackActive`.
+- With no package loaded there is nothing to take. Recovery is the next
+  `show.load`, or a resync that reports `false`.
+
+Routing `show.unload` to the engine is queued (`docs/prompt-map-07-13.md`,
+Prompt 11): *"route `show.unload` to the engine, clearing its package, View,
+preview and `Held`, so an unloaded show goes off air."*
+
+The watchdog's slate has exactly one release path, its recovery (K on-time
+frames), and none of the operator's releases touches it: new content does not
+cure lateness. A render failure that persists re-engages the slate on its next
+failed frame, after any release.
+
+*Reworded before ratification (§2c), twice.*
+
+- **First,** in PR #34's fix round. The paragraph read: ~~"**Each slate source
+  has exactly one release path** … The operator's slate … is released by a take
+  or a cut (§13.4.1), exactly as the control plane's `take` clears
+  `fallbackActive`."~~ The two-key pass of 2026-09-29 found the control plane
+  clearing the flag in two more places the engine did not follow,
+  `loadPackage` / `unloadPackage`, and a resync did not release it. A new show
+  aired under the old show's slate.
+- **Then,** in the last round. The rewrite read: ~~"… is released exactly
+  where the control plane clears `fallbackActive`: a take or a cut (§13.4.1),
+  a `show.load`, or a resync that reports `false`."~~ The re-pass (T-1) found
+  "exactly where" false for `unloadPackage`. A resync is a replay, not a clear
+  site.
 
 ## 10.4 Health endpoint
 
@@ -2248,6 +2492,24 @@ Normative yield order under sustained load:
 4. Multiview tiles.
 
 The View MUST NOT be degraded. Telemetry MUST expose the current ladder rung as `degradationRung`.
+
+**Rung 2's domain: loops not on air (normative, new in v0.4.7).** "Loop caches
+evict to streaming" evicts only loops that are **not feeding the View**. The
+clause above is why: evicting the loop on air would freeze the View, and no
+eviction may. An off-air loop — the preview's, a prerolled one — sheds its
+cache under rung 2. It is re-acquired on the next take that puts it on air, or
+on preroll once the pressure has cleared. Each shed and each re-acquire is
+observable: `degradationRung` reports rung 2 on the §10.1 tick, and the engine
+records and counts each shed and re-acquire.
+
+The ladder is climbed in order. Rung 2 is reached only from rung 1, when rung 1
+was in force and the View kept missing deadlines. That pressure is sustained
+but not necessarily consecutive: under consecutive misses the §10.3 watchdog
+puts the fallback slate on air before rung 2 could act.
+
+Rung 2 does not stream: this build has no runtime streaming decode. A shed loop
+is re-uploaded from its decoded frames, which is why the domain is off-air
+loops only.
 
 ## 10.6 Coverage additions
 
@@ -2738,9 +3000,69 @@ The command is any command-bus command. Automation actions face the same precond
 | `timeOfDay` | a wall-clock time is reached |
 | `audioLevel` | a bus crosses a level threshold |
 | `hotkey` | a binding fires |
-| `rssKeyword` | an RSS item matches a keyword rule |
+| `rssKeyword` | an RSS item matches a keyword rule. **Refused at load in this build (v0.4.7):** no RSS item is ever fetched, so preflight refuses a rule with this trigger rather than accept one that can never fire (params table below) |
 | `streamHealth` | stream state changes (e.g., reconnecting) |
 | `stateChange` | a specified state transition occurs |
+
+**Trigger params and conditions (normative, new in v0.4.7).** The schema types
+`trigger.params` and `conditions` as free objects, and the table above names
+each trigger without its parameters. A rule's params MUST read as follows, with
+no keys beyond those named. This is what preflight enforces
+(`nbe_core::automation::validate_rule`), and the control plane's read at load
+holds the same verdicts:
+
+| Trigger | `trigger.params` | Preflight refuses the rule when |
+|---|---|---|
+| `mediaEnd`, `mediaStart` | `{ itemRef? }` | `itemRef` is not an item in the rundown |
+| `timer` | `{ atMs }` | `atMs` is not a finite number greater than 0 (show-clock milliseconds after `show.start`) |
+| `timeOfDay` | `{ at }` | `at` is not `"HH:mm"` or `"HH:mm:ss"` — two digits each, hour ≤ 23, minute and second ≤ 59 (local wall clock) |
+| `audioLevel` | `{ bus, thresholdDbfs, direction? }` | as the `audioLevel` note below |
+| `hotkey` | `{ bindingId }` | `bindingId` is not a `control.bindings` entry, or that binding's trigger kind is not `hotkey` |
+| `rssKeyword` | — | **always**: it has no source in this build — `ticker.refreshRss` mutates nothing (§13.4.1) |
+| `streamHealth` | `{ state }` | `state` is not `live`, `reconnecting` or `closed` (a `streamTransportState` token, §10.1; `none` is a stub, not a state) |
+| `stateChange` | `{ field, itemRef?, from?, to? }` | `field` is not one of `showState`, `viewItem`, `previewItem`, `streamState`, `recordState`, `automationHold`, `fallbackActive`, `itemState`; or `field` is `itemState` without an `itemRef` naming a rundown item; or `itemRef` is given with any other field |
+
+A condition is `{ field, itemRef?, equals }`, with no other keys: `field` and
+`itemRef` read as `stateChange`'s do, and `equals` is required. A rule's
+conditions must all hold (AND), read when the trigger fires. A rule's action
+names a registered command with its required payload keys, checked as a
+control binding's action is; the control plane also validates the whole payload
+against the command's §16 schema at load. Preflight names the rule and the
+reason: ``automationRule: automation rule `<id>`: <reason> (SPEC §13.2)``, where
+a trigger's reason begins `<kind> trigger`.
+
+**`audioLevel`: its parameters, and where the crossing is computed (normative,
+new in v0.4.7).** An `audioLevel` rule's `trigger.params` are
+`{ "bus": string, "thresholdDbfs": number, "direction"?: "rising" | "falling" }`,
+and no other keys:
+
+- `bus` names a metered bus as `busPeakDbfs` does (`mic`, `clip`, `music`,
+  `sfx`, `guest`, `master`, `guestReturn`, `ifb`, or `guest:<guestId>`);
+- `thresholdDbfs` lies in (−120, 0], because −120 dBFS is the meter's floor and
+  a threshold at or below it could never be crossed from below;
+- `direction` defaults to `rising`.
+
+Preflight MUST refuse a rule whose params do not read this way, naming the rule
+and the reason. A rule that can never fire is not accepted and left inert.
+
+**The crossing is computed in the engine.** The §10.1 tick carries
+`busPeakDbfs` once a second, and AC-25 #1 gives a rule one frame. The engine
+therefore compares each watched bus's measured peak with its threshold on every
+audio block — one block per house frame — and on a crossing sends an
+`audioLevelCrossing` frame (§5.9.3) in that block. `rising` fires when the peak
+goes from below the threshold to at-or-above it; `falling` fires on the
+reverse. A watch starts below, so a level already present when the package
+loads does not fire a `rising` rule. There is no hysteresis: a level hovering on
+a threshold crosses on each block it changes side, and §13.3 #3's once-per-frame
+limit is what bounds the firing. The control plane's evaluator matches the
+crossing to its rules; one evaluator, as §5.9.3's `itemEvent` already is for
+`mediaEnd`.
+
+**A crossing is a moment, not a state.** Crossings the engine queued while no
+control plane was connected MUST NOT be delivered when one connects: a rule
+would fire late, on a level that may already have fallen back. This is
+§5.9.4's rule 4 in the other direction. Acknowledgements and `itemEvent`s are
+unaffected, because they report states that are still true.
 
 ## 13.3 Execution semantics
 
@@ -2748,17 +3070,64 @@ The command is any command-bus command. Automation actions face the same precond
 2. Every automation action is written to the audit log (Section 10.7).
 3. Automation actions are rate-limited; a rule MUST NOT fire more than once per frame.
 
+**Rule actions and the command limiter (normative, new in v0.4.7).** The control
+plane rate-limits commands per connection per command family: 10 per burst,
+refilled at 5/s (`RateLimiter`, `server.ts`). This is flood protection for
+sessions. The tree applies it to every family, which is wider than §10.7's
+ticker sentence, and the tree wins. **A rule's actions are exempt.**
+Automation's rate limit is #3's once per frame per rule, and its other bounds
+are §13.4's cycle refusal and the runtime's self-trigger suppression. The "same
+preconditions as a human operator's commands" of §13.1 are the command's own —
+role, state and payload — not a session's flood protection. Before v0.4.7 the
+limiter bound a rule too, because a rule dispatches on its own connection
+(`automation:<ruleId>`). A rule could therefore sustain only 5 actions a second
+in a family, below once per frame, and its 11th action in a burst was refused
+(Prompt 11 WU7's finding).
+
 ## 13.4 Cycle detection
 
 Preflight MUST statically reject rules whose action can re-trigger themselves directly or transitively. The runtime MUST also suppress a rule that fires itself.
 
-### 13.4.1 Command → trigger effects — **UNRATIFIED** (candidate, drafted in v0.4.6)
+### 13.4.1 Command → trigger effects — ~~**UNRATIFIED** (candidate, drafted in v0.4.6)~~ **RATIFIED 2026-09-29** (the user's word; rides PR #34's merge)
 
-*Not normative. Drafted 2026-09-25 from the user's decision B4 on Prompt 11
+~~*Not normative. Drafted 2026-09-25 from the user's decision B4 on Prompt 11
 (`agents/prompts/11-watchdog.md` §3). It is a **candidate**: its mechanism —
 preflight's transitive cycle check — is Prompt 11's WU5, and it is ratified by
 the user as its own change, never inside that feature PR (§4's
-counter-precedent). Until then it is a derivation, not law.*
+counter-precedent). Until then it is a derivation, not law.*~~ *(§2c, struck in
+the flip.)*
+
+**Ratified by the user's word of 2026-09-29, riding PR #34's merge (normative;
+v0.4.7 row 9).** The table was drafted 2026-09-25 from the user's decision B4
+as a candidate. The struck note planned its ratification as its own change,
+never inside the feature PR. The user's word has it ride PR #34's merge
+instead, and that is recorded here rather than smoothed over.
+
+**What is ratified.** The table as written at this commit: 55 commands in 19 row
+groups. That includes its conditional edges, such as `scene.arm`'s
+`previewItem`, which it writes only when the preview is empty. It also includes
+its deferred cells: `audioLevel` and `streamHealth` are marked deferred, and
+those marks are ratified with the table.
+
+**What stands behind it.**
+
+- **Counted two ways:** 55/55 commands, set-equal with the §16 parse and with
+  the effects data (`crates/nbe-core/src/automation_effects.json`, the table as
+  data).
+- **Read against the tree:** every row, across PR #34's two-key pass and
+  re-pass (2026-09-29).
+- **Guarded by three tests:**
+  - `effects-static.test.ts` — scanned == registry == data, three ways, with
+    the server's dispatch table as its key set;
+  - the runtime row check (`automation.test.ts`, "§13.4.1, row by row"), which
+    now takes the two paths it had missed;
+  - the preflight missing-edges pins (`nbe-preflight` `automation`).
+
+**What ratification means.** A row change is now a spec change and rides a
+revision. The guards fail CI when the table's data drifts from the tree: the
+static scan covers every `stateChange` cell, and the runtime row check covers
+every same-dispatch cell a probe reaches. The rows below mirror that data file,
+and their prose is kept in step with it by hand, as every row of this spec is.
 
 The rule above asks preflight to reject *transitive* re-triggers, which needs to
 know which commands can cause which §13.2 triggers. No section said. This table
@@ -2791,32 +3160,90 @@ does. The trigger readings the cells assume:
   arrives for an item that was stopped, and `markDone` drops it.
 - **`timeOfDay`, `hotkey`** — no command causes them (the wall clock; operator
   input). **`rssKeyword`** — no command causes it today (no RSS fetch exists; see
-  `ticker.refreshRss`).
+  `ticker.refreshRss`), and since v0.4.7 no `rssKeyword` rule loads: preflight
+  refuses it (§13.2's params table; `nbe_core::automation::validate_rule`, the
+  `RssKeyword` arm: "has no source in this build"). *Amended in Prompt 11
+  (§2c): the reading stopped at "no command causes it today", which left a rule
+  that could never fire free to load.*
 
 | Commands | `stateChange` | `mediaStart` | `mediaEnd` | Other triggers | Derived from |
 |---|---|---|---|---|---|
-| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel` — the take swaps the clip bus's source | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
+| `view.take`, `view.cut` | yes — the item goes `LIVE` (untimed) or `PLAYING` (timed), the previous live item returns to `READY`; `view.cut` arms a `READY` item first. *Amended in Prompt 11 WU5 (§2c), from the tree:* the take also clears `previewItem` when the previewed item is taken, and clears `fallbackActive` (`state.ts` `take`: `if (this.previewItem === itemRef) this.previewItem = null; this.fallbackActive = false`). *And on the engine (PR #34's fix round, §2c): this sentence was written ahead of the engine. Until `5942305`, the engine kept the operator's slate on air after a take, and its tick kept reporting `fallbackActive: true`. Now `on_take` (`directive.rs`), which handles both `view.take` and `view.cut` and is where the control plane's cut arrives as `view.take`, releases `FallbackSource::Held`. It does not release the watchdog's slate (§10.3)* | **yes**, same dispatch | **yes, deferred** — a timed item's `end` is scheduled for its duration; the take also *cancels* the previous item's pending end | `audioLevel`, **deferred** — the take swaps the clip bus's source, and the crossing arrives on a later engine frame (`server.ts`, `audioLevelCrossing` → `NO_CAUSE`). *~~`audioLevel` —~~ amended in WU5 (§2c): the cell did not say deferred* | §16.2 cells; `state.ts` `take`; `commands/view.ts`; `directive.rs` `on_take` (incl. its `release_fallback(Held)`) → `playing.begin` + `schedule_done`, whose generation check drops a superseded end |
 | `item.stop` | yes — `PLAYING → READY` | no | **no** — a stop is not a completion: the item leaves `PLAYING` for `READY`, never `DONE` | — | §16.4 cell; `state.ts` `stopItem`, `markDone` (accepts only `PLAYING`); `directive.rs` routing (`item.stop` is not routed) |
 | `show.start` | yes — show `LOADED → RUNNING`, clock `STOPPED → RUNNING` | no | no | `timer`, deferred — the show clock starts | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_start` |
-| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced | no | no — pending ends are dropped while the show is not running | `streamHealth` — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1) | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
-| `show.load`, `show.unload`, `show.preflight` | yes — `→ LOADED` / `→ UNLOADED` with item and scene states cleared; preflight state set | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
+| `show.stop` | yes — show `RUNNING → STOPPED`, outputs quiesced: **`showState`, `streamState`, `recordState`**. The last two are set idle unconditionally (`commands/show.ts`), so they change whenever an output was active. *Amended in PR #34's fix round (§2c): the effects data listed `showState` only, and WU5's probe stopped a show whose outputs were already idle* | no | no — pending ends are dropped while the show is not running | `streamHealth`, **deferred** — quiescence closes a live stream's transport (`streamTransportState` → `closed`, §10.1), observed on the next §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell did not say deferred* | §16.1 cell; `commands/show.ts`; `directive.rs` `on_show_stop` (both quiescence arms), `schedule_done` (`if !state.is_running() return`) |
+| `show.load`, `show.unload`, `show.preflight` | `show.load`: yes — `→ LOADED` with item and scene states cleared, seen by the NEW package's rules (the evaluator loads them before the diff, `server.ts` `afterAccepted`). *Amended in Prompt 11 WU5 (§2c):* `show.unload` ~~yes — `→ UNLOADED`~~ **fires no `stateChange` rule** — the evaluator unloads the package's rules in the same turn, before the diff (`afterAccepted`: `automation.unload()`), so nothing is left to hear it; `show.preflight` ~~preflight state set~~ fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those) (it sets `preflightPassed` and `lastError`, `commands/show.ts`) | no | no | — | §16.1 cells; `commands/show.ts`; `state.ts` `loadPackage`, `unloadPackage` |
 | `preview.set`, `item.arm`, `item.unarm`, `item.reset` | yes — the §17 item transitions their cells name | no — nothing goes on air | no | — | §16.2, §16.4 cells; `commands/view.ts`, `commands/sequence.ts`; `state.ts` `armItem`, `unarmItem`, `resetItem` |
-| `scene.arm`, `scene.apply` | yes — scene `ARMED`, or applied to its target bus | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene`, `applyScene` (scene states only) |
+| `scene.arm`, `scene.apply` | ~~yes~~ — scene `ARMED`, or applied to its target bus; ~~fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those)~~. *Amended in Prompt 11 WU5 (§2c); that amendment struck in PR #34's fix round:* **`scene.arm`: `previewItem`, only when the preview is empty** (`state.ts` `armScene`: `if (this.previewItem == null) this.previewItem = sceneId`). A conditional write is still an edge, because cycle detection asks what a command CAN cause. `scene.apply` changes scene states only, which no rule can name. *The two-key pass of 2026-09-29 found the WU5 wording wrong: WU5's probe ran with the preview already set* | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene` (~~scene states only~~ scene states, and an empty preview), `applyScene` (scene states only) |
 | `snapshot.recall` | yes — view state, item states, overlays and `automationHold` restored wholesale | **no under B3** — it is not a take; but it can set `viewItem` without one, so an evaluator that keys `mediaStart` on `viewItem` would put it in this column | no | — | §16.11 cell; `state.ts` `recallSnapshot`; `directive.rs` routing (not routed) |
 | `view.fallback` | yes — `fallbackActive` | no — the fallback slate is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_fallback` |
-| `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`; stop takes it to `closed` | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
+| `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth`, **deferred** — start takes `streamTransportState` to `reconnecting` and then `live`; stop takes it to `closed`; each is observed on a later §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell read* ~~"`streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`"~~ *— `reconnecting` is no more same-dispatch than `live`* | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
 | `record.start`, `record.stop` | yes — `recordState` | no | no | — | §16.14 cells; `commands/output.ts` |
-| `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | yes — the playback, bus, duck and mute changes their cells name | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel` — each moves a bus's level, up or down | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
-| `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | yes — visibility and property changes | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
-| `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | yes — ticker source and queue | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
-| `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`) |
-| `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | yes — the guest source and configuration changes their cells name | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
-| `automation.enable`, `automation.disable`, `automation.hold` | yes — a rule enabled or disabled; `automationHold` | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
+| `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | ~~yes~~ — the playback, bus, duck and mute changes their cells name; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel`, **deferred** — each moves a bus's level, up or down, and the crossing arrives on a later engine frame. *Amended in WU5 (§2c): the cell did not say deferred* | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
+| `element.toggle`, `element.set`, `graphic.show`, `graphic.hide`, `graphic.update`, `breaking.show`, `breaking.hide`, `overlay.show`, `overlay.hide`, `clock.configure` | ~~yes~~ — visibility and property changes; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — | §16.5, §16.6, §16.13 cells; `commands/element.ts`, `commands/state.ts` |
+| `ticker.setSource`, `ticker.override`, `ticker.clearOverride` | ~~yes~~ — ticker source and queue; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | not `rssKeyword` — manual items are not RSS items, and no RSS item is ever fetched | §16.7 cells; `commands/ticker.ts` |
+| `ticker.refreshRss` | **frame only** — the handler mutates nothing and returns `{ refreshed: true }` | no | no | **none today, and no rule to reach.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes. Until then preflight refuses every `rssKeyword` rule (v0.4.7, §13.2's params table). *Amended in Prompt 11 (§2c): the cell read* ~~"**none today.** §16.7 says "RSS cache refreshed"; when a real fetch lands, `rssKeyword` becomes reachable from this command and this row changes"~~ *— true of the command, silent on the rule, which the draft of Prompt 11 read as "available (per refresh)"* | §16.7 cell; `commands/ticker.ts` (`ticker.refreshRss`); `nbe-core` `automation.rs` `validate_rule` (`RssKeyword` arm) |
+| `guest.connect`, `guest.disconnect`, `guest.setLayout`, `guest.placeholder`, `guest.configureReturn` | ~~yes~~ — the guest source and configuration changes their cells name; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — (guest audio reaches no engine bus today; when it does, connect and disconnect join `audioLevel`) | §16.9 cells; `commands/guest.ts`; `directive.rs` routing (only `guest.mute` is routed) |
+| `automation.enable`, `automation.disable`, `automation.hold` | `automation.hold`: yes — `automationHold`. `automation.enable`, `automation.disable`: ~~yes — a rule enabled or disabled~~ a rule enabled or disabled, which fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no | no | — hold *suppresses* every trigger (§13.5), so it can remove firings and never adds a cycle edge | §16.10 cells; `commands/state.ts` |
 | `snapshot.save`, `marker.add`, `plugin.reload` | **frame only** — a store is updated (snapshots, markers) or a plugin reloaded; nothing on air and no §17, show or output transition | no | no | — | §16.11, §16.12 cells; `commands/state.ts` |
 | `guest.getTurn`, `system.status`, `system.telemetry.subscribe`, `system.telemetry.unsubscribe` | **frame only** — "none", or per-connection | no | no | — | §16.9, §16.15 cells; `commands/guest.ts`, `commands/system.ts`; `dispatch.ts` `READ_ONLY` |
 
-55 commands, each in exactly one row. Two things the derivation turned up, both
-recorded rather than decided here:
+55 commands, each in exactly one row.
+
+**Checked against the tree (Prompt 11 WU5, 2026-09-27).** The table is held as
+data in `crates/nbe-core/src/automation_effects.json`, one entry per command,
+and has two readers:
+
+- **Preflight's cycle check** (`nbe_core::automation_effects`) builds its edges
+  from the data.
+- **The control plane's runtime check** executes every command
+  (`automation.test.ts`, "§13.4.1, row by row"), with rules watching every
+  field a `stateChange` rule can name and `mediaStart`.
+  - Every trigger a command raises must be a cell its row names. A trigger
+    raised and not named would be a missing edge, the unsafe side.
+  - Every named same-dispatch cell must be shown to fire.
+  - One command per row must be accepted.
+
+47 of the 55 are accepted in the check's package, which covers all 19 rows.
+Eight are refused by their own preconditions in that package: `graphic.hide`,
+`graphic.update`, `overlay.show`, `overlay.hide`, `clock.configure`,
+`soundboard.stop`, `guest.getTurn`, `plugin.reload`.
+
+Rows the tree contradicted are amended in place above, each with its code
+citation (§2c). There are three kinds:
+
+- **`stateChange` "yes" where no rule can hear it.** The change touches no
+  field a rule can name, since v0.4.7's params table: ~~`scene.*`~~
+  `scene.apply`, the soundboard and audio row, the element and graphics row,
+  the ticker queue row, `guest.*`, `automation.enable` and
+  `automation.disable`, and `show.preflight`. *(§2c, PR #34's fix round:
+  `scene.arm` writes `previewItem` when the preview is empty.)*
+- **`show.unload`.** Its rules unload before the diff.
+- **Effects that arrive after the command's dispatch are marked deferred:**
+  `audioLevel`, and `streamHealth`, which is observed on the tick.
+
+Take and cut also clear `previewItem` and `fallbackActive`, which the take row
+now says. The same-dispatch cells the check confirmed unchanged are
+`item.stop`; `show.start`; ~~`show.stop`~~; `preview.set`, `item.arm`,
+`item.unarm` and `item.reset`; `snapshot.recall`; `view.fallback`;
+`stream.*`; `record.*`; `automation.hold`; and the two "frame only" rows.
+
+**Struck by the two-key pass of 2026-09-29 (§2c).** `show.stop` was never
+"confirmed". Its probe ran with the outputs idle, so its `streamState` and
+`recordState` writes never fired. `scene.arm`'s probe ran with the preview
+set, so its `previewItem` write never fired either. A runtime probe sees only
+the path it takes, so "no missing edge" was a claim with no mechanism behind
+it. PR #34's fix round added the two edges and gave the table a static reader.
+`packages/control-plane/src/effects-static.test.ts` reads ~~every command
+handler's writes~~ the writes of every command the server's dispatch table
+registers (`buildRegistry`; S-1, the re-pass) to rule-nameable fields. It follows them directly, through the
+`ControlPlaneState` methods the handler calls, and through the file's local
+helpers, each transitively. It finds handler bodies anywhere under `src/`,
+holds scanned == registry == data, and set-compares the writes with the data. The one
+exception, `show.unload`, is a premise the test re-checks: its rules unload
+before the diff. The runtime check now also takes the two paths it missed.
+
+Two things the derivation turned up, both recorded rather than decided here:
 
 - **`item.stop` has no engine effect.** The engine does not route it, so a
   stopped timed item keeps its scheduled `end`. The `mediaEnd` reading above —
@@ -2827,6 +3254,15 @@ recorded rather than decided here:
   playlist. §13.3's once-per-frame limiter bounds it at runtime. Whether a
   deferred edge counts for §13.4's *static* rejection is Prompt 11's to decide
   (WU5); the table records edges and their timing, not the verdict.
+  **Decided in WU5: it counts.** AC-25 #3 names self-triggering rules with no
+  exception for timing. The cause chain the runtime suppression reads does not
+  survive the delay: a `mediaEnd` arrives as an engine frame with no chain. So
+  only the static check can see such a loop, and a looping playlist is refused
+  by name. The check also over-approximates in two other ways. Conditions are
+  ignored, and disabled rules count, since `automation.enable` can arm them.
+  Items narrow only where the payload names one: `view.cut { itemRef }` can
+  start and end only that item. (`nbe_core::automation_effects`, module
+  documentation.)
 
 ## 13.5 Automation hold
 
@@ -2835,6 +3271,13 @@ recorded rather than decided here:
 1. all automation triggers are suppressed within 1 frame,
 2. `autoFollow` is suppressed,
 3. telemetry reports `automationHold: true`.
+
+**Hold is a state, not a command (normative, new in v0.4.7).** "Held" means
+`automationHold` is true, whichever accepted command set it: `automation.hold
+{ hold: true }`, or a `snapshot.recall` restoring a snapshot saved while held
+(§16.11 restores `automationHold` wholesale). Either one cancels every pending
+action in its own dispatch, as AC-25 #2 asks of `automation.hold`, and each
+cancellation is audited.
 
 ---
 

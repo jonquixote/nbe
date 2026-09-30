@@ -13,6 +13,8 @@ import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import {
   EngineFrameSchema,
   EnvelopeSchema,
+  type AudioLevelCrossingFrame,
+  type Envelope,
   WS_PATH,
   PROTOCOL_VERSION,
   CpError,
@@ -29,6 +31,16 @@ import {
   type RenderRegistration,
 } from "./render-bridge.js";
 import type { ControlPlaneState, DeprecationRecord } from "./state.js";
+import type { SystemHooks } from "./commands/system.js";
+import {
+  AutomationEvaluator,
+  NO_CAUSE,
+  snapshot,
+  stateChanges,
+  type ActionOutcome,
+  type Cause,
+  type Snapshot,
+} from "./automation.js";
 import type { PersistenceHooks } from "./persistence.js";
 import { buildTick, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
 
@@ -140,6 +152,16 @@ export interface ControlPlaneServer {
    * already expired. See the R5 note in `dress-rehearsal.test.ts`.
    */
   awaitApplied(version: number, ms: number): Promise<boolean>;
+  /**
+   * Subscribe to engine EVENTS the control plane consumes rather than
+   * applies — today `audioLevelCrossing` (SPEC v0.4.7 candidate B1), which
+   * the automation evaluator matches to rules. Returns the unsubscribe.
+   * Called synchronously as the frame is parsed: no queue, no tick, so a
+   * crossing reaches its consumer in the same event-loop turn it arrived in.
+   */
+  onEngineEvent(listener: (frame: AudioLevelCrossingFrame) => void): () => void;
+  /** The automation evaluator (Prompt 11): tests await `settled()` on it. */
+  automation: AutomationEvaluator;
   close(): Promise<void>;
 }
 
@@ -165,6 +187,13 @@ export interface ServerOptions {
   houseRate?: number;
   /** Warning sink; defaults to console.warn. Tests assert exact strings. */
   warn?: (message: string) => void;
+  /**
+   * The automation evaluator's monotonic clock (default `performance.now`).
+   * Test seam: the once-per-frame limiter keys on a frame index read from
+   * this clock, and a test that must put two triggers in ONE frame cannot
+   * rely on wall time never crossing a 33 ms boundary between them.
+   */
+  automationClock?: () => number;
 }
 
 export async function createControlPlaneServer(opts: ServerOptions): Promise<ControlPlaneServer> {
@@ -175,6 +204,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const rateLimiter = new RateLimiter();
 
   const clients = new Map<string, ClientSession>();
+  const engineEventListeners = new Set<(frame: AudioLevelCrossingFrame) => void>();
 
   // -- SPEC §5.9.5: the quiescence acknowledgement -------------------------
   // `show.stop` waits for a render node to confirm it applied the stop
@@ -243,6 +273,185 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     warn: opts.warn ?? ((m) => console.warn(m)),
   };
   const registry = buildRegistry(deps);
+
+  // -- The ONE command path (Prompt 11 WU1) ----------------------------------
+  // A session's command and an automation rule's action both run here:
+  // dispatch() (preconditions, the one stateVersion bump, directives), then
+  // the audit row, then the §5.4.1 stateChange, then the automation
+  // evaluator hears what changed. An automation action is a command — same
+  // preconditions, same audit, same acknowledgement rules — so it must not
+  // have a second path (Prompt 11 §9).
+  interface CommandRun {
+    envelope: Envelope;
+    role: Role;
+    tokenId: string | null;
+    connectionId: string;
+    intentSource: string | null;
+    systemHooks?: SystemHooks;
+    /** Set when a rule (or autoFollow) is acting: audited as kind "automation". */
+    automation?: { actor: string; event: string; detail: Record<string, unknown>; cause: Cause };
+  }
+  type CommandResult = { ok: true; stateVersion: number; data: Record<string, unknown> } | { ok: false; error: CpError };
+
+  // §13.3 (v0.4.7): a rule's action is exempt from §10.7's command limiter.
+  // That limiter (10 per burst, 5/s per connection per command family) is
+  // flood protection for sessions. Applied to a rule — which dispatches on its
+  // own connection, `automation:<ruleId>` — it refused the rule's 11th action
+  // in a burst, below §13.3 #3's once per frame (WU7's finding; the user's
+  // decision of 2026-09-27). Automation has its own bounds: once per frame
+  // per rule (§13.3 #3), preflight's cycle refusal (§13.4), and the runtime's
+  // self-trigger suppression.
+  const { rateLimiter: _sessionsOnly, ...automationDeps } = deps;
+
+  async function runCommand(run: CommandRun): Promise<CommandResult> {
+    const { envelope } = run;
+    const before = state.stateVersion;
+    const snapBefore = snapshot(state);
+    try {
+      const out = await dispatch(run.automation ? automationDeps : deps, registry, {
+        connectionId: run.connectionId,
+        role: run.role,
+        envelope,
+        ...(run.systemHooks ? { systemHooks: run.systemHooks } : {}),
+      });
+      const alias = resolveCommand(envelope.command);
+      const command = alias?.command ?? envelope.command;
+      audit.record({
+        kind: run.automation ? "automation" : "command",
+        ...(run.automation ? { event: run.automation.event, actor: run.automation.actor, detail: run.automation.detail } : {}),
+        outcome: "ok",
+        role: run.role,
+        tokenId: run.tokenId,
+        requestId: envelope.id,
+        command,
+        rawCommand: alias?.deprecated ? envelope.command : null,
+        intentSource: run.intentSource,
+        stateVersionBefore: before,
+        stateVersionAfter: out.stateVersion,
+      });
+      // Fan deprecation warnings into every subscriber's own cursor.
+      for (const rec of state.drainDeprecations()) {
+        for (const client of clients.values()) {
+          if (!client.closed && client.render === null) client.pendingDeprecations.push(rec);
+        }
+      }
+      // SPEC §5.4.1: exactly one stateChange per accepted command, carrying
+      // the response's stateVersion and observable no later than it.
+      broadcastStateChange(out.stateVersion, [command]);
+      afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
+      hotkeyFired(run.intentSource);
+      return { ok: true, stateVersion: out.stateVersion, data: out.data };
+    } catch (err) {
+      const e = err instanceof CpError ? err : new CpError("E_ENGINE", String(err));
+      audit.record({
+        kind: run.automation ? "automation" : "command",
+        ...(run.automation ? { event: run.automation.event, actor: run.automation.actor, detail: run.automation.detail } : {}),
+        outcome: "rejected",
+        role: run.role,
+        tokenId: run.tokenId,
+        requestId: envelope.id,
+        command: envelope.command,
+        errorCode: e.code,
+        intentSource: run.intentSource,
+        stateVersionBefore: before,
+        stateVersionAfter: state.stateVersion,
+      });
+      // The binding fired whether or not the command it carried was accepted.
+      hotkeyFired(run.intentSource);
+      return { ok: false, error: e };
+    }
+  }
+
+  // -- The automation evaluator (SPEC §13, AC-25) ---------------------------
+  const automation = new AutomationEvaluator({
+    state,
+    ...(opts.automationClock ? { clock: opts.automationClock } : {}),
+    // A rule's action: the one command path, as `operator` — §13.1's "the
+    // same preconditions as a human operator's commands".
+    execute: async (req): Promise<ActionOutcome> => {
+      const r = await runCommand({
+        envelope: { v: PROTOCOL_VERSION, id: randomUUID(), command: req.command, payload: req.payload },
+        role: "operator",
+        tokenId: null,
+        connectionId: req.actor,
+        intentSource: null,
+        automation: { actor: req.actor, event: req.auditEvent, detail: req.detail, cause: req.cause },
+      });
+      return r.ok ? { ok: true, stateVersion: r.stateVersion } : { ok: false, code: r.error.code, message: r.error.message };
+    },
+    audit: (rec) =>
+      audit.record({
+        kind: "automation",
+        event: rec.event,
+        outcome: rec.outcome,
+        actor: rec.actor,
+        role: "operator",
+        tokenId: null,
+        ...(rec.command ? { command: rec.command } : {}),
+        detail: rec.detail,
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+      }),
+  });
+
+  /**
+   * An accepted command changed state: keep the evaluator's lifecycle in step,
+   * and raise the triggers the change is. Runs in the same turn as the
+   * acceptance, so a trigger is observed the moment its condition became true.
+   */
+  function afterAccepted(command: string, before: Snapshot, cause: Cause): void {
+    if (command === "show.load" && state.pkg) automation.load(state.pkg);
+    else if (command === "show.unload") automation.unload();
+    else if (command === "show.start") automation.showStarted();
+    else if (command === "show.stop") automation.showStopped();
+    // §13.5 / AC-25 #2: a hold cancels every pending action, in this turn —
+    // whichever command engaged it (`automation.hold`, or a `snapshot.recall`
+    // restoring a held snapshot).
+    const observedAt = automation.now();
+    if (!before.automationHold && state.automationHold) automation.holdEngaged(observedAt);
+    const after = snapshot(state);
+    for (const e of stateChanges(before, after)) automation.fire(e, cause, observedAt);
+    // B3: mediaStart is control-plane-side — the take whose item goes on air,
+    // applied. Only a take puts an item on air (§13.4.1's rows: view.take,
+    // view.cut; snapshot.recall is not a take).
+    if (command === "view.take" || command === "view.cut") {
+      for (const [itemRef, to] of after.itemStates) {
+        const from = before.itemStates.get(itemRef) ?? "READY";
+        const onAir = (s: string) => s === "LIVE" || s === "PLAYING";
+        if (onAir(to) && !onAir(from)) automation.fire({ kind: "mediaStart", itemRef }, cause, observedAt);
+      }
+    }
+  }
+
+  /**
+   * A command arrived carrying `intentSource` (`adapter/profile:intent`): the
+   * binding named by its intent id fired. `hotkey` rules on that binding fire
+   * whatever the carried command's own outcome — the actuation happened.
+   */
+  function hotkeyFired(intentSource: string | null): void {
+    if (!intentSource) return;
+    const bindingId = intentSource.slice(intentSource.lastIndexOf(":") + 1);
+    automation.fire({ kind: "hotkey", bindingId }, NO_CAUSE, automation.now());
+  }
+
+  /**
+   * `streamTransportState` as last observed on the §10.1 tick (v0.4.6):
+   * `streamHealth` fires on a change TO a transport state. The first value
+   * observed is the baseline and fires nothing — after a control-plane
+   * restart a stream already live is not news. `none` is a stub (no stream
+   * has started), never a state a rule names, but a change FROM it counts:
+   * the first stream going live fires a `live` rule.
+   */
+  let lastTransport: string | undefined;
+  function observeTransport(token: string | undefined): void {
+    if (token === undefined) return; // an engine build older than the field
+    const prev = lastTransport;
+    lastTransport = token;
+    if (prev === undefined || prev === token) return;
+    if (token === "live" || token === "reconnecting" || token === "closed") {
+      automation.fire({ kind: "streamHealth", state: token, from: prev }, NO_CAUSE, automation.now());
+    }
+  }
 
   /** SPEC §5.4.1: one stateChange frame per accepted command, to observers. */
   function broadcastStateChange(stateVersion: number, changed: string[]): void {
@@ -460,6 +669,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         const frame = engine.data;
         if (frame.kind === "engineTelemetry") {
           ingestEngineFrame(world, frame, Date.now());
+          observeTransport(frame.streamTransportState);
           // SPEC §5.9.4: the snapshot's `viewItemStartFrame` needs a clock,
           // and the engine owns the only one. Recording it here keeps the
           // field at worst one tick stale rather than an outage's length.
@@ -470,8 +680,29 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         } else if (frame.kind === "resyncRequest") {
           // SPEC §5.9.4: the engine lost continuity; hand it the snapshot.
           sendResync(session);
+        } else if (frame.kind === "audioLevelCrossing") {
+          // B1: a crossing is an event for a consumer, not a state to apply.
+          // Handed over synchronously — the evaluator's one-frame budget
+          // (AC-25 #1) starts when this frame arrives.
+          for (const listener of engineEventListeners) listener(frame);
+          // The audioLevel adapter: the crossing is observed as it arrives;
+          // the engine computed it on the block it happened in (v0.4.7).
+          automation.fire(
+            {
+              kind: "audioLevel",
+              bus: frame.bus,
+              thresholdDbfs: frame.thresholdDbfs,
+              direction: frame.direction,
+              levelDbfs: frame.levelDbfs,
+              masterFrame: frame.masterFrame,
+              ts: frame.ts,
+            },
+            NO_CAUSE,
+            automation.now(),
+          );
         } else if (frame.kind === "itemEvent") {
           const before = state.stateVersion;
+          const snapBefore = snapshot(state);
           if (frame.event === "end") state.markDone(frame.itemRef);
           else if (frame.event === "missing") state.markMissing(frame.itemRef);
           else state.markError(frame.itemRef);
@@ -486,6 +717,28 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
             stateVersionBefore: before,
             stateVersionAfter: state.stateVersion,
           });
+          // The engine's item transitions are state changes too, and
+          // `PLAYING → DONE` is mediaEnd — the only point completion is true
+          // (a stopped item's late `end` is dropped by `markDone`; §13.4.1).
+          const observedAt = automation.now();
+          const snapAfter = snapshot(state);
+          for (const e of stateChanges(snapBefore, snapAfter)) automation.fire(e, NO_CAUSE, observedAt);
+          if (
+            frame.event === "end" &&
+            snapBefore.itemStates.get(frame.itemRef) === "PLAYING" &&
+            snapAfter.itemStates.get(frame.itemRef) === "DONE"
+          ) {
+            automation.fire({ kind: "mediaEnd", itemRef: frame.itemRef }, NO_CAUSE, observedAt);
+            // WU4: autoFollow — the item completed; advance to the next item
+            // in the rundown (§3.1), through the evaluator's queue so hold
+            // governs it (§13.5 #2).
+            const pkg = state.pkg;
+            if (pkg?.items.get(frame.itemRef)?.autoFollow) {
+              const order = [...pkg.items.keys()];
+              const next = order[order.indexOf(frame.itemRef) + 1];
+              automation.autoFollow(frame.itemRef, next, NO_CAUSE, observedAt);
+            }
+          }
         }
         return;
       }
@@ -498,58 +751,20 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         return;
       }
       const envelope = env.data;
-      const before = state.stateVersion;
-
-      try {
-        const out = await dispatch(deps, registry, {
-          connectionId: connId,
-          role: session.role,
-          envelope,
-          systemHooks: { onTelemetrySubscribe: startTelemetry, onTelemetryUnsubscribe: stopTelemetry },
-        });
-        const alias = resolveCommand(envelope.command);
-        audit.record({
-          kind: "command",
-          outcome: "ok",
-          role: session.role,
-          tokenId: session.tokenId,
-          requestId: envelope.id,
-          command: alias?.command ?? envelope.command,
-          rawCommand: alias?.deprecated ? envelope.command : null,
-          intentSource,
-          stateVersionBefore: before,
-          stateVersionAfter: out.stateVersion,
-        });
-        // Fan deprecation warnings into every subscriber's own cursor.
-        for (const rec of state.drainDeprecations()) {
-          for (const client of clients.values()) {
-            if (!client.closed && client.render === null) client.pendingDeprecations.push(rec);
-          }
-        }
-        // SPEC §5.4.1: exactly one stateChange per accepted command, carrying
-        // the response's stateVersion and observable no later than it.
-        broadcastStateChange(out.stateVersion, [alias?.command ?? envelope.command]);
+      const r = await runCommand({
+        envelope,
+        role: session.role,
+        tokenId: session.tokenId,
+        connectionId: connId,
+        intentSource,
+        systemHooks: { onTelemetrySubscribe: startTelemetry, onTelemetryUnsubscribe: stopTelemetry },
+      });
+      if (r.ok) {
         // Command responses are never dropped (addendum §2.8).
-        ws.send(JSON.stringify(okResponse(envelope.id, out.stateVersion, out.data)));
-      } catch (err) {
-        const e = err instanceof CpError ? err : new CpError("E_ENGINE", String(err));
-        audit.record({
-          kind: "command",
-          outcome: "rejected",
-          role: session.role,
-          tokenId: session.tokenId,
-          requestId: envelope.id,
-          command: envelope.command,
-          errorCode: e.code,
-          intentSource,
-          stateVersionBefore: before,
-          stateVersionAfter: state.stateVersion,
-        });
-        ws.send(
-          JSON.stringify(
-            errorResponse(envelope.id, state.stateVersion, e.code, e.message, e.details),
-          ),
-        );
+        ws.send(JSON.stringify(okResponse(envelope.id, r.stateVersion, r.data)));
+      } else {
+        const e = r.error;
+        ws.send(JSON.stringify(errorResponse(envelope.id, state.stateVersion, e.code, e.message, e.details)));
       }
     }
   });
@@ -567,6 +782,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     bridge,
     wsBridge,
     awaitApplied: (version: number, ms: number) => waitForGrace(ms, version),
+    onEngineEvent(listener) {
+      engineEventListeners.add(listener);
+      return () => engineEventListeners.delete(listener);
+    },
+    automation,
     async close() {
       for (const s of clients.values()) {
         s.closed = true;
@@ -579,6 +799,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       clients.clear();
       for (const waiter of ackWaiters) waiter.resolve(false);
       ackWaiters.clear();
+      automation.close();
       wss.close();
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },

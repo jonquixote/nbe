@@ -350,6 +350,49 @@ test("an engineTelemetry tick carrying streamTransportState parses and the field
   ws.close();
 });
 
+// SPEC v0.4.7 candidate B1: the engine's audioLevelCrossing reaches the
+// control plane's consumer — parsed by the `.strict()` schema, handed over
+// intact, from a render session only, and a malformed one is refused whole.
+test("an audioLevelCrossing frame from the render node reaches the engine-event consumer intact", async () => {
+  const got: Record<string, unknown>[] = [];
+  const off = server.onEngineEvent((f) => got.push(f as unknown as Record<string, unknown>));
+  try {
+    const frame = {
+      v: "0.3",
+      kind: "audioLevelCrossing",
+      ts: 1768000000123.25,
+      bus: "mic",
+      thresholdDbfs: -12,
+      direction: "rising",
+      levelDbfs: -3.5,
+      masterFrame: 54012,
+    };
+    // Not from a monitor session: engine frames are render-role only (§5.9.3).
+    const monitor = conn("monitor", MONITOR);
+    await connect(monitor);
+    monitor.send(JSON.stringify(frame));
+    // Malformed: no bus. `.strict()` with every field required — refused whole.
+    const render = conn("render", RENDER);
+    await connect(render);
+    const { bus: _noBus, ...noBus } = frame;
+    render.send(JSON.stringify(noBus));
+    render.send(JSON.stringify(frame));
+    // Wait on the SERVER having processed the three frames, not on the
+    // consumer, so a dropped hand-off fails on the assertion below instead of
+    // on a timeout: a later message on the render connection is answered only
+    // after them (per-connection order). A render session may not command, so
+    // the answer is E_AUTH — its arrival is the ordering proof.
+    const reply = await send(render, "system.status", {});
+    assert.equal(reply.status, "error");
+    assert.equal(got.length, 1, "exactly the well-formed render-session frame is consumed");
+    assert.deepEqual(got[0], frame, "the crossing reaches its consumer with every field intact");
+    monitor.close();
+    render.close();
+  } finally {
+    off();
+  }
+});
+
 // §5.9.4 show.resync
 // ---------------------------------------------------------------------------
 

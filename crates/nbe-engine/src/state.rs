@@ -5,7 +5,7 @@
 use crate::clock::{ClockState, MasterClock};
 use nbe_protocol::EngineFrame;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -22,8 +22,21 @@ pub struct EngineState {
     pub package_path: Mutex<Option<String>>,
     /// resident fallback slate (path + loaded bytes), loaded at show.load
     pub fallback: Mutex<Option<FallbackSlate>>,
-    /// set when the fallback is what the engine is currently showing
-    pub fallback_active: AtomicBool,
+    /// Who holds the fallback slate on the View, as [`FallbackSource`] bits.
+    /// The slate is on air while ANY source holds it
+    /// ([`EngineState::fallback_active`]). Split by source (Prompt 11 WU8) so
+    /// the watchdog's recovery releases only the slate the watchdog raised —
+    /// never an operator's `view.fallback`. Bits are set and cleared with
+    /// `fetch_or` / `fetch_and`, so the directive thread engaging and the
+    /// render thread releasing cannot lose each other's write.
+    pub fallback_sources: AtomicU8,
+    /// SPEC §10.3's fault counter: watchdog trips (Prompt 11 WU8). On the
+    /// §10.1 tick as `watchdogTripsTotal`.
+    pub watchdog_trips_total: AtomicU64,
+    /// Watchdog recoveries — a tripped slate cleared after the on-time run
+    /// (WU8). On the tick as `watchdogClearsTotal`; trips − clears is 1 while
+    /// the watchdog holds the slate.
+    pub watchdog_clears_total: AtomicU64,
     /// engine start time (telemetry)
     pub started_at: Instant,
     /// The effective quality profile: probe capped by request. Written only
@@ -100,6 +113,11 @@ pub struct EngineState {
     pub audio_drift_ms_bits: AtomicU64,
     /// Per-bus peak levels for telemetry (SPEC §10.1).
     pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// The loaded package's `audioLevel` watches (SPEC v0.4.7 candidate B1),
+    /// installed by `show.load` from the manifest's automation rules. The
+    /// audio driver swaps them in by pointer on its next block and reports a
+    /// crossing of any of them as an `audioLevelCrossing` frame.
+    pub audio_level_watches: Mutex<Arc<Vec<nbe_core::automation::AudioLevelWatch>>>,
     /// Audio intents published by the directive path and drained by whoever
     /// owns the graph. The directive thread never touches the graph itself.
     pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
@@ -186,6 +204,10 @@ pub struct EngineState {
     pub stream_tap_ms: Mutex<f64>,
     /// Current degradation rung (SPEC §10.5), as `Rung as u64`.
     degradation_rung: AtomicU64,
+    /// Loop caches ladder rung 2 shed (off-air only), and loop caches
+    /// re-acquired after a shed — the rung's effect, counted (WU6).
+    pub loops_shed_total: AtomicU64,
+    pub loops_reacquired_total: AtomicU64,
 }
 
 pub struct FallbackSlate {
@@ -200,7 +222,9 @@ impl EngineState {
             last_applied_state_version: AtomicU64::new(0),
             package_path: Mutex::new(None),
             fallback: Mutex::new(None),
-            fallback_active: AtomicBool::new(false),
+            fallback_sources: AtomicU8::new(0),
+            watchdog_trips_total: AtomicU64::new(0),
+            watchdog_clears_total: AtomicU64::new(0),
             started_at: Instant::now(),
             quality_profile: std::sync::Mutex::new(None),
             probed_quality: std::sync::Mutex::new(None),
@@ -222,6 +246,7 @@ impl EngineState {
             unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
@@ -241,6 +266,8 @@ impl EngineState {
             skipped_stream_frames: Arc::new(AtomicU64::new(0)),
             stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),
+            loops_shed_total: AtomicU64::new(0),
+            loops_reacquired_total: AtomicU64::new(0),
         }
     }
 
@@ -304,14 +331,38 @@ impl EngineState {
             preview_item_start_frame: self.preview_item_start_frame.load(Ordering::SeqCst),
             preview_item: self.preview_item.lock().unwrap().clone(),
             transition: self.transition.lock().unwrap().clone(),
-            fallback_active: self.fallback_active.load(Ordering::SeqCst),
+            fallback_active: self.fallback_active(),
         }
+    }
+
+    /// The fallback slate is on the View: some source holds it.
+    pub fn fallback_active(&self) -> bool {
+        self.fallback_sources.load(Ordering::SeqCst) != 0
+    }
+
+    /// Whether `source` is one of those holding the slate.
+    pub fn fallback_held_by(&self, source: FallbackSource) -> bool {
+        self.fallback_sources.load(Ordering::SeqCst) & source as u8 != 0
+    }
+
+    /// `source` puts the slate on the View (idempotent).
+    pub fn engage_fallback(&self, source: FallbackSource) {
+        self.fallback_sources
+            .fetch_or(source as u8, Ordering::SeqCst);
+    }
+
+    /// `source` lets go of the slate. It stays on air while another source
+    /// holds it.
+    pub fn release_fallback(&self, source: FallbackSource) {
+        self.fallback_sources
+            .fetch_and(!(source as u8), Ordering::SeqCst);
     }
 
     pub fn rung(&self) -> crate::render::Rung {
         match self.degradation_rung.load(Ordering::SeqCst) {
             0 => crate::render::Rung::Nominal,
-            _ => crate::render::Rung::PreviewHalfRate,
+            1 => crate::render::Rung::PreviewHalfRate,
+            _ => crate::render::Rung::LoopsShed,
         }
     }
 
@@ -395,6 +446,22 @@ pub struct FrameSnapshot {
     pub fallback_active: bool,
 }
 
+/// Who put the fallback slate on the View (SPEC §10.3; Prompt 11 WU8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FallbackSource {
+    /// The operator's `view.fallback`, a resync snapshot that says so, or a
+    /// View render failure. Released exactly where the control plane clears
+    /// `fallbackActive`: a take or cut (`on_take`), a `show.load`
+    /// (`on_show_load`), and a resync that reports `false` (`on_resync`) —
+    /// PR #34's fix round. A render failure that persists re-engages it on the
+    /// next failed frame.
+    Held = 0b01,
+    /// The frame watchdog: engaged on a trip, released by its recovery
+    /// (`watchdog.rs`, `WATCHDOG_CLEAR_AFTER_ON_TIME`).
+    Watchdog = 0b10,
+}
+
 /// What the directive handler needs to emit back to the control plane.
 #[derive(Default)]
 pub struct OutgoingQueue {
@@ -420,6 +487,23 @@ impl OutgoingQueue {
     pub fn drain(&self) -> Vec<EngineFrame> {
         let mut q = self.inner.lock().unwrap();
         q.drain(..).collect()
+    }
+
+    /// Drop queued `audioLevelCrossing` frames (B1); keep everything else.
+    /// Returns how many were dropped.
+    ///
+    /// Called when a new control-plane connection starts. A crossing is a
+    /// moment, not a state: one that could not be delivered while it was true
+    /// must not fire a rule seconds later, after an outage, on a level that
+    /// may long since have fallen back. §5.9.4's rule for directives, applied
+    /// to this event in the other direction: the backlog is not replayed.
+    /// Acks and `itemEvent`s are kept — they report states (`DONE`, applied),
+    /// which are still true on reconnect.
+    pub fn discard_stale_crossings(&self) -> usize {
+        let mut q = self.inner.lock().unwrap();
+        let before = q.len();
+        q.retain(|f| !matches!(f, EngineFrame::AudioLevelCrossing { .. }));
+        before - q.len()
     }
 
     /// Resolves when a frame has been queued since the last drain.

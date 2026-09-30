@@ -60,6 +60,11 @@ export interface PackageInfo {
   clockElements: Set<string>;
   plugins: Set<string>;
   automationRules: Set<string>;
+  /** The package's automation rules, parsed and validated at load, in
+   *  manifest order (Prompt 11 WU1). A rule that did not read refused the load. */
+  automation: import("./automation.js").ParsedRule[];
+  /** control.bindings: id → trigger kind, for `hotkey` rules. */
+  bindings: Map<string, string | undefined>;
   /** asset id → source path relative to package root */
   assets: Map<string, string>;
   /** transition preset id → preset config (Section 16.2) */
@@ -392,7 +397,9 @@ export class ControlPlaneState {
     this.fallbackActive = false;
     this.qualityProfile = pkg.qualityProfile ?? null;
     this.unrecoverableItems.clear();
-    for (const id of pkg.automationRules) this.automationRules.set(id, true);
+    // `enabled` is honoured (Prompt 11 WU1). It used to be ignored: every
+    // rule loaded enabled, whatever the manifest said.
+    for (const r of pkg.automation) this.automationRules.set(r.id, r.enabled);
   }
 
   unloadPackage(): void {

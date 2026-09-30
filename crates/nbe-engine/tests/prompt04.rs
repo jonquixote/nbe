@@ -280,7 +280,7 @@ async fn a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop() {
         "every late View frame is a dropped frame (SPEC §10.2)"
     );
     assert!(
-        state.fallback_active.load(Ordering::SeqCst),
+        state.fallback_active(),
         "sustained misses must engage the fallback slate (SPEC §10.3)"
     );
     assert_eq!(
@@ -288,6 +288,84 @@ async fn a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop() {
         1,
         "preview degrades first under View pressure (SPEC §10.5)"
     );
+}
+
+// SPEC §10.3's trip, both directions (v0.4.7 row 5; the user's decision (b),
+// 2026-09-27). The watchdog sums `ceil(late / budget)` over consecutive late
+// View frames and trips when the sum exceeds 2 (`render.rs`:
+// `Watchdog::new(state, 2)`; the deadline arm): a single frame late by 1–2
+// budgets does not trip, and three frames each under one budget late trip on
+// the third. These pin that law. History: they were written in Prompt 11 WU5
+// as evidence, when §10.3 still read "misses a deadline by more than 1 frame"
+// and the tree disagreed with it both ways (docs/prompt-map-07-13.md, WU5).
+
+#[tokio::test]
+async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
+    let dir = tempfile::tempdir().unwrap();
+    make_package(dir.path(), [10, 20, 30, 255]);
+    let (state, _h, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    // A warm-up frame, on time, first: the first render on a cold adapter
+    // costs far more than any other (143 ms on the CI runner, run
+    // 36356479347, which failed this test's bound), and an on-time frame
+    // resets the watchdog's sum.
+    assert!(render
+        .render_frame(0, Some(Duration::from_secs(5)))
+        .view_late_by
+        .is_none());
+    // 750 ms of work against a 300 ms budget: late by ~450 ms, 1.5 budgets,
+    // with 150 ms of render headroom before the lateness reaches 2 budgets.
+    // ceil(1.5) = 2 missed frames, and 2 is not above the threshold of 2.
+    let budget = Duration::from_millis(300);
+    render.injected_view_delay = Some(Duration::from_millis(750));
+    let late = render
+        .render_frame(1, Some(budget))
+        .view_late_by
+        .expect("the frame is late");
+    assert!(
+        late > budget && late <= 2 * budget,
+        "late by more than one frame and at most two: {late:?}"
+    );
+    assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 1);
+    assert!(
+        !state.fallback_active(),
+        "a single frame late by 1–2 budgets counts 2, which is not above 2: no trip (§10.3, v0.4.7)"
+    );
+}
+
+#[tokio::test]
+async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
+    let dir = tempfile::tempdir().unwrap();
+    make_package(dir.path(), [10, 20, 30, 255]);
+    let (state, _h, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    // A warm-up frame, on time, first (see the test above).
+    assert!(render
+        .render_frame(0, Some(Duration::from_secs(5)))
+        .view_late_by
+        .is_none());
+    // 210 ms of work against a 200 ms budget: each frame is late by far less
+    // than one frame, so none "misses a deadline by more than 1 frame" — and
+    // the sum of three single misses exceeds 2.
+    let budget = Duration::from_millis(200);
+    render.injected_view_delay = Some(Duration::from_millis(210));
+    for f in 0..3 {
+        let late = render
+            .render_frame(f + 1, Some(budget))
+            .view_late_by
+            .expect("the frame is late");
+        assert!(
+            late <= budget,
+            "frame {f} is late by at most one frame: {late:?}"
+        );
+        assert_eq!(
+            state.fallback_active(),
+            f == 2,
+            "the slate engages on the third consecutive miss, not before (frame {f})"
+        );
+    }
 }
 
 #[tokio::test]
@@ -300,7 +378,7 @@ async fn an_on_time_frame_counts_nothing() {
     let report = render.render_frame(0, Some(Duration::from_secs(5)));
     assert!(report.view_late_by.is_none());
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);
-    assert!(!state.fallback_active.load(Ordering::SeqCst));
+    assert!(!state.fallback_active());
     assert_eq!(state.degradation_rung(), 0);
 }
 
@@ -344,7 +422,7 @@ async fn a_failed_view_render_puts_the_slate_on_air() {
     *state.view_item.lock().unwrap() = Some("A1".into());
 
     assert!(
-        !state.fallback_active.load(Ordering::SeqCst),
+        !state.fallback_active(),
         "precondition: the fallback must be off before the failure"
     );
 
@@ -352,7 +430,7 @@ async fn a_failed_view_render_puts_the_slate_on_air() {
     render.render_frame(0, None);
 
     assert!(
-        state.fallback_active.load(Ordering::SeqCst),
+        state.fallback_active(),
         "SPEC §10.3: a failed View render must put the fallback slate on air"
     );
 }
@@ -368,7 +446,7 @@ async fn fallback_renders_the_decoded_slate_pixels() {
     render.render_frame(0, None);
     assert_eq!(centre_px(&render.readback_view().await), [255, 0, 0, 255]);
 
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(1, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -389,7 +467,7 @@ async fn the_slate_renders_while_the_clock_is_stopped() {
         "clock has not started"
     );
 
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(0, None);
     assert_eq!(
         centre_px(&render.readback_view().await),
@@ -419,7 +497,7 @@ async fn an_undecodable_fallback_becomes_a_generated_slate() {
     assert!(img.rgba.iter().any(|b| *b != 0), "slate must not be blank");
 
     let mut render = RenderLoop::new(state.clone()).await.unwrap();
-    state.fallback_active.store(true, Ordering::SeqCst);
+    state.engage_fallback(nbe_engine::state::FallbackSource::Held);
     render.render_frame(0, None);
     let px = centre_px(&render.readback_view().await);
     assert_ne!(px, [0, 0, 0, 255], "the fixture must still yield a picture");

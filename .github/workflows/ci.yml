@@ -476,6 +476,145 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL prompt10_telemetry: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: the audioLevel crossing suite actually ran (Prompt 11 B1)
+        # Six tests on real metered levels (a tone on a graph bus, the graph's own
+        # peak meter), one entering through show.load. No hardware: every test runs on
+        # every runner, so the floors are equal (6/6); a lower exercised count is a
+        # finding, not a skip.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_audio_level -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_audio_level: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=6)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL prompt11_audio_level: expected at least 6 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 6 ]; then
+            echo "FAIL prompt11_audio_level: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the degradation ladder's rung 2 suite actually ran (Prompt 11 WU6)
+        # Four tests on a real render loop with two decoded loops: the ladder's
+        # order, off-air shedding and re-acquire on take, and the View-continuity
+        # guard. They need a GPU adapter and video decode, both present on the
+        # macos-14 runner (prompt04/prompt05 run here); a machine without an
+        # adapter skips loudly (SKIP:), so floors ran>=4 exercised>=4 make a
+        # skip on this runner a failure, not a green.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_ladder -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_ladder: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL prompt11_ladder: expected at least 4 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL prompt11_ladder: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the watchdog recovery suite actually ran (Prompt 11 WU8)
+        # Four tests on a real render loop: a tripped slate clears after K
+        # on-time frames; trips and clears are counted once each and ride the
+        # tick; one on-time frame does not clear (hysteresis) and a late frame
+        # restarts the run; the recovery never releases an operator's slate.
+        # They FAIL loudly without an adapter (prompt04's policy) and print no
+        # SKIP, so ran == exercised; floors equal at the full count (4).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_watchdog: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
+          if [ "$ran" -lt 4 ]; then
+            echo "FAIL prompt11_watchdog: expected at least 4 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 4 ]; then
+            echo "FAIL prompt11_watchdog: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: "the slate-release suite actually ran (PR #34 fix round)"
+        # Seven tests on a real render loop: view.fallback then take (View
+        # pixels, the slate bit and the tick together); the engine's view.cut
+        # route releases too; a take does NOT release the watchdog's slate;
+        # and release parity (the fix round) — a resync reconciles both ways,
+        # a show.load releases, neither releases the watchdog's slate, and a
+        # persisting render failure re-engages after every release. prompt04's
+        # policy — no adapter fails loudly, no SKIP — so floors equal at the
+        # full count (7; 3 at 5942305).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt11_slate -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt11_slate: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=7 exercised>=7)"
+          if [ "$ran" -lt 7 ]; then
+            echo "FAIL prompt11_slate: expected at least 7 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 7 ]; then
+            echo "FAIL prompt11_slate: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round)"
+        # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
+        # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
+        # a complete one passes. Hardware-free: floors equal. Were 2/2 at B1,
+        # 3/3 at WU1, 4/4 at WU5; 5/5 since the fix round's missing-edge pins.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=5)"
+          if [ "$ran" -lt 5 ]; then
+            echo "FAIL preflight automation: expected at least 5 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 5 ]; then
+            echo "FAIL preflight automation: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
+        # nbe-core's reading of every trigger kind, held to the fixture the
+        # control plane's reading also reads (tests/fixtures/automation_rules.json).
+        # One test over 32 cases; hardware-free, floors equal (1/1).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-core --test automation_rules -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "automation_rules: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=1 exercised>=1)"
+          if [ "$ran" -lt 1 ]; then
+            echo "FAIL automation_rules: expected at least 1 test to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 1 ]; then
+            echo "FAIL automation_rules: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
@@ -676,6 +815,76 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "expected 0 failures"; exit 1; fi
           # A glob that matches nothing must not pass as a green build.
           if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi
+      - name: the automation suite actually ran (Prompt 11)
+        # Two floors, rule 8. Every automation test loads a real package over
+        # the wire, which needs nbe-preflight: without it they SKIP, and the
+        # suite-wide floor above would stay green about nothing. This job builds
+        # the release preflight, so exercised == ran is expected; a skip here is
+        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/automation.test.ts 2>&1)
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          # node's TAP summary: `# tests` counts every test, `# pass` only the
+          # ones that passed WITHOUT skipping (a t.skip() lands in `# skipped`,
+          # not in `# pass`). So ran = tests, exercised = pass.
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=29 exercised>=29)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to execute rather than skip, got $exercised"; exit 1; fi
+      - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
+        # Two floors, rule 8. Reads every REGISTERED command's handler writes
+        # to the fields a stateChange rule can name — directly, through state
+        # methods and local helpers — and set-compares them with the effects
+        # data; the vacuity test holds scanned == buildRegistry == effects
+        # data, three ways (the re-pass's S-1), and pins that the scanner still
+        # sees the writes it must. Static: no preflight, no skip path, so
+        # floors equal at the full count (2, unchanged by S-1).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/effects-static.test.ts 2>&1)
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "effects static scan: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL effects static scan: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+      # PR #34's fix round: the operator's slate, end to end — the real engine
+      # binary under the real control plane, asserting the engine's report and
+      # the control plane's state together after a take and after a cut. Not in
+      # `npm test`: it needs the engine, which this job builds here (release,
+      # the binary the rehearsal and the soak run).
+      - name: "build the engine for the slate-release end-to-end (PR #34)"
+        working-directory: .
+        run: cargo build -p nbe-engine --release
+      - name: "the slate-release end-to-end actually ran (PR #34)"
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
+        # not a pass), and zero failures. 4 tests: take, cut, and (the fix
+        # round) unload-then-load and reload — 2 at 5942305. The file never skips: a missing
+        # engine binary fails its `before`, which fails both tests.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/slate-release.e2e.ts 2>&1)
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "slate-release e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL slate-release e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.

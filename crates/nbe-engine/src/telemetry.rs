@@ -90,10 +90,17 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         stream_buffer_ms,
         record_space_mib: record_space_mib_for(record_dir),
         master_clock_drift_ms: 0.0,
-        fallback_active: state
-            .fallback_active
-            .load(std::sync::atomic::Ordering::SeqCst),
+        fallback_active: state.fallback_active(),
         degradation_rung: state.degradation_rung(),
+        // SPEC §10.3 (v0.4.7): the watchdog's fault counter, and its
+        // recoveries — on the tick beside `degradationRung`, §10.5's
+        // reporting shape for the ladder (Prompt 11 WU8).
+        watchdog_trips_total: state
+            .watchdog_trips_total
+            .load(std::sync::atomic::Ordering::SeqCst),
+        watchdog_clears_total: state
+            .watchdog_clears_total
+            .load(std::sync::atomic::Ordering::SeqCst),
         // Effective probe result from GPU init, capped by the manifest's
         // requested profile. The engine is the engine — it is authoritative.
         quality_profile: *state.quality_profile.lock().unwrap(),

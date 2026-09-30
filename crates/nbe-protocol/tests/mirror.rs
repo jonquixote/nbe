@@ -169,6 +169,10 @@ fn render_channel_frames_round_trip() {
         v: PROTOCOL_VERSION.into(),
         reason: ResyncReason::SeqGap,
     });
+    // B1 (SPEC v0.4.7 candidate): both directions sampled with VALUES.
+    for direction in [CrossingDirection::Rising, CrossingDirection::Falling] {
+        round_trip(&audio_level_crossing(direction));
+    }
     round_trip(&EngineFrame::EngineTelemetry {
         v: PROTOCOL_VERSION.into(),
         ts: 1768000000000.0,
@@ -184,6 +188,9 @@ fn render_channel_frames_round_trip() {
             master_clock_drift_ms: 0.2,
             fallback_active: false,
             degradation_rung: 0,
+            // SPEC §10.3 (v0.4.7): sampled with values, per the rule below.
+            watchdog_trips_total: 3,
+            watchdog_clears_total: 2,
             quality_profile: Some(QualityProfile::Consumer),
             audio_underruns_total: 3,
             audio_drift_ms: 0.4,
@@ -355,6 +362,9 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         master_clock_drift_ms: 0.0,
         fallback_active: false,
         degradation_rung: 0,
+        // SPEC §10.3 (v0.4.7): sampled with values, per the rule below.
+        watchdog_trips_total: 3,
+        watchdog_clears_total: 2,
         quality_profile: Some(QualityProfile::Consumer),
         audio_underruns_total: 0,
         audio_drift_ms: 0.0,
@@ -468,6 +478,82 @@ fn effective_quality_profile_never_exceeds_the_requested_one() {
     );
 }
 
+/// A fully populated `audioLevelCrossing` frame (B1).
+fn audio_level_crossing(direction: CrossingDirection) -> EngineFrame {
+    EngineFrame::AudioLevelCrossing {
+        v: PROTOCOL_VERSION.into(),
+        ts: 1_768_000_000_123.25,
+        bus: "mic".into(),
+        threshold_dbfs: -12.0,
+        direction,
+        level_dbfs: -3.5,
+        master_frame: 54012,
+    }
+}
+
+#[test]
+fn crossing_direction_tokens_are_stable() {
+    assert_eq!(
+        serde_json::to_value(CrossingDirection::Rising).unwrap(),
+        serde_json::json!("rising")
+    );
+    assert_eq!(
+        serde_json::to_value(CrossingDirection::Falling).unwrap(),
+        serde_json::json!("falling")
+    );
+}
+
+/// The frame-kind audit below checks that TypeScript knows the KIND; this
+/// checks it knows every FIELD, the telemetry audit's shape: the Rust frame's
+/// serialized keys, each present in the TypeScript schema's block. `.strict()`
+/// rejects a frame whole on an unknown key, so a field Rust sends and
+/// TypeScript does not name would drop every crossing.
+#[test]
+fn rust_and_typescript_agree_on_the_audio_level_crossing_fields() {
+    let value = serde_json::to_value(audio_level_crossing(CrossingDirection::Rising)).unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        ours,
+        [
+            "bus",
+            "direction",
+            "kind",
+            "levelDbfs",
+            "masterFrame",
+            "thresholdDbfs",
+            "ts",
+            "v"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<BTreeSet<_>>(),
+        "the Rust frame's wire keys"
+    );
+    let ts = ts_protocol();
+    let start = ts
+        .find("AudioLevelCrossingFrameSchema = z")
+        .expect("TypeScript has an AudioLevelCrossingFrameSchema");
+    let uncommented: String = ts[start..]
+        .lines()
+        .map(|l| match l.trim_start().starts_with("//") {
+            true => "",
+            false => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let block = &uncommented[..uncommented.find(".strict()").expect("schema terminates")];
+    for field in &ours {
+        assert!(
+            block.contains(&format!("{field}:")),
+            "TypeScript audioLevelCrossing has no `{field}` field"
+        );
+    }
+    assert!(
+        block.contains("z.enum([\"rising\", \"falling\"])"),
+        "TypeScript's direction enum must be exactly the Rust tokens"
+    );
+}
+
 #[test]
 fn rust_and_typescript_agree_on_the_engine_frame_kinds() {
     let ts = ts_protocol();
@@ -483,6 +569,7 @@ fn rust_and_typescript_agree_on_the_engine_frame_kinds() {
         "appliedStateVersion",
         "itemEvent",
         "resyncRequest",
+        "audioLevelCrossing",
     ]
     .into_iter()
     .filter(|k| ts.contains(&format!("z.literal(\"{k}\")")))

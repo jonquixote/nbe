@@ -1192,3 +1192,183 @@ The thread migration's falsification is the loop table above (the stream's share
 
 Measured on the normative machine, debug build, loads pasted. The merge word
 remains the user's.
+
+
+# Prompt 11 WU7 — automation latency, measured (2026-09-27)
+
+AC-25 #1: a rule fires within one frame of its trigger condition becoming true.
+AC-25 #2: a hold cancels pending actions within one frame. At the house rate of
+30, one frame is 33.333 ms. The instrument is
+`packages/control-plane/src/automation-latency.measure.ts` (`npm run
+measure:automation`, landed `fb1ef14`, corrected `f03796f` and `fb7619f`). It is
+deliberately not in `npm test`: a timing claim from a shared runner is noise
+(R9). Its soak row is `docs/soak-protocol.md` §1. "Observed" is defined per
+kind in `docs/automation-design.md` §6.
+
+Machine: the normative machine (Intel Core i7-9750H, x86_64). Each tier started
+only after a shell loop saw the 1-minute load under 2.2. Pace: 210 ms between
+triggers. That is under one frame's limiter window, and under §10.7's command
+limiter, which a rule's action also faces (see the finding below).
+
+Two earlier starts were abandoned, and no numbers from them are used. One
+overlapped a CPU-bound `grep` of the executor's own, which pushed the load to
+3.39, and was killed. The other started tier cp at load 3.25, over the ceiling,
+and was killed rather than left to print a VOID table.
+
+## Tier cp — every trigger kind, the control plane on its production clock
+
+Measured code `fb1ef14`, run at `6b3ab85` (the commits in between are tests
+and docs). Each kind runs through its real source: a command over the socket,
+or engine frames from a stub render session. The number is the product's own,
+`latencyMs = dispatchedAt − observedAt` from each `automation.action` audit
+row. For the hold, it is `cancelledAt − heldAt` from each
+`automation.cancelledByHold` row. Load **2.05 → 2.14**, 613.0 s.
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| stateChange (command accepted → dispatched) | 300 | 0.028 | 0.036 | 0.058 | 0.326 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaStart (take accepted → dispatched) | 300 | 0.033 | 0.062 | 0.079 | 0.087 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaEnd (itemEvent end arrives → dispatched) | 300 | 0.018 | 0.020 | 0.025 | 0.056 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| hotkey (carrying command arrives → dispatched) | 300 | 0.023 | 0.025 | 0.029 | 0.086 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| audioLevel (crossing frame arrives → dispatched) | 300 | 0.019 | 0.021 | 0.023 | 0.045 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| streamHealth (tick arrives → dispatched) | 300 | 0.013 | 0.024 | 0.028 | 0.047 | 300/300 | live: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree; reconnecting: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree |
+| timer (scheduled instant → dispatched) | 300 | 2.319 | 3.409 | 3.540 | 3.594 | 300/300 | issued 300 · audit 300 · markers 300 — agree |
+| timeOfDay (scheduled instant → dispatched) | 60 | 0.950 | 2.229 | 2.961 | 2.961 | 60/60 | issued 60 · audit 60 · markers 60 — agree |
+| autoFollow (itemEvent end arrives → advance dispatched) | 300 | 0.026 | 0.031 | 0.063 | 0.246 | 300/300 | issued 300 · audit 300 · on air AN 300 — agree |
+| hold (accepted → pending cancelled, AC-25 #2) | 600 | 0.003 | 0.004 | 0.009 | 0.049 | 600/600 | pending 600 · cancelled rows 600 · markers 0 (must be 0) — agree |
+
+`AUTOMATION: PASS — cp worst max 3.594 ms (timer) over 10 spans; counts agree; load 2.05→2.14`
+
+`timer` and `timeOfDay` are the slowest kinds, and the only ones that cross
+a millisecond. Their `observedAt` is the scheduled instant, so the
+`setTimeout` callback's own lateness is inside the number (worst 3.594 ms).
+timeOfDay has 60 samples because `at` resolves to the second: one firing per
+second, since several on one second would measure the queue behind them.
+
+## Tier engine — `audioLevel` end to end, the release binary (B1's acceptance)
+
+The release `nbe-engine` (built at the landing's code, 2026-09-27 05:28) runs
+over the real socket. The dress `stab.m4a` plays on the soundboard 300 times,
+with rising and falling `audioLevel` rules on `sfx` at −40 dBFS. Each span
+starts at the engine's `ts` on the crossing, read while the block is computed.
+The control plane's instants reach the wall clock through a `Date.now() −
+performance.now()` offset, read at a `Date.now()` millisecond edge before
+every play. Run at `f03796f`; load **2.09 → 2.63**, 190.4 s.
+
+`clock alignment: 301 edge calibrations of Date.now() − performance.now(); offset range 3.063 ms over the tier, largest step between adjacent calibrations 0.033 ms — each span is within that step of exact`
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| crossing ts → frame arrives (engine → socket → consumer) | 600 | 0.530 | 0.626 | 0.704 | 19.649 | 600/600 | plays 300 · crossings 300↑ 300↓ · audit 600 (joined 600) · markers 300↑ 300↓ — agree |
+| crossing ts → queued (AC-25 #1's span) | 600 | 0.539 | 0.637 | 0.761 | 19.656 | 600/600 | same |
+| crossing ts → dispatched | 600 | 0.549 | 0.646 | 0.787 | 19.662 | 600/600 | same |
+
+`AUTOMATION: PASS — audioLevel crossing→queued p50 0.539 p99 0.761 max 19.656 ms, ≤1 frame 600/600; counts agree; load 2.09→2.63`
+
+p99 is under a millisecond: 0.761 ms against 33.333. **600/600 crossings are
+queued within one frame.** The max is 19.656 ms, still inside the frame. At
+most 6 of the 600 samples (1%) lie above p99's 0.761 ms. The report keeps only
+percentiles, so how many there are and what caused them is not recorded; that
+is noted here rather than guessed. The hop from engine to consumer is almost
+all of the span (p50 0.530 of 0.539 ms). The evaluator's own part, observed →
+queued, is about 10 µs, which agrees with tier cp.
+
+## The first engine-tier run was wrong, and its verdict said PASS
+
+The first full run (at `6b3ab85`, load 2.14 → 2.29, right after tier cp) used
+`performance.timeOrigin + t` as the control plane's wall clock. Every span
+came out **negative**:
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| crossing ts → frame arrives (engine → socket → consumer) | 600 | -2.673 | -2.261 | -2.204 | -2.021 | 600/600 | plays 300 · crossings 300↑ 300↓ · audit 600 (joined 600) · markers 300↑ 300↓ — agree |
+| crossing ts → queued (AC-25 #1's span) | 600 | -2.663 | -2.250 | -2.192 | -2.009 | 600/600 | same |
+| crossing ts → dispatched | 600 | -2.654 | -2.236 | -2.178 | -1.997 | 600/600 | same |
+
+`clock alignment: timeOrigin + now − Date.now() over 600 crossings ∈ [-3.492, -1.779] ms ⇒ offset δ ∈ (-2.779, -3.492] ms — the spans below are exact to within |δ|`
+
+`timeOrigin` is fixed when the process starts, and `performance.now()` is
+monotonic. Thirteen minutes in, the wall clock had moved about 3 ms relative
+to that sum, and it moved another 1.7 ms during the 190 s tier. The corrected
+run measured the same drift, a 3.063 ms offset range over its tier. The printed
+"δ ∈ (−2.779, −3.492]" was an empty interval, and nothing checked it. The
+smoke run's fresh process read +0.1 ms, which is why that run looked right.
+`f03796f` recalibrates at a millisecond edge before every play, and makes a
+negative span a failure: a clock that puts the effect before its cause is
+broken, not fast.
+
+## The instrument, falsified (tier engine, `--n 10`, at `f03796f`)
+
+| Mutation | Result |
+|---|---|
+| a 40 ms busy-wait in `server.ts` after the engine-event hand-off, before `automation.fire` (load 2.67 → 2.61) | `AUTOMATION: FAIL — audioLevel crossing→queued p50 40.382 p99 40.790 max 40.790 ms, ≤1 frame 0/20; counts agree; OVER 1 FRAME: crossing, crossing, crossing; load 2.67→2.61`, exit 1. `fb7619f` then made the names distinct |
+| the harness's offset 10 ms behind (load 2.76 → 2.64) | `… — agree · **DISAGREE: a span is negative — the clocks are not aligned**`; `AUTOMATION: FAIL — audioLevel crossing→queued p50 -9.573 p99 -9.255 max -9.255 ms, ≤1 frame 20/20; counts DISAGREE; load 2.76→2.64`, exit 1 |
+
+Both were restored with `git checkout`.
+
+## Findings
+
+- **§10.7's command limiter bounds a rule's actions.** A rule's action runs on
+  connection `automation:<ruleId>` (`server.ts`, the evaluator's `execute`),
+  and `RateLimiter` allows 10 per burst, refilled at 5/s per connection per
+  command family. A rule can therefore sustain at most 5 actions/s in one
+  family: under §13.3 #3's once per frame (30/s) and AC-25 #1's promise. An
+  11th action inside a burst is refused `E_RATE_LIMITED` and audited as a
+  refused `automation.action`, as an operator's command would be. This follows
+  from the code; no action refusal was observed, because the harness paces
+  under the limit. The first pacing, 50 ms, was refused `E_RATE_LIMITED` on the
+  operator's own `view.cut`. **Whether §10.7 should bind automation actions is
+  the user's question, not a drive-by fix.** *Decided 2026-09-27: rule actions
+  are exempt (SPEC §13.3, v0.4.7 row 6; `0e3b69b`). With the limiter re-applied,
+  the exemption's guard reads 20 of 30 actions refused `E_RATE_LIMITED`.*
+- **`streamHealth`'s engine → tick hop is outside every span above.** The
+  transport state is observed once a second (design note §5), so a
+  `streamHealth` rule fires within a frame of the tick and within a second of
+  the engine's change. The design note states this; the table does not hide
+  it.
+
+## Status
+
+Measured on the normative machine, loads pasted, counted two ways. AC-25 #1
+holds for every kind from its observation, and for `audioLevel` end to end
+through the release binary. AC-25 #2 holds, with p99 of 9 µs. The merge word
+remains the user's.
+
+
+## Re-measured after WU8 and the limiter exemption (`d0936a3`, 2026-09-27)
+
+WU8 added two fields to the engine's §10.1 tick. The exemption changed how a
+rule's action is dispatched: `runCommand` now drops the limiter for it. Both are
+on the measured path, so both tiers were re-run on the rebuilt release engine.
+Each tier was gated on the 1-minute load being under 2.2.
+
+Tier cp, load **1.92 → 1.54**, 613.5 s:
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| stateChange (command accepted → dispatched) | 300 | 0.028 | 0.032 | 0.064 | 0.350 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaStart (take accepted → dispatched) | 300 | 0.033 | 0.070 | 0.081 | 0.088 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| mediaEnd (itemEvent end arrives → dispatched) | 300 | 0.019 | 0.021 | 0.034 | 0.063 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| hotkey (carrying command arrives → dispatched) | 300 | 0.023 | 0.027 | 0.036 | 0.045 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| audioLevel (crossing frame arrives → dispatched) | 300 | 0.019 | 0.021 | 0.023 | 0.036 | 300/300 | issued 300 · audit 300 · markers 300 · rateLimited 0 — agree |
+| streamHealth (tick arrives → dispatched) | 300 | 0.023 | 0.025 | 0.030 | 0.088 | 300/300 | live: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree; reconnecting: issued 150 · audit 150 · markers 150 · rateLimited 0 — agree |
+| timer (scheduled instant → dispatched) | 300 | 2.728 | 3.220 | 3.268 | 3.715 | 300/300 | issued 300 · audit 300 · markers 300 — agree |
+| timeOfDay (scheduled instant → dispatched) | 60 | 1.188 | 2.548 | 3.126 | 3.126 | 60/60 | issued 60 · audit 60 · markers 60 — agree |
+| autoFollow (itemEvent end arrives → advance dispatched) | 300 | 0.026 | 0.034 | 0.067 | 0.247 | 300/300 | issued 300 · audit 300 · on air AN 300 — agree |
+| hold (accepted → pending cancelled, AC-25 #2) | 600 | 0.003 | 0.004 | 0.009 | 0.045 | 600/600 | pending 600 · cancelled rows 600 · markers 0 (must be 0) — agree |
+
+Tier engine, load **1.54 → 2.18**, 191.0 s. `clock alignment: 301 edge calibrations of Date.now() − performance.now(); offset range 4.463 ms over the tier, largest step between adjacent calibrations 0.041 ms — each span is within that step of exact`
+
+| Span | n | p50 ms | p95 ms | p99 ms | max ms | ≤ 1 frame (33.333 ms) | Counted two ways |
+|---|---|---|---|---|---|---|---|
+| crossing ts → frame arrives (engine → socket → consumer) | 600 | 0.475 | 0.536 | 0.595 | 0.717 | 600/600 | plays 300 · crossings 300↑ 300↓ · audit 600 (joined 600) · markers 300↑ 300↓ — agree |
+| crossing ts → queued (AC-25 #1's span) | 600 | 0.488 | 0.547 | 0.608 | 0.728 | 600/600 | same |
+| crossing ts → dispatched | 600 | 0.498 | 0.559 | 0.622 | 0.740 | 600/600 | same |
+
+`AUTOMATION: PASS — cp worst max 3.715 ms (timer) over 10 spans; counts agree; load 1.92→1.54 | audioLevel crossing→queued p50 0.488 p99 0.608 max 0.728 ms, ≤1 frame 600/600; counts agree; load 1.54→2.18`
+
+**AC-25 #1's one frame is re-proven end to end: `audioLevel` crossing →
+queued, 600/600 within a frame, p99 0.608 ms.** The first run's single
+19.656 ms max did not recur: this run's max is 0.728 ms. The dispatch spans
+are unchanged within noise, so dropping the limiter from a rule's dispatch
+costs nothing measurable.

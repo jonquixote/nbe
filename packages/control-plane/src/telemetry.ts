@@ -24,6 +24,10 @@ export interface TelemetryTick {
   masterClockDriftMs: number;
   fallbackActive: boolean;
   degradationRung: number;
+  /** SPEC §10.3 (v0.4.7): watchdog trips — the fault counter — and its
+   *  recoveries. Engine-owned; 0 when no fresh engine report. */
+  watchdogTripsTotal: number;
+  watchdogClearsTotal: number;
   // control-plane-owned
   viewItem: string | null;
   previewItem: string | null;
@@ -104,6 +108,8 @@ export function buildTick(
     masterClockDriftMs: f?.masterClockDriftMs ?? 0,
     fallbackActive: f?.fallbackActive ?? state.fallbackActive,
     degradationRung: f?.degradationRung ?? 0,
+    watchdogTripsTotal: f?.watchdogTripsTotal ?? 0,
+    watchdogClearsTotal: f?.watchdogClearsTotal ?? 0,
     // ZERO-COPY: always forwarded, stubbed when the engine has not reported
     // one — no stale engine report, or an engine build older than the stub.
     // Still no `?? "cpuReadback"`: `TAP_NONE` is not a path, so a machine that

@@ -408,6 +408,9 @@ export const EngineTelemetryFrameSchema = z
     masterClockDriftMs: z.number(),
     fallbackActive: z.boolean(),
     degradationRung: z.number().int(),
+    /** The watchdog's fault counter and its recoveries (SPEC §10.3, v0.4.7). */
+    watchdogTripsTotal: z.number().int().nonnegative().default(0),
+    watchdogClearsTotal: z.number().int().nonnegative().default(0),
     /**
      * The effective profile from the engine's startup probe (SPEC §10.5),
      * capped by the manifest's requested profile (§10.1.1). Optional: absent
@@ -487,11 +490,42 @@ export const ResyncRequestFrameSchema = z
   .strict();
 export type ResyncRequestFrame = z.infer<typeof ResyncRequestFrameSchema>;
 
+/**
+ * SPEC v0.4.7 candidate B1 (ratified by the user's merge of Prompt 11's PR,
+ * never inside it): a bus level crossed an `audioLevel` rule's threshold. The
+ * engine computes the crossing on the audio block — one block per house frame
+ * — because the §10.1 tick's `busPeakDbfs` arrives once a second and cannot
+ * meet AC-25 #1's one frame. The automation evaluator matches it to rules.
+ *
+ * `.strict()` and every field required, with NO tolerance rule. The
+ * `recordTapPath` precedent's `.optional()` exists so that one tick from an
+ * older engine is not refused whole, but a telemetry field is one field
+ * among many. This frame IS the event: a crossing missing its bus, threshold
+ * or direction cannot be matched to a rule, so accepting it would fire
+ * nothing. Refusing it is the honest answer. An older engine simply never
+ * sends this kind.
+ */
+export const AudioLevelCrossingFrameSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    kind: z.literal("audioLevelCrossing"),
+    // Unix ms, fractional: when the engine computed the crossing (v0.4.7).
+    ts: z.number(),
+    bus: z.string().min(1),
+    thresholdDbfs: z.number(),
+    direction: z.enum(["rising", "falling"]),
+    levelDbfs: z.number(),
+    masterFrame: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AudioLevelCrossingFrame = z.infer<typeof AudioLevelCrossingFrameSchema>;
+
 export const EngineFrameSchema = z.discriminatedUnion("kind", [
   EngineTelemetryFrameSchema,
   AppliedStateVersionFrameSchema,
   ItemLifecycleFrameSchema,
   ResyncRequestFrameSchema,
+  AudioLevelCrossingFrameSchema,
 ]);
 
 /**
