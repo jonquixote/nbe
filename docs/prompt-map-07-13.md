@@ -1494,9 +1494,13 @@ mechanism and had its guard run at its landing commit. Branch `spec-rev-v046`.
 **Merged** as PR #33 on 2026-09-26 at 03:18 UTC (locally 2026-09-25 20:18
 −0700), squashed to `619846c` on `main`. Its tree is identical to the PR's
 final head, `6988c04`. **Main's CI at the merge commit: run `36214380771`,
-success** — control-plane, dress rehearsal and rust all green. Recorded
-2026-09-26 as the first commit of Prompt 11's branch; it was owed from the
-merge.
+success** — ~~control-plane, dress rehearsal and rust all green~~
+control-plane and rust green; the dress rehearsal job, advisory by decision
+(`continue-on-error`), concluded success with 15 of 16 passing (`not ok 12 -
+[RI-1] gate`). *Corrected 2026-10-03 (§2c): "all green" read the job's
+conclusion, not its tests; found while landing the recall leg (§ 13).*
+Recorded 2026-09-26 as the first commit of Prompt 11's branch; it was owed
+from the merge.
 
 | # | The user's word | Where it landed |
 |---|---|---|
@@ -2021,6 +2025,138 @@ at `619846c`.
 ## 13 — Operator shell
 
 Inherits the display-surface deferral (04 → 09 → here in practice) and S2: **`showState` is absent from the §10.1 telemetry tick**, so a shell subscribing to telemetry alone cannot say whether the show is running. Either the shell also tracks `stateChange` frames, or v0.4 adds the field — the outline records it as a candidate. 13 is also the first consumer that will notice R2's metering strobe: bus meters sampled once a second from a 33 ms window are unusable in an operator UI, so R2's fix is a prerequisite rather than a nicety.
+
+### The re-plan's P1, its recall leg — `snapshot.recall` reaches the engine (2026-10-03, branch `prompt13-recall-fix`)
+
+**Where P1 is written, said first (the tree wins).** P1 comes from the Prompt 13
+re-plan of 2026-10-02 ("Prompt 13 upgraded for the tree"). That document is
+not in the tree yet: it was delivered read-only, pending the user's word, and
+its branch `prompt13-upgrade` holds only PR #34's merge bookend. So P1's text
+cannot be struck where it stands. It is quoted here, struck as fixed, and the
+re-plan's own copy is struck when it lands. The user's word of 2026-10-03: the
+recall leg is fixed now.
+
+> ~~**P1** (recall leg) — `snapshot.recall` is forwarded (`forward: true`),
+> has no engine route (`directive.rs` ignores it), and no resync follows.
+> **`snapshot.recall` changes the CP's `viewItem`/overlays while the engine
+> keeps airing the old View: an on-air split brain**, against §25.2 #2's "a
+> snapshot restores what the audience sees".~~ **FIXED** by `a0e3e6d`
+> (mechanism and guards) and `835fcbc` (SPEC v0.4.8 row 1: the §13.4.1 row,
+> its two deferred edges in the data, and the preflight pin), with floors in
+> `be9d278` and the end-to-end's report window widened on CI evidence in
+> `302c0e3`.
+
+**The routing decision.** The fix reuses the existing `snapshot.recall`
+directive, now resolved. It adds no new directive and does not use `view.take`.
+
+- The command was already forwarded and is in the command surface, so the
+  frame shape is unchanged. What changes is that it carries resolved content
+  (§5.9.1) instead of the snapshot's name. No new directive means no wire audit
+  trio, and the mirror stays 18/18.
+- `view.take` was ruled out for three reasons:
+  - The engine's take always releases `Held`, and `recallSnapshot` never clears
+    `fallbackActive`. A take directive would have made the recall a release
+    site that the control plane does not have (§10.3's release parity).
+  - A take cannot say "empty View".
+  - A take cannot carry overlays.
+
+The engine applies the recall through the take's own application
+(`apply_take`): cut-class, the clip bus's source swapped, and the playback
+generation moved on. It does not release `Held`. The control plane's half
+changes too: a recalled item that changes the View starts now, as a take's
+does, instead of at the snapshot's old start, which a later resync would replay
+as a seek. The snapshot no longer saves a start frame.
+
+**The tree against the order's wording, on four points.**
+
+- **§13.4.1's row text.** The row did not read "sets viewItem wholesale, not via
+  take". The no-engine-effect caveat was its sources cell, "`directive.rs`
+  routing (not routed)", and that cell is now struck.
+- **Overlays are fixed too.** The order said "the recall's resolved view". The
+  tree's recall restores `visibleOverlays` wholesale, and §25.2 #2 counts
+  overlay visibility as View state. Routing only the item would have left the
+  same split brain for overlays, so the recall carries them.
+- **There is no next-item pointer.** autoFollow advances from the item that ends
+  (`order[indexOf(ended) + 1]`). So the autoFollow pin is the ended item, held
+  two ways:
+  - the engine drops the outgoing item's pending end;
+  - the control plane's restored item states leave that item no longer
+    PLAYING.
+- **The test runner is not vitest.** The order's gate says "control-plane
+  vitest". The package runs `node --test`, and that is what ran.
+
+**Falsifications.** Each mutation was made on a saved copy and the file was
+restored from that copy afterwards; the tree was clean after each. Loads are
+the one-minute figure at each start; all were above the 3.0 ceiling. None of
+these outcomes is a timing claim: each is a behaviour that happened or did not
+(a pixel, a bit, a command, an event, an exit code). They are disclosed as runs
+above the ceiling.
+
+| # | Mutation | Load | What failed, with its signature |
+|---|---|---|---|
+| F1 | The engine's `"snapshot.recall"` route removed (the pre-fix engine) | 4.27 | `prompt13_recall` 1/6: the split-brain tuple `left: ([255, 0, 0, 255], false, false)` against `right: ([0, 0, 255, 255], false, false)`. The empty-View, media-arm, overlay (`[("ov1", true, Enter)]` against `[("ov2", true, Steady)]`) and parity (`left: None`, `right: Some("A2")`) tests failed with it. `recall.e2e.ts` 0/2: `controlPlaneView: 'C'`, `engineClipAudible: false` (expected `true`), in both tests |
+| F2 | The recall releases `Held` (`apply_take(d, true)`) | 4.35 | `prompt13_recall` 5/6: `left: ([0, 0, 255, 255], false, false)` against `right: ([12, 200, 90, 255], true, true)`. `recall.e2e.ts` 1/2: `engineSlate: [false, false]` (expected `[true, true]`) with `controlPlaneSlate: true`, the new split brain the parity rule forbids |
+| F3 | No media arm: the recall as a bare View store, resync-style | 3.90 | `prompt13_recall` 5/6: `the recall swaps the clip bus's source to A2 through the take's path, a cut; got []`. The split-brain pixel test **passed** under this mutation. It cannot tell a take from a store, which is why the media-arm test exists |
+| F4 | The autoFollow pin's control-plane half: the recall restores the View but not the item states | 4.87 | `automation.test.ts` 29/31: `Q1's late end cannot advance the rundown past the snapshot` / `'Q2' !== 'P1'`. Collateral: the row check's precondition, `precondition: the preview is empty for scene.arm` / `'A1' !== null` |
+| F5 | The autoFollow pin's engine half: the recall skips the playback generation | 4.54 | `prompt13_recall` 5/6: `the outgoing item's pending end is superseded by the recall's generation; got [AppliedStateVersion { … state_version: 3 }, ItemEvent { … item_ref: "A1", event: End, … }]` |
+| F6 | The control plane forwards the recall raw (the pre-fix handler) | 4.64 | `automation.test.ts` 30/31: the directive's payload was `{ name: 'a1' }` with `target: {}`, against `{ transition: 'cut', audio: { transition: 'follow' }, visibleOverlays: [] }` with `target: { itemRef: 'A1' }` |
+| F7 | The data: `snapshot.recall`'s two deferred edges removed | 3.74 | `nbe-preflight` `automation` 5/6: `… "snapshot.recall" … must fail preflight; errors []` / `left: 0` (preflight admitted `mediaEnd → snapshot.recall`) |
+
+The release engine was rebuilt from the restored tree after F1 and F2.
+
+**Found while landing it.** These are recorded, not fixed.
+
+- **The engine reads a take's transition length as the item's duration.**
+  `schedule_done`, the only source of `itemEvent end`, runs only when the take
+  payload carries `durationFrames`. That field is the transition's
+  (`resolveTransition`). Two consequences follow:
+  - a cut, which carries none, never schedules an end;
+  - a mix take of a timed item schedules its end at the mix's length, so the
+    control plane would mark the item DONE, fire `mediaEnd`, and advance
+    autoFollow about half a second in.
+
+  The midpoint report's "nothing on the wire moves when a clip is exhausted"
+  covered the first half and not the second. A recall's resolved cut carries no
+  `durationFrames`, so it inherits only the first.
+- **§13.4.1's `view.take`/`view.cut` `mediaEnd` cell overclaims.** It says "a
+  timed item's end is scheduled for its duration". For a cut, nothing is
+  scheduled. The error is in the safe direction for a cycle check. The row is
+  ratified, so changing it is the user's word; it is not changed here. The new
+  recall cell states the same mechanism exactly.
+- **Audio under the operator's slate.** `view.fallback` changes the picture,
+  not the clip bus, so an item's audio continues beneath the slate. That
+  predates this fix. A recall under the slate follows it: the recalled item's
+  audio plays beneath the slate, and `recall.e2e.ts` uses that as its witness.
+  The spec says nothing about audio under the slate.
+- **PR #34's merge bookend overstated the dress rehearsal.** `0461261`, on
+  `prompt13-upgrade`, said "control-plane, dress rehearsal and rust all
+  green" for run `36658852056`. The job's conclusion is success, but the job is
+  advisory (`continue-on-error`, the gate split of 2026-09-17), and inside it
+  14 of 16 passed. These two failed:
+  - `not ok 7 - [RI-1] step 6: a soundboard stab raises the sfx bus`;
+  - `not ok 12 - [RI-1] gate`.
+
+  The v0.4.6 bookend copied the same phrase for run `36214380771`, which
+  passed 15 of 16 (`not ok 12`). That one is corrected in place below, with
+  §2c. PR #34's bookend is corrected on its own branch.
+- **The dress rehearsal's audio-rise steps are intermittent on CI, late
+  rather than absent.**
+  - Step 4 (the clip bus) failed on PR #34's head run `36567491896`.
+  - Step 6 (sfx) failed at the merge, `36658852056`.
+  - Step 6 passed in the first run and step 4 in the second.
+
+  The step-4 failure timed out at its 3000 ms wait with the risen value
+  (−20.8 dBFS) in the last tick, with 82 underruns. The job is advisory, so
+  nothing went red. `recall.e2e.ts`, which uses the same witness in a gating
+  job, waits 10 s (`302c0e3`). The steps' 3000 ms bound is the open
+  question, and it is the rehearsal's to settle.
+
+**The queue keeps P1's other legs for the shell work.** `preview.set` and
+`scene.arm` still have no engine route, so the preview bus is stale until a
+resync. The snapshot's preview half stays control-plane-only, and the engine
+says so in `on_recall`'s doc. These remain prerequisites before any shell work
+that shows a preview pane. `preview.set` is the WU6 finding above,
+recorded as out of scope then and queued now.
 
 ---
 
