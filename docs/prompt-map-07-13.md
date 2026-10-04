@@ -704,7 +704,8 @@ show` (`N !== 0`). The other values come from each run's uploaded
 `telemetry.jsonl` (`dress-rehearsal-artifacts`), read at the last tick before
 `show.stop`. Those readings equal what test 12 asserted.
 
-**Sightings.** Four of the four runs sampled, read per test:
+**Sightings.** ~~Four of the four~~ Five of the five runs sampled, read per test
+(the fifth was added 2026-10-03, at PR #35's ride-along head):
 
 | Run | Commit | Context | Failed on (asserted) | Drops | Underruns | Fallback ticks | Watchdog trips | Other dress failures |
 |---|---|---|---|---|---|---|---|---|
@@ -712,7 +713,12 @@ show` (`N !== 0`). The other values come from each run's uploaded
 | `36567491896` | `de90bbe` | PR #34 head, 2026-09-29 | underruns, `179 !== 0` | 0 | 179 | 0 | 0 | step 4: the clip rise came late |
 | `36658852056` | `592444a` | main, PR #34 merge, 2026-09-30 | underruns, `160 !== 0` | 0 | 160 | 0 | 0 | step 6: the sfx rise came late |
 | `37171465949` | `8265292` | PR #35 head, 2026-10-04 UTC | zero-drop, `1 !== 0` | 1 | 164 | 1 | 1 | — |
+| `37177561864` | `66f9f94` | PR #35 head after the ride-along, 2026-10-04 UTC | zero-drop, `3 !== 0` | 3 | 174 | 2 | 1 | step 4: the clip rise came late (R13) |
 | local | `8265292` | normative machine, quiescent (2.46 → 2.94) | — (16 of 16) | 0 | 0 | 0 | 0 | — |
+
+Sighting 5's whole-run maxima are drops 4 and underruns 267. Its counts are
+inside every backstop, but **3 drops at the gate is above the earlier 0–2
+pattern**: the trend the work order will log starts being watched here.
 
 On CI, underruns are non-zero from the first tick (frame 0) of every run. Over a
 whole run they reach 249–315. The job's own comment in `ci.yml` measured 83 and
@@ -736,7 +742,7 @@ shared VM.
 The job's comment names "a gate red on purpose — it teaches reviewers to ignore
 red" as a failure mode it rejected. Test 12 has been red on purpose in every
 run sampled since. The band also absorbed failures that were not hardware
-claims: steps 4 and 6, whose rises arrived late. Advisory and unread, it stayed
+claims: steps 4 and 6, whose rises arrived late (now Finding R13). Advisory and unread, it stayed
 invisible for weeks. Two merge bookends, v0.4.6's and PR #34's, recorded "all
 green" from the job's conclusion over failing tests.
 
@@ -787,6 +793,49 @@ corrected it, and the user decided the corrected form:
 > Adopt ran/exercised accounting, so that a `# SKIP` capability gate is not
 > counted as exercised. Remove the step's band and the job's
 > `continue-on-error`, and gate on `failed == 0`.
+>
+> *Amended 2026-10-03, carrying Finding R13:* also log step 4's and step 6's
+> rise time (take or play to the first audible tick) on every run, with its
+> trend. On CI, assert the rise is present within a 10 s backstop, and keep the
+> 3000 ms bound for the normative machine only.
+
+### Finding R13 — the dress rehearsal's audio rises arrive after their 3000 ms wait on CI (recorded 2026-10-03, PR #35)
+
+*Numbered after R12. The register row is in `docs/soak-protocol.md` §5.*
+
+**Signature.** Step 4 (`not ok 5 - [RI-1] step 4: a take with audio follow
+raises the clip bus on the wire`) or step 6 (`not ok 7 - [RI-1] step 6: a
+soundboard stab raises the sfx bus and drops nothing`) fails with `waited 3000
+ms for busPeakDbfs.<bus> to rise`. The wait is `RISE_MS + TICK_MS`.
+
+**Sightings.** These are the three the band absorbed, now read per test. Rise
+times are from each run's artifacts, measured from the take or the play to the
+first audible tick:
+
+| Run | Commit | Step | Rise (ms) | At the expiry |
+|---|---|---|---|---|
+| `36567491896` | `de90bbe` | 4 (clip) | 2981 | the risen value (−20.8 dBFS) in the very tick the wait gave up on |
+| `36658852056` | `592444a` | 6 (sfx) | ≈3986 | — |
+| `37177561864` | `66f9f94` | 4 (clip) | 3967 | the clip at −120 dBFS. The take was at 11044 ms and the clip became audible at 15011 ms, about 4 s later |
+
+The runs that passed show the healthy pattern on CI: step 4 at 1971–2980 ms and
+step 6 at about 1927–2009 ms. Rises land in steps of about 1 s, set by the 1 Hz
+telemetry tick and the 1 s meter window (`audio_driver.rs`). A rise one step
+late crosses the 3000 ms wait.
+
+**Class.** R9's: a wall bound measuring the runner. **The behaviour is
+correct.** The rise comes in every run, every time. It is late on a loaded
+runner, and the normative machine is 16 of 16 (`8265292`). The recall
+end-to-end, which uses the same witness in a gating job, already waits 10 s
+(`302c0e3`).
+
+**Disposition (the user's word of 2026-10-03): it rides R12's work order.**
+- **On CI:** the work order's log-and-backstop list gains each step's rise time,
+  logged per run with its trend. The rise is asserted present within a 10 s
+  backstop, sized from the sightings: 2.5× the worst (3986 ms), ten telemetry
+  ticks, and the same window `recall.e2e.ts` uses for the same witness.
+- **On the normative machine:** the 3000 ms bound stays, asserted in the local
+  rehearsal and the soak.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
@@ -2268,7 +2317,8 @@ The release engine was rebuilt from the restored tree after F1 and F2.
   (−20.8 dBFS) in the last tick, with 82 underruns. The job is advisory, so
   nothing went red. `recall.e2e.ts`, which uses the same witness in a gating
   job, waits 10 s (`302c0e3`). The steps' 3000 ms bound is the open
-  question, and it is the rehearsal's to settle.
+  question, and it is the rehearsal's to settle. *Filed 2026-10-03 as Finding
+  R13, under § 07. The disposition rides R12's work order.*
 
 **After this record: the toolchain rename, `8265292`.** This is its own row.
 It landed in this PR so that the gate's CI could go green.
@@ -2330,6 +2380,28 @@ reachable mechanisms with its deferred cells:
 record says no clock means no audio, and neither row lists the edge. This is
 unconfirmed. For this PR's own row the guard is sufficient: both new edges are
 pinned at load and falsified (F7).
+
+**The merge's bounded acceptance (the user's word of 2026-10-03).** CI at this
+PR's head is red under §2b ("a green job over failing tests is a red run"). It
+is red by two named classes, and the merge accepts exactly those two:
+
+- **R12's gate.** Test 12, `not ok 12 - [RI-1] gate: …`, fails its zero-drop or
+  underrun conjunct. Its counts are inside the backstops: drops ≤ 20,
+  underruns ≤ 2000, watchdog trips ≤ 10.
+- **R13's late rise.** Test 5 or test 7 (step 4 or step 6) finds the clip or
+  sfx bus rising after the 3000 ms wait. The rise is inside the 10 s backstop.
+
+Each class is 16 of 16 on the normative machine, run quiescent. At `8265292`,
+the last code change, the local rehearsal passed 16 of 16 with 0 drops and 0
+underruns, and the slate never went to air (load 2.46 → 2.94). Every commit
+since is docs-only.
+
+**What blocks the merge:** a sighting outside its backstops, or a new signature
+(any other failing test).
+
+**The R12+R13 dress-leg work order is the top item of the queue after this
+merge.** The tree keeps no standing board, so this paragraph is where that order
+is recorded.
 
 **The queue keeps P1's other legs for the shell work.** `preview.set` and
 `scene.arm` still have no engine route, so the preview bus is stale until a
