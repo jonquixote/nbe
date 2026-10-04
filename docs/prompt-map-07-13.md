@@ -704,8 +704,11 @@ show` (`N !== 0`). The other values come from each run's uploaded
 `telemetry.jsonl` (`dress-rehearsal-artifacts`), read at the last tick before
 `show.stop`. Those readings equal what test 12 asserted.
 
-**Sightings.** ~~Four of the four~~ Five of the five runs sampled, read per test
-(the fifth was added 2026-10-03, at PR #35's ride-along head):
+**Sightings.** ~~Four of the four~~ ~~Five of the five~~ Seven of the seven runs
+sampled under the old gate, read per test. The fifth was added 2026-10-03, at
+PR #35's ride-along head; the sixth and seventh were added 2026-10-04, at PR
+#35's final head and its merge. The last row is the first honest run under the
+new gate:
 
 | Run | Commit | Context | Failed on (asserted) | Drops | Underruns | Fallback ticks | Watchdog trips | Other dress failures |
 |---|---|---|---|---|---|---|---|---|
@@ -714,6 +717,9 @@ show` (`N !== 0`). The other values come from each run's uploaded
 | `36658852056` | `592444a` | main, PR #34 merge, 2026-09-30 | underruns, `160 !== 0` | 0 | 160 | 0 | 0 | step 6: the sfx rise came late |
 | `37171465949` | `8265292` | PR #35 head, 2026-10-04 UTC | zero-drop, `1 !== 0` | 1 | 164 | 1 | 1 | — |
 | `37177561864` | `66f9f94` | PR #35 head after the ride-along, 2026-10-04 UTC | zero-drop, `3 !== 0` | 3 | 174 | 2 | 1 | step 4: the clip rise came late (R13) |
+| `37178415083` | `f1a8279` | PR #35's final head, 2026-10-04 UTC | zero-drop, `2 !== 0` | 2 | 152 | 1 | 1 | — |
+| `37179591329` | `d7b96f7` | main, PR #35's merge, 2026-10-04 UTC | underruns, `170 !== 0` | 0 | 170 | 0 | 0 | step 6: the sfx rise came late (R13) |
+| `37181092309` | `83bfb60` | PR #36, **the new gate: counts logged, not failed** | — (27 of 27) | 0 | 176 | 0 | 0 | — (step 6's rise logged at 4971 ms) |
 | local | `8265292` | normative machine, quiescent (2.46 → 2.94) | — (16 of 16) | 0 | 0 | 0 | 0 | — |
 
 Sighting 5's whole-run maxima are drops 4 and underruns 267. Its counts are
@@ -780,8 +786,9 @@ corrected it, and the user decided the corrected form:
 - **The band and `continue-on-error` are removed**, and the job gates on
   `failed == 0`. The leg never runs unread-red again.
 
-**Queued (a small work order, not built in PR #35): the dress leg's gate, in
-`ci.yml` and the rehearsal.**
+**~~Queued (a small work order, not built in PR #35)~~ Implemented in PR #36
+(2026-10-04): the dress leg's gate, in `ci.yml` and the rehearsal.** The order as
+it was queued:
 
 > Split the RI-1 gate test into one assertion per conjunct. On CI, assert that
 > the profile is real, that a decode session is held, and that every fallback
@@ -799,6 +806,148 @@ corrected it, and the user decided the corrected form:
 > trend. On CI, assert the rise is present within a 10 s backstop, and keep the
 > 3000 ms bound for the normative machine only.
 
+**As implemented (PR #36, branch `dress-leg-r12-r13`: `76f092f` the test,
+`83bfb60` the CI gate, `2582b2a` the head commit on the counts line).**
+
+- **The gate, one test per conjunct (16 tests become 27).**
+  - Three functional conjuncts, on every machine: the profile is real; a decode
+    session is held; every fallback tick lies inside a watchdog episode
+    (`watchdogTripsTotal > watchdogClearsTotal` on that tick).
+  - Three backstops, on every machine: drops ≤ 20, underruns ≤ 2000, watchdog
+    trips ≤ 10.
+  - One `DRESS-COUNTS` line.
+  - Three normative zero conjuncts.
+  - R13's two normative 3000 ms rise bounds.
+  - The gate reads its ticks once, so every gate test judges the same snapshot.
+- **The machine (`whichMachine`).** This is the tree's own `CI` convention,
+  made fail-closed:
+  - With no CI variables set, it is the normative machine, and the zero claims
+    are asserted.
+  - With `GITHUB_ACTIONS=true`, it is a runner, and each zero claim is skipped
+    with a logged `SKIP normative:` reason.
+  - Any other combination fails with "refusing to skip".
+
+  It cannot flip silently. A stray `CI=1` on the normative machine fails
+  instead of skipping. The runner always sets `GITHUB_ACTIONS`, and if it did
+  not, the zero claims would run there and fail red. Step 11's drop asserts,
+  which used to skip on CI without a word, now use the same mechanism. *(§2c,
+  2026-10-04: the PR #36 pass's order spoke of "steps 11/13's old silent skips".
+  Only step 11 carried the silent skip. Step 13's direct `CI` read chose a
+  message, never an assertion: both branches assert `hasMoof`.)*
+- **The two hiding places, deleted, quoted from `main` at `d7b96f7`.**
+  - The job's flag (`ci.yml`, line 1030):
+    ```yaml
+        continue-on-error: true
+    ```
+  - The step's band, comment included (`ci.yml`, lines 1121–1137 at
+    `d7b96f7`). The order cited "1127–1136", copying my imprecise citation from
+    the PR #35 pass, and `83bfb60`'s message repeats it; the tree's lines are
+    these:
+    ```sh
+              # The band stays, and the reason has CHANGED. It used to tolerate R2,
+              # R4 and R5 being red by design. Those are closed — 12/12 three times
+              # consecutively on the normative machine. It now tolerates the runner:
+              # macos-14 gives 3 arm64 cores, and the gate step asserts
+              # droppedFramesTotal == 0 and audioUnderrunsTotal == 0, which are
+              # performance claims about REFERENCE hardware. Measured on this runner:
+              # 83 and 120 underruns in two runs, and a dropped frame, where the
+              # normative machine gives 0. No code change makes a shared CI VM hold a
+              # 33 ms audio cadence next to wgpu.
+              if [ "${passed:-0}" -lt 9 ]; then
+                echo "expected at least 9 passing steps, got ${passed:-0}"
+                exit 1
+              fi
+              if [ "${failed:-99}" -gt 3 ]; then
+                echo "expected at most 3 failing steps (the hardware-bound gate assertions), got ${failed:-99}"
+                exit 1
+              fi
+    ```
+- **The job now gates on `failed == 0`, with the rule-8 floors.**
+  - ran ≥ 27.
+  - exercised = ran minus the `# SKIP` lines, ≥ 18. The runner takes 9 skips: 4
+    capability skips (stream, record, sync and kill, because it has no hardware
+    H.264 encoder) and 5 normative ones.
+  - The `DRESS-COUNTS` line is required.
+
+**Falsified** on the normative machine. Each rehearsal started under the
+ceiling, and each mutation was restored from a saved copy.
+
+| # | Mutation | Load (before → after) | Signature |
+|---|---|---|---|
+| baseline | none (normative) | 2.47 → 1.84 | 27 of 27, 0 `SKIP` lines, all counts 0, rises 974 and 1034 ms |
+| baseline | `CI=true GITHUB_ACTIONS=true` | 1.84 → 1.89 | 27 of 27, 6 `SKIP normative:` lines (locally step 11 runs and logs its own); the CI step's extracted check exits 0 |
+| baseline | `CI=1` alone | 1.89 → 2.30 | 6 failures: `refusing to skip "zero drops across the show" on an unidentified machine (CI="1", GITHUB_ACTIONS="")…` |
+| F1a | the engine reports no profile | 2.48 → 2.56 | **27 of 27: the conjunct is blind here** (see below) |
+| F1a′ | the tick carries an empty profile | 2.47 → 3.36 | `not ok 12 - [RI-1] gate: the profile is real …`: `saw ""` |
+| F1b | decode sessions forced to 0 | 2.41 → 2.04 | `not ok 13 - … a decode session is held …`: `saw 0` |
+| F1c | an operator slate at step 7 | 2.04 → 2.17 | `not ok 14 - … every fallback tick lies inside a watchdog episode …`: `(tick index): [15]`, and the normative `the fallback slate must never have gone to air`. ~~Collateral: `not ok 13`, `saw 0` (below)~~ *(§2c, 2026-10-04: not collateral, but a stale binary; see below.)* On a rebuilt engine (the PR #36 pass, load 2.27 → 2.01) only `not ok 14` (`[16]`) and the normative slate test fail, and `decodeSessions` holds at 3 through the slate |
+| F2 | drops +25, underruns +2500, trips +11 (CI path) | 2.07 → 2.06 | `not ok 15/16/17`, each by name: `droppedFramesTotal at the gate is 25, over the backstop of 20 …`, `… 2500, over … 2000`, `… 11, over … 10`; the CI check: `FAIL: 3 failing test(s)`, exit 1 |
+| F3 | every take's clip source silenced | 1.97 → 2.26 | `not ok 5 - … step 4 …`: `waited 10000 ms for busPeakDbfs.clip to rise`. The run took 64 s against about 55, so nothing hangs |
+| F4 | droppedFramesTotal +1, both paths | 2.16 → 1.67 · 1.67 → 1.53 | normative: `not ok 19`, `zero-drop across the whole show / 1 !== 0`. CI path: 27 of 27, `"drops":1` logged, the CI check exits 0 |
+| F5 | the runner's capability skips reproduced (forced no encoder and no chain), then one more skip | 1.53 → 2.50 · 2.43 → 2.96 | as the runner: `skips=9 exercised=18`, exit 0. With one more: `skips=10 exercised=17`, `FAIL: expected at least 18 tests exercised …`, exit 1 |
+
+**What the gate still cannot see, recorded rather than hidden.**
+
+- **The profile conjunct is blind to a missing engine profile.** The control
+  plane's tick fills a missing engine value with the manifest's declared one
+  (`telemetry.ts`: `f?.qualityProfile ?? state.qualityProfile`). So an engine
+  that reports no profile still passes (F1a). The old gate's comment, "a stub
+  would report the manifest's declared value", named this case, and its assert
+  never caught it either.
+
+  **Plainly: the tree's fresh-null fallback goes past the spec's text.** §10.1.1
+  allows the requested profile only when the engine report is stale or absent,
+  with `engineConnected: false` saying why. The tree's `??` also fills a
+  **fresh** report's null, while `engineConnected` reads `true`.
+
+  **Hedged in the test** (the PR #36 pass's adjudication F1, adopted
+  2026-10-04). The comment and message now say what the gate proves: a
+  non-empty effective profile, on a fresh report. They also say what it does
+  not prove: that the engine's probe produced it. The test now asserts
+  `engineConnected === true` on the gate tick, which closes the sanctioned
+  stale-or-absent path.
+
+  **Queued:** ~~carry the profile's provenance on the tick, engine or manifest.
+  That is a wire change, so it is the user's word.~~ the fix gets a spec row
+  when it comes. The leading candidate is a no-value emission when a fresh
+  report carries no profile, in the shape of v0.4.6 row 3's `streamBufferMs`
+  sentinel. The alternative is provenance on the tick, a new field with its wire
+  audit trio.
+- **An operator slate raised during a watchdog episode** cannot be told from
+  the watchdog's own slate in telemetry. The episode check passes it.
+- **Steps 5 and 6 still assert zero drops on every machine**: a mix drops no
+  frames, and a stab drops nothing. Their windows read 0 in all seven CI runs
+  sampled. If one goes red on CI, it is R12's class.
+- ~~**F1c's collateral `decodeSessions` 0** at the gate, after an inserted
+  slate-and-take, is unexplained. The mutation changed the show's sequence, so
+  this is an observation, not a finding.~~
+- **F1c's "collateral", explained** (§2c, the PR #36 two-key pass of
+  2026-10-04). It was a harness defect, not the engine.
+  - The batch rebuilt the debug engine only when it mutated engine source.
+  - F1b set `decode_sessions: 0`, built, ran, and restored the source
+    **without rebuilding**.
+  - F1c changed only the test file, so it ran on F1b's binary:
+    `decodeSessions` read 0 from the first tick, before the slate went up.
+
+  On a rebuilt engine, the slate mutation fails only its own tests, and
+  `decodeSessions` holds at 3 through the slate. **The executor's own batch had
+  the same ordering, and that is how "unexplained" entered this finding.** F1a′
+  ran on F1a's binary in the same way, harmlessly, because it forces the profile
+  empty regardless.
+
+  **The lesson: rebuild after every restore.** A test-only mutation that follows
+  a restore otherwise runs on the previous mutation's binary.
+
+**The first honest CI run under the new gate:** `37181092309` at `83bfb60`,
+read per test, 27 of 27 (`ran=27 passed=27 failed=0 skips=9 exercised=18`). It
+logged `"sha":"26e0e1d…"`, GitHub's test-merge commit, not the head, and
+`2582b2a` makes the line name the head. R12 stays OPEN in the register until the
+user's word after the two-key pass.
+
+**After the merge (the user's word of 2026-10-04):** R12 becomes *resolved;
+watch* once main's merge run reads green per test. The trend rule in its
+register row keeps its home there.
+
 ### Finding R13 — the dress rehearsal's audio rises arrive after their 3000 ms wait on CI (recorded 2026-10-03, PR #35)
 
 *Numbered after R12. The register row is in `docs/soak-protocol.md` §5.*
@@ -808,15 +957,18 @@ raises the clip bus on the wire`) or step 6 (`not ok 7 - [RI-1] step 6: a
 soundboard stab raises the sfx bus and drops nothing`) fails with `waited 3000
 ms for busPeakDbfs.<bus> to rise`. The wait is `RISE_MS + TICK_MS`.
 
-**Sightings.** These are the three the band absorbed, now read per test. Rise
-times are from each run's artifacts, measured from the take or the play to the
-first audible tick:
+**Sightings.** These are the ~~three~~ four the band absorbed, now read per
+test, plus the first under the new gate. Rise times are from each run's
+artifacts, or from the `DRESS-COUNTS` line, measured from the take or the play
+to the first audible tick:
 
 | Run | Commit | Step | Rise (ms) | At the expiry |
 |---|---|---|---|---|
 | `36567491896` | `de90bbe` | 4 (clip) | 2981 | the risen value (−20.8 dBFS) in the very tick the wait gave up on |
 | `36658852056` | `592444a` | 6 (sfx) | ≈3986 | — |
 | `37177561864` | `66f9f94` | 4 (clip) | 3967 | the clip at −120 dBFS. The take was at 11044 ms and the clip became audible at 15011 ms, about 4 s later |
+| `37179591329` | `d7b96f7` | 6 (sfx) | ≈3986 | main, PR #35's merge |
+| `37181092309` | `83bfb60` | 6 (sfx) | 4971 | **the new gate:** logged inside the 10 s backstop, green |
 
 The runs that passed show the healthy pattern on CI: step 4 at 1971–2980 ms and
 step 6 at about 1927–2009 ms. Rises land in steps of about 1 s, set by the 1 Hz
@@ -836,6 +988,31 @@ end-to-end, which uses the same witness in a gating job, already waits 10 s
   ticks, and the same window `recall.e2e.ts` uses for the same witness.
 - **On the normative machine:** the 3000 ms bound stays, asserted in the local
   rehearsal and the soak.
+
+**Implemented in PR #36** with R12's work order (`76f092f`, `83bfb60`):
+- On every machine, steps 4 and 6 wait up to the 10 s backstop and record their
+  rise time on the `DRESS-COUNTS` line.
+- `[R13] step 4 (normative)` and `[R13] step 6 (normative)` assert the 3000 ms
+  bound through the same machine mechanism.
+- F3 above suppresses the rise: the 10 s backstop fails step 4 by name, and the
+  rehearsal does not hang.
+
+**What the rise-time measure cannot see** (the PR #36 pass, adopted
+2026-10-04):
+- **The poll quantum.** The wait polls every 50 ms, so a rise reads up to about
+  50 ms late.
+- **Tick-plus-window resolution.** A bus level reaches the control plane once
+  per 1 s telemetry tick, from a 1 s meter window. A rise time is therefore
+  "ticks until detection": it lands in steps of about 1 s, and two rises a few
+  hundred ms apart can read the same.
+- **The 10 s backstop logs, but passes, a rise between 3 and 10 s.** On CI only
+  the log line sees that span. The 3000 ms bound fails it, but only on the
+  normative machine.
+
+R13 stays OPEN in the register until the user's word after the two-key pass.
+**After the merge (the user's word of 2026-10-04):** R13 closes outright once
+main's merge run reads green per test, because its rises are logged on every
+run.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
@@ -2399,8 +2576,10 @@ since is docs-only.
 **What blocks the merge:** a sighting outside its backstops, or a new signature
 (any other failing test).
 
-**The R12+R13 dress-leg work order is the top item of the queue after this
-merge.** The tree keeps no standing board, so this paragraph is where that order
+~~**The R12+R13 dress-leg work order is the top item of the queue after this
+merge.**~~ *Done: PR #36 (2026-10-04) implements it (Findings R12, R13).* **The
+top item of the queue is now the deferred-edge static reader** (the queue line
+above). The tree keeps no standing board, so this paragraph is where that order
 is recorded.
 
 **The queue keeps P1's other legs for the shell work.** `preview.set` and
@@ -2409,6 +2588,24 @@ resync. The snapshot's preview half stays control-plane-only, and the engine
 says so in `on_recall`'s doc. These remain prerequisites before any shell work
 that shows a preview pane. `preview.set` is the WU6 finding above,
 recorded as out of scope then and queued now.
+
+**Merged** as PR #35 on 2026-10-04 at 05:20 UTC, squashed to `d7b96f7` on
+`main`. Its tree, `c7153a3`, is identical to the PR's final head, `f1a8279`.
+
+**Main's CI at the merge commit, run `37179591329`, read per test (§2b):**
+- rust and control-plane are green;
+- the dress rehearsal passed 14 of 16 (`# fail 2`).
+
+The two failures:
+- **`not ok 7 - [RI-1] step 6`** is R13's late rise. The sfx bus rose after
+  about 3986 ms.
+- **`not ok 12 - [RI-1] gate`** is R12's underrun conjunct, `170 !== 0`. At the
+  gate the counts were 0 / 170 / 0 / 0; the whole-run maxima were drops 1,
+  underruns 259, trips 1.
+
+**The run is red under §2b**, by exactly the two classes the bounded acceptance
+names, each inside its backstops. Recorded 2026-10-04 as the bookend of PR #36,
+the work order those two classes queued.
 
 ---
 

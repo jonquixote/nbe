@@ -68,6 +68,83 @@ const TELEMETRY_MS = 3 * TICK_MS;
 /** `show.stop` must acknowledge inside its own grace window, plus slack. */
 const STOP_MS = GRACE_MS + 2_000;
 
+// --- Which machine this is (Findings R12, R13) -------------------------------
+//
+// The zero conjuncts (no drops, no underruns, no slate) and the 3000 ms rise
+// bound are claims about the REFERENCE machine (SPEC §0.3). They are asserted
+// there and only there. A GitHub Actions runner, 3 arm64 cores on a shared VM,
+// skips them, logs its reason, and the dress job's ran/exercised floors count
+// the skip. The mechanism is the tree's own (steps 11 and 13 read `CI`), made
+// fail-closed so that it cannot flip silently:
+//
+// - Neither `CI` nor `GITHUB_ACTIONS` is set: the normative machine. Asserted.
+// - `GITHUB_ACTIONS=true`: a CI runner. The Actions runner sets it, with
+//   `CI=true`, for every step, and nothing else sets it. Skipped, with the
+//   reason logged as a `SKIP normative:` line.
+// - Anything else (a stray `CI=1` in a shell, or a half-set pair): refused.
+//   The normative assertion FAILS rather than skips, so a variable on the
+//   normative machine cannot turn the zero claims into silent skips. On the
+//   runner the opposite flip cannot happen either: CI always sets the variable,
+//   and if it did not, the zero assertions would run there and fail red.
+
+type Machine =
+  | { kind: "normative" }
+  | { kind: "ci"; reason: string }
+  | { kind: "unidentified"; why: string };
+
+function whichMachine(): Machine {
+  const ci = process.env["CI"] ?? "";
+  const actions = process.env["GITHUB_ACTIONS"] ?? "";
+  if (ci === "" && actions === "") return { kind: "normative" };
+  if (actions === "true") {
+    return {
+      kind: "ci",
+      reason: `a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)`,
+    };
+  }
+  return { kind: "unidentified", why: `CI=${JSON.stringify(ci)}, GITHUB_ACTIONS=${JSON.stringify(actions)}` };
+}
+
+/**
+ * A reference-hardware claim: asserted on the normative machine, skipped with
+ * its reason on a GitHub Actions runner, refused anywhere else.
+ */
+function normativeOnly(what: string, check: () => void): void {
+  const m = whichMachine();
+  if (m.kind === "ci") {
+    console.log(`SKIP normative: ${what} — ${m.reason}`);
+    return;
+  }
+  if (m.kind === "unidentified") {
+    assert.fail(
+      `refusing to skip "${what}" on an unidentified machine (${m.why}): normative assertions skip only on a GitHub Actions runner`,
+    );
+  }
+  check();
+}
+
+/**
+ * R12's backstops, asserted on every machine: about an order of magnitude
+ * above the CI sightings at the gate (drops 0–3, underruns 152–211, watchdog
+ * trips 0–1; over a whole run at most 4, 315 and 2). A count past one is a
+ * gross regression, not the runner (Finding R12, decided 2026-10-03).
+ */
+const BACKSTOP = { drops: 20, underruns: 2000, watchdogTrips: 10 } as const;
+/**
+ * R13's backstop: a bus rise must come within this on every machine. It is
+ * sized from the sightings: 2.5× the worst (3986 ms), ten telemetry ticks, and
+ * the same window `recall.e2e.ts` uses for the same witness (`302c0e3`). How
+ * fast the rise comes, `RISE_MS + TICK_MS`, is the normative bound.
+ */
+const RISE_BACKSTOP_MS = 10 * TICK_MS;
+/**
+ * R13: from the take (step 4) or the play (step 6) returning, to the first
+ * tick with the bus above the floor, in ms. It is measured with the wait's own
+ * 50 ms poll, so it can read up to 50 ms late. It is null until measured.
+ */
+let step4RiseMs: number | null = null;
+let step6RiseMs: number | null = null;
+
 const ADMIN = "admin-token";
 const RENDER = "render-token";
 const OPERATOR = "operator-token";
@@ -402,10 +479,13 @@ test("[RI-1] step 3: show.start runs the clock", async () => {
 test("[RI-1] step 4: a take with audio follow raises the clip bus on the wire", async () => {
   await ok("preview.set", { itemRef: "A1" });
   await ok("view.take", { transition: "cut", audio: { transition: "follow" } });
+  const tookAt = Date.now();
 
   // The wire-visible proof that audio follows video: the control plane never
   // computes this number — it comes from the engine's own graph, through
   // telemetry, because a real clip with a real AAC track is being decoded.
+  // R13: the rise must COME, within the backstop, on every machine. How fast it
+  // comes is a reference-hardware claim, asserted at the gate (normative only).
   const tick = await untilTelemetry(
     "busPeakDbfs.clip to rise",
     (t) => {
@@ -414,8 +494,9 @@ test("[RI-1] step 4: a take with audio follow raises the clip bus on the wire", 
         | undefined;
       return (peaks?.["clip"] ?? -120) > -60;
     },
-    RISE_MS + TICK_MS,
+    RISE_BACKSTOP_MS,
   );
+  step4RiseMs = Date.now() - tookAt;
   const peaks = (tick["data"] as Record<string, unknown>)["busPeakDbfs"] as Record<
     string,
     number
@@ -437,6 +518,9 @@ test("[RI-1] step 5: a 15-frame mix drops no frames", async () => {
 test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", async () => {
   const before = droppedNow();
   await ok("soundboard.play", { assetId: "stab_sfx" });
+  const playedAt = Date.now();
+  // R13, as in step 4: the rise must come within the backstop everywhere; its
+  // speed is asserted at the gate, on the normative machine only.
   const tick = await untilTelemetry(
     "busPeakDbfs.sfx to rise",
     (t) => {
@@ -445,8 +529,9 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
         | undefined;
       return (peaks?.["sfx"] ?? -120) > -60;
     },
-    RISE_MS + TICK_MS,
+    RISE_BACKSTOP_MS,
   );
+  step6RiseMs = Date.now() - playedAt;
   const peaks = (tick["data"] as Record<string, unknown>)["busPeakDbfs"] as Record<
     string,
     number
@@ -846,27 +931,195 @@ test("[P10] step 9: a live stream publishes beside the running show and stops in
   }
 });
 
-test("[RI-1] gate: no drops, no underruns, no fallback, and the profile is real", async () => {
-  const fields = (ticks.at(-1)?.["data"] ?? {}) as Record<string, unknown>;
-  assert.equal(fields["droppedFramesTotal"], 0, "zero-drop across the whole show");
-  assert.equal(fields["audioUnderrunsTotal"], 0, "no audio underruns across the show");
+// --- The gate (Findings R12, R13): one assertion per conjunct ---------------
+//
+// The RI-1 gate was one test with five asserts in order, so the first failure
+// hid the rest. CI showed one count per run, and a red that was red by design
+// read the same as a real one: two merge bookends recorded it green (Finding
+// R12). It is split here:
+//
+// - FUNCTIONAL conjuncts gate on every machine.
+// - The ZERO conjuncts are reference-hardware claims, asserted on the
+//   reference machine only (`normativeOnly`).
+// - Every count is asserted against its backstop on every machine, and logged
+//   on one machine-readable line for the trend.
+//
+// This is the disposition decided on 2026-10-03.
 
-  // fallbackActive false THROUGHOUT, not merely at the end.
-  const everFell = ticks.some(
-    (t) => ((t["data"] as Record<string, unknown>)?.["fallbackActive"] ?? false) === true,
-  );
-  assert.equal(everFell, false, "the fallback slate must never have gone to air");
+interface GateCounts {
+  drops: number;
+  underruns: number;
+  watchdogTrips: number;
+  fallbackTicks: number;
+  /** Indices of fallback ticks with no watchdog episode (trips ≤ clears). */
+  fallbackTicksOutsideWatchdog: number[];
+  qualityProfile: unknown;
+  decodeSessions: unknown;
+  /** The gate tick's `engineConnected`: whether the engine's report was fresh. */
+  engineConnected: unknown;
+}
+let gateSnapshot: GateCounts | null = null;
 
-  assert.ok(
-    (fields["decodeSessions"] as number) >= 1,
-    `a show playing real clips must hold a decode session, saw ${fields["decodeSessions"]}`,
+/**
+ * The show as the gate sees it, read ONCE so every gate test judges the same
+ * ticks. Without that, a tick landing between two gate tests would split the
+ * gate. A missing field reads NaN, which no assertion below accepts.
+ */
+function gate(): GateCounts {
+  if (gateSnapshot) return gateSnapshot;
+  const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
+  const last = data.at(-1) ?? {};
+  const num = (v: unknown): number => (typeof v === "number" ? v : Number.NaN);
+  const outside: number[] = [];
+  data.forEach((d, i) => {
+    if (d["fallbackActive"] !== true) return;
+    // A watchdog episode on the tick: trips outnumber clears (§10.3). The
+    // watchdog's slate stays up until its clear, so a watchdog slate is always
+    // inside one. Telemetry cannot tell an operator slate raised DURING an
+    // episode from the watchdog's own slate; that blind spot is recorded with
+    // Finding R12.
+    if (!(num(d["watchdogTripsTotal"]) > num(d["watchdogClearsTotal"]))) outside.push(i);
+  });
+  gateSnapshot = {
+    drops: num(last["droppedFramesTotal"]),
+    underruns: num(last["audioUnderrunsTotal"]),
+    watchdogTrips: num(last["watchdogTripsTotal"]),
+    fallbackTicks: data.filter((d) => d["fallbackActive"] === true).length,
+    fallbackTicksOutsideWatchdog: outside,
+    qualityProfile: last["qualityProfile"],
+    decodeSessions: last["decodeSessions"],
+    engineConnected: last["engineConnected"],
+  };
+  return gateSnapshot;
+}
+
+test("[RI-1] gate: the profile is real (functional, every machine)", () => {
+  // What this proves, and what it does not (Finding R12): the tick carries a
+  // non-empty effective profile, and the engine's report behind the tick is
+  // fresh (`engineConnected: true`). That closes the fallback §10.1.1
+  // sanctions, the requested profile on a stale or absent report. It does NOT
+  // prove the engine's probe produced the value. The control plane also fills
+  // in the manifest's profile when a FRESH report carries none (`telemetry.ts`,
+  // `f?.qualityProfile ?? state.qualityProfile`), which goes past §10.1.1's
+  // text, and this gate cannot tell that fill from a measurement. The fix is
+  // queued with Finding R12.
+  const { qualityProfile, engineConnected } = gate();
+  assert.equal(
+    engineConnected,
+    true,
+    "the gate tick must carry a fresh engine report (engineConnected: true): otherwise qualityProfile is the requested profile, not the engine's",
   );
-  // A stub would report the manifest's declared value; the engine reports what
-  // the hardware probe actually allowed.
   assert.ok(
-    typeof fields["qualityProfile"] === "string" && fields["qualityProfile"] !== "",
-    `qualityProfile must be a real capped value, saw ${JSON.stringify(fields["qualityProfile"])}`,
+    typeof qualityProfile === "string" && qualityProfile !== "",
+    `qualityProfile must be a non-empty string on a fresh report, saw ${JSON.stringify(qualityProfile)} (this does not prove the engine's probe produced it: Finding R12)`,
   );
+});
+
+test("[RI-1] gate: a decode session is held (functional, every machine)", () => {
+  const { decodeSessions } = gate();
+  assert.ok(
+    typeof decodeSessions === "number" && decodeSessions >= 1,
+    `a show playing real clips must hold a decode session, saw ${JSON.stringify(decodeSessions)}`,
+  );
+});
+
+test("[RI-1] gate: every fallback tick lies inside a watchdog episode (functional, every machine)", () => {
+  // Read across the WHOLE show so far, not merely at the end. On a runner the
+  // watchdog may slate late frames (§10.3); nothing else may put the slate on
+  // air during the rehearsal.
+  const { fallbackTicks, fallbackTicksOutsideWatchdog } = gate();
+  assert.deepEqual(
+    fallbackTicksOutsideWatchdog,
+    [],
+    `the slate may go to air only as the watchdog's: ${fallbackTicks} fallback tick(s), these outside a watchdog episode (tick index): ${JSON.stringify(fallbackTicksOutsideWatchdog)}`,
+  );
+});
+
+test(`[RI-1] gate: drops are inside their backstop (≤ ${BACKSTOP.drops}, every machine)`, () => {
+  const { drops } = gate();
+  assert.ok(
+    drops <= BACKSTOP.drops,
+    `droppedFramesTotal at the gate is ${drops}, over the backstop of ${BACKSTOP.drops}: a gross regression, not the runner (Finding R12)`,
+  );
+});
+
+test(`[RI-1] gate: underruns are inside their backstop (≤ ${BACKSTOP.underruns}, every machine)`, () => {
+  const { underruns } = gate();
+  assert.ok(
+    underruns <= BACKSTOP.underruns,
+    `audioUnderrunsTotal at the gate is ${underruns}, over the backstop of ${BACKSTOP.underruns}: a gross regression, not the runner (Finding R12)`,
+  );
+});
+
+test(`[RI-1] gate: watchdog trips are inside their backstop (≤ ${BACKSTOP.watchdogTrips}, every machine)`, () => {
+  const { watchdogTrips } = gate();
+  assert.ok(
+    watchdogTrips <= BACKSTOP.watchdogTrips,
+    `watchdogTripsTotal at the gate is ${watchdogTrips}, over the backstop of ${BACKSTOP.watchdogTrips}: a gross regression, not the runner (Finding R12)`,
+  );
+});
+
+test("[RI-1] gate: the counts, logged for the trend (Findings R12, R13)", () => {
+  // One line a bookend can read to extend the register's table without the
+  // artifacts: the run, the commit, the machine, and every count.
+  const g = gate();
+  const line = {
+    machine: whichMachine().kind,
+    run: process.env["GITHUB_RUN_ID"] ?? null,
+    // The commit under test. On a pull_request run GITHUB_SHA is GitHub's
+    // test-merge commit, not the PR's head (run 37181092309 logged 26e0e1d for
+    // head 83bfb60), so the dress job passes the head explicitly.
+    sha: process.env["DRESS_HEAD_SHA"] ?? process.env["GITHUB_SHA"] ?? null,
+    drops: g.drops,
+    underruns: g.underruns,
+    fallbackTicks: g.fallbackTicks,
+    fallbackTicksOutsideWatchdog: g.fallbackTicksOutsideWatchdog.length,
+    watchdogTrips: g.watchdogTrips,
+    step4RiseMs,
+    step6RiseMs,
+    backstops: { ...BACKSTOP, riseMs: RISE_BACKSTOP_MS },
+    normativeRiseMs: RISE_MS + TICK_MS,
+  };
+  console.log(`DRESS-COUNTS ${JSON.stringify(line)}`);
+  for (const k of ["drops", "underruns", "watchdogTrips", "step4RiseMs", "step6RiseMs"] as const) {
+    assert.ok(Number.isFinite(line[k]), `${k} must be measured, saw ${JSON.stringify(line[k])}`);
+  }
+});
+
+test("[RI-1] gate (normative): zero drops across the show", () => {
+  normativeOnly("zero drops across the show", () => {
+    assert.equal(gate().drops, 0, "zero-drop across the whole show");
+  });
+});
+
+test("[RI-1] gate (normative): zero audio underruns across the show", () => {
+  normativeOnly("zero audio underruns across the show", () => {
+    assert.equal(gate().underruns, 0, "no audio underruns across the show");
+  });
+});
+
+test("[RI-1] gate (normative): the slate never went to air", () => {
+  normativeOnly("the slate never went to air", () => {
+    assert.equal(gate().fallbackTicks, 0, "the fallback slate must never have gone to air");
+  });
+});
+
+test("[R13] step 4 (normative): the clip bus rose within 3000 ms", () => {
+  normativeOnly("the clip bus rose within 3000 ms", () => {
+    assert.ok(
+      step4RiseMs !== null && step4RiseMs <= RISE_MS + TICK_MS,
+      `the clip bus must rise within ${RISE_MS + TICK_MS} ms of the take, took ${step4RiseMs} ms`,
+    );
+  });
+});
+
+test("[R13] step 6 (normative): the sfx bus rose within 3000 ms", () => {
+  normativeOnly("the sfx bus rose within 3000 ms", () => {
+    assert.ok(
+      step6RiseMs !== null && step6RiseMs <= RISE_MS + TICK_MS,
+      `the sfx bus must rise within ${RISE_MS + TICK_MS} ms of the stab, took ${step6RiseMs} ms`,
+    );
+  });
 });
 
 test("[RI-1] step 10: show.stop acknowledges inside the grace window and the clock stops", async () => {
@@ -1177,7 +1430,9 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
       ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
   };
   recordSpan = { ...spanStart, endDroppedFramesTotal: spanEnd.droppedFramesTotal, endAudioUnderrunsTotal: spanEnd.audioUnderrunsTotal, mixDroppedBefore: mixDropsBefore, mixDroppedAfter: mixDropsAfter, mixUnderrunsBefore, mixUnderrunsAfter };
-  if (process.env["CI"] === undefined || process.env["CI"] === "") {
+  // The same mechanism as the gate (Findings R12, R13). On a runner this used
+  // to skip without a word, and now the skip is logged.
+  normativeOnly("no View drops while recording, and through the record-through-mix", () => {
     assert.equal(
       spanEnd.droppedFramesTotal,
       spanStart.droppedFramesTotal,
@@ -1188,7 +1443,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
       mixDropsBefore,
       `no View drops through the record-through-mix on the normative machine: ${mixDropsBefore} -> ${mixDropsAfter}`,
     );
-  }
+  });
   const size = statSync(file).size;
   // MEASURED 2026-09-15 on the Intel local machine: 39-41 KB for the 4 s
   // take. Video is sparse by design there (the feed.rs ladder sheds record
