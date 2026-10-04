@@ -50,25 +50,37 @@ pub enum DirectiveError {
 /// emitting. Without this the `itemEvent: end` fires for the superseded take
 /// even after a new take replaced it — a documented guarantee that must exist.
 pub struct PlaybackTracker {
-    current: Mutex<Option<(String, u64)>>,
+    /// The playing item, if any, and the generation. The generation only ever
+    /// moves forward — through [`Self::clear`] as well as [`Self::begin`] — so
+    /// a timer from before a clear can never become current again by matching
+    /// a restarted count.
+    current: Mutex<(Option<String>, u64)>,
 }
 
 impl PlaybackTracker {
     fn new() -> Self {
         Self {
-            current: Mutex::new(None),
+            current: Mutex::new((None, 0)),
         }
     }
     /// Publish a new playing item; returns the generation for the timer.
     fn begin(&self, item_ref: &str) -> u64 {
         let mut cur = self.current.lock().unwrap();
-        let generation = cur.take().map(|(_, g)| g + 1).unwrap_or(0);
-        *cur = Some((item_ref.to_string(), generation));
-        generation
+        cur.1 += 1;
+        cur.0 = Some(item_ref.to_string());
+        cur.1
+    }
+    /// Nothing is playing any more (a recall of an empty View): every pending
+    /// end is superseded.
+    fn clear(&self) {
+        let mut cur = self.current.lock().unwrap();
+        cur.1 += 1;
+        cur.0 = None;
     }
     /// True if (item_ref, generation) is still the recorded playback.
     fn is_current(&self, item_ref: &str, generation: u64) -> bool {
-        matches!(&*self.current.lock().unwrap(), Some((item, g)) if item == item_ref && *g == generation)
+        let cur = self.current.lock().unwrap();
+        cur.0.as_deref() == Some(item_ref) && cur.1 == generation
     }
 }
 
@@ -120,6 +132,7 @@ impl DirectiveHandler {
             "stream.start" => self.on_stream_start(d)?,
             "stream.stop" => self.on_stream_stop(d).await?,
             "marker.add" => self.on_marker_add(d)?,
+            "snapshot.recall" => self.on_recall(d)?,
             nbe_protocol::command::RESYNC => self.on_resync(d)?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -567,6 +580,17 @@ impl DirectiveHandler {
     }
 
     fn on_take(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        self.apply_take(d, true)
+    }
+
+    /// The take's application: the View, the transition, the clip bus's
+    /// source (the media arm) and the playback generation. Shared by a take
+    /// and a recall so the two cannot drift. `release_held` is the one
+    /// difference — the release-parity invariant (§10.3): the operator's slate
+    /// comes down exactly where the control plane's clear reaches the engine.
+    /// A take clears `fallbackActive`; a recall does not (`state.ts`
+    /// `recallSnapshot` never touches it), so a recall leaves `Held` up.
+    fn apply_take(&self, d: &DirectiveFrame, release_held: bool) -> Result<(), DirectiveError> {
         let item_ref = d
             .target
             .get("itemRef")
@@ -719,9 +743,11 @@ impl DirectiveHandler {
             // watchdog's slate does NOT: lateness is not cured by new content,
             // and its release is the watchdog's recovery (K = 30 on-time
             // frames). One release path per source, through WU8's atomic
-            // source tracking.
-            self.state
-                .release_fallback(crate::state::FallbackSource::Held);
+            // source tracking. A recall is not a clear site, so it skips this.
+            if release_held {
+                self.state
+                    .release_fallback(crate::state::FallbackSource::Held);
+            }
 
             // SPEC §8.7.3: the take's audio object decides what the clip bus
             // does. `follow` takes the item's own audioPolicy (AFV).
@@ -1445,29 +1471,102 @@ impl DirectiveHandler {
         // is a full snapshot, not a patch. A present array — including an empty
         // one — replaces the on-air set wholesale; an absent key leaves it alone.
         if let Some(visible) = snapshot.get("visibleOverlays").and_then(|v| v.as_array()) {
-            let ids: Vec<String> = visible
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-            let mut overlays = self.state.overlays.lock().unwrap();
-            overlays.clear();
-            for id in ids {
-                // Resynced overlays are authoritative state, not an animation:
-                // they land steady.
-                overlays.insert(
-                    id,
-                    crate::state::OverlayRuntime {
-                        on_air: true,
-                        anim_start: now,
-                        duration_frames: 1,
-                        phase: crate::state::OverlayPhase::Steady,
-                    },
-                );
-            }
+            self.replace_overlays(visible, now);
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
         Ok(())
+    }
+
+    /// `visibleOverlays` as a full snapshot, not a patch: the on-air set is
+    /// replaced wholesale. The overlays land steady — authoritative state, not
+    /// an animation. Shared by `show.resync` and `snapshot.recall` (whose
+    /// control-plane side clears the animation phase for the same reason:
+    /// `state.ts` `recallSnapshot`).
+    fn replace_overlays(&self, visible: &[serde_json::Value], now: u64) {
+        let ids: Vec<String> = visible
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let mut overlays = self.state.overlays.lock().unwrap();
+        overlays.clear();
+        for id in ids {
+            overlays.insert(
+                id,
+                crate::state::OverlayRuntime {
+                    on_air: true,
+                    anim_start: now,
+                    duration_frames: 1,
+                    phase: crate::state::OverlayPhase::Steady,
+                },
+            );
+        }
+    }
+
+    /// `snapshot.recall` (§16.11). The control plane restored a snapshot's
+    /// View state wholesale; this applies what the audience sees of it. Until
+    /// the Prompt 13 re-plan's P1 fix the engine did not route the command at
+    /// all, so a recall moved the control plane's `viewItem` while the old
+    /// View stayed on air.
+    ///
+    /// The control plane resolves everything (§5.9.1, `commands/state.ts`):
+    /// - `target.itemRef` is present only when the recalled item is not the
+    ///   one already on air. A name applies as a cut through the take's own
+    ///   application ([`Self::apply_take`]): cut-class (immediate, never a
+    ///   transition), starting now as a take does, with the clip bus's source
+    ///   swapped and a new playback generation, so the outgoing item's pending
+    ///   end is dropped. `null` means the snapshot's View was empty.
+    /// - `payload` carries the take's resolution (`resolveTransition` on a
+    ///   cut) and `visibleOverlays`, the snapshot's on-air set, wholesale.
+    ///
+    /// The operator's slate is NOT released: a recall does not clear the
+    /// control plane's `fallbackActive`, and release parity (§10.3) puts the
+    /// engine's release only where that clear reaches it. The preview half of
+    /// the snapshot stays control-plane-only: the engine routes no preview
+    /// writer (`preview.set`, `scene.arm` — queued for the shell work).
+    fn on_recall(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        match d.target.get("itemRef") {
+            Some(serde_json::Value::String(_)) => self.apply_take(d, false)?,
+            Some(serde_json::Value::Null) => self.clear_view(d),
+            _ => {}
+        }
+        if let Some(visible) = d.payload.get("visibleOverlays").and_then(|v| v.as_array()) {
+            self.replace_overlays(visible, self.state.master_frame().unwrap_or(0));
+        }
+        Ok(())
+    }
+
+    /// A recall of a snapshot whose View was empty: the cut-class application
+    /// of nothing. The View and any transition clear, the playback generation
+    /// moves on so the outgoing item's pending end is dropped, and the clip bus
+    /// goes silent through the take's own path — a `TakeItem` with no asset is
+    /// the silent source (`audio_control.rs`), so the previous item is not left
+    /// audible under an empty View. Its `item_ref` is empty: there is no item,
+    /// and the audio path does not read it.
+    fn clear_view(&self, d: &DirectiveFrame) {
+        let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+        *self.state.transition.lock().unwrap() = None;
+        *self.state.view_item.lock().unwrap() = None;
+        self.state
+            .view_item_start_frame
+            .store(start_frame, std::sync::atomic::Ordering::SeqCst);
+        self.playing.clear();
+        let ramp_ms = d
+            .payload
+            .get("audio")
+            .and_then(|a| a.get("rampMs"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(10.0) as f32;
+        self.state.audio_commands.lock().unwrap().push(
+            crate::audio_control::AudioCommand::TakeItem {
+                item_ref: String::new(),
+                asset_id: None,
+                t0: start_frame,
+                mode: "follow".to_string(),
+                ramp_ms,
+                crossfade_frames: 0,
+            },
+        );
     }
 
     /// The Section 5.9.5 ack: emitted only after the engine has executed the
