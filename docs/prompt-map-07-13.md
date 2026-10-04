@@ -610,6 +610,11 @@ sightings read "did not exit within 500 ms", never "injected".
 **Still watched.** A flake that goes quiet is not thereby explained. The soak
 row stays, and a sighting now carries its capture.
 
+*Reopen condition amended 2026-10-03 (the user's word), on post-fix sighting
+2, which kept its capture: `phase=exiting` at load 37.5. The amended
+condition and the sighting are in the register row (`docs/soak-protocol.md`
+§5).*
+
 ### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
 *Numbered after R10; no R11 existed in the tree. This entry supersedes the
@@ -684,6 +689,153 @@ and the habit of pressing it: a re-run is not evidence the flake is gone, and a
 sighting that is re-run without being recorded here is a lost datum.
 
 **Watch list:** `docs/soak-protocol.md` §5, in R7's and R10's shape.
+
+### Finding R12 — the dress rehearsal's RI-1 gate is red on every CI run, and nobody read it (recorded 2026-10-03, PR #35)
+
+*Numbered after R11, the highest filed. The register row is in
+`docs/soak-protocol.md` §5.*
+
+**Signature.** `not ok 12 - [RI-1] gate: no drops, no underruns, no fallback,
+and the profile is real` (`packages/control-plane/src/dress-rehearsal.test.ts`,
+line 849 onward), in the `dress rehearsal` CI job. The gate's asserts run in
+order and stop at the first failure. So each run shows one conjunct only: either
+`zero-drop across the whole show` (`N !== 0`) or `no audio underruns across the
+show` (`N !== 0`). The other values come from each run's uploaded
+`telemetry.jsonl` (`dress-rehearsal-artifacts`), read at the last tick before
+`show.stop`. Those readings equal what test 12 asserted.
+
+**Sightings.** ~~Four of the four~~ Five of the five runs sampled, read per test
+(the fifth was added 2026-10-03, at PR #35's ride-along head):
+
+| Run | Commit | Context | Failed on (asserted) | Drops | Underruns | Fallback ticks | Watchdog trips | Other dress failures |
+|---|---|---|---|---|---|---|---|---|
+| `36214380771` | `619846c` | main, v0.4.6 merge, 2026-09-26 | zero-drop, `2 !== 0` | 2 | 211 | 16 | (no counter before v0.4.7) | — |
+| `36567491896` | `de90bbe` | PR #34 head, 2026-09-29 | underruns, `179 !== 0` | 0 | 179 | 0 | 0 | step 4: the clip rise came late |
+| `36658852056` | `592444a` | main, PR #34 merge, 2026-09-30 | underruns, `160 !== 0` | 0 | 160 | 0 | 0 | step 6: the sfx rise came late |
+| `37171465949` | `8265292` | PR #35 head, 2026-10-04 UTC | zero-drop, `1 !== 0` | 1 | 164 | 1 | 1 | — |
+| `37177561864` | `66f9f94` | PR #35 head after the ride-along, 2026-10-04 UTC | zero-drop, `3 !== 0` | 3 | 174 | 2 | 1 | step 4: the clip rise came late (R13) |
+| local | `8265292` | normative machine, quiescent (2.46 → 2.94) | — (16 of 16) | 0 | 0 | 0 | 0 | — |
+
+Sighting 5's whole-run maxima are drops 4 and underruns 267. Its counts are
+inside every backstop, but **3 drops at the gate is above the earlier 0–2
+pattern**: the trend the work order will log starts being watched here.
+
+On CI, underruns are non-zero from the first tick (frame 0) of every run. Over a
+whole run they reach 249–315. The job's own comment in `ci.yml` measured 83 and
+120, plus a dropped frame, on 2026-09-11. When the slate went to air on CI, it
+was the watchdog (§10.3). The first fallback tick coincides with the first drop
+tick, so it is the same late frames, not an independent failure.
+
+**Class.** A hardware-bound gate asserting on non-reference hardware. This is
+R9's family (a wall-clock threshold measuring the machine), at CI scale. The
+gate's zero-drop and zero-underrun conjuncts are claims about the reference
+machine (§0.3), and `ci.yml` already says so. The runner is 3 arm64 cores on a
+shared VM.
+
+**The process failure.** The leg is advisory in two layers:
+- **Job level.** `dress-rehearsal:` … `continue-on-error: true`
+  (`.github/workflows/ci.yml`, line 1027 onward).
+- **Inside the step.** A band fails the step only if `passed < 9` or
+  `failed > 3`. A run with 15 passing and 1 failing reads green before
+  `continue-on-error` is even consulted.
+
+The job's comment names "a gate red on purpose — it teaches reviewers to ignore
+red" as a failure mode it rejected. Test 12 has been red on purpose in every
+run sampled since. The band also absorbed failures that were not hardware
+claims: steps 4 and 6, whose rises arrived late (now Finding R13). Advisory and unread, it stayed
+invisible for weeks. Two merge bookends, v0.4.6's and PR #34's, recorded "all
+green" from the job's conclusion over failing tests.
+
+The rule that now forbids that reading is `docs/implementation-standards.md`
+§2b, "A job's conclusion is not its tests".
+
+**Disposition, decided 2026-10-03 (the user's word): the corrected split.** The
+split as first ordered would have gated "no underruns" and "no fallback" on CI.
+It would have been red in four runs of four: underruns are non-zero at every CI
+gate, and the slate went to air at two of the four gates. The two-key pass
+corrected it, and the user decided the corrected form:
+
+- **On CI, the gate keeps the functional conjuncts.** These are: the profile is
+  real; a decode session is held; and the slate engages only through a watchdog
+  trip, meaning every fallback tick sits inside a watchdog episode. Any operator
+  or render-failure slate fails.
+- **The zero conjuncts are normative-only.** Drops = 0, underruns = 0, no slate
+  at all: these are asserted on the normative machine only, in the local
+  rehearsal and in the soak. The dress job adopts ran/exercised accounting
+  (rule 8), so a capability-gated step that prints `# SKIP` is counted as ran
+  and not as exercised.
+- **The four counts are logged on every CI run, each asserted separately, so no
+  conjunct hides another.** Each has a gross-regression backstop about an order
+  of magnitude above the sightings:
+
+  | Count | At the gate on CI | Whole run on CI | Backstop |
+  |---|---|---|---|
+  | Drops | 0–2 | max 3 | ≤ 20 |
+  | Underruns | 160–211 | max 315 | ≤ 2000 |
+  | Watchdog trips | 0–1 | max 2 | ≤ 10 |
+
+  The underrun count is also logged as a trend. It has risen from 83/120 on
+  2026-09-11, while the rehearsal grew a stream step, and a 10× backstop alone
+  would hide a 5× regression.
+- **The band and `continue-on-error` are removed**, and the job gates on
+  `failed == 0`. The leg never runs unread-red again.
+
+**Queued (a small work order, not built in PR #35): the dress leg's gate, in
+`ci.yml` and the rehearsal.**
+
+> Split the RI-1 gate test into one assertion per conjunct. On CI, assert that
+> the profile is real, that a decode session is held, and that every fallback
+> tick lies inside a watchdog episode. At the gate, on every run, log
+> `droppedFramesTotal`, `audioUnderrunsTotal`, the fallback ticks and
+> `watchdogTripsTotal`, each against its backstop (drops ≤ 20, underruns ≤ 2000,
+> trips ≤ 10), and append the underrun count to a trend record. Assert the zero
+> conjuncts only on the normative machine (the local rehearsal and the soak).
+> Adopt ran/exercised accounting, so that a `# SKIP` capability gate is not
+> counted as exercised. Remove the step's band and the job's
+> `continue-on-error`, and gate on `failed == 0`.
+>
+> *Amended 2026-10-03, carrying Finding R13:* also log step 4's and step 6's
+> rise time (take or play to the first audible tick) on every run, with its
+> trend. On CI, assert the rise is present within a 10 s backstop, and keep the
+> 3000 ms bound for the normative machine only.
+
+### Finding R13 — the dress rehearsal's audio rises arrive after their 3000 ms wait on CI (recorded 2026-10-03, PR #35)
+
+*Numbered after R12. The register row is in `docs/soak-protocol.md` §5.*
+
+**Signature.** Step 4 (`not ok 5 - [RI-1] step 4: a take with audio follow
+raises the clip bus on the wire`) or step 6 (`not ok 7 - [RI-1] step 6: a
+soundboard stab raises the sfx bus and drops nothing`) fails with `waited 3000
+ms for busPeakDbfs.<bus> to rise`. The wait is `RISE_MS + TICK_MS`.
+
+**Sightings.** These are the three the band absorbed, now read per test. Rise
+times are from each run's artifacts, measured from the take or the play to the
+first audible tick:
+
+| Run | Commit | Step | Rise (ms) | At the expiry |
+|---|---|---|---|---|
+| `36567491896` | `de90bbe` | 4 (clip) | 2981 | the risen value (−20.8 dBFS) in the very tick the wait gave up on |
+| `36658852056` | `592444a` | 6 (sfx) | ≈3986 | — |
+| `37177561864` | `66f9f94` | 4 (clip) | 3967 | the clip at −120 dBFS. The take was at 11044 ms and the clip became audible at 15011 ms, about 4 s later |
+
+The runs that passed show the healthy pattern on CI: step 4 at 1971–2980 ms and
+step 6 at about 1927–2009 ms. Rises land in steps of about 1 s, set by the 1 Hz
+telemetry tick and the 1 s meter window (`audio_driver.rs`). A rise one step
+late crosses the 3000 ms wait.
+
+**Class.** R9's: a wall bound measuring the runner. **The behaviour is
+correct.** The rise comes in every run, every time. It is late on a loaded
+runner, and the normative machine is 16 of 16 (`8265292`). The recall
+end-to-end, which uses the same witness in a gating job, already waits 10 s
+(`302c0e3`).
+
+**Disposition (the user's word of 2026-10-03): it rides R12's work order.**
+- **On CI:** the work order's log-and-backstop list gains each step's rise time,
+  logged per run with its trend. The rise is asserted present within a 10 s
+  backstop, sized from the sightings: 2.5× the worst (3986 ms), ten telemetry
+  ticks, and the same window `recall.e2e.ts` uses for the same witness.
+- **On the normative machine:** the 3000 ms bound stays, asserted in the local
+  rehearsal and the soak.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
@@ -1494,9 +1646,13 @@ mechanism and had its guard run at its landing commit. Branch `spec-rev-v046`.
 **Merged** as PR #33 on 2026-09-26 at 03:18 UTC (locally 2026-09-25 20:18
 −0700), squashed to `619846c` on `main`. Its tree is identical to the PR's
 final head, `6988c04`. **Main's CI at the merge commit: run `36214380771`,
-success** — control-plane, dress rehearsal and rust all green. Recorded
-2026-09-26 as the first commit of Prompt 11's branch; it was owed from the
-merge.
+success** — ~~control-plane, dress rehearsal and rust all green~~
+control-plane and rust green; the dress rehearsal job, advisory by decision
+(`continue-on-error`), concluded success with 15 of 16 passing (`not ok 12 -
+[RI-1] gate`). *Corrected 2026-10-03 (§2c): "all green" read the job's
+conclusion, not its tests; found while landing the recall leg (§ 13).*
+Recorded 2026-09-26 as the first commit of Prompt 11's branch; it was owed
+from the merge.
 
 | # | The user's word | Where it landed |
 |---|---|---|
@@ -2021,6 +2177,238 @@ at `619846c`.
 ## 13 — Operator shell
 
 Inherits the display-surface deferral (04 → 09 → here in practice) and S2: **`showState` is absent from the §10.1 telemetry tick**, so a shell subscribing to telemetry alone cannot say whether the show is running. Either the shell also tracks `stateChange` frames, or v0.4 adds the field — the outline records it as a candidate. 13 is also the first consumer that will notice R2's metering strobe: bus meters sampled once a second from a 33 ms window are unusable in an operator UI, so R2's fix is a prerequisite rather than a nicety.
+
+### The re-plan's P1, its recall leg — `snapshot.recall` reaches the engine (2026-10-03, branch `prompt13-recall-fix`)
+
+**Where P1 is written, said first (the tree wins).** P1 comes from the Prompt 13
+re-plan of 2026-10-02 ("Prompt 13 upgraded for the tree"). That document is
+not in the tree yet: it was delivered read-only, pending the user's word, and
+its branch `prompt13-upgrade` holds only PR #34's merge bookend. So P1's text
+cannot be struck where it stands. It is quoted here, struck as fixed, and the
+re-plan's own copy is struck when it lands. The user's word of 2026-10-03: the
+recall leg is fixed now.
+
+> ~~**P1** (recall leg) — `snapshot.recall` is forwarded (`forward: true`),
+> has no engine route (`directive.rs` ignores it), and no resync follows.
+> **`snapshot.recall` changes the CP's `viewItem`/overlays while the engine
+> keeps airing the old View: an on-air split brain**, against §25.2 #2's "a
+> snapshot restores what the audience sees".~~ **FIXED** by `a0e3e6d`
+> (mechanism and guards) and `835fcbc` (SPEC v0.4.8 row 1: the §13.4.1 row,
+> its two deferred edges in the data, and the preflight pin), with floors in
+> `be9d278` and the end-to-end's report window widened on CI evidence in
+> `302c0e3`.
+
+**The routing decision.** The fix reuses the existing `snapshot.recall`
+directive, now resolved. It adds no new directive and does not use `view.take`.
+
+- The command was already forwarded and is in the command surface, so the
+  frame shape is unchanged. What changes is that it carries resolved content
+  (§5.9.1) instead of the snapshot's name. No new directive means no wire audit
+  trio, and the mirror stays 18/18.
+- `view.take` was ruled out for three reasons:
+  - The engine's take always releases `Held`, and `recallSnapshot` never clears
+    `fallbackActive`. A take directive would have made the recall a release
+    site that the control plane does not have (§10.3's release parity).
+  - A take cannot say "empty View".
+  - A take cannot carry overlays.
+
+The engine applies the recall through the take's own application
+(`apply_take`): cut-class, the clip bus's source swapped, and the playback
+generation moved on. It does not release `Held`. The control plane's half
+changes too: a recalled item that changes the View starts now, as a take's
+does, instead of at the snapshot's old start, which a later resync would replay
+as a seek. The snapshot no longer saves a start frame.
+
+**The tree against the order's wording, on four points.**
+
+- **§13.4.1's row text.** The row did not read "sets viewItem wholesale, not via
+  take". The no-engine-effect caveat was its sources cell, "`directive.rs`
+  routing (not routed)", and that cell is now struck.
+- **Overlays are fixed too.** The order said "the recall's resolved view". The
+  tree's recall restores `visibleOverlays` wholesale, and §25.2 #2 counts
+  overlay visibility as View state. Routing only the item would have left the
+  same split brain for overlays, so the recall carries them.
+- **There is no next-item pointer.** autoFollow advances from the item that ends
+  (`order[indexOf(ended) + 1]`). So the autoFollow pin is the ended item, held
+  two ways:
+  - the engine drops the outgoing item's pending end;
+  - the control plane's restored item states leave that item no longer
+    PLAYING.
+- **The test runner is not vitest.** The order's gate says "control-plane
+  vitest". The package runs `node --test`, and that is what ran.
+
+**Falsifications.** Each mutation was made on a saved copy and the file was
+restored from that copy afterwards; the tree was clean after each. Loads are
+the one-minute figure at each start; all were above the 3.0 ceiling. None of
+these outcomes is a timing claim: each is a behaviour that happened or did not
+(a pixel, a bit, a command, an event, an exit code). They are disclosed as runs
+above the ceiling.
+
+| # | Mutation | Load | What failed, with its signature |
+|---|---|---|---|
+| F1 | The engine's `"snapshot.recall"` route removed (the pre-fix engine) | 4.27 | `prompt13_recall` 1/6: the split-brain tuple `left: ([255, 0, 0, 255], false, false)` against `right: ([0, 0, 255, 255], false, false)`. The empty-View, media-arm, overlay (`[("ov1", true, Enter)]` against `[("ov2", true, Steady)]`) and parity (`left: None`, `right: Some("A2")`) tests failed with it. `recall.e2e.ts` 0/2: `controlPlaneView: 'C'`, `engineClipAudible: false` (expected `true`), in both tests |
+| F2 | The recall releases `Held` (`apply_take(d, true)`) | 4.35 | `prompt13_recall` 5/6: `left: ([0, 0, 255, 255], false, false)` against `right: ([12, 200, 90, 255], true, true)`. `recall.e2e.ts` 1/2: `engineSlate: [false, false]` (expected `[true, true]`) with `controlPlaneSlate: true`, the new split brain the parity rule forbids |
+| F3 | No media arm: the recall as a bare View store, resync-style | 3.90 | `prompt13_recall` 5/6: `the recall swaps the clip bus's source to A2 through the take's path, a cut; got []`. The split-brain pixel test **passed** under this mutation. It cannot tell a take from a store, which is why the media-arm test exists |
+| F4 | The autoFollow pin's control-plane half: the recall restores the View but not the item states | 4.87 | `automation.test.ts` 29/31: `Q1's late end cannot advance the rundown past the snapshot` / `'Q2' !== 'P1'`. Collateral: the row check's precondition, `precondition: the preview is empty for scene.arm` / `'A1' !== null` |
+| F5 | The autoFollow pin's engine half: the recall skips the playback generation | 4.54 | `prompt13_recall` 5/6: `the outgoing item's pending end is superseded by the recall's generation; got [AppliedStateVersion { … state_version: 3 }, ItemEvent { … item_ref: "A1", event: End, … }]` |
+| F6 | The control plane forwards the recall raw (the pre-fix handler) | 4.64 | `automation.test.ts` 30/31: the directive's payload was `{ name: 'a1' }` with `target: {}`, against `{ transition: 'cut', audio: { transition: 'follow' }, visibleOverlays: [] }` with `target: { itemRef: 'A1' }` |
+| F7 | The data: `snapshot.recall`'s two deferred edges removed | 3.74 | `nbe-preflight` `automation` 5/6: `… "snapshot.recall" … must fail preflight; errors []` / `left: 0` (preflight admitted `mediaEnd → snapshot.recall`) |
+
+The release engine was rebuilt from the restored tree after F1 and F2.
+
+**Found while landing it.** These are recorded, not fixed.
+
+- **The engine reads a take's transition length as the item's duration.**
+  `schedule_done`, the only source of `itemEvent end`, runs only when the take
+  payload carries `durationFrames`. That field is the transition's
+  (`resolveTransition`). Two consequences follow:
+  - a cut, which carries none, never schedules an end;
+  - a mix take of a timed item schedules its end at the mix's length, so the
+    control plane would mark the item DONE, fire `mediaEnd`, and advance
+    autoFollow about half a second in.
+
+  The midpoint report's "nothing on the wire moves when a clip is exhausted"
+  covered the first half and not the second. A recall's resolved cut carries no
+  `durationFrames`, so it inherits only the first.
+
+  **The intent, recorded (the user's word of 2026-10-03).** The engine fix is
+  its own PR, after this merge. That fix is what makes the ratified take/cut
+  `mediaEnd` cell ("a timed item's end is scheduled for its duration") true.
+  Until it lands, a recall inherits the defect through `apply_take`: its cut
+  schedules no end.
+- **§13.4.1's `view.take`/`view.cut` `mediaEnd` cell overclaims.** It says "a
+  timed item's end is scheduled for its duration". For a cut, nothing is
+  scheduled. The error is in the safe direction for a cycle check. The row is
+  ratified, so changing it is the user's word; it is not changed here. The new
+  recall cell states the same mechanism exactly.
+- **Audio under the operator's slate.** `view.fallback` changes the picture,
+  not the clip bus, so an item's audio continues beneath the slate. That
+  predates this fix. A recall under the slate follows it: the recalled item's
+  audio plays beneath the slate, and `recall.e2e.ts` uses that as its witness.
+  The spec says nothing about audio under the slate.
+
+  **Queued as a spec question (2026-10-03): does a slate mute?** The spec is
+  silent. It is the user's word when it matters.
+- **PR #34's merge bookend overstated the dress rehearsal.** `0461261`, on
+  `prompt13-upgrade`, said "control-plane, dress rehearsal and rust all
+  green" for run `36658852056`. The job's conclusion is success, but the job is
+  advisory (`continue-on-error`, the gate split of 2026-09-17), and inside it
+  14 of 16 passed. These two failed:
+  - `not ok 7 - [RI-1] step 6: a soundboard stab raises the sfx bus`;
+  - `not ok 12 - [RI-1] gate`.
+
+  The v0.4.6 bookend copied the same phrase for run `36214380771`, which
+  passed 15 of 16 (`not ok 12`). That one is corrected in place ~~below~~
+  above, in the v0.4.6 entry under § 11 (§2c: it sits above this section, not
+  below). PR #34's bookend is corrected on its own branch (`0af6f0f` on
+  `prompt13-upgrade`).
+
+  **The process rule is now written** (the user's word of 2026-10-03):
+  `docs/implementation-standards.md` §2b, "A job's conclusion is not its
+  tests". A green job over failing tests is a red run. The chronic red these
+  bookends missed is Finding R12, under § 07.
+- **The dress rehearsal's audio-rise steps are intermittent on CI, late
+  rather than absent.**
+  - Step 4 (the clip bus) failed on PR #34's head run `36567491896`.
+  - Step 6 (sfx) failed at the merge, `36658852056`.
+  - Step 6 passed in the first run and step 4 in the second.
+
+  The step-4 failure timed out at its 3000 ms wait with the risen value
+  (−20.8 dBFS) in the last tick, with 82 underruns. The job is advisory, so
+  nothing went red. `recall.e2e.ts`, which uses the same witness in a gating
+  job, waits 10 s (`302c0e3`). The steps' 3000 ms bound is the open
+  question, and it is the rehearsal's to settle. *Filed 2026-10-03 as Finding
+  R13, under § 07. The disposition rides R12's work order.*
+
+**After this record: the toolchain rename, `8265292`.** This is its own row.
+It landed in this PR so that the gate's CI could go green.
+
+- **What happened.** On run `37170937500`, CI's `dtolnay/rust-toolchain@stable`
+  resolved to rustc 1.99.0 (2026-09-28). That release deprecates
+  `AtomicU32::fetch_update` ("renamed to `try_update` for consistency"), so
+  clippy's `-D warnings` failed the rust job at `crates/nbe-engine/src/video.rs:71`.
+  The site is `SessionLease::drop`, untouched since `74cfd04`.
+- **The fix.** `8265292` renames that call, which is the only one in the
+  workspace. CI at `8265292`: run `37171465949`.
+- **The security-review flag, answered.** A background review flagged
+  `try_update` as a single-shot compare-and-swap that would leak the session
+  count under contention. It is not. In the installed std source
+  (`library/core/src/sync/atomic.rs`, rustc 1.98.1):
+  - `fetch_update` is now only a forwarder,
+    `self.try_update(set_order, fetch_order, f)`, marked
+    `#[deprecated(since = "1.99.0", note = "renamed to `try_update` for consistency")]`;
+  - `try_update` is the retry loop:
+    `while let Some(next) = f(prev) { match self.compare_exchange_weak(prev, next, set_order, fetch_order) { … Err(next_prev) => prev = next_prev } }`.
+    It returns `Err(prev)` only when the closure returns `None`, and it has been
+    stable since 1.95.0.
+
+  Same method, same retry loop: behaviour is unchanged.
+
+**The two-key pass (2026-10-03), and what it settled.** The pass had an amended
+precondition, the user's word: CI's dress rehearsal is read per test, and the
+mission gate's evidence is the local rehearsal.
+
+- **CI.** All 16 tests ran and 15 passed. Test 12 failed in the chronic shape:
+  zero-drop, `1 !== 0` (Finding R12).
+- **Local, at `8265292`.** The rehearsal ran quiescent (load 2.46 → 2.94) and
+  passed 16 of 16, with no `# SKIP`. Across 50 ticks, `droppedFramesTotal`
+  stayed at 0, `audioUnderrunsTotal` at 0, and the slate never went to air.
+- **The user's words of 2026-10-03:**
+  - Keep the refusal consequence: `mediaEnd → snapshot.recall` and
+    `audioLevel → snapshot.recall` are refused at load, the `mediaEnd` edge
+    over-approximated as its cell says.
+  - Close the pass's four record gaps before the merge. This commit does so.
+
+**Queued (from the pass, section D): a static reader for the deferred cells.**
+The table's "no missing edge" claim has no mechanism for deferred cells:
+- the static scan reads only `stateChange` cells;
+- the runtime row check reads only same-dispatch triggers;
+- the preflight pins cover only the rows they name.
+
+That is where the `stateChange` cells stood before S-1. The reader goes over the
+engine's directive routes (`directive.rs`) and compares each routed command's
+reachable mechanisms with its deferred cells:
+
+| Reachable mechanism | Deferred cell |
+|---|---|
+| a push to `audio_commands`, or the clock starting or stopping | `audioLevel` |
+| `playing.begin` or `schedule_done` | `mediaEnd` |
+| a stream session | `streamHealth` |
+| the clock starting | `timer` |
+
+**Its first case: `show.start` and `show.stop` against `audioLevel`.** The DRESS
+record says no clock means no audio, and neither row lists the edge. This is
+unconfirmed. For this PR's own row the guard is sufficient: both new edges are
+pinned at load and falsified (F7).
+
+**The merge's bounded acceptance (the user's word of 2026-10-03).** CI at this
+PR's head is red under §2b ("a green job over failing tests is a red run"). It
+is red by two named classes, and the merge accepts exactly those two:
+
+- **R12's gate.** Test 12, `not ok 12 - [RI-1] gate: …`, fails its zero-drop or
+  underrun conjunct. Its counts are inside the backstops: drops ≤ 20,
+  underruns ≤ 2000, watchdog trips ≤ 10.
+- **R13's late rise.** Test 5 or test 7 (step 4 or step 6) finds the clip or
+  sfx bus rising after the 3000 ms wait. The rise is inside the 10 s backstop.
+
+Each class is 16 of 16 on the normative machine, run quiescent. At `8265292`,
+the last code change, the local rehearsal passed 16 of 16 with 0 drops and 0
+underruns, and the slate never went to air (load 2.46 → 2.94). Every commit
+since is docs-only.
+
+**What blocks the merge:** a sighting outside its backstops, or a new signature
+(any other failing test).
+
+**The R12+R13 dress-leg work order is the top item of the queue after this
+merge.** The tree keeps no standing board, so this paragraph is where that order
+is recorded.
+
+**The queue keeps P1's other legs for the shell work.** `preview.set` and
+`scene.arm` still have no engine route, so the preview bus is stale until a
+resync. The snapshot's preview half stays control-plane-only, and the engine
+says so in `on_recall`'s doc. These remain prerequisites before any shell work
+that shows a preview pane. `preview.set` is the WU6 finding above,
+recorded as out of scope then and queued now.
 
 ---
 

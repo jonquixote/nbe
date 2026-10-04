@@ -183,6 +183,20 @@ jobs echo their summaries in a collapsed group for exactly this purpose; quote
 those lines. Arithmetic across suites has been wrong often enough that it is no
 longer an acceptable source.
 
+**A job's conclusion is not its tests.** Bookends, gates and two-key passes
+read a CI run per test: the runner's own `# tests`, `# pass` and `# fail`
+lines, and every `not ok`. They never read a job's conclusion. A job can
+conclude success over failing tests, through `continue-on-error` or through a
+tolerance band inside a step. **A green job over failing tests is a red run**,
+and it is recorded as one.
+
+The counterexample: two merge bookends recorded the dress rehearsal as "all
+green" from its job conclusion while 1 and 2 of its 16 tests had failed
+(`docs/prompt-map-07-13.md`, Finding R12).
+
+*Provenance, as v0.4.2 row 2 set the precedent: this rule is the user's word of
+2026-10-03, and it arrived inside PR #35's ride-along rather than on its own.*
+
 ## 2c. Records and mandated text
 
 Text mandated verbatim by a prompt stays verbatim until the mandating authority

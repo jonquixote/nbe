@@ -68,7 +68,7 @@ impl Drop for SessionLease {
         let _ = self
             .pool
             .active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
     }
 }
 

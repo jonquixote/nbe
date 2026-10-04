@@ -88,7 +88,12 @@ export function viewHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   });
 }
 
-function resolveTransition(
+/**
+ * A take's transition, resolved — the directive payload the engine applies
+ * (never a preset name). Exported for `snapshot.recall`, whose cut-class
+ * application goes through the same resolution (`commands/state.ts`).
+ */
+export function resolveTransition(
   state: import("../state.js").ControlPlaneState,
   payload: Record<string, unknown>,
 ): Record<string, unknown> {

@@ -3,6 +3,7 @@
 
 import { CpError } from "../protocol.js";
 import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.js";
+import { resolveTransition } from "./view.js";
 
 export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   // overlay
@@ -81,10 +82,36 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   });
 
   reg.set("snapshot.recall", {
-    forward: true,
+    // forward:false — the engine gets the RESOLVED recall below, never the
+    // snapshot's name (§5.9.1: the engine never resolves). Forwarding the
+    // name was the Prompt 13 re-plan's P1 split brain: the engine routed
+    // nothing for it, so a recall moved `viewItem` here while the old View
+    // stayed on air.
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
-      ctx.state.recallSnapshot(String(payload.name));
-      return {};
+      const state = ctx.state;
+      const before = state.viewItem;
+      state.recallSnapshot(String(payload.name));
+      // The View the audience sees, applied as a cut through the take's own
+      // resolution: `target.itemRef` only when the recalled item is not the
+      // one on air (view.cut's "already on view" rule — a recall does not
+      // restart the item it leaves on air), `null` for an empty View, and
+      // the overlays wholesale. The preview half stays here: the engine
+      // routes no preview writer yet.
+      const target: Record<string, unknown> = {};
+      if (state.viewItem !== before) target.itemRef = state.viewItem;
+      return {
+        extraDirectives: [
+          {
+            command: "snapshot.recall",
+            target,
+            payload: {
+              ...resolveTransition(state, { transition: "cut" }),
+              visibleOverlays: Array.from(state.visibleOverlays),
+            },
+          },
+        ],
+      };
     },
   });
 

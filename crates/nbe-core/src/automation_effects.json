@@ -30,7 +30,7 @@
     "item.reset": { "stateChange": ["itemState"] },
     "scene.arm": { "stateChange": ["previewItem"], "note": "previewItem only when the preview is empty (state.ts armScene: previewItem == null -> previewItem = sceneId)" },
     "scene.apply": {},
-    "snapshot.recall": { "stateChange": ["viewItem", "previewItem", "automationHold", "itemState"] },
+    "snapshot.recall": { "stateChange": ["viewItem", "previewItem", "automationHold", "itemState"], "deferred": ["mediaEnd", "audioLevel"], "note": "SPEC v0.4.8 row 1: the engine applies the recall as a cut through the take's application (directive.rs on_recall -> apply_take): the clip bus's source swaps (audioLevel, later) and the playback generation moves on, which runs the take's end scheduling. mediaEnd is over-approximated: no item is named in the payload (a snapshot is runtime state), so any item's end counts" },
     "view.fallback": { "stateChange": ["fallbackActive"] },
     "stream.start": { "stateChange": ["streamState"], "deferred": ["streamHealth"] },
     "stream.stop": { "stateChange": ["streamState"], "deferred": ["streamHealth"] },

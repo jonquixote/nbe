@@ -572,11 +572,39 @@ jobs:
           if [ "$exercised" -lt 7 ]; then
             echo "FAIL prompt11_slate: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round)"
+      - name: "the recall suite actually ran (Prompt 13 re-plan P1, the recall leg)"
+        # Six tests on a real render loop: a recall puts the recalled item on
+        # air (View pixels, the slate bit and the tick together — the split
+        # brain's pin); it leaves the operator's slate up (release parity: a
+        # recall does not clear fallbackActive); it arms the media and
+        # supersedes the outgoing item's end (the take's own application);
+        # the item already on air keeps playing; an empty View clears; the
+        # overlays are replaced wholesale and steady. prompt04's policy — no
+        # adapter fails loudly, no SKIP — so floors equal at the full count
+        # (6, new).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test prompt13_recall -- --nocapture 2>&1)
+          echo "$out"
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "prompt13_recall: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=6)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL prompt13_recall: expected at least 6 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 6 ]; then
+            echo "FAIL prompt13_recall: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
+      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round, SPEC v0.4.8 row 1)"
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
         # a complete one passes. Hardware-free: floors equal. Were 2/2 at B1,
-        # 3/3 at WU1, 4/4 at WU5; 5/5 since the fix round's missing-edge pins.
+        # 3/3 at WU1, 4/4 at WU5, 5/5 with the fix round's missing-edge pins;
+        # 6/6 since v0.4.8 row 1's pin on the recall's two deferred edges.
         run: |
           set -u
           out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
@@ -587,12 +615,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=5 exercised>=5)"
-          if [ "$ran" -lt 5 ]; then
-            echo "FAIL preflight automation: expected at least 5 tests to run, got $ran"; exit 1
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=6)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL preflight automation: expected at least 6 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 5 ]; then
-            echo "FAIL preflight automation: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 6 ]; then
+            echo "FAIL preflight automation: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
         # nbe-core's reading of every trigger kind, held to the fixture the
@@ -820,7 +848,7 @@ jobs:
         # the wire, which needs nbe-preflight: without it they SKIP, and the
         # suite-wide floor above would stay green about nothing. This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
-        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29).
+        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31).
         run: |
           set -u
           out=$(node --import tsx --test src/automation.test.ts 2>&1)
@@ -834,10 +862,10 @@ jobs:
           skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=29 exercised>=29)"
+          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=31 exercised>=31)"
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 29 ]; then echo "FAIL automation: expected at least 29 tests to execute rather than skip, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 31 ]; then echo "FAIL automation: expected at least 31 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 31 ]; then echo "FAIL automation: expected at least 31 tests to execute rather than skip, got $exercised"; exit 1; fi
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
         # Two floors, rule 8. Reads every REGISTERED command's handler writes
         # to the fields a stateChange rule can name — directly, through state
@@ -885,6 +913,26 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL slate-release e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
+      - name: "the recall end-to-end actually ran (Prompt 13 re-plan P1, the recall leg)"
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, and zero
+        # failures. 2 tests (new): after a recall, the control plane's View and
+        # the engine's report agree — the clip bus is the engine's witness to
+        # the on-air item, since its report carries no viewItem — and the same
+        # under the operator's slate, which both keep. Uses the engine built
+        # above. The file never skips: a missing binary fails its `before`.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/recall.e2e.ts 2>&1)
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "recall e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL recall e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.

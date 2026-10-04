@@ -88,7 +88,6 @@ export interface GuestState {
 
 export interface SnapshotState {
   viewItem: string | null;
-  viewItemStartFrame: number | null;
   previewItem: string | null;
   itemStates: Record<string, ItemState>;
   visibleOverlays: string[];
@@ -362,7 +361,6 @@ export class ControlPlaneState {
   saveSnapshot(name: string): void {
     this.snapshots.set(name, {
       viewItem: this.viewItem,
-      viewItemStartFrame: this.viewItemStartFrame,
       previewItem: this.previewItem,
       itemStates: Object.fromEntries(this.itemStates),
       visibleOverlays: Array.from(this.visibleOverlays),
@@ -373,8 +371,16 @@ export class ControlPlaneState {
   recallSnapshot(name: string): void {
     const snap = this.snapshots.get(name);
     if (!snap) throw new CpError("E_NOT_FOUND", `no such snapshot: ${name}`);
+    // The engine applies a recall as a cut (`directive.rs` `on_recall`), so a
+    // recalled item that is not already on air starts NOW, as a take's does
+    // (`take`, above) — not at the snapshot's old start, which a later resync
+    // would replay as a seek into the item. The item already on air keeps
+    // its start: the recall leaves it playing. (The snapshot no longer saves
+    // a start frame: nothing reads one.)
+    if (snap.viewItem !== this.viewItem) {
+      this.viewItemStartFrame = snap.viewItem === null ? null : this.lastKnownMasterFrame;
+    }
     this.viewItem = snap.viewItem;
-    this.viewItemStartFrame = snap.viewItemStartFrame;
     this.previewItem = snap.previewItem;
     this.itemStates = new Map(Object.entries(snap.itemStates));
     this.visibleOverlays = new Set(snap.visibleOverlays);

@@ -1115,3 +1115,141 @@ test("a rule firing on every frame, past 5 actions a second, is not throttled by
   render.close();
   ws.close();
 });
+
+// ---------------------------------------------------------------------------
+// The Prompt 13 re-plan's P1, the recall leg (SPEC v0.4.8 row 1): the engine
+// applies `snapshot.recall`. Its engine half is `prompt13_recall.rs`; the two
+// together, against the real binary, `recall.e2e.ts`.
+// ---------------------------------------------------------------------------
+
+/** Every directive a render session receives, in order (show.resync first). */
+function directivesOn(render: WebSocket): Array<Record<string, unknown>> {
+  const seen: Array<Record<string, unknown>> = [];
+  render.on("message", (buf: Buffer) => {
+    const frame = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (frame["kind"] === "directive") seen.push(frame);
+  });
+  return seen;
+}
+
+test("snapshot.recall reaches the engine resolved: the recalled item as a cut, the overlays wholesale, never the name", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // Before the fix the control plane forwarded the recall's payload — the
+  // snapshot's NAME — and the engine routed nothing for it. §5.9.1: the
+  // engine never resolves, so the directive carries the resolved View: the
+  // take's resolution of a cut (`resolveTransition`), `target.itemRef` only
+  // when the recalled item is not the one on air (null for an empty View),
+  // and the snapshot's overlays wholesale.
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  const directives = directivesOn(render);
+  const recalls = () => directives.filter((d) => d["command"] === "snapshot.recall");
+  const resolved = { transition: "cut", audio: { transition: "follow" }, visibleOverlays: [] };
+
+  render.send(engineTelemetry({ masterClockFrame: 10 }));
+  await flushed(render);
+  assert.equal((await send(ws, "snapshot.save", { name: "empty" })).status, "ok");
+  assert.equal((await send(ws, "view.cut", { itemRef: "A1" })).status, "ok");
+  assert.equal((await send(ws, "snapshot.save", { name: "a1" })).status, "ok");
+  assert.equal((await send(ws, "view.cut", { itemRef: "A2" })).status, "ok");
+  render.send(engineTelemetry({ masterClockFrame: 500 }));
+  await flushed(render);
+  // The operator's slate is up when the recall lands.
+  assert.equal((await send(ws, "view.fallback", {})).status, "ok");
+
+  const r1 = await send(ws, "snapshot.recall", { name: "a1" });
+  assert.equal(r1.status, "ok");
+  await flushed(render);
+  assert.deepEqual(
+    recalls().map((d) => ({ stateVersion: d["stateVersion"], target: d["target"], payload: d["payload"] })),
+    [{ stateVersion: r1["stateVersion"], target: { itemRef: "A1" }, payload: resolved }],
+    "A2 → A1: the recalled item, as the take's resolved cut, at the recall's stateVersion",
+  );
+  assert.equal(state.viewItem, "A1");
+  assert.equal(state.viewItemStartFrame, 500, "the recalled item starts now, as a take's does");
+  // Release parity, the control plane's half: a recall does not clear the
+  // fallback flag, so the engine must not release the slate either
+  // (prompt13_recall.rs pins the engine's half).
+  assert.equal(state.fallbackActive, true, "a recall is not a clear site");
+
+  // The recalled item is already on air: nothing on the View moves.
+  assert.equal((await send(ws, "snapshot.recall", { name: "a1" })).status, "ok");
+  // A snapshot saved before anything was taken: the View empties.
+  assert.equal((await send(ws, "snapshot.recall", { name: "empty" })).status, "ok");
+  await flushed(render);
+  assert.deepEqual(
+    recalls().slice(1).map((d) => d["target"]),
+    [{}, { itemRef: null }],
+    "already on air: no itemRef; an empty snapshot: itemRef null",
+  );
+  assert.equal(state.viewItem, null);
+  assert.equal(state.viewItemStartFrame, null);
+  render.close();
+  ws.close();
+});
+
+test("a recall is not a cut for autoFollow: the rundown goes on from the snapshot's position", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // autoFollow keeps no pointer: it advances from the item that ENDS
+  // (server.ts, itemEvent → `order[indexOf(ended) + 1]`), and only through a
+  // PLAYING → DONE completion. So the snapshot's position holds when the
+  // recall restores the item states with the View: the item it took off air
+  // cannot complete and advance past the snapshot — the engine drops that
+  // item's pending end (prompt13_recall.rs), and here an end that arrived
+  // anyway finds it no longer PLAYING. The recall itself fires neither
+  // autoFollow nor mediaStart (B3: it is not a take).
+  const ws = conn("admin", ADMIN);
+  await connect(ws);
+  const pkg = automationPackage([markerRule("w-start", { kind: "mediaStart" })], {
+    rundown: {
+      id: "R",
+      items: [
+        { id: "P1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
+        { id: "P2", kind: "sceneRef", sceneRef: "SCN" },
+        { id: "Q1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
+        { id: "Q2", kind: "sceneRef", sceneRef: "SCN" },
+      ],
+    },
+  });
+  assert.equal((await send(ws, "show.load", { packagePath: pkg })).status, "ok");
+  assert.equal((await send(ws, "show.start", {})).status, "ok");
+  const render = await renderSession();
+
+  assert.equal((await send(ws, "view.cut", { itemRef: "P1" })).status, "ok");
+  assert.equal((await send(ws, "snapshot.save", { name: "at-p1" })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "view.cut", { itemRef: "Q1" })).status, "ok");
+  nextFrame();
+  assert.equal((await send(ws, "snapshot.recall", { name: "at-p1" })).status, "ok");
+  await server.automation.settled();
+  assert.equal(state.viewItem, "P1");
+  assert.deepEqual(followRows(), [], "the recall fires no autoFollow");
+  assert.deepEqual(
+    firedTriggers(),
+    [
+      { kind: "mediaStart", itemRef: "P1" },
+      { kind: "mediaStart", itemRef: "Q1" },
+    ],
+    "the two cuts started media; the recall did not",
+  );
+
+  // The item the recall took off air ends anyway: no advance to Q2.
+  nextFrame();
+  render.send(END("Q1"));
+  await flushed(render);
+  assert.equal(state.viewItem, "P1", "Q1's late end cannot advance the rundown past the snapshot");
+  assert.deepEqual(followRows(), []);
+
+  // The recalled item completes: the rundown goes on from P1, to P2.
+  nextFrame();
+  render.send(END("P1"));
+  await flushed(render);
+  assert.equal(state.viewItem, "P2");
+  assert.deepEqual(
+    followRows().map((r) => [r.event, r.actor]),
+    [["autoFollow.advance", "autoFollow:P1"]],
+    "one advance, by P1's completion",
+  );
+  render.close();
+  ws.close();
+});
