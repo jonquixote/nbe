@@ -294,3 +294,51 @@ fn the_two_key_passes_missing_edges_are_refused_and_every_field_still_admits_a_c
         "a clean rule on each of the eight fields passes; report {report}"
     );
 }
+
+#[test]
+fn the_recalls_engine_edges_are_refused_and_a_recall_is_still_not_a_take() {
+    // SPEC v0.4.8 row 1 — the first change under the ratified §13.4.1 table.
+    // The engine now applies `snapshot.recall` (the Prompt 13 re-plan's P1,
+    // the recall leg) as a cut through the take's own application: the clip
+    // bus's source swaps (`audioLevel`, later) and the playback generation
+    // moves on through the take's end scheduling (`mediaEnd`, later). No item
+    // is named in a recall's payload — a snapshot is runtime state — so any
+    // item's end counts. These pin the two new edges as refusals.
+    let dir = tempfile::tempdir().unwrap();
+    for (rule, needle) in [
+        (
+            r#"{ "id": "rc", "trigger": { "kind": "mediaEnd", "params": { "itemRef": "A1" } },
+                 "action": { "command": "snapshot.recall", "payload": { "name": "open" } } }"#,
+            "`rc` → `rc` (`rc`: `snapshot.recall` schedules an item's end (mediaEnd, deferred))",
+        ),
+        (
+            r#"{ "id": "rc", "trigger": { "kind": "audioLevel",
+                    "params": { "bus": "clip", "thresholdDbfs": -30, "direction": "falling" } },
+                 "action": { "command": "snapshot.recall", "payload": { "name": "open" } } }"#,
+            "`rc` → `rc` (`rc`: `snapshot.recall` moves a bus level (audioLevel, deferred))",
+        ),
+    ] {
+        let root = package(dir.path(), rule);
+        let (code, report) = run(&root);
+        let errs = errors(&report);
+        assert_eq!(code, 2, "{rule} must fail preflight; errors {errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("automationRule: ") && e.contains(needle)),
+            "expected the cycle named, {needle:?}; got {errs:?}"
+        );
+    }
+
+    // The control: a recall is still not a take (B3), so a recall keyed on an
+    // item going on air — WU2's recall × hold pin has this shape — loads.
+    let root = package(
+        dir.path(),
+        r#"{ "id": "rc", "trigger": { "kind": "mediaStart", "params": { "itemRef": "A1" } },
+             "action": { "command": "snapshot.recall", "payload": { "name": "open" } } }"#,
+    );
+    let (code, report) = run(&root);
+    assert_eq!(
+        code, 0,
+        "a mediaStart → snapshot.recall rule passes; report {report}"
+    );
+}
