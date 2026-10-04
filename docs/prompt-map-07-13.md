@@ -830,7 +830,10 @@ it was queued:
   It cannot flip silently. A stray `CI=1` on the normative machine fails
   instead of skipping. The runner always sets `GITHUB_ACTIONS`, and if it did
   not, the zero claims would run there and fail red. Step 11's drop asserts,
-  which used to skip on CI without a word, now use the same mechanism.
+  which used to skip on CI without a word, now use the same mechanism. *(§2c,
+  2026-10-04: the PR #36 pass's order spoke of "steps 11/13's old silent skips".
+  Only step 11 carried the silent skip. Step 13's direct `CI` read chose a
+  message, never an assertion: both branches assert `hasMoof`.)*
 - **The two hiding places, deleted, quoted from `main` at `d7b96f7`.**
   - The job's flag (`ci.yml`, line 1030):
     ```yaml
@@ -877,7 +880,7 @@ ceiling, and each mutation was restored from a saved copy.
 | F1a | the engine reports no profile | 2.48 → 2.56 | **27 of 27: the conjunct is blind here** (see below) |
 | F1a′ | the tick carries an empty profile | 2.47 → 3.36 | `not ok 12 - [RI-1] gate: the profile is real …`: `saw ""` |
 | F1b | decode sessions forced to 0 | 2.41 → 2.04 | `not ok 13 - … a decode session is held …`: `saw 0` |
-| F1c | an operator slate at step 7 | 2.04 → 2.17 | `not ok 14 - … every fallback tick lies inside a watchdog episode …`: `(tick index): [15]`, and the normative `the fallback slate must never have gone to air`. Collateral: `not ok 13`, `saw 0` (below) |
+| F1c | an operator slate at step 7 | 2.04 → 2.17 | `not ok 14 - … every fallback tick lies inside a watchdog episode …`: `(tick index): [15]`, and the normative `the fallback slate must never have gone to air`. ~~Collateral: `not ok 13`, `saw 0` (below)~~ *(§2c, 2026-10-04: not collateral, but a stale binary; see below.)* On a rebuilt engine (the PR #36 pass, load 2.27 → 2.01) only `not ok 14` (`[16]`) and the normative slate test fail, and `decodeSessions` holds at 3 through the slate |
 | F2 | drops +25, underruns +2500, trips +11 (CI path) | 2.07 → 2.06 | `not ok 15/16/17`, each by name: `droppedFramesTotal at the gate is 25, over the backstop of 20 …`, `… 2500, over … 2000`, `… 11, over … 10`; the CI check: `FAIL: 3 failing test(s)`, exit 1 |
 | F3 | every take's clip source silenced | 1.97 → 2.26 | `not ok 5 - … step 4 …`: `waited 10000 ms for busPeakDbfs.clip to rise`. The run took 64 s against about 55, so nothing hangs |
 | F4 | droppedFramesTotal +1, both paths | 2.16 → 1.67 · 1.67 → 1.53 | normative: `not ok 19`, `zero-drop across the whole show / 1 !== 0`. CI path: 27 of 27, `"drops":1` logged, the CI check exits 0 |
@@ -890,22 +893,60 @@ ceiling, and each mutation was restored from a saved copy.
   (`telemetry.ts`: `f?.qualityProfile ?? state.qualityProfile`). So an engine
   that reports no profile still passes (F1a). The old gate's comment, "a stub
   would report the manifest's declared value", named this case, and its assert
-  never caught it either. **Queued:** carry the profile's provenance on the
-  tick, engine or manifest. That is a wire change, so it is the user's word.
+  never caught it either.
+
+  **Plainly: the tree's fresh-null fallback goes past the spec's text.** §10.1.1
+  allows the requested profile only when the engine report is stale or absent,
+  with `engineConnected: false` saying why. The tree's `??` also fills a
+  **fresh** report's null, while `engineConnected` reads `true`.
+
+  **Hedged in the test** (the PR #36 pass's adjudication F1, adopted
+  2026-10-04). The comment and message now say what the gate proves: a
+  non-empty effective profile, on a fresh report. They also say what it does
+  not prove: that the engine's probe produced it. The test now asserts
+  `engineConnected === true` on the gate tick, which closes the sanctioned
+  stale-or-absent path.
+
+  **Queued:** ~~carry the profile's provenance on the tick, engine or manifest.
+  That is a wire change, so it is the user's word.~~ the fix gets a spec row
+  when it comes. The leading candidate is a no-value emission when a fresh
+  report carries no profile, in the shape of v0.4.6 row 3's `streamBufferMs`
+  sentinel. The alternative is provenance on the tick, a new field with its wire
+  audit trio.
 - **An operator slate raised during a watchdog episode** cannot be told from
   the watchdog's own slate in telemetry. The episode check passes it.
 - **Steps 5 and 6 still assert zero drops on every machine**: a mix drops no
   frames, and a stab drops nothing. Their windows read 0 in all seven CI runs
   sampled. If one goes red on CI, it is R12's class.
-- **F1c's collateral `decodeSessions` 0** at the gate, after an inserted
+- ~~**F1c's collateral `decodeSessions` 0** at the gate, after an inserted
   slate-and-take, is unexplained. The mutation changed the show's sequence, so
-  this is an observation, not a finding.
+  this is an observation, not a finding.~~
+- **F1c's "collateral", explained** (§2c, the PR #36 two-key pass of
+  2026-10-04). It was a harness defect, not the engine.
+  - The batch rebuilt the debug engine only when it mutated engine source.
+  - F1b set `decode_sessions: 0`, built, ran, and restored the source
+    **without rebuilding**.
+  - F1c changed only the test file, so it ran on F1b's binary:
+    `decodeSessions` read 0 from the first tick, before the slate went up.
+
+  On a rebuilt engine, the slate mutation fails only its own tests, and
+  `decodeSessions` holds at 3 through the slate. **The executor's own batch had
+  the same ordering, and that is how "unexplained" entered this finding.** F1a′
+  ran on F1a's binary in the same way, harmlessly, because it forces the profile
+  empty regardless.
+
+  **The lesson: rebuild after every restore.** A test-only mutation that follows
+  a restore otherwise runs on the previous mutation's binary.
 
 **The first honest CI run under the new gate:** `37181092309` at `83bfb60`,
 read per test, 27 of 27 (`ran=27 passed=27 failed=0 skips=9 exercised=18`). It
 logged `"sha":"26e0e1d…"`, GitHub's test-merge commit, not the head, and
 `2582b2a` makes the line name the head. R12 stays OPEN in the register until the
 user's word after the two-key pass.
+
+**After the merge (the user's word of 2026-10-04):** R12 becomes *resolved;
+watch* once main's merge run reads green per test. The trend rule in its
+register row keeps its home there.
 
 ### Finding R13 — the dress rehearsal's audio rises arrive after their 3000 ms wait on CI (recorded 2026-10-03, PR #35)
 
@@ -956,7 +997,22 @@ end-to-end, which uses the same witness in a gating job, already waits 10 s
 - F3 above suppresses the rise: the 10 s backstop fails step 4 by name, and the
   rehearsal does not hang.
 
+**What the rise-time measure cannot see** (the PR #36 pass, adopted
+2026-10-04):
+- **The poll quantum.** The wait polls every 50 ms, so a rise reads up to about
+  50 ms late.
+- **Tick-plus-window resolution.** A bus level reaches the control plane once
+  per 1 s telemetry tick, from a 1 s meter window. A rise time is therefore
+  "ticks until detection": it lands in steps of about 1 s, and two rises a few
+  hundred ms apart can read the same.
+- **The 10 s backstop logs, but passes, a rise between 3 and 10 s.** On CI only
+  the log line sees that span. The 3000 ms bound fails it, but only on the
+  normative machine.
+
 R13 stays OPEN in the register until the user's word after the two-key pass.
+**After the merge (the user's word of 2026-10-04):** R13 closes outright once
+main's merge run reads green per test, because its rises are logged on every
+run.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
