@@ -955,6 +955,8 @@ interface GateCounts {
   fallbackTicksOutsideWatchdog: number[];
   qualityProfile: unknown;
   decodeSessions: unknown;
+  /** The gate tick's `engineConnected`: whether the engine's report was fresh. */
+  engineConnected: unknown;
 }
 let gateSnapshot: GateCounts | null = null;
 
@@ -986,17 +988,30 @@ function gate(): GateCounts {
     fallbackTicksOutsideWatchdog: outside,
     qualityProfile: last["qualityProfile"],
     decodeSessions: last["decodeSessions"],
+    engineConnected: last["engineConnected"],
   };
   return gateSnapshot;
 }
 
 test("[RI-1] gate: the profile is real (functional, every machine)", () => {
-  // A stub would report the manifest's declared value; the engine reports what
-  // the hardware probe actually allowed.
-  const { qualityProfile } = gate();
+  // What this proves, and what it does not (Finding R12): the tick carries a
+  // non-empty effective profile, and the engine's report behind the tick is
+  // fresh (`engineConnected: true`). That closes the fallback §10.1.1
+  // sanctions, the requested profile on a stale or absent report. It does NOT
+  // prove the engine's probe produced the value. The control plane also fills
+  // in the manifest's profile when a FRESH report carries none (`telemetry.ts`,
+  // `f?.qualityProfile ?? state.qualityProfile`), which goes past §10.1.1's
+  // text, and this gate cannot tell that fill from a measurement. The fix is
+  // queued with Finding R12.
+  const { qualityProfile, engineConnected } = gate();
+  assert.equal(
+    engineConnected,
+    true,
+    "the gate tick must carry a fresh engine report (engineConnected: true): otherwise qualityProfile is the requested profile, not the engine's",
+  );
   assert.ok(
     typeof qualityProfile === "string" && qualityProfile !== "",
-    `qualityProfile must be a real capped value, saw ${JSON.stringify(qualityProfile)}`,
+    `qualityProfile must be a non-empty string on a fresh report, saw ${JSON.stringify(qualityProfile)} (this does not prove the engine's probe produced it: Finding R12)`,
   );
 });
 
