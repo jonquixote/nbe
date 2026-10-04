@@ -1093,6 +1093,10 @@ jobs:
       - run: brew install ffmpeg
       - name: play the show
         working-directory: packages/control-plane
+        env:
+          # DRESS-COUNTS names the commit under test. On a pull_request run
+          # GITHUB_SHA is the test-merge commit, not the PR's head.
+          DRESS_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -o pipefail
           # `|| true` was right while the job was advisory. A required gate must

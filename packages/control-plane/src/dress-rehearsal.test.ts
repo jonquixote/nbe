@@ -1051,7 +1051,10 @@ test("[RI-1] gate: the counts, logged for the trend (Findings R12, R13)", () => 
   const line = {
     machine: whichMachine().kind,
     run: process.env["GITHUB_RUN_ID"] ?? null,
-    sha: process.env["GITHUB_SHA"] ?? null,
+    // The commit under test. On a pull_request run GITHUB_SHA is GitHub's
+    // test-merge commit, not the PR's head (run 37181092309 logged 26e0e1d for
+    // head 83bfb60), so the dress job passes the head explicitly.
+    sha: process.env["DRESS_HEAD_SHA"] ?? process.env["GITHUB_SHA"] ?? null,
     drops: g.drops,
     underruns: g.underruns,
     fallbackTicks: g.fallbackTicks,
