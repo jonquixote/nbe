@@ -36,10 +36,15 @@ const REPO = resolve(import.meta.dirname, "../../..");
 const ENGINE_BIN = resolve(process.env.NBE_ENGINE_BIN ?? join(REPO, "target/release/nbe-engine"));
 /**
  * The engine reports once a second, and a meter window is a second
- * (`audio_driver.rs`), so a level change can take two reports to show.
- * Five seconds is that with slack, then fail with what was seen.
+ * (`audio_driver.rs`), so a level change can take two reports to show. On a
+ * loaded CI runner it has taken three: the dress rehearsal's step 4 waited
+ * 3000 ms for the clip bus and timed out with the risen value in the very
+ * tick it gave up on (run 36567491896, 82 underruns). Ten seconds is that
+ * with margin — a window ends at the first report that satisfies it, so the
+ * width costs nothing when the engine is on time — then fail with what was
+ * seen.
  */
-const REPORT_MS = 5_000;
+const REPORT_MS = 10_000;
 /** Audible, as the dress rehearsal reads the clip bus (step 4). */
 const AUDIBLE_DBFS = -60;
 
