@@ -935,7 +935,9 @@ jobs:
           if [ "$exercised" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
-  # The dress rehearsal ([RI-1]) — ADVISORY by decision, not by default.
+  # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
+  # (decided 2026-10-03). Advisory before that, by decision; the history is kept
+  # below, and docs/prompt-map-07-13.md quotes what was deleted.
   #
   # THE GATE SPLIT, decided 2026-09-17 (docs/prompt-map-07-13.md; the protocol
   # is docs/soak-protocol.md). This job's status is settled, so the next reader
@@ -957,12 +959,24 @@ jobs:
   #       machine, and REQUIRED before anything called a release.
   #       `scripts/soak.sh`, PASS / FAIL / VOID.
   #
-  # So this job is advisory because the claims it cannot measure were moved to
-  # where they can be, NOT because it is tolerated as broken. Both failure modes
-  # are named and rejected: a gate red on purpose (DRESS's lesson — it teaches
-  # reviewers to ignore red) and a gate green about what it cannot see (PR #18's
-  # 09 floors, which counted `passed` while a forced-absent encoder satisfied
-  # every one of them). AC-6's home is docs/hardware-baseline.txt.
+  # WHY IT GATES NOW. Advisory, the job let the RI-1 gate stay red on purpose
+  # on every run, and the red went unread for weeks while two merge bookends
+  # recorded it green (Finding R12). That is the failure mode the old comment
+  # named and rejected. The claims are now split INSIDE the rehearsal, so the
+  # runner gates what it can measure:
+  #
+  #   - Functional conjuncts gate here: the profile is real, a decode session
+  #     is held, and the slate goes to air only inside a watchdog episode.
+  #   - The zero conjuncts (no drops, no underruns, no slate) and the 3000 ms
+  #     rise bound are reference-hardware claims. They are asserted on the
+  #     normative machine only, and skipped here with a logged reason
+  #     (`SKIP normative:`).
+  #   - Every count is asserted against a backstop and logged on one line,
+  #     `DRESS-COUNTS {...}`: drops <= 20, underruns <= 2000, watchdog trips
+  #     <= 10, and each bus rise within 10 s (Finding R13).
+  #
+  # The job gates on failed == 0 plus ran/exercised floors (rule 8). No band,
+  # no continue-on-error.
   #
   # A real control plane, the engine binary as a separate process, the real
   # WebSocket protocol, and a real 1920x1080/30 package with H.264+AAC media. It
@@ -971,25 +985,12 @@ jobs:
   # §3.10 — three Rust gates for that claim were written and all three were
   # defeated, because text a process prints is free to forge).
   #
-  # PROMOTION ATTEMPTED AND REVERTED, 2026-09-11. The three findings that kept
-  # this job red are CLOSED — 12/12 three times consecutively on the normative
-  # machine, each fix falsified. The job is still advisory for a different
-  # reason, and the distinction matters:
-  #
-  #   The gate step asserts `droppedFramesTotal == 0` and
-  #   `audioUnderrunsTotal == 0`. Those are performance claims about REFERENCE
-  #   hardware (§0.3: Intel, discrete AMD). This runner is macos-14 — 3 arm64
-  #   cores — and measured 83 then 120 underruns plus a dropped frame, where the
-  #   normative machine measures 0. §8.10 counts a missed 33 ms callback deadline
-  #   as an underrun, and a shared CI VM cannot hold that cadence beside wgpu. No
-  #   code change in this work order makes it.
-  #
-  # So requiring this job would block every PR on a hardware fact, which is a
-  # worse version of the state promotion was meant to end. The corrected rule is
-  # recorded in docs/prompt-map-07-13.md: three consecutive green runs on the
-  # normative machine AND green on the runner that will gate it. The first half
-  # was met; the second is not, and cannot be while the gate carries
-  # reference-hardware thresholds.
+  # PROMOTION ATTEMPTED AND REVERTED, 2026-09-11, because the gate step then
+  # asserted zero drops and zero underruns, which this runner (3 arm64 cores)
+  # cannot hold: 83 and 120 underruns plus a dropped frame, against 0 on the
+  # normative machine. The rule recorded then was three consecutive green runs
+  # on the normative machine AND a green run on the runner that gates. The
+  # split above is what makes the second half possible.
   #
   # The findings, for the record:
   #
@@ -1027,7 +1028,6 @@ jobs:
   dress-rehearsal:
     name: dress rehearsal
     runs-on: macos-14
-    continue-on-error: true
     env:
       # Standards §4: verify a build artifact before a later step consumes it.
       # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
@@ -1110,30 +1110,54 @@ jobs:
           # "# tests 12 / # pass 0 / # fail 12", so `ran=12` passed the gate
           # while every step failed — the exact state the build step above
           # exists to prevent. Gate on what PASSED.
-          ran=$(grep -E "^# tests " /tmp/dress.log | awk '{print $3}')
-          passed=$(grep -E "^# pass " /tmp/dress.log | awk '{print $3}')
-          failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}')
-          echo "ran=${ran:-0} passed=${passed:-0} failed=${failed:-0}"
-          if [ "${ran:-0}" -lt 12 ]; then
-            echo "the rehearsal must run all 15 steps (12 + P9 record/sync/kill), ran ${ran:-0}"
+          #
+          # Findings R12/R13 (decided 2026-10-03): every test must pass (§2b: a
+          # green job over failing tests is a red run). The reference-hardware
+          # claims skip on this runner with a logged reason, so they are counted
+          # the rule-8 way: ran = `# tests`, exercised = ran minus the `# SKIP`
+          # lines.
+          #   ran       >= 27: the file's 27 tests (16 before, minus the one RI-1
+          #                    gate test, plus its 12 replacements).
+          #   exercised >= 18: 27 minus the 9 skips this runner takes. Four are
+          #                    capability skips (stream, record, sync, kill: no
+          #                    hardware H.264 encoder) and five are normative
+          #                    (zero drops, zero underruns, no slate, and the two
+          #                    3000 ms rise bounds). One more skip moves it below.
+          ran=$(grep -E "^# tests " /tmp/dress.log | awk '{print $3}' || true)
+          passed=$(grep -E "^# pass " /tmp/dress.log | awk '{print $3}' || true)
+          failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}' || true)
+          skips=$(grep -cE "^# SKIP" /tmp/dress.log || true)
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$skips" in ''|*[!0-9]*) skips=0 ;; esac
+          exercised=$((ran - skips))
+          echo "ran=$ran passed=${passed:-0} failed=${failed:-?} skips=$skips exercised=$exercised (floors: failed == 0, ran >= 27, exercised >= 18)"
+          grep -E "^# SKIP" /tmp/dress.log || true
+          # The gate's counts on one machine-readable line (Findings R12, R13).
+          # It is what a bookend reads to extend the register's trend table.
+          counts=$(grep -E "^# DRESS-COUNTS " /tmp/dress.log | head -1 | sed -E 's/^# DRESS-COUNTS //' || true)
+          echo "DRESS-COUNTS ${counts:-<missing>}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Dress rehearsal counts (Findings R12, R13)"
+              echo '```json'
+              echo "${counts:-missing}"
+              echo '```'
+              echo "ran=$ran failed=${failed:-?} skips=$skips exercised=$exercised"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -z "$counts" ]; then
+            echo "FAIL: the gate's DRESS-COUNTS line is missing"; exit 1
+          fi
+          if [ "${failed:-1}" != "0" ]; then
+            echo "FAIL: ${failed:-?} failing test(s); every test must pass"
+            grep -E "^not ok " /tmp/dress.log || true
             exit 1
           fi
-          # The band stays, and the reason has CHANGED. It used to tolerate R2,
-          # R4 and R5 being red by design. Those are closed — 12/12 three times
-          # consecutively on the normative machine. It now tolerates the runner:
-          # macos-14 gives 3 arm64 cores, and the gate step asserts
-          # droppedFramesTotal == 0 and audioUnderrunsTotal == 0, which are
-          # performance claims about REFERENCE hardware. Measured on this runner:
-          # 83 and 120 underruns in two runs, and a dropped frame, where the
-          # normative machine gives 0. No code change makes a shared CI VM hold a
-          # 33 ms audio cadence next to wgpu.
-          if [ "${passed:-0}" -lt 9 ]; then
-            echo "expected at least 9 passing steps, got ${passed:-0}"
-            exit 1
+          if [ "$ran" -lt 27 ]; then
+            echo "FAIL: expected at least 27 tests to run, got $ran"; exit 1
           fi
-          if [ "${failed:-99}" -gt 3 ]; then
-            echo "expected at most 3 failing steps (the hardware-bound gate assertions), got ${failed:-99}"
-            exit 1
+          if [ "$exercised" -lt 18 ]; then
+            echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1
           fi
       - name: failure artifacts
         if: always()
