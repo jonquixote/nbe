@@ -2685,6 +2685,32 @@ run. A1's end now fires there; before the fix that cut never ended. No step
 reads A1's state, and the View holds an ended clip, so the rehearsal is 27 of
 27 with no expectation shifted (quiescent, load 2.48 → 2.58).
 
+**The consequence, recorded by the PR #37 two-key pass (2026-10-05): autoFollow
+never advances after an untimed item.**
+- autoFollow fires only on a `PLAYING → DONE` edge (`server.ts`, the
+  `itemEvent` branch). The `end` that makes that edge comes only from
+  `schedule_done`.
+- An untimed item goes `LIVE`, never `PLAYING` (`state.ts` `take`). It carries
+  no `itemDurationFrames`, so nothing schedules its end.
+- So `autoFollow: true` on an untimed item is inert, silently. The manifest
+  schema accepts it (`Item` in `schemas/manifest.v0.4.json`), and preflight
+  says nothing about it.
+
+This is not new with the fix. Before it, only a mix could send an `end` for an
+untimed item, and `markDone` ignores a `LIVE` item, so autoFollow never fired
+then either. What the fix settles is that no mechanism exists: there is no end
+at end of file (above).
+
+It falls short of §3.1's definition of the flag: "Per-item flag to advance
+automatically when media ends". An untimed clip's media does end, because a
+clip plays once (`video.rs`). Nothing tells the control plane when it has.
+
+**Queued as a spec question (2026-10-05): should an end at end of file
+exist?** That is, should the engine emit `itemEvent end` when an untimed
+clip's media is exhausted, so that autoFollow and `mediaEnd` rules work for
+untimed clips? Or should autoFollow on an untimed item be refused or warned
+at preflight? It is the user's word.
+
 
 ---
 
