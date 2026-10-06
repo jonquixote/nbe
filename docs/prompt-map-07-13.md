@@ -2435,8 +2435,10 @@ The release engine was rebuilt from the restored tree after F1 and F2.
 
 **Found while landing it.** These are recorded, not fixed.
 
-- **The engine reads a take's transition length as the item's duration.**
-  `schedule_done`, the only source of `itemEvent end`, runs only when the take
+- ~~**The engine reads a take's transition length as the item's duration.**~~
+  **FIXED** by `990b8ed` (SPEC v0.4.8 row 2, `57d7490`; branch
+  `take-duration-fix`, 2026-10-05); see the take-duration fix's record below.
+  As found: `schedule_done`, the only source of `itemEvent end`, runs only when the take
   payload carries `durationFrames`. That field is the transition's
   (`resolveTransition`). Two consequences follow:
   - a cut, which carries none, never schedules an end;
@@ -2445,19 +2447,24 @@ The release engine was rebuilt from the restored tree after F1 and F2.
     autoFollow about half a second in.
 
   The midpoint report's "nothing on the wire moves when a clip is exhausted"
-  covered the first half and not the second. A recall's resolved cut carries no
-  `durationFrames`, so it inherits only the first.
+  covered the first half and not the second. ~~A recall's resolved cut carries no
+  `durationFrames`, so it inherits only the first.~~ *(§2c, v0.4.8 row 2: a
+  recall now carries the recalled item's own `itemDurationFrames`, and the item
+  ends at it.)*
 
   **The intent, recorded (the user's word of 2026-10-03).** The engine fix is
   its own PR, after this merge. That fix is what makes the ratified take/cut
   `mediaEnd` cell ("a timed item's end is scheduled for its duration") true.
-  Until it lands, a recall inherits the defect through `apply_take`: its cut
-  schedules no end.
-- **§13.4.1's `view.take`/`view.cut` `mediaEnd` cell overclaims.** It says "a
+  ~~Until it lands, a recall inherits the defect through `apply_take`: its cut
+  schedules no end.~~ **Kept (2026-10-05):** the fix landed as its own PR
+  (`990b8ed`), and the take/cut cell is now true as written, unamended.
+- ~~**§13.4.1's `view.take`/`view.cut` `mediaEnd` cell overclaims.** It says "a
   timed item's end is scheduled for its duration". For a cut, nothing is
   scheduled. The error is in the safe direction for a cycle check. The row is
   ratified, so changing it is the user's word; it is not changed here. The new
-  recall cell states the same mechanism exactly.
+  recall cell states the same mechanism exactly.~~ *(§2c, 2026-10-05: it no
+  longer overclaims. Since v0.4.8 row 2 the cell is true as written. It was
+  the tree, not the cell, that was wrong.)*
 - **Audio under the operator's slate.** `view.fallback` changes the picture,
   not the clip bus, so an item's audio continues beneath the slate. That
   predates this fix. A recall under the slate follows it: the recalled item's
@@ -2606,6 +2613,78 @@ The two failures:
 **The run is red under §2b**, by exactly the two classes the bounded acceptance
 names, each inside its backstops. Recorded 2026-10-04 as the bookend of PR #36,
 the work order those two classes queued.
+
+### The take-duration fix — a timed item ends at its own duration (2026-10-05, branch `take-duration-fix`)
+
+**The defect** was recorded with PR #35 (above, struck to FIXED).
+`schedule_done`, the engine's only source of `itemEvent end`, ran on the take
+payload's `durationFrames`, and that field is the transition's length. The
+effects:
+- A cut never ended a timed item, so autoFollow never advanced after a cut.
+- A mix ended a timed item at the mix's length, so autoFollow ran away.
+- A recall inherited both.
+
+**The fix.** The user's word of 2026-10-04: the engine fix makes the ratified
+take/cut `mediaEnd` cell true, keeping the intent line in PR #35's record.
+- The take payload carries the item's duration as its own field,
+  `itemDurationFrames`. The transition keeps §16.2's own `durationFrames`.
+- In Rust the two are `transition_duration_frames` and `item_duration_frames`
+  (`nbe_protocol::TakePayload`), and the engine reads every take through that
+  typed model.
+- The control plane resolves the item's duration from the package in one
+  helper, `takePayload`. It parses the payload through
+  `TakeDirectivePayloadSchema` before view.take, view.cut and snapshot.recall
+  send it.
+- The landing is `990b8ed`, the spec row is `57d7490`, and the CI floors are
+  `3159592`.
+
+**The tree, against the order, on three points.**
+- **There is no end at end of file.** `schedule_done` is the only
+  `ItemEvent::End`, and the engine has no end-of-file signal. So "untimed
+  clips still end at EOF" is false: an untimed item never ends. The pin is
+  "no end": an untimed item never ends, and a transition's length never ends
+  it. A timed item ends exactly once.
+- **The take/cut `mediaEnd` cell needed no amendment.** It reads "a timed
+  item's `end` is scheduled for its duration", and it never named the field.
+  It is verified true as written. Only the `snapshot.recall` row's cell named
+  the field, and it is amended (§2c).
+- **Tests encoded the defect.** prompt03's four cut takes sent the item's
+  duration as `durationFrames`, and so did prompt13_recall's `take()` helper.
+  After the fix:
+  - `item_end_emitted_after_timed_duration` failed;
+  - the stopped-show guard and the superseded-take guard would have passed
+    **vacuously**, because nothing was scheduled at all;
+  - prompt13_recall's superseded-end checks would have passed vacuously too.
+
+  They are moved to `itemDurationFrames`, with the reason in place (§2c).
+
+**New behaviour, stated.** A take payload that does not read is now refused
+(`DirectiveError::Invalid`). It used to be read field by field with silent
+fallbacks. The control plane is the only producer, and it parses its own
+payloads first.
+
+**Falsified** on the normative machine. Each mutation was restored from a
+saved copy **and both engine binaries were rebuilt** (the lesson from PR #36).
+Every run started under the ceiling (2.26–2.49).
+
+| # | Mutation | Signature |
+|---|---|---|
+| M1 | Control plane: the cut's item duration dropped | automation `not ok 32` (the `itemDurationFrames: 60` lines missing). e2e 0 of 2: `autoFollow must advance T1 -> T2 at T1's end; the View is still T1`, and the same for M1 |
+| M2 | Engine: the old read (`schedule_done` on the transition's field), the pre-fix signature | `take_duration` 3 of 8. The cut: `a cut to a 6-frame item ends it at 200 ms`, `left: 0`. The mix: `no end at 300 ms …`, `left: 1`. The recall: `left: 0`. Untimed: `left: (0, 1)`. e2e: T1 never advances; `at 1000 ms M1 is still on air … 'M2' !== 'M1'` (ran away at the mix's 200 ms) |
+| M3 | Engine: `is_current` removed | `(A's ends, B's ends) … left: (1, 1) right: (0, 1)` |
+| M4 | Engine: the end scheduled twice | `exactly one end for one take of a timed item`, `left: 2`, and four more tests at `left: 2` |
+| M5 | Engine: the recall's share reverted (schedule only on a take) | `the recalled 6-frame item ends at 200 ms`, `left: 0` |
+| M6 | Control plane: the recall's share reverted | automation `not ok 32`: the recall's `itemDurationFrames: 60` missing |
+| M7 | The trio, TypeScript: `itemDurationFrames` dropped from the schema | mirror: ``TypeScript's take payload has no `itemDurationFrames` field``; protocol.test: `Unrecognized key(s) in object: 'itemDurationFrames'`; automation 22 of 32, because the producer's own parse now refuses its timed payloads: `'error' !== 'ok'` |
+| M8 | The trio, Rust: the item's wire key renamed | mirror 18 of 20 (`left: {…"itemDuration"…}`; the fixture round trip loses the field). `take_duration` 1 of 8: the engine no longer reads the control plane's key |
+| M9 | Engine: a payload that does not read is half-applied (default on error) | `a payload whose itemDurationFrames is not a number is refused: ()` |
+
+**Observed, not a finding.** The dress rehearsal's final segment keeps A1, a
+150-frame item, on air for about 9 ticks while the record, sync and kill steps
+run. A1's end now fires there; before the fix that cut never ended. No step
+reads A1's state, and the View holds an ended clip, so the rehearsal is 27 of
+27 with no expectation shifted (quiescent, load 2.48 → 2.58).
+
 
 ---
 
