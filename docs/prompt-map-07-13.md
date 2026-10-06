@@ -1032,6 +1032,58 @@ run.
 reads green per test, with step 4 / step 6 rises of 3025 / 2985 ms logged
 inside the 10 s backstop. **R13 is closed** in the register.
 
+### Finding R14 — power: a running show slept on battery, and the adapter fell short on AC (recorded 2026-10-06, PR #37's fix-forward)
+
+*Numbered after R13. The register row is in `docs/soak-protocol.md` §5, and
+the evidence is in its §2a.*
+
+**The user's word of 2026-10-06:** power availability matters, and it is
+accounted for in the application's performance, not only in the documents.
+The budget a show runs on is the adapter's wattage minus what the machine and
+its attached devices consume: audio interfaces, Stream Decks, capture cards, a
+monitor or teleprompter. The user met this with OBS, where frame-rate and
+buffering problems appeared once every device was plugged in.
+
+**What was measured on 2026-10-06:**
+- **On battery, a running show slept.** This machine idle-sleeps 1 minute after
+  the last input on battery (`pmset`: `sleep 1`). nbe holds no sleep assertion,
+  so the slate-release end-to-end slept 491 s mid-test and failed its
+  precondition. The run is void; the AC re-run was 4 of 4.
+- **On AC, the 45 W adapter fell short.** Under a CPU-bound build the battery
+  discharged while plugged in (`InstantAmperage` −1092 mA). Apple rates this
+  machine's adapter at 87 W.
+- **Low Power Mode is on, on AC too** (`lowpowermode 1`).
+- **The battery is at 64% of design capacity**, `Service Recommended`.
+
+**Not measured yet:** any frame-rate or underrun effect of power. The effect
+on the thresholds is what the work order measures.
+
+**Queued: the application work order (its own PR; the parts that change the
+wire need the user's word).**
+1. **The engine holds a sleep assertion while a show runs.** It takes
+   `kIOPMAssertPreventUserIdleSystemSleep` while `showState` is RUNNING (and
+   prevents display sleep when it drives a display output), and releases it at
+   stop, unload and exit. This is the demonstrated failure. No wire change.
+   Guard: `pmset -g assertions` names the engine during a running show,
+   falsified by removing the assertion.
+2. **Power state, reported.**
+   - At preflight, in `preflight_report.json`, with warnings: on battery; an
+     adapter below the machine's rating; Low Power Mode on.
+   - On the telemetry tick: power source, adapter watts, system load, battery
+     current, Low Power Mode, and the CPU speed limit (`pmset -g therm`).
+
+   The tick fields are a wire change: a spec row and the audit trio.
+3. **Headroom as an operator signal.** A discharge on AC is the deficit, made
+   visible before frames drop. `DRESS-COUNTS` carries the power facts, so the
+   R12/R13 trend sees them.
+4. **The harnesses enforce precondition 6.** `scripts/soak.sh` and the gate
+   battery refuse on battery, run under `caffeinate`, and record the power
+   samples.
+5. **Measure.** The dress rehearsal's draw on the 45 W adapter and on 87 W,
+   with and without a representative device load (an audio interface, a
+   Stream Deck, a capture card, an external display). Those are the numbers
+   the thresholds and the warnings need.
+
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 
@@ -2828,6 +2880,26 @@ resync snapshot carries no item duration to schedule from (`state.ts`
 ends, and autoFollow stops there. A reconnect without a restart keeps the
 original pending end, because `on_resync` leaves the generation alone. Found by
 PR #37's two-key pass; recorded on the user's word of 2026-10-06.
+
+**The gate, run twice (§2c: the first run is void).**
+- **The first run, from 02:00, was partly on battery.** The charger came out
+  mid-run (the first battery tag in the power log is 02:21:33), and at 02:27:39
+  the machine idle-slept for 491 s. The slate-release end-to-end's test 4 ran
+  486 s and failed its precondition. That run is void, and it is kept aside
+  with its logs. It opened Finding R14.
+- **The re-run, on AC under `caffeinate -i -s`** (02:38:10 to 03:01:32; AC at
+  both ends; no sleep or battery event in the window):
+  - workspace **489/0/3 across 55 binaries**, which is 488 + 1, the new
+    `take_duration` test (main `dc312a6`: 478/0/3 across 54);
+  - `npm test` 129/129, mirror 20/20, `take_duration` 9/9, prompt03 10/10,
+    prompt13_recall 6/6;
+  - the end-to-ends: take-duration 3/3, recall 2/2, slate-release 4/4;
+  - the local dress 27/27 at 0 / 0 / 0 / 0;
+  - tsc, fmt and clippy clean.
+
+  Every run started under 2.5. `npm test` ended at 3.03, over the 3.0
+  ceiling. The run is power-limited (§2a): the adapter is 45 W, and the gauge
+  read a discharge in the final build.
 
 **Stated, not changed:** a take payload the control plane's parse refuses still
 reaches the client as `E_ENGINE`, because `server.ts` maps any error that is not

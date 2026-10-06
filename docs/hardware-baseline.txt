@@ -61,3 +61,20 @@ Graphics/Displays:
           Automatically Adjust Brightness: Yes
           Connection Type: Internal
 
+
+Power (recorded 2026-10-06 from system_profiler SPPowerDataType, ioreg -rn
+AppleSmartBattery and pmset -g custom; why it matters: docs/soak-protocol.md
+§2a and precondition 6):
+
+    Rated adapter (Apple, MacBookPro15,1): 87 W USB-C
+    Adapter in use on 2026-10-06: 45 W ("pd charger", 20 V x 2.25 A)
+      -> power-limited: under a CPU-bound build the battery discharged while
+         plugged in (InstantAmperage -1092 mA at 12.387 V)
+    Battery: 1002 cycles, Condition: Service Recommended,
+      4682 of 7336 mAh design capacity (64%)
+    pmset, AC Power:      sleep 0, displaysleep 180, lowpowermode 1, gpuswitch 2
+    pmset, Battery Power: sleep 1, displaysleep 1,   lowpowermode 1, gpuswitch 2
+      -> Low Power Mode is ON on AC as well as battery
+      -> on battery the machine idle-sleeps 1 minute after the last input,
+         and nbe holds no sleep assertion (a running show slept, 2026-10-06)
+    Automatic graphics switching (gpuswitch 2): Intel UHD 630 / Radeon Pro 555X
