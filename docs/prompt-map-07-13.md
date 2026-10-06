@@ -2901,6 +2901,24 @@ PR #37's two-key pass; recorded on the user's word of 2026-10-06.
   ceiling. The run is power-limited (§2a): the adapter is 45 W, and the gauge
   read a discharge in the final build.
 
+**CI at `7fdd0ca`, run `37447312366`, read per test (§2b).**
+- **Attempt 1 is red.** Dress 27/27 and control-plane green. The rust job's
+  workspace step was all green (55 binaries), but its "GPU/render tests
+  actually ran" step re-ran prompt04 and exited 101, **printing nothing**:
+  the step's `out=$(cargo test …)` under `bash -e` exited before the echo.
+  prompt04 had passed 17/17 in the workspace step two minutes earlier. The
+  failing test is unknown, so it is entered as R15
+  (`docs/soak-protocol.md` §5).
+- **Attempt 2 (the failed job re-run) is green per test.** 142 `test result:`
+  lines, all ok, with prompt04 17, `take_duration` 9, mirror 20 and
+  prompt13_recall 6.
+- **The swallowing is fixed** (the user's word of 2026-10-06, `23dcc9d`). All
+  28 capture steps keep the exit code, echo the output, then fail naming the
+  suite. Falsified on the extracted steps under `bash -e`:
+  - with a forced failing test, the old steps printed 0 lines and the new
+    ones printed the failure;
+  - the 09 loop records a failing suite and goes on.
+
 **Stated, not changed:** a take payload the control plane's parse refuses still
 reaches the client as `E_ENGINE`, because `server.ts` maps any error that is not
 a `CpError` to it, though the engine was never contacted. After this fix no
