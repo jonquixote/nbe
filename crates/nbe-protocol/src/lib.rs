@@ -366,8 +366,15 @@ pub enum DirectiveKind {
 /// item's duration `itemDurationFrames`, so neither can be read as the other.
 /// Mirrored by `TakeDirectivePayloadSchema` in `protocol.ts`, which the control
 /// plane parses its own take payloads through before it sends them.
+///
+/// Strict on both sides: an unknown key is refused here, as the TypeScript
+/// schema refuses it (`deny_unknown_fields`, as `Envelope` and
+/// `DirectiveFrame` above).
+/// Until PR #37's fix-forward the engine ignored one, so a misspelt item
+/// duration read cleanly as "untimed" and the item silently never ended (the
+/// two-key pass's M8: the renamed key failed only by its effects).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TakePayload {
     /// `cut` | `mix` | … (§16.2). Absent means a cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -391,9 +398,10 @@ pub struct TakePayload {
 }
 
 /// A take's audio object (§16.2): the mode, its ramp, and a crossfade length
-/// when it differs from the video's.
+/// when it differs from the video's. Strict, as [`TakePayload`] is and as the
+/// TypeScript schema's audio object is.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TakeAudio {
     /// `follow` | `crossfade` | `cut` | `mute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

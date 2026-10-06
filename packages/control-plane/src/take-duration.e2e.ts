@@ -9,6 +9,11 @@
 //! 6-frame mix ended a 2-second item 0.2 s in, so autoFollow ran away. The take
 //! payload now carries the item's own `itemDurationFrames`.
 //!
+//! And PR #37's fix-forward (the two-key pass's P1): a spec-legal 0-frame mix
+//! was refused AFTER the control plane took the item, so its View moved and the
+//! engine's did not. A 0-frame mix is a cut now, and the third test asserts the
+//! two sides together.
+//!
 //! Not in `npm test`: it needs the engine binary. CI builds it in the
 //! control-plane job and runs this file with its own floors. Run locally:
 //!   node --import tsx --test src/take-duration.e2e.ts
@@ -91,6 +96,13 @@ async function until(pred: () => boolean, ms: number): Promise<number | null> {
   return null;
 }
 
+/** The engine's last applied stateVersion, from `/status`. It acks only a directive it applied (§5.9.3). */
+async function engineApplied(): Promise<number | null> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/nbe/v0.3/status`);
+  const body = (await res.json()) as { renderNode?: { lastAppliedStateVersion?: number | null } };
+  return body.renderNode?.lastAppliedStateVersion ?? null;
+}
+
 function writePackage(): string {
   const dir = tempDir("nbe-take-duration-pkg-");
   mkdirSync(join(dir, "media"), { recursive: true });
@@ -119,6 +131,9 @@ function writePackage(): string {
           // 2 s, then autoFollow to M2.
           { id: "M1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
           { id: "M2", kind: "sceneRef", sceneRef: "SCN" },
+          // 1 s, then autoFollow to Z2: taken by a 0-frame mix.
+          { id: "Z1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 30, autoFollow: true },
+          { id: "Z2", kind: "sceneRef", sceneRef: "SCN" },
         ],
       },
       control: { bindings: [] },
@@ -203,5 +218,40 @@ test("[v0.4.8 row 2] a 6-frame mix to a 60-frame item: no advance at the mix's l
     { m1: state.itemStateOf("M1"), view: state.viewItem, advances: advances().filter(([a]) => a === "autoFollow:M1") },
     { m1: "DONE", view: "M2", advances: [["autoFollow:M1", "ok"]] },
     "M1 completed at its own length, and autoFollow advanced exactly once",
+  );
+});
+
+test("[PR #37 fix-forward] a 0-frame mix to a timed item is a cut: both sides agree, and it ends at its own duration", async () => {
+  // The two-key pass's P1: this spec-legal take was refused after the control
+  // plane had taken Z1. Its View said Z1, the engine never got the take, and
+  // the client saw E_ENGINE.
+  await ok("preview.set", { itemRef: "Z1" });
+  const t0 = Date.now();
+  const r = await send("view.take", { transition: "mix", durationFrames: 0 });
+  assert.equal(r.status, "ok", `a 0-frame mix is a legal take: ${JSON.stringify({ r, controlPlaneView: state.viewItem })}`);
+  const sv = r.stateVersion as number;
+  // The engine's side: it acks only what it applied, and nothing else is sent
+  // before Z1's end.
+  let applied: number | null = null;
+  const deadline = Date.now() + REPORT_MS;
+  while (Date.now() < deadline) {
+    applied = await engineApplied();
+    if (applied !== null && applied >= sv) break;
+    await new Promise((res) => setTimeout(res, 25));
+  }
+  assert.deepEqual(
+    { controlPlaneView: state.viewItem, z1: state.itemStateOf("Z1"), engineAppliedTheTake: applied !== null && applied >= sv },
+    { controlPlaneView: "Z1", z1: "PLAYING", engineAppliedTheTake: true },
+    `the control plane says Z1 and the engine applied the take at ${sv} (it acked ${applied})`,
+  );
+  // Cut semantics: Z1 ends at its own 30 frames, never at the mix's 0.
+  const advanced = await until(() => state.viewItem === "Z2", REPORT_MS);
+  assert.ok(advanced !== null, `autoFollow must advance Z1 -> Z2 at Z1's end; the View is still ${state.viewItem}`);
+  const sinceTake = Date.now() - t0;
+  assert.ok(sinceTake >= (30 / FPS) * 1000 * 0.8, `Z1 is 30 frames (1000 ms); it must not end early, advanced ${sinceTake} ms after the take`);
+  assert.deepEqual(
+    { z1: state.itemStateOf("Z1"), view: state.viewItem, advances: advances().filter(([a]) => a === "autoFollow:Z1") },
+    { z1: "DONE", view: "Z2", advances: [["autoFollow:Z1", "ok"]] },
+    "Z1 completed at its own length, and autoFollow advanced exactly once",
   );
 });

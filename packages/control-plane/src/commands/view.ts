@@ -42,19 +42,16 @@ export function viewHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
       if (!preview) throw new CpError("E_FORBIDDEN_STATE", "no preview item armed");
       const item = state.requireItem(preview);
 
-      // Resolve the transition: explicit payload fields override preset.
-      const resolved = resolveTransition(state, payload);
-      const next = state.take(preview);
-      return {
-        data: { item: preview, state: next },
-        extraDirectives: [
-          {
-            command: "view.take",
-            target: { itemRef: preview },
-            payload: takePayload(state, preview, resolved),
-          },
-        ],
+      // Build and validate the directive BEFORE the take mutates anything
+      // (the take invariant, on `takePayload` below). The transition resolves
+      // first: explicit payload fields override the preset.
+      const directive = {
+        command: "view.take",
+        target: { itemRef: preview },
+        payload: takePayload(state, preview, resolveTransition(state, payload)),
       };
+      const next = state.take(preview);
+      return { data: { item: preview, state: next }, extraDirectives: [directive] };
     },
   });
 
@@ -68,14 +65,16 @@ export function viewHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
       if (cur === "LIVE" || cur === "PLAYING") {
         return { data: { item: itemRef, state: cur } }; // already on view
       }
+      // Built and validated before the arm and the take mutate anything (the
+      // take invariant, on `takePayload` below).
+      const directive = {
+        command: "view.take",
+        target: { itemRef },
+        payload: takePayload(state, itemRef, { transition: "cut" }),
+      };
       if (cur !== "ARMED") state.armItem(itemRef); // cut implies arm+take
       const next = state.take(itemRef);
-      return {
-        data: { item: itemRef, state: next },
-        extraDirectives: [
-          { command: "view.take", target: { itemRef }, payload: takePayload(state, itemRef, { transition: "cut" }) },
-        ],
-      };
+      return { data: { item: itemRef, state: next }, extraDirectives: [directive] };
     },
   });
 
@@ -96,6 +95,15 @@ export function viewHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
  * used to, so a cut never ended and a mix ended a timed item at the mix's
  * length. Parsed through `TakeDirectivePayloadSchema` before it is sent: a
  * payload the engine could not read is refused here, not there.
+ *
+ * **The take invariant (the user's word of 2026-10-06): no command path
+ * mutates state before its directive validates.** The order is build →
+ * validate → mutate → send. view.take, view.cut and snapshot.recall each call
+ * this before their first state write, so a payload that does not validate is
+ * refused with the control plane exactly where it was, and the engine never
+ * hears of it. PR #37's two-key pass found the other order (P1): the parse ran
+ * after `state.take`, so a refusal left the control plane's View moved and the
+ * engine's not.
  */
 export function takePayload(
   state: import("../state.js").ControlPlaneState,
@@ -124,8 +132,18 @@ export function resolveTransition(
     if (!preset) throw new CpError("E_NOT_FOUND", `no such transition preset: ${payload.preset}`);
     base = preset;
   }
-  const transition = payload.transition ?? base.kind ?? "cut";
-  const durationFrames = payload.durationFrames ?? base.durationFrames;
+  let transition = payload.transition ?? base.kind ?? "cut";
+  let durationFrames = payload.durationFrames ?? base.durationFrames;
+  // A 0-frame mix is a cut, and it resolves as one. §16.2 allows the 0
+  // (`durationFrames` 0–600), but its audio-follows-video rule below would
+  // copy it into `audio.durationFrames`, whose minimum is 1: a value the spec
+  // forbids, which the take payload's parse then refused (PR #37's two-key
+  // pass, P1). The command schema is unchanged; the resolution is where the 0
+  // becomes honest.
+  if (transition === "mix" && durationFrames === 0) {
+    transition = "cut";
+    durationFrames = undefined;
+  }
   const audio = (payload.audio ?? base.audio ?? {}) as Record<string, unknown>;
   const audioTransition = audio.transition ?? "follow";
   const resolved: Record<string, unknown> = { transition, audio: { ...audio, transition: audioTransition } };

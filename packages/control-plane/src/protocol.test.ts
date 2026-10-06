@@ -140,8 +140,11 @@ test("the take payload fixture, the control plane's half: valid ones parse, inva
   for (const c of fixture.invalid) {
     assert.equal(TakeDirectivePayloadSchema.safeParse(c.payload).success, false, `${c.name}: must be refused`);
   }
-  // The producer is strict where the engine (a consumer) is lenient: an
-  // unknown key, a zero item duration, are the control plane's own defects.
+  // The producer is stricter than the engine on a zero item duration, which
+  // the engine's integer would read: that is the control plane's own defect.
+  // (§2c, PR #37's fix-forward: this said the engine was lenient on an
+  // unknown key too. It refuses one now, and the fixture's invalid cases
+  // carry an unknown key to both sides.)
   assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDuration: 60 }).success, false, "an unknown key");
   assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDurationFrames: 0 }).success, false, "a zero item duration");
 });

@@ -5,7 +5,8 @@
     "nbe-protocol's mirror (TakePayload, which the engine reads) and the control plane's",
     "protocol.test.ts (TakeDirectivePayloadSchema, which the control plane parses its own",
     "payloads through before sending). `valid` must read on both sides and round-trip in Rust;",
-    "`invalid` must be refused by both. durationFrames is the TRANSITION's length;",
+    "`invalid` must be refused by both, an unknown key included (strict on both sides since",
+    "PR #37's fix-forward). durationFrames is the TRANSITION's length;",
     "itemDurationFrames is the ITEM's own duration. The two are never the same field."
   ],
   "valid": [
@@ -34,6 +35,8 @@
   "invalid": [
     { "name": "an item duration that is not a number", "payload": { "transition": "cut", "itemDurationFrames": "six" } },
     { "name": "a transition length that is not a number", "payload": { "transition": "mix", "durationFrames": "fifteen" } },
-    { "name": "overlays that are not a list", "payload": { "transition": "cut", "visibleOverlays": "lower_third" } }
+    { "name": "overlays that are not a list", "payload": { "transition": "cut", "visibleOverlays": "lower_third" } },
+    { "name": "an unknown key: a misspelt item duration (the two-key pass's M8 class)", "payload": { "transition": "cut", "itemDuration": 150 } },
+    { "name": "an unknown key in the audio object", "payload": { "transition": "mix", "durationFrames": 15, "audio": { "transition": "follow", "curve": "linear" } } }
   ]
 }

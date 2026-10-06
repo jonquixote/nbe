@@ -289,3 +289,39 @@ async fn a_take_payload_that_does_not_read_is_refused_not_half_applied() {
         "the View did not move"
     );
 }
+
+#[tokio::test]
+async fn an_unknown_key_in_a_take_payload_is_refused_on_every_path() {
+    // PR #37's fix-forward: the typed model is strict, as the control plane's
+    // schema is. The two-key pass's M8 renamed the item's key and the engine
+    // read the payload cleanly as "untimed", so the item silently never ended.
+    // A misspelt key is now a refusal that names it, on the take, the cut (it
+    // reaches the same application) and the recall, and the View does not move.
+    for command in ["view.take", "view.cut", "snapshot.recall"] {
+        let (handler, state, outgoing) = make_engine();
+        let err = handler
+            .apply(&directive(
+                command,
+                1,
+                serde_json::json!({ "itemRef": "T1" }),
+                serde_json::json!({ "transition": "cut", "itemDuration": 6 }),
+            ))
+            .await
+            .expect_err("a payload with an unknown key is refused");
+        assert!(
+            err.to_string().contains("unknown field `itemDuration`"),
+            "{command}: the refusal names the key: {err}"
+        );
+        assert_eq!(
+            *state.view_item.lock().unwrap(),
+            None,
+            "{command}: the View did not move"
+        );
+        after(400).await;
+        assert_eq!(
+            ends(&outgoing.drain(), "T1"),
+            0,
+            "{command}: nothing was scheduled"
+        );
+    }
+}

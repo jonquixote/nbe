@@ -90,31 +90,34 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
     forward: false,
     handler: (ctx, payload): HandlerOutput => {
       const state = ctx.state;
-      const before = state.viewItem;
-      state.recallSnapshot(String(payload.name));
+      const name = String(payload.name);
+      const snap = state.requireSnapshot(name);
       // The View the audience sees, applied as a cut through the take's own
       // resolution: `target.itemRef` only when the recalled item is not the
       // one on air (view.cut's "already on view" rule — a recall does not
       // restart the item it leaves on air), `null` for an empty View, and
       // the overlays wholesale. The preview half stays here: the engine
       // routes no preview writer yet.
+      //
+      // Built from the snapshot and validated BEFORE the recall mutates
+      // anything (the take invariant, on `takePayload` in view.ts): the
+      // directive used to be built from the state after `recallSnapshot`.
       const target: Record<string, unknown> = {};
-      if (state.viewItem !== before) target.itemRef = state.viewItem;
-      return {
-        extraDirectives: [
-          {
-            command: "snapshot.recall",
-            target,
-            // The recalled item's own duration rides with the cut when the
-            // item is timed (v0.4.8 row 2): a recall starts the item now, so
-            // its end is scheduled from now.
-            payload: takePayload(state, typeof target.itemRef === "string" ? target.itemRef : null, {
-              ...resolveTransition(state, { transition: "cut" }),
-              visibleOverlays: Array.from(state.visibleOverlays),
-            }),
-          },
-        ],
+      if (snap.viewItem !== state.viewItem) target.itemRef = snap.viewItem;
+      const directive = {
+        command: "snapshot.recall",
+        target,
+        // The recalled item's own duration rides with the cut when the item
+        // is timed (v0.4.8 row 2): a recall starts the item now, so its end
+        // is scheduled from now.
+        payload: takePayload(state, typeof target.itemRef === "string" ? target.itemRef : null, {
+          ...resolveTransition(state, { transition: "cut" }),
+          // As `recallSnapshot` restores them: a set, in the snapshot's order.
+          visibleOverlays: Array.from(new Set(snap.visibleOverlays)),
+        }),
       };
+      state.recallSnapshot(name);
+      return { extraDirectives: [directive] };
     },
   });
 
