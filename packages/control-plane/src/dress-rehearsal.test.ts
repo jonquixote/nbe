@@ -580,8 +580,10 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
   // NOT the AC-4 cadence gate. The first version of this step asserted that no
   // `itemEvent: end` arrives for a 12 fps take, and it could not fail:
   // `ItemEvent::End` is emitted only from `schedule_done`, which is spawned
-  // only when the take payload carries `durationFrames` — and this take
-  // carries none. Nothing on the wire moves when a clip is exhausted:
+  // only when the take payload carries the item's duration — and this take
+  // carries none (A3 is untimed). (§2c, PR #37's two-key pass: this named the
+  // field `durationFrames`, the transition's, which the engine read until
+  // v0.4.8 row 2; the item's field is `itemDurationFrames`.) Nothing on the wire moves when a clip is exhausted:
   // `viewItem` does not clear and no event fires. So the assertion was green
   // whether or not cadence conversion existed, which is exactly the defeatable
   // gate this review spent three rounds removing elsewhere (report §3.10).

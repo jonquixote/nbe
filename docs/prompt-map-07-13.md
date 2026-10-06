@@ -615,6 +615,13 @@ row stays, and a sighting now carries its capture.
 condition and the sighting are in the register row (`docs/soak-protocol.md`
 §5).*
 
+*Tripwire sharpened 2026-10-06 (the user's word), on post-fix sightings 3 and
+4: both `phase=exiting`, both under the ceiling (loads 2.15–2.40), found by
+PR #37's two-key pass. R11 stays resolved, and a third such sighting reopens
+it. Queued with them: measure the exit path's true duration, the run loop's
+return and the encoders' drop (VideoToolbox's invalidation is the suspect).
+The sightings, their captures and the queue line are in the register row.*
+
 ### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
 *Numbered after R10; no R11 existed in the tree. This entry supersedes the
@@ -2719,8 +2726,113 @@ clip plays once (`video.rs`). Nothing tells the control plane when it has.
 **Queued as a spec question (2026-10-05): should an end at end of file
 exist?** That is, should the engine emit `itemEvent end` when an untimed
 clip's media is exhausted, so that autoFollow and `mediaEnd` rules work for
-untimed clips? Or should autoFollow on an untimed item be refused or warned
-at preflight? It is the user's word.
+untimed clips? ~~Or should autoFollow on an untimed item be refused or warned
+at preflight? It is the user's word.~~
+
+**Decided in part (the user's word of 2026-10-06, §2c):** preflight refuses
+`autoFollow` on an untimed item. It lands as its own small PR, with a spec
+note when it is built. **Still queued for the user:** whether the engine emits
+an end at end of file.
+
+### PR #37's fix-forward — the take invariant, the strictness completed, the pass's corrections (2026-10-06, branch `take-duration-fix`)
+
+**The defect, P1 of PR #37's two-key pass, introduced by this PR.**
+`view.take { transition: "mix", durationFrames: 0 }` is spec-legal (§16.2:
+`durationFrames` 0–600). `resolveTransition`'s audio-follows-video rule copied
+the 0 into `audio.durationFrames`, whose minimum is 1, and the new take
+payload's parse refused it. The parse ran **after** `state.take`. So the
+control plane's View moved, the engine received nothing, and the client saw
+`E_ENGINE`. That is the split-brain class the recall fix removed.
+
+**The invariant (the user's word of 2026-10-06): no command path mutates state
+before its directive validates.** The order is build → validate → mutate →
+send. It is written on `takePayload` (`commands/view.ts`), which builds and
+validates the directive, and it is applied on all three take-class paths:
+- **view.take** builds its directive before `state.take`.
+- **view.cut** builds it before the arm, which is a write too, and the take.
+- **snapshot.recall** builds it from the snapshot itself (`requireSnapshot`,
+  read only) before `recallSnapshot` writes anything. It used to be built from
+  the state after the recall.
+
+The tree, said first: these three are the only paths whose directive
+validates. `overlay.show`/`overlay.hide` and `show.stop` send payloads that are
+empty or already validated as commands, so they have no validation step to
+order.
+
+**The 0 made honest.** A 0-frame mix resolves as a cut: no transition length,
+so no `audio.durationFrames` to copy. The command schema is unchanged; the
+resolution is where the 0 becomes honest.
+
+**The strictness completed.** `TakePayload` gains `deny_unknown_fields`, as
+`Envelope` and `DirectiveFrame` already have it. So does `TakeAudio`: the order
+named `TakePayload`, and the TypeScript schema's audio object is strict too, so
+the mirror is strict on both sides at both levels. The shared fixture gains two
+invalid cases: a misspelt item duration (M8's class) and an unknown key inside
+`audio`. §5.9.1's note now says an unknown key does not read.
+
+**Guards** (the counts move: `npm test` 125 → 129, `take_duration` 8 → 9, the
+take-duration end-to-end 2 → 3, the fixture's invalid cases 3 → 5, the mirror
+unchanged at 20):
+- `src/take-payload.test.ts` (4, in `npm test`, through dispatch):
+  - a 0-frame mix is a cut: accepted, and the control plane and its
+    directive agree;
+  - the invariant, one test per path. Each forces an unreadable payload with an
+    in-test item of duration 0, which the manifest schema forbids, and asserts
+    the refusal is the payload parse's own and that every field a take-class
+    command writes, plus the bridge, is untouched.
+- `take-duration.e2e.ts` +1, on the real engine: a 0-frame mix to a timed
+  autoFollow item. The control plane says Z1, and the engine acks the take's
+  stateVersion: it acks only what it applied. Z1 then ends at its own 30
+  frames, and autoFollow advances once.
+- `take_duration.rs` +1: an unknown key is refused on the take, the cut and
+  the recall, naming the key, with the View unmoved and nothing scheduled.
+
+**Falsified** on the normative machine. Each mutation was restored from a
+saved copy, checked identical, and **both engine binaries rebuilt**. Every run
+started at load 2.27–2.46.
+
+| # | Mutation | Signature |
+|---|---|---|
+| (i) | The whole control-plane fix reverted to `9473da3` (the pre-fix tree) | unit 0 of 4. The 0-frame mix: `outcome: 'refused: [ { "code": "too_small", "minimum": 1 …'`, `viewItem: 'A'`, `a: 'PLAYING'`, `bumps: 0`, `directives: []`, which is the pass's probe signature. Each invariant test: the control plane moved (`viewItem: 'Z'`, `Z: 'PLAYING'`). End to end, test 3: `"status":"error"`, `"code":"E_ENGINE"`, path `audio.durationFrames`, `"controlPlaneView":"Z1"` |
+| (ii) | The copy of the 0 restored; parse-before-mutate kept | unit 3 of 4. The 0-frame mix is refused **before any mutation**: `viewItem: null`, `a: 'ARMED'`, `bumps: 0`, `directives: []`. End to end: `E_ENGINE` with `"controlPlaneView":"M2"`, the View it had: the control plane did not move |
+| (iii-a) | view.take mutates before it validates | its invariant test only: `viewItem: 'Z'` for `'B'`, `Z: 'PLAYING'` for `'ARMED'`, `B: 'READY'` for `'LIVE'`, `previewItem: null` for `'Z'` |
+| (iii-b) | view.cut arms and takes before it validates | its test only: `viewItem: 'Z'` for `'B'`, `Z: 'PLAYING'`, `B: 'READY'` for `'LIVE'` |
+| (iii-c) | snapshot.recall recalls before it validates | its test only: `viewItem: 'Z'`, `Z: 'PLAYING'`, `automationHold: true` for `false`, `visibleOverlays: ['bug']` for `[]` |
+| (iv-a) | `TakePayload` lenient again | `take_duration` 8 of 9: `a payload with an unknown key is refused: ()`. Mirror 19 of 20: `"an unknown key: a misspelt item duration (the two-key pass's M8 class)": must be refused` |
+| (iv-b) | `TakeAudio` lenient again | mirror 19 of 20: `"an unknown key in the audio object": must be refused` |
+| (iv-c) | M8 re-run with the strictness in place (the Rust key renamed) | **now loud**: `take_duration` 2 of 9, every timed take refused by name, e.g. ``Invalid("view.take: the take payload does not read: unknown field `itemDurationFrames`, expected one of …")``. At `b8af9ff` the same mutation failed only by its effects |
+
+**The pass's corrections (§2c each).**
+- §13.4.1's `snapshot.recall` row: "over-approximates in two ways only" is
+  struck. It is three ways, because a recall to an empty View
+  (`clear_view`) schedules no end either.
+- §5.9.1's note, amended before ratification: the end is counted in wall-clock
+  time from the point the engine applies the directive, and the item airs at
+  `master+1`, up to one frame later. The dress rehearsal's A1 ended 5.00 s
+  after its take.
+- `prompt03.rs`: "these four tests" is corrected to three tests (four takes).
+- `dress-rehearsal.test.ts`: the 12 fps comment named the transition's field;
+  it now says the item's duration.
+- `protocol.test.ts`: the comment that called the engine lenient on an unknown
+  key is corrected.
+
+**Recorded alongside.** R11's post-fix sightings 3 and 4 and the sharper
+tripwire are in the register row (`docs/soak-protocol.md` §5) and under Finding
+R11 above. The autoFollow decision is recorded above.
+
+**Queued (its own PR, after this one): the resync-end gap.** `on_resync` never
+schedules a timed item's remaining end. It sets the View and its start frame,
+but it neither begins a playback generation nor calls `schedule_done`, and the
+resync snapshot carries no item duration to schedule from (`state.ts`
+`resyncSnapshot`). So an engine restart strands a timed item on air: it never
+ends, and autoFollow stops there. A reconnect without a restart keeps the
+original pending end, because `on_resync` leaves the generation alone. Found by
+PR #37's two-key pass; recorded on the user's word of 2026-10-06.
+
+**Stated, not changed:** a take payload the control plane's parse refuses still
+reaches the client as `E_ENGINE`, because `server.ts` maps any error that is not
+a `CpError` to it, though the engine was never contacted. After this fix no
+accepted command reaches that path; the invariant tests force it.
 
 
 ---

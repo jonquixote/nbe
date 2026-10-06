@@ -197,12 +197,13 @@ async fn resync_after_outage_is_snapshot_not_replay() {
     assert!(out.iter().any(|f| matches!(f, nbe_protocol::EngineFrame::AppliedStateVersion { state_version, .. } if *state_version == 7))    );
 }
 
-// SPEC v0.4.8 row 2 (§2c): these four tests sent the item's duration as
-// `durationFrames`, the TRANSITION's field, and the engine read it back as the
-// item's. They pinned the collision. The item's duration is
+// SPEC v0.4.8 row 2 (§2c): these three tests (four takes) sent the item's
+// duration as `durationFrames`, the TRANSITION's field, and the engine read it
+// back as the item's. They pinned the collision. The item's duration is
 // `itemDurationFrames` now, and without that change the two "no end" guards
 // below would pass vacuously: a cut whose payload carries only `durationFrames`
-// schedules no end at all.
+// schedules no end at all. (§2c, PR #37's two-key pass: this said "four
+// tests".)
 #[tokio::test]
 async fn item_end_emitted_after_timed_duration() {
     let (handler, state, outgoing) = make_engine();
