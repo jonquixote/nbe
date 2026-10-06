@@ -65,9 +65,17 @@ jobs:
         # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
         # If zero tests ran, the render gate is silently absent and CI passes
         # with no GPU exercise.
+        #
+        # Every step that captures a test run keeps its exit code and echoes
+        # the output BEFORE it fails (`&& rc=0 || rc=$?`, then the guard). The
+        # step shell is `bash -e`, so a bare `out=$(cargo test …)` exited on a
+        # failing test before the echo, and the failure's message was lost.
+        # That happened to this step on PR #37's run 37447312366, attempt 1:
+        # exit 101, nothing to read. All 28 capture steps were fixed together.
         run: |
-          out=$(cargo test -p nbe-engine --test prompt04 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt04 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt04: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok")
           # The pattern is anchored on purpose. `.*: ([0-9]+) passed` never
           # matched "test result: ok. 15 passed" — sed passed the whole line
@@ -104,8 +112,9 @@ jobs:
         # gating itself off the machine.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt04_midmix -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt04_midmix -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt04_midmix: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -126,8 +135,9 @@ jobs:
         # render test drops the total below it and fails the job, so the
         # compositor cannot go unexercised while the gate stays green.
         run: |
-          out=$(cargo test -p nbe-engine --test prompt07_overlay 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt07_overlay 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt07_overlay: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok")
           ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -137,8 +147,9 @@ jobs:
           echo "prompt07_overlay tests that ran: $ran"
       - name: the 07b graphics suite actually ran
         run: |
-          out=$(cargo test -p nbe-engine --test prompt07b_graphics 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt07b_graphics 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt07b_graphics: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok")
           ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -158,8 +169,9 @@ jobs:
         # skipped bindings test fails the job, so the binding rules cannot
         # go unexercised while the gate stays green.
         run: |
-          out=$(cargo test -p nbe-preflight --test bindings 2>&1)
+          out=$(cargo test -p nbe-preflight --test bindings 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL bindings: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok")
           ran=$(echo "$line" | sed -E 's/^test result: ok\. ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -210,8 +222,11 @@ jobs:
             target=$(echo "$t" | cut -d: -f1)
             floor=$(echo "$t" | cut -d: -f2)
             exercised_floor=$(echo "$t" | cut -d: -f3)
-            out=$(cargo test -p nbe-engine --test "$target" -- --nocapture 2>&1)
+            out=$(cargo test -p nbe-engine --test "$target" -- --nocapture 2>&1) && rc=0 || rc=$?
             echo "$out"
+            # This loop collects every suite's verdict, so a failing suite is
+            # recorded and the loop goes on to the next.
+            if [ "$rc" -ne 0 ]; then echo "FAIL $target: cargo test exited $rc (the output is above)"; fail=1; continue; fi
             line=$(echo "$out" | grep "test result: ok" || true)
             ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
             case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -250,8 +265,9 @@ jobs:
         # had run or skipped. That inability was the finding.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test zerocopy_tap -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test zerocopy_tap -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL zerocopy_tap: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -290,8 +306,9 @@ jobs:
         # would compile, pass every unit test, and corrupt frames in production.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test zerocopy_migration -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test zerocopy_migration -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL zerocopy_migration: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -330,8 +347,9 @@ jobs:
         # guarding were wrong (§2c).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test zerocopy_g1 -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test zerocopy_g1 -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL zerocopy_g1: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -352,8 +370,9 @@ jobs:
         # that skipping cannot satisfy.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test zerocopy_override -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test zerocopy_override -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL zerocopy_override: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -374,8 +393,9 @@ jobs:
         # guards (the keyless false-live), which must not vanish silently.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test stream_url_precedence -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test stream_url_precedence -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL stream_url_precedence: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -406,8 +426,9 @@ jobs:
         # deleting it left CI green. Found by PR #30's second-key pass.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt10_stream_cmds -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt10_stream_cmds: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -437,8 +458,9 @@ jobs:
         # PR #30 exercised 1 of 13 here (§2c).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt10_rtmp: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -461,8 +483,9 @@ jobs:
         # of each kind.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt10_telemetry -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt10_telemetry -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt10_telemetry: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -483,8 +506,9 @@ jobs:
         # finding, not a skip.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt11_audio_level -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt11_audio_level -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt11_audio_level: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -507,8 +531,9 @@ jobs:
         # skip on this runner a failure, not a green.
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt11_ladder -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt11_ladder -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt11_ladder: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -531,8 +556,9 @@ jobs:
         # SKIP, so ran == exercised; floors equal at the full count (4).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt11_watchdog: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -557,8 +583,9 @@ jobs:
         # full count (7; 3 at 5942305).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt11_slate -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt11_slate -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt11_slate: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -583,8 +610,9 @@ jobs:
         # recall (the payload is strict on both sides).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test take_duration -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test take_duration -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL take_duration: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -606,8 +634,9 @@ jobs:
         # the floor is the full count: 18 + 2 = 20. Hardware-free, no SKIP.
         run: |
           set -u
-          out=$(cargo test -p nbe-protocol --test mirror -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-protocol --test mirror -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL mirror: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -633,8 +662,9 @@ jobs:
         # (6, new).
         run: |
           set -u
-          out=$(cargo test -p nbe-engine --test prompt13_recall -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-engine --test prompt13_recall -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL prompt13_recall: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -656,8 +686,9 @@ jobs:
         # 6/6 since v0.4.8 row 1's pin on the recall's two deferred edges.
         run: |
           set -u
-          out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL automation: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -677,8 +708,9 @@ jobs:
         # One test over 32 cases; hardware-free, floors equal (1/1).
         run: |
           set -u
-          out=$(cargo test -p nbe-core --test automation_rules -- --nocapture 2>&1)
+          out=$(cargo test -p nbe-core --test automation_rules -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL automation_rules: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
@@ -900,8 +932,9 @@ jobs:
         # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31, v0.4.8 row 2's take payload: 32).
         run: |
           set -u
-          out=$(node --import tsx --test src/automation.test.ts 2>&1)
+          out=$(node --import tsx --test src/automation.test.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL automation.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           # node's TAP summary: `# tests` counts every test, `# pass` only the
           # ones that passed WITHOUT skipping (a t.skip() lands in `# skipped`,
           # not in `# pass`). So ran = tests, exercised = pass.
@@ -925,8 +958,9 @@ jobs:
         # floors equal at the full count (2, unchanged by S-1).
         run: |
           set -u
-          out=$(node --import tsx --test src/effects-static.test.ts 2>&1)
+          out=$(node --import tsx --test src/effects-static.test.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL effects-static.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
@@ -951,8 +985,9 @@ jobs:
         # engine binary fails its `before`, which fails both tests.
         run: |
           set -u
-          out=$(node --import tsx --test src/slate-release.e2e.ts 2>&1)
+          out=$(node --import tsx --test src/slate-release.e2e.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL slate-release.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
@@ -971,8 +1006,9 @@ jobs:
         # above. The file never skips: a missing binary fails its `before`.
         run: |
           set -u
-          out=$(node --import tsx --test src/recall.e2e.ts 2>&1)
+          out=$(node --import tsx --test src/recall.e2e.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL recall.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
@@ -993,8 +1029,9 @@ jobs:
         # The file never skips: a missing binary fails its `before`.
         run: |
           set -u
-          out=$(node --import tsx --test src/take-duration.e2e.ts 2>&1)
+          out=$(node --import tsx --test src/take-duration.e2e.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL take-duration.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
