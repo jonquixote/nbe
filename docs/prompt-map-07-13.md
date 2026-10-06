@@ -941,12 +941,18 @@ ceiling, and each mutation was restored from a saved copy.
 **The first honest CI run under the new gate:** `37181092309` at `83bfb60`,
 read per test, 27 of 27 (`ran=27 passed=27 failed=0 skips=9 exercised=18`). It
 logged `"sha":"26e0e1d…"`, GitHub's test-merge commit, not the head, and
-`2582b2a` makes the line name the head. R12 stays OPEN in the register until the
-user's word after the two-key pass.
+`2582b2a` makes the line name the head. ~~R12 stays OPEN in the register until the
+user's word after the two-key pass.~~ *(§2c: superseded by the execution below.)*
 
 **After the merge (the user's word of 2026-10-04):** R12 becomes *resolved;
 watch* once main's merge run reads green per test. The trend rule in its
 register row keeps its home there.
+
+**Executed 2026-10-05** (a ride-along on PR #37's branch, after its two-key
+pass): main's PR #36 merge run, `37188708420` at `dc312a6`, reads green per
+test (§2b). Dress 27 of 27, all rust results `ok.`, control-plane 0 `not ok`.
+R12 is *resolved; watch* in the register. Its trend rule stays live there, and
+read at `b8af9ff` neither leg fires.
 
 ### Finding R13 — the dress rehearsal's audio rises arrive after their 3000 ms wait on CI (recorded 2026-10-03, PR #35)
 
@@ -1009,10 +1015,15 @@ end-to-end, which uses the same witness in a gating job, already waits 10 s
   the log line sees that span. The 3000 ms bound fails it, but only on the
   normative machine.
 
-R13 stays OPEN in the register until the user's word after the two-key pass.
+~~R13 stays OPEN in the register until the user's word after the two-key pass.~~
+*(§2c: superseded by the execution below.)*
 **After the merge (the user's word of 2026-10-04):** R13 closes outright once
 main's merge run reads green per test, because its rises are logged on every
 run.
+
+**Executed 2026-10-05** (the same ride-along): `37188708420` at `dc312a6`
+reads green per test, with step 4 / step 6 rises of 3025 / 2985 ms logged
+inside the 10 s backstop. **R13 is closed** in the register.
 
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
 ### The preflight bound's constants: provenance and one residual (recorded 2026-09-07)
