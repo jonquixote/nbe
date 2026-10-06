@@ -3,7 +3,7 @@
 
 import { CpError } from "../protocol.js";
 import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.js";
-import { resolveTransition } from "./view.js";
+import { resolveTransition, takePayload } from "./view.js";
 
 export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   // overlay
@@ -105,10 +105,13 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
           {
             command: "snapshot.recall",
             target,
-            payload: {
+            // The recalled item's own duration rides with the cut when the
+            // item is timed (v0.4.8 row 2): a recall starts the item now, so
+            // its end is scheduled from now.
+            payload: takePayload(state, typeof target.itemRef === "string" ? target.itemRef : null, {
               ...resolveTransition(state, { transition: "cut" }),
               visibleOverlays: Array.from(state.visibleOverlays),
-            },
+            }),
           },
         ],
       };

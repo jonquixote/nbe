@@ -4,7 +4,7 @@
 
 use crate::render::{VIEW_H, VIEW_W};
 use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing, StreamState};
-use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent};
+use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent, TakePayload};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -591,6 +591,7 @@ impl DirectiveHandler {
     /// A take clears `fallbackActive`; a recall does not (`state.ts`
     /// `recallSnapshot` never touches it), so a recall leaves `Held` up.
     fn apply_take(&self, d: &DirectiveFrame, release_held: bool) -> Result<(), DirectiveError> {
+        let p = take_payload(d)?;
         let item_ref = d
             .target
             .get("itemRef")
@@ -601,19 +602,19 @@ impl DirectiveHandler {
             // resolved (SPEC §16.2 — never re-resolved here) takes effect on
             // the NEXT frame boundary, never mid-frame.
             let previous = self.state.view_item.lock().unwrap().clone();
-            let kind = match d.payload.get("transition").and_then(|v| v.as_str()) {
+            let kind = match p.transition.as_deref() {
                 Some("mix") => crate::scene::TransitionKind::Mix,
                 _ => crate::scene::TransitionKind::Cut,
             };
-            let transition_frames = d
-                .payload
-                .get("durationFrames")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(if kind == crate::scene::TransitionKind::Mix {
+            // The TRANSITION's length. It is never the item's: that is
+            // `item_duration_frames`, below (SPEC v0.4.8 row 2).
+            let transition_frames = p.transition_duration_frames.unwrap_or(
+                if kind == crate::scene::TransitionKind::Mix {
                     15
                 } else {
                     0
-                });
+                },
+            );
             let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
             // Step 1 mid-mix rule. UNRATIFIED spec-correction candidate: a
             // PROPOSED NEW ROW for §17.3 (draft, NOT in the spec file — §17.3
@@ -751,25 +752,18 @@ impl DirectiveHandler {
 
             // SPEC §8.7.3: the take's audio object decides what the clip bus
             // does. `follow` takes the item's own audioPolicy (AFV).
-            let mode = d
-                .payload
-                .get("audio")
-                .and_then(|a| a.get("transition"))
-                .and_then(|v| v.as_str())
+            let mode = p
+                .audio
+                .as_ref()
+                .and_then(|a| a.transition.as_deref())
                 .unwrap_or("follow");
-            let ramp_ms = d
-                .payload
-                .get("audio")
-                .and_then(|a| a.get("rampMs"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(10.0) as f32;
+            let ramp_ms = p.audio.as_ref().and_then(|a| a.ramp_ms).unwrap_or(10.0) as f32;
             // §8.7.5: a video mix crossfades audio over the same duration.
             // §8.7.6: a video cut still ramps, never steps.
             let crossfade_frames = if kind == crate::scene::TransitionKind::Mix {
-                d.payload
-                    .get("audio")
-                    .and_then(|a| a.get("durationFrames"))
-                    .and_then(|v| v.as_u64())
+                p.audio
+                    .as_ref()
+                    .and_then(|a| a.duration_frames)
                     .unwrap_or(transition_frames)
             } else {
                 0
@@ -796,8 +790,15 @@ impl DirectiveHandler {
                 },
             );
             let generation = self.playing.begin(r);
-            if let Some(frames) = duration_frames(d) {
-                self.schedule_done(r.to_string(), frames, generation);
+            // SPEC v0.4.8 row 2: a timed item ends at ITS duration, counted
+            // from the apply point (the take and the recall start the item
+            // now), on a cut and a mix alike. This used to read the
+            // transition's `durationFrames`, so a cut never ended and a mix
+            // ended a timed item at the mix's length. An untimed item carries
+            // no duration and never ends: nothing in the engine signals end of
+            // file.
+            if let Some(frames) = p.item_duration_frames {
+                self.schedule_done(r.to_string(), frames as u32, generation);
             }
         }
         Ok(())
@@ -1471,7 +1472,11 @@ impl DirectiveHandler {
         // is a full snapshot, not a patch. A present array — including an empty
         // one — replaces the on-air set wholesale; an absent key leaves it alone.
         if let Some(visible) = snapshot.get("visibleOverlays").and_then(|v| v.as_array()) {
-            self.replace_overlays(visible, now);
+            let ids = visible
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            self.replace_overlays(ids, now);
         }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
@@ -1483,11 +1488,7 @@ impl DirectiveHandler {
     /// an animation. Shared by `show.resync` and `snapshot.recall` (whose
     /// control-plane side clears the animation phase for the same reason:
     /// `state.ts` `recallSnapshot`).
-    fn replace_overlays(&self, visible: &[serde_json::Value], now: u64) {
-        let ids: Vec<String> = visible
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
+    fn replace_overlays(&self, ids: Vec<String>, now: u64) {
         let mut overlays = self.state.overlays.lock().unwrap();
         overlays.clear();
         for id in ids {
@@ -1525,12 +1526,13 @@ impl DirectiveHandler {
     /// the snapshot stays control-plane-only: the engine routes no preview
     /// writer (`preview.set`, `scene.arm` — queued for the shell work).
     fn on_recall(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let p = take_payload(d)?;
         match d.target.get("itemRef") {
             Some(serde_json::Value::String(_)) => self.apply_take(d, false)?,
-            Some(serde_json::Value::Null) => self.clear_view(d),
+            Some(serde_json::Value::Null) => self.clear_view(&p),
             _ => {}
         }
-        if let Some(visible) = d.payload.get("visibleOverlays").and_then(|v| v.as_array()) {
+        if let Some(visible) = p.visible_overlays {
             self.replace_overlays(visible, self.state.master_frame().unwrap_or(0));
         }
         Ok(())
@@ -1543,7 +1545,7 @@ impl DirectiveHandler {
     /// the silent source (`audio_control.rs`), so the previous item is not left
     /// audible under an empty View. Its `item_ref` is empty: there is no item,
     /// and the audio path does not read it.
-    fn clear_view(&self, d: &DirectiveFrame) {
+    fn clear_view(&self, p: &TakePayload) {
         let start_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
         *self.state.transition.lock().unwrap() = None;
         *self.state.view_item.lock().unwrap() = None;
@@ -1551,12 +1553,7 @@ impl DirectiveHandler {
             .view_item_start_frame
             .store(start_frame, std::sync::atomic::Ordering::SeqCst);
         self.playing.clear();
-        let ramp_ms = d
-            .payload
-            .get("audio")
-            .and_then(|a| a.get("rampMs"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(10.0) as f32;
+        let ramp_ms = p.audio.as_ref().and_then(|a| a.ramp_ms).unwrap_or(10.0) as f32;
         self.state.audio_commands.lock().unwrap().push(
             crate::audio_control::AudioCommand::TakeItem {
                 item_ref: String::new(),
@@ -1632,11 +1629,17 @@ fn load_fallback_asset(package_path: &str) -> Result<FallbackSlate, DirectiveErr
     Ok(FallbackSlate { path, bytes })
 }
 
-fn duration_frames(d: &DirectiveFrame) -> Option<u32> {
-    d.payload
-        .get("durationFrames")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32)
+/// A take's payload, typed (`nbe_protocol::TakePayload`). A payload that does
+/// not read is refused, not half-applied: the control plane parses its take
+/// payloads through `TakeDirectivePayloadSchema` before sending them, so a
+/// malformed one is a defect to surface, not an input to guess around.
+fn take_payload(d: &DirectiveFrame) -> Result<TakePayload, DirectiveError> {
+    serde_json::from_value(d.payload.clone()).map_err(|e| {
+        DirectiveError::Invalid(format!(
+            "{}: the take payload does not read: {e}",
+            d.command
+        ))
+    })
 }
 
 /// `show.stop` payload flag with a SPEC default (both default when absent:

@@ -346,6 +346,65 @@ pub enum DirectiveKind {
     Directive,
 }
 
+/// The resolved payload of a directive that puts an item on the View:
+/// `view.take` (the control plane's cut also arrives as one) and
+/// `snapshot.recall` (SPEC §5.9.1: fully resolved, never re-resolved by the
+/// engine).
+///
+/// Two durations travel in it, and they are different things. The collision
+/// between them was a defect (SPEC v0.4.8 row 2). The engine scheduled an
+/// item's end from the one field, which was the transition's length. A cut
+/// carried none, so it never ended, and a mix ended a timed item at the mix's
+/// length.
+/// - [`Self::transition_duration_frames`] is the TRANSITION's length, §16.2's
+///   `durationFrames` as `resolveTransition` resolved it. A cut has none.
+/// - [`Self::item_duration_frames`] is the ITEM's own duration, the §16.4
+///   `durationFrames` of a timed item. An untimed item has none, and never
+///   ends.
+///
+/// The wire keeps §16.2's `durationFrames` for the transition and names the
+/// item's duration `itemDurationFrames`, so neither can be read as the other.
+/// Mirrored by `TakeDirectivePayloadSchema` in `protocol.ts`, which the control
+/// plane parses its own take payloads through before it sends them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakePayload {
+    /// `cut` | `mix` | … (§16.2). Absent means a cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    /// The transition's length in frames.
+    #[serde(
+        rename = "durationFrames",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transition_duration_frames: Option<u64>,
+    /// The item's own duration in frames, timed items only (v0.4.8 row 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_duration_frames: Option<u64>,
+    /// The take's audio (§8.7.3, §16.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<TakeAudio>,
+    /// `snapshot.recall` only: the snapshot's on-air overlays, wholesale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_overlays: Option<Vec<String>>,
+}
+
+/// A take's audio object (§16.2): the mode, its ramp, and a crossfade length
+/// when it differs from the video's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeAudio {
+    /// `follow` | `crossfade` | `cut` | `mute`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    /// The audio crossfade's length in frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_frames: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp_ms: Option<f64>,
+}
+
 /// The stub a telemetry field carries before its subsystem has run. §10.1.1:
 /// a consumer must never see a missing field.
 pub fn tap_none() -> String {

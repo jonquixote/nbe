@@ -644,3 +644,120 @@ fn the_specs_numbered_lists_number_consistently() {
         problems.join("\n  ")
     );
 }
+
+// ---------------------------------------------------------------------------
+// SPEC v0.4.8 row 2: the take payload's two durations
+// ---------------------------------------------------------------------------
+
+fn take_payload_fixture() -> serde_json::Value {
+    let path = repo_root().join("crates/nbe-protocol/tests/fixtures/take_payloads.json");
+    serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture is readable"))
+        .expect("the fixture is JSON")
+}
+
+/// Every JSON number as an f64, recursively, so `10` and `10.0` compare equal.
+fn numeric(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Number(n) => serde_json::json!(n.as_f64()),
+        serde_json::Value::Array(a) => a.iter().map(numeric).collect(),
+        serde_json::Value::Object(o) => o.iter().map(|(k, v)| (k.clone(), numeric(v))).collect(),
+        other => other.clone(),
+    }
+}
+
+/// The shared fixture, Rust's half (the control plane's half is in
+/// `protocol.test.ts`): every valid payload reads as `TakePayload` and
+/// round-trips byte-for-key, and every invalid one is refused, as the engine
+/// refuses it.
+#[test]
+fn take_payload_fixture_reads_round_trips_and_refuses() {
+    let fixture = take_payload_fixture();
+    let valid = fixture["valid"].as_array().expect("valid cases");
+    let invalid = fixture["invalid"].as_array().expect("invalid cases");
+    assert!(
+        valid.len() >= 5 && invalid.len() >= 3,
+        "the fixture is not empty"
+    );
+    for case in valid {
+        let wire = &case["payload"];
+        let p: TakePayload = serde_json::from_value(wire.clone())
+            .unwrap_or_else(|e| panic!("{}: does not read: {e}", case["name"]));
+        round_trip(&p);
+        // Numbers compare as numbers: the control plane writes `rampMs: 10`
+        // (a JavaScript number), Rust's f64 writes `10.0`, and both are 10.
+        assert_eq!(
+            numeric(&serde_json::to_value(&p).unwrap()),
+            numeric(wire),
+            "{}: what Rust writes back is what the control plane sent",
+            case["name"]
+        );
+    }
+    for case in invalid {
+        assert!(
+            serde_json::from_value::<TakePayload>(case["payload"].clone()).is_err(),
+            "{}: must be refused",
+            case["name"]
+        );
+    }
+}
+
+/// Rust's wire keys, each present in the TypeScript schema's block: the
+/// payload's five, and the audio object's three. The two durations are
+/// distinct keys on the wire, and that is the row's point.
+#[test]
+fn rust_and_typescript_agree_on_the_take_payload_fields() {
+    let full = TakePayload {
+        transition: Some("mix".into()),
+        transition_duration_frames: Some(15),
+        item_duration_frames: Some(150),
+        audio: Some(TakeAudio {
+            transition: Some("follow".into()),
+            duration_frames: Some(15),
+            ramp_ms: Some(10.0),
+        }),
+        visible_overlays: Some(vec!["lower_third".into()]),
+    };
+    let value = serde_json::to_value(&full).unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        ours,
+        [
+            "audio",
+            "durationFrames",
+            "itemDurationFrames",
+            "transition",
+            "visibleOverlays"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<BTreeSet<_>>(),
+        "the Rust payload's wire keys"
+    );
+    let audio: BTreeSet<String> = value["audio"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let ts = ts_protocol();
+    let start = ts
+        .find("TakeDirectivePayloadSchema = z")
+        .expect("TypeScript has a TakeDirectivePayloadSchema");
+    let uncommented: String = ts[start..]
+        .lines()
+        .map(|l| match l.trim_start().starts_with("//") {
+            true => "",
+            false => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // The payload's block ends at its own `.strict();` (the audio object's
+    // `.strict()` is followed by `.optional()`).
+    let block = &uncommented[..uncommented.find(".strict();").expect("schema terminates")];
+    for field in ours.iter().chain(audio.iter()) {
+        assert!(
+            block.contains(&format!("{field}:")),
+            "TypeScript's take payload has no `{field}` field"
+        );
+    }
+}

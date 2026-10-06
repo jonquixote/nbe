@@ -505,6 +505,38 @@ export type ResyncRequestFrame = z.infer<typeof ResyncRequestFrameSchema>;
  * nothing. Refusing it is the honest answer. An older engine simply never
  * sends this kind.
  */
+/**
+ * The resolved payload of a directive that puts an item on the View:
+ * `view.take` (the cut also arrives as one) and `snapshot.recall` (§5.9.1).
+ * Mirrored by `nbe_protocol::TakePayload` (the mirror audit reads this block).
+ *
+ * Two durations, never to be confused again (SPEC v0.4.8 row 2):
+ * - `durationFrames` is the TRANSITION's length, §16.2's field, resolved. A
+ *   cut has none.
+ * - `itemDurationFrames` is the ITEM's own duration, the §16.4
+ *   `durationFrames` of a timed item. An untimed item has none.
+ *
+ * The control plane parses every take payload through this before it sends
+ * one (`commands/view.ts` `takePayload`).
+ */
+export const TakeDirectivePayloadSchema = z
+  .object({
+    transition: z.enum(["cut", "mix", "wipe", "sting", "move", "dve"]).optional(),
+    durationFrames: z.number().int().min(0).max(600).optional(),
+    itemDurationFrames: z.number().int().min(1).optional(),
+    audio: z
+      .object({
+        transition: z.enum(["follow", "crossfade", "cut", "mute"]).optional(),
+        durationFrames: z.number().int().min(1).max(600).optional(),
+        rampMs: z.number().optional(),
+      })
+      .strict()
+      .optional(),
+    visibleOverlays: z.array(z.string()).optional(),
+  })
+  .strict();
+export type TakeDirectivePayload = z.infer<typeof TakeDirectivePayloadSchema>;
+
 export const AudioLevelCrossingFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
