@@ -578,7 +578,9 @@ jobs:
         # ITEM's duration; a superseded end is dropped; an untimed item never
         # ends; a timed item ends exactly once; a recall schedules its end; the
         # two durations are distinct wire keys; a payload that does not read is
-        # refused. Floors equal at the full count (8, new).
+        # refused. Floors equal at the full count (8, new). 8 -> 9 (PR #37's
+        # fix-forward): an unknown key is refused on the take, the cut and the
+        # recall (the payload is strict on both sides).
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test take_duration -- --nocapture 2>&1)
@@ -589,12 +591,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "take_duration: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=8 exercised>=8)"
-          if [ "$ran" -lt 8 ]; then
-            echo "FAIL take_duration: expected at least 8 tests to run, got $ran"; exit 1
+          echo "take_duration: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=9 exercised>=9)"
+          if [ "$ran" -lt 9 ]; then
+            echo "FAIL take_duration: expected at least 9 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 8 ]; then
-            echo "FAIL take_duration: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 9 ]; then
+            echo "FAIL take_duration: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "the protocol mirror actually ran (the wire audit, SPEC v0.4.8 row 2's trio)"
         # The mirror holds Rust, TypeScript and the spec to one wire. It had no
@@ -985,8 +987,10 @@ jobs:
         # failures. 2 tests (new), on the real engine built above: a cut to a
         # timed autoFollow item ends it at its own duration and advances once;
         # a 6-frame mix to a 60-frame autoFollow item does not advance at the
-        # mix's length, and advances once at the item's. The file never skips:
-        # a missing binary fails its `before`.
+        # mix's length, and advances once at the item's. 2 -> 3 (PR #37's
+        # fix-forward): a 0-frame mix to a timed item is a cut, the control
+        # plane and the engine agree on it, and it ends at its own duration.
+        # The file never skips: a missing binary fails its `before`.
         run: |
           set -u
           out=$(node --import tsx --test src/take-duration.e2e.ts 2>&1)
@@ -996,10 +1000,10 @@ jobs:
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "take-duration e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          echo "take-duration e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=3 exercised>=3)"
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL take-duration e2e: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 2 ]; then echo "FAIL take-duration e2e: expected at least 2 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 2 ]; then echo "FAIL take-duration e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 3 ]; then echo "FAIL take-duration e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 3 ]; then echo "FAIL take-duration e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
