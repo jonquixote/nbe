@@ -480,20 +480,28 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   }
 
   /** SPEC §5.9.4: the full snapshot, addressed to one connection. */
-  function sendResync(session: ClientSession): void {
+  /**
+   * Builds `show.resync` and sends it on `session`. Throws if the snapshot
+   * cannot be built; returns whether the socket accepted it. `sendDirect`
+   * swallows a send throw and reports `false` (backpressure or a failed
+   * send), so a caller that ignores the result cannot tell a resync that went
+   * out from one that did not.
+   */
+  function sendResync(session: ClientSession): boolean {
     const now = Date.now();
     const payload = state.resyncSnapshot(now);
-    session.render?.registration.sendDirect({
-      command: RESYNC_COMMAND,
-      target: {},
-      payload,
-      stateVersion: state.stateVersion,
-    });
+    const sent =
+      session.render?.registration.sendDirect({
+        command: RESYNC_COMMAND,
+        target: {},
+        payload,
+        stateVersion: state.stateVersion,
+      }) ?? false;
     // SPEC v0.4.8 row 3: a resync that re-establishes the on-air item's end
     // says what it did. An item whose duration elapsed during the outage ends
     // on receipt, late by `overdueMs`, on purpose.
     const end = payload.viewItemEnd as ResyncViewItemEnd | undefined;
-    if (end !== undefined) {
+    if (sent && end !== undefined) {
       const durationFrames = state.pkg?.items.get(end.itemRef)?.durationFrames ?? null;
       const rate = state.pkg?.houseRate ?? null;
       const elapsedMs = state.viewItemTakenAtMs === null ? null : now - state.viewItemTakenAtMs;
@@ -516,6 +524,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         },
       });
     }
+    return sent;
   }
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -591,21 +600,6 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     };
     clients.set(connId, session);
 
-    // Render-role sessions receive directives: register a fan-out sender.
-    if (session.role === "render") {
-      const renderSender = (frame: RenderDirective): boolean => {
-        if (session.closed) return false;
-        if (ws.bufferedAmount > 256 * 1024) return false; // backpressure: drop, never block dispatch
-        ws.send(JSON.stringify(frame));
-        return true;
-      };
-      session.render = { registration: wsBridge.register(renderSender), lastApplied: null };
-      // SPEC §5.9.4: show.resync goes out before any other directive on this
-      // connection. Directives issued while no node was connected are never
-      // replayed — the snapshot is the recovery mechanism.
-      sendResync(session);
-    }
-
     const startTelemetry = (intervalMs: number): void => {
       if (session.telemetryTimer) clearInterval(session.telemetryTimer);
       session.telemetryTimer = setInterval(() => {
@@ -630,6 +624,23 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       session.telemetryTimer = null;
     };
 
+    /**
+     * Everything this connection registered, released: the client entry, the
+     * render registration, the telemetry timer. Idempotent, because a failed
+     * handshake and the close that follows it both call it.
+     */
+    const forget = (): void => {
+      session.closed = true;
+      stopTelemetry();
+      session.render?.registration.unregister();
+      clients.delete(connId);
+    };
+
+    // Listeners FIRST: this connection's frames are processed from its first
+    // moment, and its close is always heard. They used to be installed after
+    // the render handshake below, so a throw in the handshake skipped them:
+    // the session stayed registered, its frames went unprocessed, and its
+    // close went unnoticed (PR #38's falsification F3, the zombie).
     ws.on("message", (buf: Buffer) => {
       // Commands execute strictly in arrival order on this connection;
       // an async handler (show.load's preflight subprocess) must not race
@@ -643,18 +654,50 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       );
     });
 
-    ws.on("close", () => {
-      session.closed = true;
-      stopTelemetry();
-      session.render?.registration.unregister();
-      clients.delete(connId);
-    });
-    ws.on("error", () => {
-      session.closed = true;
-      stopTelemetry();
-      session.render?.registration.unregister();
-      clients.delete(connId);
-    });
+    ws.on("close", forget);
+    ws.on("error", forget);
+
+    // Render-role sessions receive directives: register a fan-out sender, and
+    // complete SPEC §5.9.4's handshake: show.resync goes out before any other
+    // directive on this connection. Directives issued while no node was
+    // connected are never replayed; the snapshot is the recovery mechanism.
+    //
+    // **The handshake invariant: a connect either completes its resync or
+    // leaves NO registration. There is no third state.** Register, build and
+    // send run inside one guard. Any throw (the snapshot's strict parse, a
+    // builder) or an unsent resync (`sendDirect` reports a send failure as
+    // `false`) deregisters the session, closes the socket with 1011 and a
+    // reason the engine sees, and is surfaced in the audit log
+    // (`resync.handshakeFailed`) and through `warn`. Never a silent swallow.
+    // The engine's reconnect loop then retries against a clean slate.
+    if (session.role === "render") {
+      const renderSender = (frame: RenderDirective): boolean => {
+        if (session.closed) return false;
+        if (ws.bufferedAmount > 256 * 1024) return false; // backpressure: drop, never block dispatch
+        ws.send(JSON.stringify(frame));
+        return true;
+      };
+      try {
+        session.render = { registration: wsBridge.register(renderSender), lastApplied: null };
+        if (!sendResync(session)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        forget();
+        audit.record({
+          kind: "command",
+          outcome: "rejected",
+          role: session.role,
+          tokenId: session.tokenId,
+          command: RESYNC_COMMAND,
+          event: "resync.handshakeFailed",
+          stateVersionBefore: state.stateVersion,
+          stateVersionAfter: state.stateVersion,
+          detail: { error },
+        });
+        deps.warn?.(`show.resync handshake failed; the render connection is closed and holds no registration: ${error}`);
+        ws.close(1011, "show.resync handshake failed");
+      }
+    }
 
     async function handleMessage(raw: string): Promise<void> {
       let parsed: unknown;
