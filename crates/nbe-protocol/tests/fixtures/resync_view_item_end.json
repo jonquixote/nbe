@@ -1,0 +1,23 @@
+{
+  "$comment": [
+    "SPEC v0.4.8 row 3: show.resync's `viewItemEnd`, the on-air timed item's end re-established",
+    "on a restarted engine. Read by BOTH readers: nbe-protocol's mirror (ResyncViewItemEnd, which",
+    "the engine reads) and the control plane's protocol.test.ts (ResyncViewItemEndSchema, which",
+    "the control plane parses its own snapshot's end through before sending). `valid` must read on",
+    "both sides and round-trip in Rust; `invalid` must be refused by both. remainingFrames is the",
+    "item's own duration less the time since the take, rounded up and clamped at zero: zero ends",
+    "the item on receipt."
+  ],
+  "valid": [
+    { "name": "a timed item with time left", "end": { "itemRef": "A1", "remainingFrames": 150 } },
+    { "name": "the clamped zero: the duration elapsed during the outage", "end": { "itemRef": "A1", "remainingFrames": 0 } }
+  ],
+  "invalid": [
+    { "name": "a negative remaining time (an unclamped overdue item)", "end": { "itemRef": "A1", "remainingFrames": -30 } },
+    { "name": "a fractional frame count", "end": { "itemRef": "A1", "remainingFrames": 1.5 } },
+    { "name": "a remaining time that is not a number", "end": { "itemRef": "A1", "remainingFrames": "150" } },
+    { "name": "no item named", "end": { "remainingFrames": 150 } },
+    { "name": "no remaining time", "end": { "itemRef": "A1" } },
+    { "name": "an unknown key", "end": { "itemRef": "A1", "remainingFrames": 150, "remainingMs": 5000 } }
+  ]
+}

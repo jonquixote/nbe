@@ -2872,14 +2872,19 @@ started at load 2.27–2.46.
 tripwire are in the register row (`docs/soak-protocol.md` §5) and under Finding
 R11 above. The autoFollow decision is recorded above.
 
-**Queued (its own PR, after this one): the resync-end gap.** `on_resync` never
+~~**Queued (its own PR, after this one): the resync-end gap.**~~ **FIXED** by
+`299038b` (SPEC v0.4.8 row 3, `acd5857`; branch `resync-end-fix`; the record
+is below). `on_resync` never
 schedules a timed item's remaining end. It sets the View and its start frame,
 but it neither begins a playback generation nor calls `schedule_done`, and the
 resync snapshot carries no item duration to schedule from (`state.ts`
 `resyncSnapshot`). So an engine restart strands a timed item on air: it never
-ends, and autoFollow stops there. A reconnect without a restart keeps the
-original pending end, because `on_resync` leaves the generation alone. Found by
-PR #37's two-key pass; recorded on the user's word of 2026-10-06.
+ends, and autoFollow stops there. ~~A reconnect without a restart keeps the
+original pending end, because `on_resync` leaves the generation alone.~~ *(§2c,
+v0.4.8 row 3: a resync that carries `viewItemEnd` now supersedes the pending
+end with its own, at the same time; one that carries none still leaves the
+generation alone.)* Found by PR #37's two-key pass; recorded on the user's word
+of 2026-10-06.
 
 **The gate, run twice (§2c: the first run is void).**
 - **The first run, from 02:00, was partly on battery.** The charger came out
@@ -2923,6 +2928,158 @@ PR #37's two-key pass; recorded on the user's word of 2026-10-06.
 reaches the client as `E_ENGINE`, because `server.ts` maps any error that is not
 a `CpError` to it, though the engine was never contacted. After this fix no
 accepted command reaches that path; the invariant tests force it.
+
+### The resync-end fix — a restarted engine still ends the timed item (2026-10-07, branch `resync-end-fix`)
+
+**The defect** was recorded by PR #37's two-key pass and queued by the user's
+word of 2026-10-06. `on_resync` re-applied the show's state: the View, the
+overlays, and the slate's engage and release. It never scheduled the on-air
+timed item's remaining end, and the resync snapshot carried no duration. So
+an engine restart stranded a timed item on air: no `itemEvent end` ever fired,
+and autoFollow stopped dead mid-rundown. It is the resync half of the family
+that PR #35 closed for recall.
+
+**The fix.** The landing is `299038b`, the floors `113a6a1`, the spec row
+`acd5857`.
+- **The wire.** The `show.resync` snapshot gains `viewItemEnd: { itemRef,
+  remainingFrames }`, carried with its audit trio:
+  `nbe_protocol::ResyncViewItemEnd` (`deny_unknown_fields`),
+  `ResyncViewItemEndSchema` (strict), and the shared fixture
+  `resync_view_item_end.json` (2 valid, the clamped zero among them; 6
+  invalid).
+  - It is present only while the on-air item is timed and `PLAYING`. An item
+    that already ended is not ended again, and an untimed one never ends.
+- **The remaining time is computed by the control plane** (`state.ts`
+  `viewItemEnd`), because the engine has no package and its tick names no
+  `viewItem`. It is the item's `itemDurationFrames` (v0.4.8 row 2) less the
+  wall-clock time since the control plane's own take (`viewItemTakenAtMs`,
+  new, set by a take and by a recall that changes the View), rounded **up** to
+  a whole frame, so rounding never ends it early, and clamped to
+  `[0, duration]`.
+- **Its error bound: good to about a frame.** The control plane's take
+  precedes the engine's apply by a local hop. The engine counts the original
+  end from its apply, and the item airs at `master+1`, up to one frame after.
+  Rounding up adds less than a frame. A wall clock stepped backwards cannot
+  lengthen the item past its duration.
+
+  *Refined by the two-key pass (the user's word of 2026-10-08):* **the
+  rescheduled end is not strictly late-only.**
+  - A healthy engine fires the end at `t_take + h + D`, where `h` is the
+    take's local hop, from the control plane's stamp to the engine's apply.
+  - The resync's end lands at `t_take + D + h' + q`, where `h'` is the
+    resync's hop and `q` is the rounding, `0 ≤ q <` one frame.
+  - The difference is `h' − h + q`. Rounding is late-only, but the end as a
+    whole can come early by the take's local hop when the resync's hop is
+    shorter. Both hops are local, so it stays well under two frames, `master+1`
+    included.
+
+  The spec's "good to about a frame" stands accurate.
+- **The clamp's semantics.** Ends are counted in wall-clock time from the
+  apply, so an item that should have ended during the outage ends **at resync
+  time**: its remaining time is zero, the end fires on receipt, and autoFollow
+  advances. The end arrives late by the outage, on purpose. The audit says
+  what happened: `sendResync` records `resync.viewItemEnd` with the item,
+  `remainingFrames`, `durationFrames`, `elapsedMs` and `overdueMs`.
+- **The engine.** `on_resync` reads `viewItemEnd` **before** it applies
+  anything. One that does not read, or that names another item than
+  `viewItem`, refuses the resync, as an unreadable take payload refuses a
+  take. After re-applying the View, it schedules the end through the take's
+  own machinery: `playing.begin` supersedes any end still pending, so a resync
+  on a healthy engine leaves exactly one, at the right time. Without an end,
+  the generation is left alone, so a resync that carries none (untimed, done,
+  or from a control plane older than this row) cannot cancel a pending end.
+
+**The tree, against the order, on three points.**
+- **§13.4.1 needs no amendment.** `show.resync` is directive-only and has no
+  row. The end it restores is the `view.take`/`view.cut` row's own deferred
+  `mediaEnd` edge ("a timed item's `end` is scheduled for its duration"),
+  which an engine restart used to sever. No row's edge set changes. The change
+  still rides as v0.4.8 row 3, because §5.9.4's snapshot gains a field and a
+  sentence.
+- **The reconnect suite has no floor step.** `reconnect.rs` is two wire-level
+  tests inside the workspace run, and it is untouched. The engine's pins went
+  to a new handler-level suite, `resync_end.rs` (7), with its own floor.
+- **The sibling sentence is not yet true.** The order's sentence is "resync's
+  application is now complete for everything §13.4.1 says a take does". Its
+  siblings are the recall leg (#35), the slate parity (#34), and now the end.
+  Read cell by cell against the take/cut row:
+  - **stateChange.** The engine's half, releasing the operator's slate, is
+    reconciled by a resync since #34.
+  - **mediaEnd.** A deferred end, which cancels the previous pending end, is
+    re-established by this row.
+  - **Other triggers, `audioLevel`, deferred: "the take swaps the clip bus's
+    source".** **This cell still distinguishes resync from take.**
+    `on_resync` never touches the audio graph, so after an engine restart the
+    on-air item's clip bus stays silent.
+
+  So the sentence would be true for the slate and the end, and false for the
+  clip bus. It is recorded as false, with the cell named.
+
+~~**Observed, not changed (each the user's word):**~~ **Queued** (the user's
+word of 2026-10-08, §2c: these two were recorded as observed). The prompt map
+keeps no current queue list (its queue sections, after 07 and after Prompt 09,
+are historical), so the order is stated here:
+1. **At the top of the queue after this merge: the zombie registration.**
+   `sendResync` runs before the connection handler installs the socket's
+   listeners (`server.ts`: `register`, then `sendResync`, then the `message`
+   and `close` handlers). Falsification F3 showed the shape:
+   - the strict parse throws inside the connection handler;
+   - the engine is registered but never resynced, so §5.9.4 makes it hold and
+     apply nothing;
+   - the control plane never processes its frames, and never notices the
+     engine go.
+
+   The clamp makes it unreachable from the end's computation, but any throw
+   while the snapshot is built does the same. **The fix direction:** install
+   the listeners before `sendResync`, or deregister the session on a throw.
+2. **Behind it: the package-reload gap, a design question.** The control
+   plane sends `packagePath` in the snapshot, but `on_resync` never reads it;
+   only `show.load` does (`directive.rs`), and §5.9.4's field list does not
+   name it. A restarted engine rejoins with the View, the overlays and now the
+   end, but without the show's media: it cannot render the item it was told
+   is on air, which compounds the clip-bus cell above. What a restarted engine
+   should reload ("package, assets, overlays") is a resync-semantics decision
+   for the user.
+
+**Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
+`npm test` 129 → 134; the resync-end end-to-end 3, new):
+- **`resync_end.rs`:**
+  - a restarted engine ends the item at its remaining time;
+  - an overdue one ends on receipt;
+  - a redundant resync on a healthy engine leaves exactly one end;
+  - an untimed item schedules nothing;
+  - a resync with no end leaves a pending one alone;
+  - an end that does not read, or names another item, refuses the resync
+    before anything applies;
+  - a stopped show drops the end.
+- **The audit trio:** mirror +2, `protocol.test.ts` +1.
+- **`resync-snapshot.test.ts` (4):**
+  - the remaining time from the take, rounded up;
+  - clamped at both ends;
+  - none for an untimed, done or empty View;
+  - a recall starts the clock.
+- **`resync-end.e2e.ts` (3), a real engine killed and restarted:**
+  - an 8 s item restarted at 3 s ends at its own 8 s and advances once;
+  - a 2 s item whose duration elapses during the outage ends on receipt, and
+    the audit says so;
+  - an untimed item across a restart: nothing ends.
+
+**Falsified** on the normative machine. Each mutation was restored from a
+saved copy, checked identical, and both engine binaries rebuilt. Every run
+started at load 2.19–2.48, on AC under `caffeinate`, with no sleep or battery
+event in the window (22:30–22:50). The runs are power-limited (§2a): the
+adapter is 45 W, and the battery discharged on AC in 40 of 229 samples, down
+to −1201 mA.
+
+| # | Mutation | Signature |
+|---|---|---|
+| F1 | Engine: `on_resync`'s scheduling reverted (the pre-fix tree) | `resync_end` 5 of 7: `the end arrives at the remaining 300 ms`, `left: 0`; `an overdue item ends on receipt of the resync`, `left: 0`. End to end: `autoFollow must advance R1 -> R2 at R1's end after the restart; the View is still R1 (outage 110 ms)`, and S1 never advances |
+| F2 | Control plane: the FULL duration sent instead of the remaining time | unit 1 of 4: `remainingFrames: 90` for `60`, `90` for `1`, `90` for `0`, `90` for `75`. End to end: `R1 must end at its own 8000 ms from the take, not its full duration from the restart: ended 11103 ms after the take (delta 3103 ms; outage 105 ms)`, and S1's overdue end came `1992 ms after the engine returned` |
+| F3 | Control plane: the clamp at zero removed | unit: the clamp test fails with `ZodError` (`too_small`, the strict parse refusing a negative). End to end, the misbehaviour: the parse throws inside the connection handler at `sendResync`, before the socket's listeners are installed. The restarted engine is registered but never resynced, so S1 stays on air (`the View is still S1`). When the engine is killed again, `the control plane never noticed the engine go` |
+| F4 | Engine: `is_current` always true (a superseded end not dropped) | `(ends by 800 ms, ends after): one end, never two`, `left: (2, 0)` |
+| F5a | Engine: a resync ends the View item with no end on the snapshot | `untimed items, a fresh resync and a resync after a take: no end`, `left: (0, 1)` |
+| F5b | Control plane: an end sent for an untimed item | unit: `untimed: { itemRef: 'U1', remainingFrames: 0 }` for `undefined`. End to end: `resyncEnds: [ { itemRef: 'U1', remainingFrames: 0, durationFrames: null, … } ]` for `[]` |
+| F6 | Engine: the item check removed | `another item than the View: ()`: the resync that names T2 while T1 is on air is accepted |
 
 
 ---

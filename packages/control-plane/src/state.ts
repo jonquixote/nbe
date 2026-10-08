@@ -8,7 +8,7 @@
 //! - No mutate-then-throw: every precondition check runs before any write.
 //! - Persistance lives in `persistence.ts` (async, dirty-flag + debounce).
 
-import { CpError } from "./protocol.js";
+import { CpError, ResyncViewItemEndSchema, type ResyncViewItemEnd } from "./protocol.js";
 
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
 export type SceneState = "IDLE" | "ARMED" | "VIEW" | "TRANSITIONING";
@@ -136,6 +136,14 @@ export class ControlPlaneState {
    * between bounded and unbounded error.
    */
   viewItemStartFrame: number | null = null;
+  /**
+   * Wall-clock time (`Date.now()`) of the take that put `viewItem` on air: the
+   * control plane's own apply point. A resync computes the timed item's
+   * remaining time from it (`viewItemEnd`, SPEC v0.4.8 row 3). The engine
+   * applies the take a local hop later and airs it at master+1, so the
+   * estimate is good to about a frame.
+   */
+  viewItemTakenAtMs: number | null = null;
   /** Last `masterClockFrame` the engine reported, for the field above. */
   lastKnownMasterFrame = 0;
   previewItem: string | null = null;
@@ -261,6 +269,7 @@ export class ControlPlaneState {
     this.itemStates.set(itemRef, next);
     this.viewItem = itemRef;
     this.viewItemStartFrame = this.lastKnownMasterFrame;
+    this.viewItemTakenAtMs = Date.now();
     if (this.previewItem === itemRef) this.previewItem = null;
     this.fallbackActive = false;
     return next;
@@ -318,12 +327,35 @@ export class ControlPlaneState {
    * render-role connection. This — not a replayed backlog — is how a render
    * node recovers.
    */
-  resyncSnapshot(): Record<string, unknown> {
+  /**
+   * The on-air timed item's end, for a resync (SPEC v0.4.8 row 3): the item's
+   * own duration less the wall-clock time since the take, rounded UP to a
+   * whole frame (so rounding never ends it early) and clamped to
+   * `[0, duration]`. Zero means the duration elapsed while the engine was away,
+   * and the end fires on receipt, late by the outage, on purpose. `undefined`
+   * unless the item is timed and still `PLAYING`: an untimed item never ends,
+   * and an item that already ended is not ended again. Parsed through
+   * `ResyncViewItemEndSchema` before it is sent.
+   */
+  viewItemEnd(nowMs: number = Date.now()): ResyncViewItemEnd | undefined {
+    const itemRef = this.viewItem;
+    if (itemRef === null || this.viewItemTakenAtMs === null || this.itemStateOf(itemRef) !== "PLAYING") return undefined;
+    const durationFrames = this.pkg?.items.get(itemRef)?.durationFrames;
+    if (durationFrames == null) return undefined;
+    const rate = this.requirePackage().houseRate;
+    const remainingMs = (durationFrames * 1000) / rate - (nowMs - this.viewItemTakenAtMs);
+    const remainingFrames = Math.min(durationFrames, Math.max(0, Math.ceil((remainingMs * rate) / 1000)));
+    return ResyncViewItemEndSchema.parse({ itemRef, remainingFrames });
+  }
+
+  resyncSnapshot(nowMs: number = Date.now()): Record<string, unknown> {
+    const viewItemEnd = this.viewItemEnd(nowMs);
     return {
       showState: this.showState,
       packagePath: this.pkg?.packagePath ?? null,
       viewItem: this.viewItem,
       viewItemStartFrame: this.viewItem === null ? null : this.viewItemStartFrame,
+      ...(viewItemEnd === undefined ? {} : { viewItemEnd }),
       previewItem: this.previewItem,
       itemStates: Object.fromEntries(this.itemStates),
       sceneStates: Object.fromEntries(this.sceneStates),
@@ -385,6 +417,7 @@ export class ControlPlaneState {
     // a start frame: nothing reads one.)
     if (snap.viewItem !== this.viewItem) {
       this.viewItemStartFrame = snap.viewItem === null ? null : this.lastKnownMasterFrame;
+      this.viewItemTakenAtMs = snap.viewItem === null ? null : Date.now();
     }
     this.viewItem = snap.viewItem;
     this.previewItem = snap.previewItem;
@@ -403,6 +436,7 @@ export class ControlPlaneState {
     this.showState = "LOADED";
     this.preflightPassed = false;
     this.viewItem = null;
+    this.viewItemTakenAtMs = null;
     this.previewItem = null;
     this.itemStates.clear();
     this.sceneStates.clear();
@@ -418,6 +452,7 @@ export class ControlPlaneState {
     this.pkg = null;
     this.showState = "UNLOADED";
     this.viewItem = null;
+    this.viewItemTakenAtMs = null;
     this.previewItem = null;
     this.itemStates.clear();
     this.sceneStates.clear();

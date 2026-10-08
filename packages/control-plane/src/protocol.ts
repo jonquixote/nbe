@@ -537,6 +537,24 @@ export const TakeDirectivePayloadSchema = z
   .strict();
 export type TakeDirectivePayload = z.infer<typeof TakeDirectivePayloadSchema>;
 
+/**
+ * `show.resync`'s `viewItemEnd` (SPEC v0.4.8 row 3, §5.9.4): the on-air timed
+ * item's end, re-established on a restarted engine. Mirrored by
+ * `nbe_protocol::ResyncViewItemEnd` (the mirror audit reads this block).
+ *
+ * `remainingFrames` is the item's own `itemDurationFrames` less the wall-clock
+ * time since the control plane's take, rounded up to a whole frame and clamped
+ * at zero (`state.ts` `viewItemEnd`). Zero ends the item on receipt. The
+ * control plane parses its own end through this before it sends a resync.
+ */
+export const ResyncViewItemEndSchema = z
+  .object({
+    itemRef: z.string(),
+    remainingFrames: z.number().int().min(0),
+  })
+  .strict();
+export type ResyncViewItemEnd = z.infer<typeof ResyncViewItemEndSchema>;
+
 export const AudioLevelCrossingFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),

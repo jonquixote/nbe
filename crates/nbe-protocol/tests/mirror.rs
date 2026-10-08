@@ -761,3 +761,91 @@ fn rust_and_typescript_agree_on_the_take_payload_fields() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// SPEC v0.4.8 row 3: show.resync's `viewItemEnd`
+// ---------------------------------------------------------------------------
+
+fn resync_end_fixture() -> serde_json::Value {
+    let path = repo_root().join("crates/nbe-protocol/tests/fixtures/resync_view_item_end.json");
+    serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture is readable"))
+        .expect("the fixture is JSON")
+}
+
+/// The shared fixture, Rust's half (the control plane's half is in
+/// `protocol.test.ts`): every valid end reads as `ResyncViewItemEnd` and
+/// round-trips exactly, the clamped zero included, and every invalid one is
+/// refused, as the engine refuses the resync that carries it.
+#[test]
+fn resync_view_item_end_fixture_reads_round_trips_and_refuses() {
+    let fixture = resync_end_fixture();
+    let valid = fixture["valid"].as_array().expect("valid cases");
+    let invalid = fixture["invalid"].as_array().expect("invalid cases");
+    assert!(
+        valid.len() >= 2 && invalid.len() >= 6,
+        "the fixture is not empty"
+    );
+    assert!(
+        valid.iter().any(|c| c["end"]["remainingFrames"] == 0),
+        "the clamped zero is among the valid cases"
+    );
+    for case in valid {
+        let wire = &case["end"];
+        let end: ResyncViewItemEnd = serde_json::from_value(wire.clone())
+            .unwrap_or_else(|e| panic!("{}: does not read: {e}", case["name"]));
+        round_trip(&end);
+        assert_eq!(
+            &serde_json::to_value(&end).unwrap(),
+            wire,
+            "{}: what Rust writes back is what the control plane sent",
+            case["name"]
+        );
+    }
+    for case in invalid {
+        assert!(
+            serde_json::from_value::<ResyncViewItemEnd>(case["end"].clone()).is_err(),
+            "{}: must be refused",
+            case["name"]
+        );
+    }
+}
+
+/// Rust's wire keys and `ResyncViewItemEndSchema`'s, in both directions: the
+/// object is small enough to pin exactly.
+#[test]
+fn rust_and_typescript_agree_on_the_resync_view_item_end_fields() {
+    let value = serde_json::to_value(ResyncViewItemEnd {
+        item_ref: "A1".into(),
+        remaining_frames: 0,
+    })
+    .unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        ours,
+        ["itemRef", "remainingFrames"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "the Rust end's wire keys"
+    );
+    let ts = ts_protocol();
+    let start = ts
+        .find("ResyncViewItemEndSchema = z")
+        .expect("TypeScript has a ResyncViewItemEndSchema");
+    let rest = &ts[start..];
+    let block = &rest[..rest.find(".strict();").expect("the schema is strict")];
+    let theirs: BTreeSet<String> = block
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter_map(|l| {
+            let t = l.trim_start();
+            let key = t.split(':').next()?;
+            (t.contains(':') && key.chars().all(|c| c.is_ascii_alphanumeric()))
+                .then(|| key.to_string())
+        })
+        .collect();
+    assert_eq!(
+        ours, theirs,
+        "Rust's and TypeScript's resync end have the same keys"
+    );
+}

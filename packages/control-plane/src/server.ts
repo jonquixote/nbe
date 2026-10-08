@@ -22,6 +22,7 @@ import {
   okResponse,
   resolveCommand,
   RESYNC_COMMAND,
+  type ResyncViewItemEnd,
   type Role,
 } from "./protocol.js";
 import {
@@ -480,12 +481,41 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
 
   /** SPEC §5.9.4: the full snapshot, addressed to one connection. */
   function sendResync(session: ClientSession): void {
+    const now = Date.now();
+    const payload = state.resyncSnapshot(now);
     session.render?.registration.sendDirect({
       command: RESYNC_COMMAND,
       target: {},
-      payload: state.resyncSnapshot(),
+      payload,
       stateVersion: state.stateVersion,
     });
+    // SPEC v0.4.8 row 3: a resync that re-establishes the on-air item's end
+    // says what it did. An item whose duration elapsed during the outage ends
+    // on receipt, late by `overdueMs`, on purpose.
+    const end = payload.viewItemEnd as ResyncViewItemEnd | undefined;
+    if (end !== undefined) {
+      const durationFrames = state.pkg?.items.get(end.itemRef)?.durationFrames ?? null;
+      const rate = state.pkg?.houseRate ?? null;
+      const elapsedMs = state.viewItemTakenAtMs === null ? null : now - state.viewItemTakenAtMs;
+      const durationMs = durationFrames === null || rate === null ? null : (durationFrames * 1000) / rate;
+      audit.record({
+        kind: "command",
+        outcome: "ok",
+        role: session.role,
+        tokenId: session.tokenId,
+        command: RESYNC_COMMAND,
+        event: "resync.viewItemEnd",
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+        detail: {
+          itemRef: end.itemRef,
+          remainingFrames: end.remainingFrames,
+          durationFrames,
+          elapsedMs,
+          overdueMs: elapsedMs === null || durationMs === null ? null : Math.max(0, Math.round(elapsedMs - durationMs)),
+        },
+      });
+    }
   }
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {

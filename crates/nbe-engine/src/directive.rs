@@ -4,7 +4,7 @@
 
 use crate::render::{VIEW_H, VIEW_W};
 use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing, StreamState};
-use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent, TakePayload};
+use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent, ResyncViewItemEnd, TakePayload};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1407,6 +1407,26 @@ impl DirectiveHandler {
 
     fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let snapshot = &d.payload;
+        // SPEC v0.4.8 row 3: the on-air timed item's end, read BEFORE anything
+        // is applied. An end that does not read, or that names an item other
+        // than the snapshot's `viewItem`, refuses the resync, as an unreadable
+        // take payload refuses a take, and nothing moves.
+        let view_item_end = match snapshot.get("viewItemEnd") {
+            None => None,
+            Some(v) => {
+                let end: ResyncViewItemEnd = serde_json::from_value(v.clone()).map_err(|e| {
+                    DirectiveError::Invalid(format!("show.resync: viewItemEnd does not read: {e}"))
+                })?;
+                let view = snapshot.get("viewItem").and_then(|v| v.as_str());
+                if view != Some(end.item_ref.as_str()) {
+                    return Err(DirectiveError::Invalid(format!(
+                        "show.resync: viewItemEnd names `{}`, but the snapshot's View is {view:?}",
+                        end.item_ref
+                    )));
+                }
+                Some(end)
+            }
+        };
         let show_state = snapshot
             .get("showState")
             .and_then(|v| v.as_str())
@@ -1452,6 +1472,19 @@ impl DirectiveHandler {
             self.state
                 .view_item_start_frame
                 .store(t0, std::sync::atomic::Ordering::SeqCst);
+        }
+        // SPEC v0.4.8 row 3: re-establish the on-air timed item's end through
+        // the take's own generation machinery. Until this, a resync re-applied
+        // the View but never its end, so an engine restart left a timed item
+        // on air for good and autoFollow stopped there. `begin` supersedes any
+        // end still pending (a resync on a healthy engine), so exactly one end
+        // is ever pending; zero frames fires on receipt (the item's duration
+        // elapsed during the outage). With no end the generation is left
+        // alone: an untimed item never ends, and a resync that carries none
+        // cannot cancel an end that is pending.
+        if let Some(end) = view_item_end {
+            let generation = self.playing.begin(&end.item_ref);
+            self.schedule_done(end.item_ref, end.remaining_frames as u32, generation);
         }
         // A resync supersedes any transition the engine was mid-way through:
         // the snapshot is the state, not a waypoint toward it. Unconditional —
