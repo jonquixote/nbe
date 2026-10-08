@@ -197,6 +197,13 @@ async fn resync_after_outage_is_snapshot_not_replay() {
     assert!(out.iter().any(|f| matches!(f, nbe_protocol::EngineFrame::AppliedStateVersion { state_version, .. } if *state_version == 7))    );
 }
 
+// SPEC v0.4.8 row 2 (§2c): these three tests (four takes) sent the item's
+// duration as `durationFrames`, the TRANSITION's field, and the engine read it
+// back as the item's. They pinned the collision. The item's duration is
+// `itemDurationFrames` now, and without that change the two "no end" guards
+// below would pass vacuously: a cut whose payload carries only `durationFrames`
+// schedules no end at all. (§2c, PR #37's two-key pass: this said "four
+// tests".)
 #[tokio::test]
 async fn item_end_emitted_after_timed_duration() {
     let (handler, state, outgoing) = make_engine();
@@ -204,7 +211,7 @@ async fn item_end_emitted_after_timed_duration() {
     let d = directive(
         "view.take",
         7,
-        serde_json::json!({ "transition": "cut", "durationFrames": 3 }),
+        serde_json::json!({ "transition": "cut", "itemDurationFrames": 3 }),
         serde_json::json!({ "itemRef": "A1" }),
     );
     handler.apply(&d).await.unwrap();
@@ -297,7 +304,7 @@ async fn a_stopped_show_emits_no_item_end() {
     let d = directive(
         "view.take",
         7,
-        serde_json::json!({ "transition": "cut", "durationFrames": 3 }),
+        serde_json::json!({ "transition": "cut", "itemDurationFrames": 3 }),
         serde_json::json!({ "itemRef": "A1" }),
     );
     handler.apply(&d).await.unwrap();
@@ -327,14 +334,14 @@ async fn superseded_take_emits_no_late_item_end() {
     let first = directive(
         "view.take",
         3,
-        serde_json::json!({ "transition": "cut", "durationFrames": 3 }),
+        serde_json::json!({ "transition": "cut", "itemDurationFrames": 3 }),
         serde_json::json!({ "itemRef": "A1" }),
     );
     handler.apply(&first).await.unwrap();
     let second = directive(
         "view.take",
         4,
-        serde_json::json!({ "transition": "cut", "durationFrames": 900 }),
+        serde_json::json!({ "transition": "cut", "itemDurationFrames": 900 }),
         serde_json::json!({ "itemRef": "B1" }),
     );
     handler.apply(&second).await.unwrap();

@@ -1,0 +1,42 @@
+{
+  "$comment": [
+    "SPEC v0.4.8 row 2: the resolved payload of a directive that puts an item on the View",
+    "(view.take, the control plane's cut, snapshot.recall). Read by BOTH readers:",
+    "nbe-protocol's mirror (TakePayload, which the engine reads) and the control plane's",
+    "protocol.test.ts (TakeDirectivePayloadSchema, which the control plane parses its own",
+    "payloads through before sending). `valid` must read on both sides and round-trip in Rust;",
+    "`invalid` must be refused by both, an unknown key included (strict on both sides since",
+    "PR #37's fix-forward). durationFrames is the TRANSITION's length;",
+    "itemDurationFrames is the ITEM's own duration. The two are never the same field."
+  ],
+  "valid": [
+    { "name": "a cut to an untimed item", "payload": { "transition": "cut" } },
+    { "name": "a cut to a timed item", "payload": { "transition": "cut", "itemDurationFrames": 150 } },
+    {
+      "name": "a mix to a timed item: both durations, and they differ",
+      "payload": {
+        "transition": "mix",
+        "durationFrames": 15,
+        "itemDurationFrames": 150,
+        "audio": { "transition": "follow", "durationFrames": 15, "rampMs": 10 }
+      }
+    },
+    {
+      "name": "a recall of a timed item, overlays wholesale",
+      "payload": {
+        "transition": "cut",
+        "audio": { "transition": "follow" },
+        "itemDurationFrames": 60,
+        "visibleOverlays": ["lower_third"]
+      }
+    },
+    { "name": "a recall of an empty View", "payload": { "transition": "cut", "audio": { "transition": "follow" }, "visibleOverlays": [] } }
+  ],
+  "invalid": [
+    { "name": "an item duration that is not a number", "payload": { "transition": "cut", "itemDurationFrames": "six" } },
+    { "name": "a transition length that is not a number", "payload": { "transition": "mix", "durationFrames": "fifteen" } },
+    { "name": "overlays that are not a list", "payload": { "transition": "cut", "visibleOverlays": "lower_third" } },
+    { "name": "an unknown key: a misspelt item duration (the two-key pass's M8 class)", "payload": { "transition": "cut", "itemDuration": 150 } },
+    { "name": "an unknown key in the audio object", "payload": { "transition": "mix", "durationFrames": 15, "audio": { "transition": "follow", "curve": "linear" } } }
+  ]
+}

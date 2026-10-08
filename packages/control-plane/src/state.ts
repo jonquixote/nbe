@@ -368,9 +368,15 @@ export class ControlPlaneState {
     });
   }
 
-  recallSnapshot(name: string): void {
+  /** The snapshot `name`, read only. `snapshot.recall` builds its directive from it before `recallSnapshot` mutates anything. */
+  requireSnapshot(name: string): SnapshotState {
     const snap = this.snapshots.get(name);
     if (!snap) throw new CpError("E_NOT_FOUND", `no such snapshot: ${name}`);
+    return snap;
+  }
+
+  recallSnapshot(name: string): void {
+    const snap = this.requireSnapshot(name);
     // The engine applies a recall as a cut (`directive.rs` `on_recall`), so a
     // recalled item that is not already on air starts NOW, as a take's does
     // (`take`, above) — not at the snapshot's old start, which a later resync

@@ -1253,3 +1253,44 @@ test("a recall is not a cut for autoFollow: the rundown goes on from the snapsho
   render.close();
   ws.close();
 });
+
+test("a take directive carries the ITEM's duration for a timed item, apart from the transition's (SPEC v0.4.8 row 2)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // The engine schedules an item's end from `itemDurationFrames` alone. Before
+  // v0.4.8 row 2 it read the transition's `durationFrames`, so a cut never
+  // ended a timed item and a mix ended it at the mix's length. The control
+  // plane resolves the item's duration from the package (§5.9.1): present for
+  // a timed item, absent for an untimed one, on view.cut, view.take and
+  // snapshot.recall alike.
+  const ws = await loadAndStart([]);
+  const render = await renderSession();
+  const directives = directivesOn(render);
+  const takes = () =>
+    directives
+      .filter((d) => d["command"] === "view.take" || d["command"] === "snapshot.recall")
+      .map((d) => ({ command: d["command"], target: d["target"], payload: d["payload"] }));
+
+  // AT is timed (60 frames); A1 is not.
+  assert.equal((await send(ws, "view.cut", { itemRef: "AT" })).status, "ok");
+  assert.equal((await send(ws, "snapshot.save", { name: "on-at" })).status, "ok");
+  assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
+  assert.equal((await send(ws, "view.take", { transition: "mix", durationFrames: 15 })).status, "ok");
+  assert.equal((await send(ws, "snapshot.recall", { name: "on-at" })).status, "ok");
+  await flushed(render);
+  assert.deepEqual(takes(), [
+    { command: "view.take", target: { itemRef: "AT" }, payload: { transition: "cut", itemDurationFrames: 60 } },
+    {
+      command: "view.take",
+      target: { itemRef: "A1" },
+      // No item duration: A1 is untimed. The mix's 15 frames are the transition's.
+      payload: { transition: "mix", durationFrames: 15, audio: { transition: "follow", durationFrames: 15 } },
+    },
+    {
+      command: "snapshot.recall",
+      target: { itemRef: "AT" },
+      payload: { transition: "cut", audio: { transition: "follow" }, itemDurationFrames: 60, visibleOverlays: [] },
+    },
+  ]);
+  render.close();
+  ws.close();
+});

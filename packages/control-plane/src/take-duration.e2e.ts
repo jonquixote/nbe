@@ -1,0 +1,257 @@
+//! SPEC v0.4.8 row 2, end to end: a timed item ends at ITS duration, on a cut
+//! and a mix alike, and autoFollow advances from that end, once. This runs the
+//! real control plane, the real `nbe-engine` binary, and the real protocol
+//! between them.
+//!
+//! The defect it guards: the engine scheduled an item's end from the take's
+//! `durationFrames`, which is the TRANSITION's length. A cut carries none, so a
+//! timed item taken by a cut never ended, and autoFollow never advanced. A
+//! 6-frame mix ended a 2-second item 0.2 s in, so autoFollow ran away. The take
+//! payload now carries the item's own `itemDurationFrames`.
+//!
+//! And PR #37's fix-forward (the two-key pass's P1): a spec-legal 0-frame mix
+//! was refused AFTER the control plane took the item, so its View moved and the
+//! engine's did not. A 0-frame mix is a cut now, and the third test asserts the
+//! two sides together.
+//!
+//! Not in `npm test`: it needs the engine binary. CI builds it in the
+//! control-plane job and runs this file with its own floors. Run locally:
+//!   node --import tsx --test src/take-duration.e2e.ts
+//! (engine: $NBE_ENGINE_BIN, default target/release/nbe-engine).
+
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { WebSocket } from "ws";
+
+import { AuditLog } from "./audit.js";
+import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
+import { ControlPlaneState } from "./state.js";
+import { tempDir } from "./test-tmp.js";
+
+const ADMIN = "admin-token";
+const RENDER = "render-token";
+const REPO = resolve(import.meta.dirname, "../../..");
+const ENGINE_BIN = resolve(process.env.NBE_ENGINE_BIN ?? join(REPO, "target/release/nbe-engine"));
+/**
+ * The longest wait for an end to arrive and autoFollow to land. The items here
+ * last 1 s and 2 s, and the end reaches the control plane on the engine's next
+ * outgoing frame. Ten seconds is generous on a loaded runner, and a wait ends
+ * the moment its condition holds.
+ */
+const REPORT_MS = 10_000;
+/** The house rate the engine runs at here (`NBE_HOUSE_RATE`): one frame is 33.3 ms. */
+const FPS = 30;
+
+let server: ControlPlaneServer;
+let state: ControlPlaneState;
+let engine: ChildProcess;
+const engineLog: string[] = [];
+let ws: WebSocket;
+
+function send(command: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const id = randomUUID();
+  return new Promise((res, rej) => {
+    const timer = setTimeout(() => rej(new Error(`no response to ${command}`)), 120_000);
+    const onMsg = (buf: Buffer) => {
+      const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+      if (msg.requestId !== id) return;
+      clearTimeout(timer);
+      ws.off("message", onMsg);
+      res(msg);
+    };
+    ws.on("message", onMsg);
+    ws.send(JSON.stringify({ v: "0.3", id, command, payload }));
+  });
+}
+
+async function ok(command: string, payload: Record<string, unknown> = {}): Promise<void> {
+  const r = await send(command, payload);
+  assert.equal(r.status, "ok", `${command}: ${JSON.stringify(r)}`);
+}
+
+let auditPath = "";
+
+/** The audit's autoFollow advances so far: `[actor, outcome]`. */
+function advances(): Array<[string, string]> {
+  if (!existsSync(auditPath)) return [];
+  return readFileSync(auditPath, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((r) => r["event"] === "autoFollow.advance")
+    .map((r) => [String(r["actor"]), String(r["outcome"])]);
+}
+
+/** Wait for `pred`, polling; returns the elapsed ms, or null at the deadline. */
+async function until(pred: () => boolean, ms: number): Promise<number | null> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (pred()) return Date.now() - t0;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return null;
+}
+
+/** The engine's last applied stateVersion, from `/status`. It acks only a directive it applied (§5.9.3). */
+async function engineApplied(): Promise<number | null> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/nbe/v0.3/status`);
+  const body = (await res.json()) as { renderNode?: { lastAppliedStateVersion?: number | null } };
+  return body.renderNode?.lastAppliedStateVersion ?? null;
+}
+
+function writePackage(): string {
+  const dir = tempDir("nbe-take-duration-pkg-");
+  mkdirSync(join(dir, "media"), { recursive: true });
+  copyFileSync(join(REPO, "tests/fixtures/dress_show/media/fallback.png"), join(dir, "media", "fallback.png"));
+  writeFileSync(
+    join(dir, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: "0.4",
+      network: { id: "nbe", name: "Take duration" },
+      show: {
+        id: "show-take-duration",
+        title: "Take duration",
+        video: { width: 1920, height: 1080, frameRate: 30, colorSpace: "rec709" },
+        audio: { sampleRate: 48000, loudnessTargetLufs: -16, truePeakDbtp: -1.5 },
+        fallbackAssetId: "fallback",
+      },
+      qualityProfile: "consumer",
+      assets: [{ id: "fallback", kind: "image", source: "media/fallback.png" }],
+      scenes: [{ id: "SCN", elements: [{ id: "main", kind: "clip", z: 1, assetId: "fallback" }] }],
+      rundown: {
+        id: "R",
+        items: [
+          // 1 s, then autoFollow to T2.
+          { id: "T1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 30, autoFollow: true },
+          { id: "T2", kind: "sceneRef", sceneRef: "SCN" },
+          // 2 s, then autoFollow to M2.
+          { id: "M1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 60, autoFollow: true },
+          { id: "M2", kind: "sceneRef", sceneRef: "SCN" },
+          // 1 s, then autoFollow to Z2: taken by a 0-frame mix.
+          { id: "Z1", kind: "sceneRef", sceneRef: "SCN", durationFrames: 30, autoFollow: true },
+          { id: "Z2", kind: "sceneRef", sceneRef: "SCN" },
+        ],
+      },
+      control: { bindings: [] },
+    }),
+  );
+  return dir;
+}
+
+before(async () => {
+  assert.ok(existsSync(ENGINE_BIN), `the engine binary must be built: ${ENGINE_BIN} (cargo build --release -p nbe-engine)`);
+  state = new ControlPlaneState();
+  auditPath = join(tempDir("nbe-take-duration-audit-"), "audit.jsonl");
+  server = await createControlPlaneServer({
+    port: 0,
+    auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render" } },
+    audit: new AuditLog(auditPath),
+    state,
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+    warn: () => {},
+  });
+  engine = spawn(ENGINE_BIN, [], {
+    env: {
+      ...process.env,
+      NBE_CP_URL: `ws://127.0.0.1:${server.port}/nbe/v0.3`,
+      NBE_RENDER_TOKEN: RENDER,
+      NBE_HOUSE_RATE: String(FPS),
+      RUST_LOG: "warn",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  engine.stdout?.on("data", (b: Buffer) => engineLog.push(b.toString()));
+  engine.stderr?.on("data", (b: Buffer) => engineLog.push(b.toString()));
+  const deadline = Date.now() + 30_000;
+  while (server.wsBridge.renderNodeCount() === 0) {
+    if (engine.exitCode !== null || Date.now() > deadline) throw new Error(`engine never registered:\n${engineLog.join("")}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
+    headers: { authorization: `Bearer ${ADMIN}`, "x-nbe-role": "admin" },
+  });
+  await new Promise<void>((res, rej) => {
+    ws.once("open", () => res());
+    ws.once("error", rej);
+  });
+  await ok("show.load", { packagePath: writePackage() });
+  await ok("show.start", {});
+});
+
+after(async () => {
+  engine?.kill("SIGKILL");
+  ws?.close();
+  if (server) await server.close();
+});
+
+test("[v0.4.8 row 2] a cut to a timed item: it ends at its own duration, and autoFollow advances once", async () => {
+  // Before the fix the cut carried no duration the engine would read, so T1
+  // never ended and the View stayed on T1 for good.
+  await ok("view.cut", { itemRef: "T1" });
+  const advancedAfter = await until(() => state.viewItem === "T2", REPORT_MS);
+  assert.ok(advancedAfter !== null, `autoFollow must advance T1 -> T2 at T1's end; the View is still ${state.viewItem}`);
+  assert.ok(
+    advancedAfter >= (30 / FPS) * 1000 * 0.8,
+    `T1 is 30 frames (1000 ms); it must not end early, advanced after ${advancedAfter} ms`,
+  );
+  assert.deepEqual(
+    { t1: state.itemStateOf("T1"), view: state.viewItem, advances: advances() },
+    { t1: "DONE", view: "T2", advances: [["autoFollow:T1", "ok"]] },
+    "T1 completed, the View moved on, and autoFollow advanced exactly once",
+  );
+});
+
+test("[v0.4.8 row 2] a 6-frame mix to a 60-frame item: no advance at the mix's length, one at the item's", async () => {
+  // Before the fix the 6-frame mix (200 ms) was read as M1's duration, so M1
+  // "ended" 0.2 s in and autoFollow ran away to M2.
+  await ok("preview.set", { itemRef: "M1" });
+  await ok("view.take", { transition: "mix", durationFrames: 6 });
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.equal(state.viewItem, "M1", "at 1000 ms M1 is still on air: the mix's 200 ms did not end it");
+  const advancedAfter = await until(() => state.viewItem === "M2", REPORT_MS);
+  assert.ok(advancedAfter !== null, `autoFollow must advance M1 -> M2 at M1's end; the View is still ${state.viewItem}`);
+  assert.deepEqual(
+    { m1: state.itemStateOf("M1"), view: state.viewItem, advances: advances().filter(([a]) => a === "autoFollow:M1") },
+    { m1: "DONE", view: "M2", advances: [["autoFollow:M1", "ok"]] },
+    "M1 completed at its own length, and autoFollow advanced exactly once",
+  );
+});
+
+test("[PR #37 fix-forward] a 0-frame mix to a timed item is a cut: both sides agree, and it ends at its own duration", async () => {
+  // The two-key pass's P1: this spec-legal take was refused after the control
+  // plane had taken Z1. Its View said Z1, the engine never got the take, and
+  // the client saw E_ENGINE.
+  await ok("preview.set", { itemRef: "Z1" });
+  const t0 = Date.now();
+  const r = await send("view.take", { transition: "mix", durationFrames: 0 });
+  assert.equal(r.status, "ok", `a 0-frame mix is a legal take: ${JSON.stringify({ r, controlPlaneView: state.viewItem })}`);
+  const sv = r.stateVersion as number;
+  // The engine's side: it acks only what it applied, and nothing else is sent
+  // before Z1's end.
+  let applied: number | null = null;
+  const deadline = Date.now() + REPORT_MS;
+  while (Date.now() < deadline) {
+    applied = await engineApplied();
+    if (applied !== null && applied >= sv) break;
+    await new Promise((res) => setTimeout(res, 25));
+  }
+  assert.deepEqual(
+    { controlPlaneView: state.viewItem, z1: state.itemStateOf("Z1"), engineAppliedTheTake: applied !== null && applied >= sv },
+    { controlPlaneView: "Z1", z1: "PLAYING", engineAppliedTheTake: true },
+    `the control plane says Z1 and the engine applied the take at ${sv} (it acked ${applied})`,
+  );
+  // Cut semantics: Z1 ends at its own 30 frames, never at the mix's 0.
+  const advanced = await until(() => state.viewItem === "Z2", REPORT_MS);
+  assert.ok(advanced !== null, `autoFollow must advance Z1 -> Z2 at Z1's end; the View is still ${state.viewItem}`);
+  const sinceTake = Date.now() - t0;
+  assert.ok(sinceTake >= (30 / FPS) * 1000 * 0.8, `Z1 is 30 frames (1000 ms); it must not end early, advanced ${sinceTake} ms after the take`);
+  assert.deepEqual(
+    { z1: state.itemStateOf("Z1"), view: state.viewItem, advances: advances().filter(([a]) => a === "autoFollow:Z1") },
+    { z1: "DONE", view: "Z2", advances: [["autoFollow:Z1", "ok"]] },
+    "Z1 completed at its own length, and autoFollow advanced exactly once",
+  );
+});

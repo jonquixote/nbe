@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CommandPayloadSchemas, CommandNames, ErrorCodeSchema, EnvelopeSchema } from "./protocol.js";
+import { CommandPayloadSchemas, CommandNames, ErrorCodeSchema, EnvelopeSchema, TakeDirectivePayloadSchema } from "./protocol.js";
 
 // The Section 16 tables are parsed OUT OF THE SPEC at test time. The lists
 // used to be copied here by hand, which meant the spec could move to v0.3.2 —
@@ -122,4 +122,29 @@ test("malformed envelopes are rejected", () => {
   assert.ok(
     !EnvelopeSchema.safeParse({ v: "0.2", id: crypto.randomUUID(), command: "system.status", payload: {} }).success,
   );
+});
+
+test("the take payload fixture, the control plane's half: valid ones parse, invalid ones are refused (SPEC v0.4.8 row 2)", () => {
+  // Shared with nbe-protocol's mirror (TakePayload). `durationFrames` is the
+  // TRANSITION's length and `itemDurationFrames` the ITEM's own duration; the
+  // control plane parses every take payload through this schema before it
+  // sends one.
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../../crates/nbe-protocol/tests/fixtures/take_payloads.json", import.meta.url), "utf8"),
+  ) as { valid: Array<{ name: string; payload: unknown }>; invalid: Array<{ name: string; payload: unknown }> };
+  assert.ok(fixture.valid.length >= 5 && fixture.invalid.length >= 3, "the fixture is not empty");
+  for (const c of fixture.valid) {
+    const r = TakeDirectivePayloadSchema.safeParse(c.payload);
+    assert.ok(r.success, `${c.name}: must parse — ${JSON.stringify(r.success ? null : r.error.issues)}`);
+  }
+  for (const c of fixture.invalid) {
+    assert.equal(TakeDirectivePayloadSchema.safeParse(c.payload).success, false, `${c.name}: must be refused`);
+  }
+  // The producer is stricter than the engine on a zero item duration, which
+  // the engine's integer would read: that is the control plane's own defect.
+  // (§2c, PR #37's fix-forward: this said the engine was lenient on an
+  // unknown key too. It refuses one now, and the fixture's invalid cases
+  // carry an unknown key to both sides.)
+  assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDuration: 60 }).success, false, "an unknown key");
+  assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDurationFrames: 0 }).success, false, "a zero item duration");
 });

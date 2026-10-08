@@ -68,11 +68,14 @@ fn recall(sv: u64, item: Option<Option<&str>>, overlays: &[&str]) -> DirectiveFr
 }
 
 /// What the control plane forwards for a take (`view.take`, a cut), optionally
-/// with a duration, which is what schedules an item's end.
+/// with the ITEM's duration, which is what schedules its end. (§2c, v0.4.8
+/// row 2: this helper put the duration in `durationFrames`, the transition's
+/// field. That pinned the collision the row fixes, and it left this file's
+/// superseded-end checks passing vacuously once the engine stopped reading it.)
 fn take(sv: u64, item: &str, duration_frames: Option<u64>) -> DirectiveFrame {
     let mut payload = serde_json::json!({ "transition": "cut" });
     if let Some(n) = duration_frames {
-        payload["durationFrames"] = n.into();
+        payload["itemDurationFrames"] = n.into();
     }
     directive(
         "view.take",
