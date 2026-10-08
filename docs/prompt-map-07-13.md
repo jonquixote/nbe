@@ -2961,6 +2961,19 @@ that PR #35 closed for recall.
   end from its apply, and the item airs at `master+1`, up to one frame after.
   Rounding up adds less than a frame. A wall clock stepped backwards cannot
   lengthen the item past its duration.
+
+  *Refined by the two-key pass (the user's word of 2026-10-08):* **the
+  rescheduled end is not strictly late-only.**
+  - A healthy engine fires the end at `t_take + h + D`, where `h` is the
+    take's local hop, from the control plane's stamp to the engine's apply.
+  - The resync's end lands at `t_take + D + h' + q`, where `h'` is the
+    resync's hop and `q` is the rounding, `0 ≤ q <` one frame.
+  - The difference is `h' − h + q`. Rounding is late-only, but the end as a
+    whole can come early by the take's local hop when the resync's hop is
+    shorter. Both hops are local, so it stays well under two frames, `master+1`
+    included.
+
+  The spec's "good to about a frame" stands accurate.
 - **The clamp's semantics.** Ends are counted in wall-clock time from the
   apply, so an item that should have ended during the outage ends **at resync
   time**: its remaining time is zero, the end fires on receipt, and autoFollow
@@ -3002,20 +3015,31 @@ that PR #35 closed for recall.
   So the sentence would be true for the slate and the end, and false for the
   clip bus. It is recorded as false, with the cell named.
 
-**Observed, not changed (each the user's word):**
-- **A restarted engine does not reload its package.** The control plane sends
-  `packagePath` in the snapshot, but `on_resync` never reads it; only
-  `show.load` does (`directive.rs`). §5.9.4's field list does not name it. So
-  a restarted engine rejoins with the View, the overlays and now the end, but
-  without the show's media: it cannot render the item it was told is on air,
-  and this compounds the clip-bus cell above.
-- **`sendResync` runs before the connection handler installs the socket's
-  listeners** (`server.ts`: `register`, then `sendResync`, then the `message`
-  and `close` handlers). Falsification F3 showed what a throw there does: the
-  engine is registered but never resynced, so §5.9.4 makes it hold and apply
-  nothing, and the control plane never processes its frames or notices it
-  leave. That is a zombie registration. The clamp makes it unreachable from
-  the end's computation; the ordering itself is noted.
+~~**Observed, not changed (each the user's word):**~~ **Queued** (the user's
+word of 2026-10-08, §2c: these two were recorded as observed). The prompt map
+keeps no current queue list (its queue sections, after 07 and after Prompt 09,
+are historical), so the order is stated here:
+1. **At the top of the queue after this merge: the zombie registration.**
+   `sendResync` runs before the connection handler installs the socket's
+   listeners (`server.ts`: `register`, then `sendResync`, then the `message`
+   and `close` handlers). Falsification F3 showed the shape:
+   - the strict parse throws inside the connection handler;
+   - the engine is registered but never resynced, so §5.9.4 makes it hold and
+     apply nothing;
+   - the control plane never processes its frames, and never notices the
+     engine go.
+
+   The clamp makes it unreachable from the end's computation, but any throw
+   while the snapshot is built does the same. **The fix direction:** install
+   the listeners before `sendResync`, or deregister the session on a throw.
+2. **Behind it: the package-reload gap, a design question.** The control
+   plane sends `packagePath` in the snapshot, but `on_resync` never reads it;
+   only `show.load` does (`directive.rs`), and §5.9.4's field list does not
+   name it. A restarted engine rejoins with the View, the overlays and now the
+   end, but without the show's media: it cannot render the item it was told
+   is on air, which compounds the clip-bus cell above. What a restarted engine
+   should reload ("package, assets, overlays") is a resync-semantics decision
+   for the user.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
