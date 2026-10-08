@@ -27,7 +27,20 @@ export interface AuditRecord {
    * (their `role`/`tokenId` say who).
    */
   actor?: string | null;
-  /** Stable event name for a non-command action, e.g. `preflight.bound_decision`. */
+  /**
+   * Stable event name for what happened, where `kind` and `command` alone do
+   * not say it:
+   * - a preflight decision (`preflight.bound_decision`);
+   * - an automation outcome, beside the action's `command`
+   *   (`automation.rateLimited`, `autoFollow.suppressedByHold`);
+   * - a directive-path record under kind `command`, with
+   *   `command: "show.resync"` (`resync.viewItemEnd`, `resync.handshakeFailed`).
+   *
+   * An engine item event carries none: it is named in `command` instead
+   * (`engine:end`). (§2c, PR #39's two-key pass: this said "for a non-command
+   * action", which the tree had outgrown, since kind-`command` records carry
+   * events too.)
+   */
   event?: string;
   /** Free-form structured detail for such an event. */
   detail?: Record<string, unknown>;

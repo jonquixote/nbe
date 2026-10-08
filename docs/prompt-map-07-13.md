@@ -3018,8 +3018,10 @@ that PR #35 closed for recall.
 ~~**Observed, not changed (each the user's word):**~~ **Queued** (the user's
 word of 2026-10-08, §2c: these two were recorded as observed). The prompt map
 keeps no current queue list (its queue sections, after 07 and after Prompt 09,
-are historical), so the order is stated here:
-1. ~~**At the top of the queue after this merge: the zombie registration.**~~
+are historical), so the order is stated here, absolutely (the user's word of
+2026-10-08, §2c: it was relative, and "Behind it" came to point at a struck
+item):
+- ~~**At the top of the queue after this merge: the zombie registration.**~~
    **FIXED** by `94dec15` (SPEC v0.4.8 row 4, `955b43f`; branch
    `zombie-resync-fix`; the record is below).
    `sendResync` runs before the connection handler installs the socket's
@@ -3034,14 +3036,37 @@ are historical), so the order is stated here:
    The clamp makes it unreachable from the end's computation, but any throw
    while the snapshot is built does the same. **The fix direction:** install
    the listeners before `sendResync`, or deregister the session on a throw.
-2. **Behind it: the package-reload gap, a design question.** The control
-   plane sends `packagePath` in the snapshot, but `on_resync` never reads it;
-   only `show.load` does (`directive.rs`), and §5.9.4's field list does not
-   name it. A restarted engine rejoins with the View, the overlays and now the
-   end, but without the show's media: it cannot render the item it was told
-   is on air, which compounds the clip-bus cell above. What a restarted engine
-   should reload ("package, assets, overlays") is a resync-semantics decision
-   for the user.
+- **Position 1 after PR #39's merge: the package-reload gap, a design
+  question.** *(It read ~~"Behind it:"~~, §2c.)* The control
+  plane sends `packagePath` in the snapshot, but `on_resync` never reads it;
+  only `show.load` does (`directive.rs`), and §5.9.4's field list does not
+  name it. A restarted engine rejoins with the View, the overlays and now the
+  end, but without the show's media: it cannot render the item it was told
+  is on air, which compounds the clip-bus cell above. What a restarted engine
+  should reload ("package, assets, overlays") is a resync-semantics decision
+  for the user.
+- **Position 2: surface a failed re-resync on the `resyncRequest` path** (the
+  user's word of 2026-10-08, adopting PR #39's two-key pass). An established
+  connection that asks again gets `sendResync` with its result ignored, and a
+  throw there is answered only as an `E_ENGINE` reply on the engine's own
+  socket, neither audited nor warned.
+  - **The ceiling.** The engine's gate does not advance `expected_seq` on a
+    `SeqGap` (`channel.rs` `classify`), so after a gap every directive is a
+    gap: dropped, each one re-requesting. A persistent failure (a
+    deterministic throw while the snapshot is built) therefore leaves a frozen
+    engine on an established connection. Every directive is a SeqGap, every
+    re-request fails, telemetry still flows, commands are accepted, nothing on
+    air changes, and there is no signal.
+  - A transient failure (a send refused under backpressure) heals on the next
+    directive's re-request.
+  - **The item:** audit and warn a failed re-resync, as the handshake now does
+    (`resync.handshakeFailed`). Whether to tear down the established session
+    on a persistent failure, handing recovery to the now-honest connect path,
+    is the user's word when the item is built.
+- **Position 3: the deferred-cell reader**, a static reader that compares each
+  routed command's reachable mechanisms with its deferred §13.4.1 cells. It
+  was queued by PR #35's two-key pass (section D), and its entry stands under
+  the recall leg's record above ("a static reader for the deferred cells").
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
