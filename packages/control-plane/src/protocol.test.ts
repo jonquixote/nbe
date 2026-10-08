@@ -5,7 +5,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CommandPayloadSchemas, CommandNames, ErrorCodeSchema, EnvelopeSchema, TakeDirectivePayloadSchema } from "./protocol.js";
+import {
+  CommandPayloadSchemas,
+  CommandNames,
+  ErrorCodeSchema,
+  EnvelopeSchema,
+  ResyncViewItemEndSchema,
+  TakeDirectivePayloadSchema,
+} from "./protocol.js";
 
 // The Section 16 tables are parsed OUT OF THE SPEC at test time. The lists
 // used to be copied here by hand, which meant the spec could move to v0.3.2 —
@@ -147,4 +154,21 @@ test("the take payload fixture, the control plane's half: valid ones parse, inva
   // carry an unknown key to both sides.)
   assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDuration: 60 }).success, false, "an unknown key");
   assert.equal(TakeDirectivePayloadSchema.safeParse({ transition: "cut", itemDurationFrames: 0 }).success, false, "a zero item duration");
+});
+
+test("the resync end fixture, the control plane's half: valid ones parse, invalid ones are refused (SPEC v0.4.8 row 3)", () => {
+  // Shared with nbe-protocol's mirror (ResyncViewItemEnd). The control plane
+  // parses the end it puts on a `show.resync` through this schema before it
+  // sends one; the clamped zero is valid, a negative (unclamped) one is not.
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../../crates/nbe-protocol/tests/fixtures/resync_view_item_end.json", import.meta.url), "utf8"),
+  ) as { valid: Array<{ name: string; end: unknown }>; invalid: Array<{ name: string; end: unknown }> };
+  assert.ok(fixture.valid.length >= 2 && fixture.invalid.length >= 6, "the fixture is not empty");
+  for (const c of fixture.valid) {
+    const r = ResyncViewItemEndSchema.safeParse(c.end);
+    assert.ok(r.success, `${c.name}: must parse — ${JSON.stringify(r.success ? null : r.error.issues)}`);
+  }
+  for (const c of fixture.invalid) {
+    assert.equal(ResyncViewItemEndSchema.safeParse(c.end).success, false, `${c.name}: must be refused`);
+  }
 });

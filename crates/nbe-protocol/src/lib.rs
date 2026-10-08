@@ -413,6 +413,33 @@ pub struct TakeAudio {
     pub ramp_ms: Option<f64>,
 }
 
+/// `show.resync`'s `viewItemEnd` (SPEC v0.4.8 row 3, §5.9.4): the on-air
+/// timed item's end, re-established on a restarted engine.
+///
+/// The engine has no package and its tick names no `viewItem`, so the control
+/// plane computes this. `remaining_frames` is the item's own
+/// `itemDurationFrames` (v0.4.8 row 2) less the wall-clock time since the
+/// control plane's take, rounded up to a whole frame and clamped at zero.
+/// Zero means the duration elapsed during the outage, and the end fires on
+/// receipt. Present only while the item is timed and still `PLAYING`, so an
+/// item that already ended is never ended twice. Before this, `on_resync`
+/// re-applied the View but never scheduled its end: an engine restart left a
+/// timed item on air for good, and autoFollow stopped there.
+///
+/// Strict, as the take payload is: an unknown key, or an end that names an
+/// item other than the snapshot's `viewItem`, refuses the resync before it
+/// applies anything. Mirrored by `ResyncViewItemEndSchema` in `protocol.ts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResyncViewItemEnd {
+    /// The on-air item the remaining time belongs to; equals the snapshot's
+    /// `viewItem`.
+    pub item_ref: String,
+    /// Frames left until the item's end, at the house rate. Zero ends it on
+    /// receipt.
+    pub remaining_frames: u64,
+}
+
 /// The stub a telemetry field carries before its subsystem has run. §10.1.1:
 /// a consumer must never see a missing field.
 pub fn tap_none() -> String {
