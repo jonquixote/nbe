@@ -3019,7 +3019,9 @@ that PR #35 closed for recall.
 word of 2026-10-08, §2c: these two were recorded as observed). The prompt map
 keeps no current queue list (its queue sections, after 07 and after Prompt 09,
 are historical), so the order is stated here:
-1. **At the top of the queue after this merge: the zombie registration.**
+1. ~~**At the top of the queue after this merge: the zombie registration.**~~
+   **FIXED** by `94dec15` (SPEC v0.4.8 row 4, `955b43f`; branch
+   `zombie-resync-fix`; the record is below).
    `sendResync` runs before the connection handler installs the socket's
    listeners (`server.ts`: `register`, then `sendResync`, then the `message`
    and `close` handlers). Falsification F3 showed the shape:
@@ -3075,11 +3077,93 @@ to −1201 mA.
 |---|---|---|
 | F1 | Engine: `on_resync`'s scheduling reverted (the pre-fix tree) | `resync_end` 5 of 7: `the end arrives at the remaining 300 ms`, `left: 0`; `an overdue item ends on receipt of the resync`, `left: 0`. End to end: `autoFollow must advance R1 -> R2 at R1's end after the restart; the View is still R1 (outage 110 ms)`, and S1 never advances |
 | F2 | Control plane: the FULL duration sent instead of the remaining time | unit 1 of 4: `remainingFrames: 90` for `60`, `90` for `1`, `90` for `0`, `90` for `75`. End to end: `R1 must end at its own 8000 ms from the take, not its full duration from the restart: ended 11103 ms after the take (delta 3103 ms; outage 105 ms)`, and S1's overdue end came `1992 ms after the engine returned` |
-| F3 | Control plane: the clamp at zero removed | unit: the clamp test fails with `ZodError` (`too_small`, the strict parse refusing a negative). End to end, the misbehaviour: the parse throws inside the connection handler at `sendResync`, before the socket's listeners are installed. The restarted engine is registered but never resynced, so S1 stays on air (`the View is still S1`). When the engine is killed again, `the control plane never noticed the engine go` |
+| F3 | Control plane: the clamp at zero removed | unit: the clamp test fails with `ZodError` (`too_small`, the strict parse refusing a negative). End to end, the misbehaviour: the parse throws inside the connection handler at `sendResync`, before the socket's listeners are installed. The restarted engine is registered but never resynced, so S1 stays on air (`the View is still S1`). When the engine is killed again, `the control plane never noticed the engine go` *(§2c, 2026-10-08: since `94dec15` this zombie can no longer form. The listeners install first, and a failed handshake deregisters the session and closes the connection with 1011, so the same throw is now a loud teardown and a clean reconnect.)* |
 | F4 | Engine: `is_current` always true (a superseded end not dropped) | `(ends by 800 ms, ends after): one end, never two`, `left: (2, 0)` |
 | F5a | Engine: a resync ends the View item with no end on the snapshot | `untimed items, a fresh resync and a resync after a take: no end`, `left: (0, 1)` |
 | F5b | Control plane: an end sent for an untimed item | unit: `untimed: { itemRef: 'U1', remainingFrames: 0 }` for `undefined`. End to end: `resyncEnds: [ { itemRef: 'U1', remainingFrames: 0, durationFrames: null, … } ]` for `[]` |
 | F6 | Engine: the item check removed | `another item than the View: ()`: the resync that names T2 while T1 is on air is accepted |
+
+### The zombie-registration fix — a failed resync handshake tears down, loudly (2026-10-08, branch `zombie-resync-fix`)
+
+**The defect, F3's shape, demonstrated at the tree.** The engine's connect
+path in `server.ts` ran register → `sendResync` → install listeners.
+`sendResync` builds the snapshot inside the connection handler, so any throw
+while the snapshot was built skipped the listeners: the strict parse (F3's
+unclamped end), or a throw in any builder it calls. The result:
+- the session stayed **registered** but was never resynced;
+- §5.9.4 rule 2 had the engine hold and apply nothing;
+- the control plane never processed its frames, and never noticed it go.
+
+The four pins that held `show.resync` on connect stayed green throughout.
+This fix hardens the failure path, not the success path.
+
+**The tree adds a second shape.** `WsRenderBridge.sendDirect` catches a send
+throw itself (`console.warn`) and reports `false`, and `sendResync` ignored
+the result. So a resync that failed to *send* never threw. The listeners
+installed, and the engine stayed registered, heard, and never resynced.
+
+**The handler's new order** (`server.ts`, `wss.on("connection")`):
+1. `clients.set(connId, session)`;
+2. the telemetry closures, and `forget()`: the client entry, the render
+   registration and the telemetry timer released, idempotently;
+3. **the listeners**: `message`, then `close` → `forget`, then
+   `error` → `forget`;
+4. **the render handshake, in one guard**: `wsBridge.register`, then
+   `sendResync`, which now returns whether the socket accepted the resync;
+   an unsent one throws.
+
+**The teardown path.** On any failure: `forget()`; then the audit log records
+`resync.handshakeFailed` (kind `command`, outcome `rejected`, the cause in
+`detail.error`); then the server's `warn` hook (`console.warn` unless a
+caller passes its own); then `ws.close(1011, "show.resync handshake
+failed")`, which the engine sees on the wire. The engine's reconnect loop
+retries against a clean slate (`channel.rs`: "control plane connection ...
+reconnecting"). The close event that follows calls `forget()` again,
+harmlessly.
+
+**The invariant**, written on the handler: *a connect either completes its
+resync or leaves NO registration. There is no third state.*
+
+**Wire-visible, so the spec carries it.** The spec held no close semantics
+anywhere, and §5.9.4 rule 2 is what turns a silent handshake failure into an
+indefinite hold. So the failure half lands as §5.9.4 rule 1's new paragraph,
+v0.4.8 row 4 (`955b43f`). The audit event is internal, and no audit kind is
+new.
+
+**The tree, against the order.**
+- **The adjacent check: no other registration path has the shape.** There is
+  one WebSocket server and one connection handler. Every role's client entry
+  is set before the listeners, but for a non-render session nothing that can
+  throw runs between them: only closures are defined. Now the listeners
+  follow at once for every role.
+- **The `resyncRequest` path is unchanged.** An established connection that
+  asks again still gets `sendResync` with its result ignored, and a throw
+  there is answered as an `E_ENGINE` error on the socket, as before. It is
+  not a registration path, and it is outside this order.
+
+**Guards.** `src/resync-handshake.test.ts` (3, in `npm test`, 134 → 137), on
+a real server and socket, one standalone injector each:
+- a state whose `resyncSnapshot` throws (the build failure);
+- a bridge whose `sendDirect` refuses once (the send failure);
+- an operator's connection beside a failed render handshake, which is
+  untouched.
+
+Each failure must close the connection with 1011 and the reason, hold no
+registration before or after the engine goes, be audited and warned, and
+leave the next connect resynced first. The success path is unchanged and
+green: the four connect pins (`render-channel.test.ts` tests 7, 8 and 9,
+`server.test.ts`'s in-order pin), `resync-snapshot.test.ts` 4/4, and the
+resync-end end-to-end 3/3.
+
+**Falsified** on AC under `caffeinate`, 04:21–04:23, with no sleep or battery
+event. Each mutation was restored from a saved copy; TypeScript runs from
+source, so there is nothing to rebuild. Every run started at load 2.07–2.36.
+
+| # | Mutation | Signature |
+|---|---|---|
+| Z1 | The old handler restored | the zombie, all three tests: `closed: 'never: the socket stayed open'`, `registrations: 1`, **`registrationsAfterTheEngineGoes: 1`** (the control plane never notices it go), `audited: []`, `warned: false` |
+| Z2 | Listeners first, the failure swallowed | `closed: 'never…'`, `registrations: 1`, `audited: []`, but `registrationsAfterTheEngineGoes: 0`: the close is heard, and the third state lasts until the engine leaves. Each half of the fix carries its own weight |
+| Z3 | The send result ignored again | the send-failure test alone: `closed: 'never…'`, `registrations: 1`, `audited: []` |
 
 
 ---
