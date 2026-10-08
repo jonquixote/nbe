@@ -1025,7 +1025,10 @@ after its take.)* It does so for a cut and a mix alike, and never from
 signal. A take payload that does not read is refused, not partly applied. A key
 outside the table, §16.2's `transition` and `audio`, and the recall's
 `visibleOverlays` does not read *(added before ratification by PR #37's
-fix-forward: strict on both sides)*.
+fix-forward: strict on both sides)*. Inside `audio`, a key outside its
+`transition`, `durationFrames` and `rampMs` does not read either: `TakeAudio`
+carries `deny_unknown_fields`, mirroring the TypeScript schema's strict audio
+object *(§2c, completed before ratification by PR #37's re-pass)*.
 
 Delivery is fire-and-forget: emitting a directive MUST NOT block command processing. The outbound path MUST be bounded — a render node that cannot keep up has its directives dropped and counted, never buffered without bound (the Section 5.4.1 §3 rule).
 

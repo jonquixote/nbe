@@ -583,10 +583,11 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
   // only when the take payload carries the item's duration — and this take
   // carries none (A3 is untimed). (§2c, PR #37's two-key pass: this named the
   // field `durationFrames`, the transition's, which the engine read until
-  // v0.4.8 row 2; the item's field is `itemDurationFrames`.) Nothing on the wire moves when a clip is exhausted:
-  // `viewItem` does not clear and no event fires. So the assertion was green
-  // whether or not cadence conversion existed, which is exactly the defeatable
-  // gate this review spent three rounds removing elsewhere (report §3.10).
+  // v0.4.8 row 2; the item's field is `itemDurationFrames`.) Nothing on the
+  // wire moves when a clip is exhausted: `viewItem` does not clear and no event
+  // fires. So the assertion was green whether or not cadence conversion
+  // existed, which is exactly the defeatable gate this review spent three
+  // rounds removing elsewhere (report §3.10).
   //
   // The cadence mapping is gated where the observable actually lives: in
   // pixels, by `a_12_fps_source_spans_30_house_frames_in_the_rendered_picture`
