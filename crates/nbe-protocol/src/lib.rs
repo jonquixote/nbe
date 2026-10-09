@@ -440,6 +440,57 @@ pub struct ResyncViewItemEnd {
     pub remaining_frames: u64,
 }
 
+/// `show.resync`'s package identity (SPEC v0.4.8 row 5, §5.9.4): which package
+/// the show runs on, and the control plane's load generation for it.
+///
+/// `package_load_state_version` is the `stateVersion` at which the control
+/// plane last applied `show.load`. A `show.load` directive is forwarded at that
+/// same version, so the engine knows the generation of the load IT applied, and
+/// the two compare directly. Equal path and generation: the engine already
+/// runs this show's package. Different, or none loaded: the engine missed a
+/// load (an engine restart, or a stop-load-start while it was away; §5.9.4
+/// rule 4 never replays one) and reloads before the rest of the resync
+/// applies. The content is trusted as-is, as `show.load` trusts it: no
+/// fingerprint.
+///
+/// Read through [`ResyncPackage::read`]. A generation with no path does not
+/// read. A path with no generation is the shape a control plane from before
+/// this row sends: no identity, so nothing is reconciled, as before. Mirrored
+/// by `ResyncPackageSchema` in `protocol.ts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResyncPackage {
+    /// The package the show runs on; `None` when the control plane has none
+    /// loaded.
+    pub package_path: Option<String>,
+    /// The control plane's load generation: the `stateVersion` of its last
+    /// `show.load`.
+    #[serde(default)]
+    pub package_load_state_version: Option<u64>,
+}
+
+impl ResyncPackage {
+    /// Parse and validate the pair. A generation without a path is refused.
+    pub fn read(value: serde_json::Value) -> Result<Self, String> {
+        let p: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        if p.package_path.is_none() && p.package_load_state_version.is_some() {
+            return Err("a load generation with no package path".into());
+        }
+        Ok(p)
+    }
+
+    /// The identity to reconcile against: `(path, generation)`, or `None` when
+    /// the snapshot names no package (outside row 5's scope: that is the
+    /// queued `show.unload` routing) or no generation (an older control
+    /// plane).
+    pub fn identity(&self) -> Option<(&str, u64)> {
+        match (&self.package_path, self.package_load_state_version) {
+            (Some(path), Some(version)) => Some((path.as_str(), version)),
+            _ => None,
+        }
+    }
+}
+
 /// The stub a telemetry field carries before its subsystem has run. §10.1.1:
 /// a consumer must never see a missing field.
 pub fn tap_none() -> String {

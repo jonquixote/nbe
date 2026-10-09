@@ -10,6 +10,7 @@ import {
   CommandNames,
   ErrorCodeSchema,
   EnvelopeSchema,
+  ResyncPackageSchema,
   ResyncViewItemEndSchema,
   TakeDirectivePayloadSchema,
 } from "./protocol.js";
@@ -170,5 +171,22 @@ test("the resync end fixture, the control plane's half: valid ones parse, invali
   }
   for (const c of fixture.invalid) {
     assert.equal(ResyncViewItemEndSchema.safeParse(c.end).success, false, `${c.name}: must be refused`);
+  }
+});
+
+test("the resync package fixture, the control plane's half: valid pairs parse, invalid ones are refused (SPEC v0.4.8 row 5)", () => {
+  // Shared with nbe-protocol's mirror (ResyncPackage::read). The control plane
+  // parses the package path and load generation it puts on a `show.resync`
+  // through this schema; a generation without a path is incoherent.
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../../crates/nbe-protocol/tests/fixtures/resync_package.json", import.meta.url), "utf8"),
+  ) as { valid: Array<{ name: string; pair: unknown }>; invalid: Array<{ name: string; pair: unknown }> };
+  assert.ok(fixture.valid.length >= 4 && fixture.invalid.length >= 6, "the fixture is not empty");
+  for (const c of fixture.valid) {
+    const r = ResyncPackageSchema.safeParse(c.pair);
+    assert.ok(r.success, `${c.name}: must parse — ${JSON.stringify(r.success ? null : r.error.issues)}`);
+  }
+  for (const c of fixture.invalid) {
+    assert.equal(ResyncPackageSchema.safeParse(c.pair).success, false, `${c.name}: must be refused`);
   }
 });

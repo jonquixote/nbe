@@ -12,6 +12,17 @@ use tokio::sync::Notify;
 
 /// The engine's shared mutable state. All writes go through handlers; readers
 /// (telemetry, watchdog) see a coherent snapshot via atomics.
+/// The identity of a package load (SPEC v0.4.8 row 5): what was loaded, at
+/// which control-plane load generation, and whether it worked. A failed load
+/// is recorded too, so a resync with the same identity does not retry it: the
+/// operator's next load (a new generation) does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedPackage {
+    pub path: String,
+    pub load_state_version: u64,
+    pub ok: bool,
+}
+
 pub struct EngineState {
     /// The clock is locked because Rust's ownership doesn't allow &mut behind
     /// Arc; lock order is: clock before everything else.
@@ -82,6 +93,15 @@ pub struct EngineState {
     /// Bumped on every successful `show.load` so the renderer knows to
     /// re-upload its texture cache at a load boundary, never per frame.
     pub package_generation: AtomicU64,
+    /// The package the engine last loaded, or tried to: its path and the
+    /// control plane's load generation for it (SPEC v0.4.8 row 5). A
+    /// `show.load` records its own `stateVersion`; a resync that reconciled
+    /// records the snapshot's. A resync whose pair equals this loads nothing.
+    pub loaded_package: Mutex<Option<LoadedPackage>>,
+    /// Every package load attempted, by `show.load` or by a resync's
+    /// reconciliation. The instrumentation point that proves a load did, or
+    /// did not, run (v0.4.8 row 5's guards).
+    pub package_load_attempts: AtomicU64,
     /// The running View transition, if any (Prompt 04 Step 2).
     pub transition: Mutex<Option<crate::scene::Transition>>,
     /// Decoded video assets for the loaded package (Prompt 05).
@@ -236,6 +256,8 @@ impl EngineState {
             preview_item: std::sync::Mutex::new(None),
             package: Mutex::new(None),
             package_generation: AtomicU64::new(0),
+            loaded_package: Mutex::new(None),
+            package_load_attempts: AtomicU64::new(0),
             transition: Mutex::new(None),
             video: Mutex::new(crate::video::VideoLibrary::default()),
             sessions: crate::video::SessionPool::new(),

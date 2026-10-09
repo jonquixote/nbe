@@ -555,6 +555,29 @@ export const ResyncViewItemEndSchema = z
   .strict();
 export type ResyncViewItemEnd = z.infer<typeof ResyncViewItemEndSchema>;
 
+/**
+ * `show.resync`'s package identity (SPEC v0.4.8 row 5, §5.9.4): the package
+ * the show runs on, and the control plane's load generation for it, the
+ * `stateVersion` of its last `show.load`. Mirrored by
+ * `nbe_protocol::ResyncPackage` (the mirror audit reads this block).
+ *
+ * The engine compares the pair with the load IT applied: equal, it does
+ * nothing; different or none, it reloads before the rest of the resync
+ * applies. A generation without a path is refused; a path without a
+ * generation names no identity. The control plane parses its own pair
+ * through this before it sends a resync (`state.ts` `resyncSnapshot`).
+ */
+export const ResyncPackageSchema = z
+  .object({
+    packagePath: z.string().nullable(),
+    packageLoadStateVersion: z.number().int().min(0).nullable(),
+  })
+  .strict()
+  .refine((p) => p.packageLoadStateVersion === null || p.packagePath !== null, {
+    message: "a load generation with no package path",
+  });
+export type ResyncPackage = z.infer<typeof ResyncPackageSchema>;
+
 export const AudioLevelCrossingFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
