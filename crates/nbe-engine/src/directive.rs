@@ -158,7 +158,11 @@ impl DirectiveHandler {
         let result = self.load_package(path);
         // SPEC v0.4.8 row 5: the load's identity is this directive's
         // stateVersion, the control plane's load generation for the package.
-        self.record_load(path, d.state_version, result.is_ok());
+        // Recorded only when the load worked: a failed one leaves the engine
+        // not holding this identity, so a resync naming it retries the load.
+        if result.is_ok() {
+            self.record_load(path, d.state_version);
+        }
         result
     }
 
@@ -1570,27 +1574,31 @@ impl DirectiveHandler {
     }
 
     /// Reconcile the engine's package with the snapshot's (SPEC v0.4.8 row 5).
-    /// Returns true when the package the snapshot names is not loaded: its
-    /// load failed now, or failed before at the same identity.
+    /// Returns true when the package the snapshot names did not load.
     ///
     /// - No identity (no package named, the `show.unload` case queued
     ///   separately; or no generation, an older control plane): nothing.
-    /// - Equal path and generation: nothing. A blip reconnect costs zero and
-    ///   never touches media the engine is rendering.
-    /// - Different, or none loaded: `show.load`'s own body, on the blocking
+    /// - Equal to the load the engine holds: nothing. A blip reconnect costs
+    ///   zero and never touches media the engine is rendering.
+    /// - Anything else (different, none loaded, or a load that failed, which
+    ///   the engine never holds): `show.load`'s own body, on the blocking
     ///   pool. Content is trusted as-is, as `show.load` trusts it.
     ///
-    /// A failed load is recorded at its identity, so a resync with the same
-    /// identity does not retry it (no retry loop); the operator's next load,
-    /// a new generation, does. The failed load's remains are cleared, so the
-    /// previous show's package can never render under the new show's items.
+    /// The retry rule (the user's word of 2026-10-09): a resync at an identity
+    /// whose load failed retries it, so a package put back on disk heals on
+    /// the next resync, with no stop, load and start and no engine restart.
+    /// It cannot loop: a resync comes only from a connect or a `SeqGap`
+    /// (`channel.rs`), and a failed load is neither, so each resync makes at
+    /// most one attempt. A failure clears every remain of any previous
+    /// package (`forget_package`), so no path through here can leave the
+    /// previous show renderable: there is no early return past the failure.
     async fn reconcile_package(&self, package: &nbe_protocol::ResyncPackage) -> bool {
         let Some((path, version)) = package.identity() else {
             return false;
         };
         if let Some(current) = self.state.loaded_package.lock().unwrap().as_ref() {
             if current.path == path && current.load_state_version == version {
-                return !current.ok;
+                return false;
             }
         }
         let handler = self.clone();
@@ -1599,31 +1607,35 @@ impl DirectiveHandler {
             .await
             .map_err(|e| DirectiveError::Invalid(format!("the package load panicked: {e}")))
             .and_then(|r| r);
-        let ok = result.is_ok();
-        if let Err(e) = &result {
-            tracing::error!(path, err = %e, "show.resync: the package did not load; the on-air item is reported missing");
-            self.forget_package();
-        } else {
-            info!(path, version, "show.resync: the package was reloaded");
+        match result {
+            Ok(()) => {
+                info!(path, version, "show.resync: the package was reloaded");
+                self.record_load(path, version);
+                false
+            }
+            Err(e) => {
+                tracing::error!(path, err = %e, "show.resync: the package did not load; the on-air item is reported missing");
+                self.forget_package();
+                true
+            }
         }
-        self.record_load(path, version, ok);
-        !ok
     }
 
-    /// The identity of a package load, recorded whether it worked or not.
-    fn record_load(&self, path: &str, load_state_version: u64, ok: bool) {
+    /// The identity of a package load that worked.
+    fn record_load(&self, path: &str, load_state_version: u64) {
         *self.state.loaded_package.lock().unwrap() = Some(crate::state::LoadedPackage {
             path: path.to_string(),
             load_state_version,
-            ok,
         });
     }
 
     /// After a failed reconciliation: nothing of any previous package stays
-    /// renderable or audible. The index, the packaged slate, the media and the
+    /// renderable or audible, and the engine holds no load, so the next
+    /// resync retries. The index, the packaged slate, the media and the
     /// per-show watches go; the generation moves so the render loop and the
     /// audio driver drop what they uploaded.
     fn forget_package(&self) {
+        *self.state.loaded_package.lock().unwrap() = None;
         *self.state.package.lock().unwrap() = None;
         *self.state.fallback.lock().unwrap() = None;
         *self.state.video.lock().unwrap() = crate::video::VideoLibrary::default();

@@ -10,19 +10,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
 
-/// The engine's shared mutable state. All writes go through handlers; readers
-/// (telemetry, watchdog) see a coherent snapshot via atomics.
-/// The identity of a package load (SPEC v0.4.8 row 5): what was loaded, at
-/// which control-plane load generation, and whether it worked. A failed load
-/// is recorded too, so a resync with the same identity does not retry it: the
-/// operator's next load (a new generation) does.
+/// The identity of a package load that worked (SPEC v0.4.8 row 5): what was
+/// loaded, at which control-plane load generation. A failed load records
+/// nothing, so a resync naming that identity retries it (the retry rule, the
+/// user's word of 2026-10-09).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedPackage {
     pub path: String,
     pub load_state_version: u64,
-    pub ok: bool,
 }
 
+/// The engine's shared mutable state. All writes go through handlers; readers
+/// (telemetry, watchdog) see a coherent snapshot via atomics.
 pub struct EngineState {
     /// The clock is locked because Rust's ownership doesn't allow &mut behind
     /// Arc; lock order is: clock before everything else.
@@ -93,10 +92,11 @@ pub struct EngineState {
     /// Bumped on every successful `show.load` so the renderer knows to
     /// re-upload its texture cache at a load boundary, never per frame.
     pub package_generation: AtomicU64,
-    /// The package the engine last loaded, or tried to: its path and the
-    /// control plane's load generation for it (SPEC v0.4.8 row 5). A
-    /// `show.load` records its own `stateVersion`; a resync that reconciled
-    /// records the snapshot's. A resync whose pair equals this loads nothing.
+    /// The package the engine holds: its path and the control plane's load
+    /// generation for it (SPEC v0.4.8 row 5). A `show.load` that worked
+    /// records its own `stateVersion`; a resync that reloaded records the
+    /// snapshot's. A resync whose pair equals this loads nothing. A failed
+    /// reconciliation clears it (`forget_package`), so the next resync retries.
     pub loaded_package: Mutex<Option<LoadedPackage>>,
     /// Every package load attempted, by `show.load` or by a resync's
     /// reconciliation. The instrumentation point that proves a load did, or

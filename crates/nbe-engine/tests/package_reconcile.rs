@@ -12,7 +12,9 @@
 //! the generation of the load it applied. Equal: nothing. Different, or none
 //! loaded: `show.load`'s own body runs before the rest of the resync. A load
 //! that fails is not fatal: the rest applies, the on-air item is reported
-//! `missing`, and the generated slate is on air.
+//! `missing`, and the generated slate is on air. A resync at an identity whose
+//! load failed retries it (the retry rule, the user's word of 2026-10-09), once
+//! per resync and never between them.
 //!
 //! Pixels, through the real render loop, the prompt13_recall shape. GPU
 //! required; no adapter fails loudly. The control plane's side, against the
@@ -35,6 +37,9 @@ const BLACK: [u8; 4] = [0, 0, 0, 255];
 /// The generated slate (`state.rs` `fallback_image`): what the slate shows
 /// when no packaged slate is resident.
 const GENERATED_SLATE: [u8; 4] = [191, 89, 13, 255];
+/// `write_package`'s own slate image: the packaged slate, resident only when
+/// that package is loaded.
+const PACKAGED_SLATE: [u8; 4] = [12, 200, 90, 255];
 const ON_TIME: Duration = Duration::from_secs(5);
 /// A frame well past any take or resync the real clock reaches in a test.
 const F: u64 = 100;
@@ -118,6 +123,17 @@ fn take_a1(sv: u64) -> DirectiveFrame {
 /// A `show.resync` as the control plane sends one (`state.ts`
 /// `resyncSnapshot`): a running show with A1 on air, and the package pair.
 fn resync(sv: u64, package_path: Option<&str>, load_sv: Option<u64>) -> DirectiveFrame {
+    resync_slate(sv, package_path, load_sv, false)
+}
+
+/// The same, with the control plane's `fallbackActive`: true once it has
+/// marked the on-air item MISSING (`state.ts` `markMissing`).
+fn resync_slate(
+    sv: u64,
+    package_path: Option<&str>,
+    load_sv: Option<u64>,
+    fallback_active: bool,
+) -> DirectiveFrame {
     directive(
         RESYNC,
         sv,
@@ -130,7 +146,7 @@ fn resync(sv: u64, package_path: Option<&str>, load_sv: Option<u64>) -> Directiv
             "viewItemStartFrame": 0,
             "previewItem": null,
             "visibleOverlays": [],
-            "fallbackActive": false,
+            "fallbackActive": fallback_active,
         }),
     )
 }
@@ -293,8 +309,9 @@ async fn g4_a_same_path_reload_during_the_outage_reloads() {
 #[tokio::test]
 async fn g5_a_package_that_does_not_load_is_not_fatal_and_is_reported() {
     // A broken path: the resync still applies, the on-air item is reported
-    // missing, the generated slate is on air, and the same identity is never
-    // retried by a later resync (no retry loop).
+    // missing, and the generated slate is on air. A later resync at the same
+    // identity retries the load once (the retry rule), and nothing retries
+    // between resyncs: attempts happen only on a resync, never in a loop.
     let mut e = fresh_engine().await;
     let broken = "/nonexistent/nbe-package-reconcile";
     let applied = e.handler.apply(&resync(5, Some(broken), Some(3))).await;
@@ -320,10 +337,82 @@ async fn g5_a_package_that_does_not_load_is_not_fatal_and_is_reported() {
         .apply(&resync(6, Some(broken), Some(3)))
         .await
         .unwrap();
+    let retried = (attempts(&e), missing(&e.outgoing.drain(), "A1"));
+    // Between resyncs nothing retries: frames render, time passes, the count
+    // holds.
+    for _ in 0..3 {
+        view(&mut e).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
-        (attempts(&e), missing(&e.outgoing.drain(), "A1")),
-        (1, 1),
-        "(attempts, missing): the same identity is not retried, and is still reported"
+        (retried, attempts(&e)),
+        ((2, 1), 2),
+        "((attempts, missing) after a second resync at the same identity, attempts after): one attempt per resync, none between"
+    );
+}
+
+#[tokio::test]
+async fn g6_a_failed_show_load_then_a_resync_at_its_identity_never_airs_the_previous_show() {
+    // PR #40's two-key pass: a forwarded `show.load` that fails at the engine
+    // leaves the previous show's index in place (its failure path is
+    // unchanged). A resync naming that load's identity must not trust it: the
+    // previous show's slate and items never air under the new show's names.
+    let old = tempfile::tempdir().unwrap();
+    write_package(old.path(), "#ff0000");
+    let mut e = loaded_engine(old.path()).await;
+    assert_eq!(view(&mut e).await, RED, "precondition: the old show's A1");
+    let broken = std::path::Path::new("/nonexistent/nbe-package-reconcile-failed-load");
+    let load = e.handler.apply(&show_load(7, broken)).await;
+    assert!(
+        load.is_err(),
+        "precondition: the show.load fails at the engine: {load:?}"
+    );
+    e.outgoing.drain();
+    e.handler
+        .apply(&resync(9, broken.to_str(), Some(7)))
+        .await
+        .unwrap();
+    let frames = e.outgoing.drain();
+    let on_slate = view(&mut e).await;
+    e.handler.apply(&take_a1(10)).await.unwrap();
+    let after_take = view(&mut e).await;
+    assert_eq!(
+        (missing(&frames, "A1"), on_slate, after_take),
+        (1, GENERATED_SLATE, BLACK),
+        "(missing A1, the slate, after the next take): never the previous show's slate or red"
+    );
+}
+
+#[tokio::test]
+async fn g7_a_failed_load_heals_on_the_next_resync_once_the_path_is_fixed() {
+    // The retry rule (the user's word of 2026-10-09): the package is missing
+    // when a restarted engine first resyncs; it is put back on disk; the next
+    // resync, at the SAME identity, loads it. No new `show.load`, no engine
+    // restart. The control plane marked A1 MISSING, so its next snapshot
+    // carries the slate; the operator's `item.reset` and `view.cut` bring A1
+    // back (the take below).
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("show");
+    let p = path.to_str().unwrap();
+    let mut e = fresh_engine().await;
+    e.handler.apply(&resync(5, Some(p), Some(3))).await.unwrap();
+    let first = e.outgoing.drain();
+    let failed_picture = view(&mut e).await;
+    let failed = (missing(&first, "A1"), failed_picture, attempts(&e));
+    write_package(&path, "#ff0000");
+    e.handler
+        .apply(&resync_slate(6, Some(p), Some(3), true))
+        .await
+        .unwrap();
+    let second = e.outgoing.drain();
+    let healed_picture = view(&mut e).await;
+    let healed = (missing(&second, "A1"), healed_picture, attempts(&e));
+    e.handler.apply(&take_a1(7)).await.unwrap();
+    let after_take = view(&mut e).await;
+    assert_eq!(
+        (failed, healed, after_take),
+        ((1, GENERATED_SLATE, 1), (0, PACKAGED_SLATE, 2), RED),
+        "((missing, picture, attempts) at the failed resync, at the healing resync, A1 after the take): healed at the same identity"
     );
 }
 
