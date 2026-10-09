@@ -15,6 +15,11 @@
 //! engine's report measures `recordSpaceMib` against it (0 with no package).
 //! The pixels are asserted in `crates/nbe-engine/tests/package_reconcile.rs`.
 //!
+//! The engine connects through a TCP proxy, so a test can drop the connection
+//! with the engine process still running (a reconnect at the same identity,
+//! not a restart). Its `nbe_engine::directive` log runs at `info`, so the
+//! engine's own lines count its reloads and its failed load attempts.
+//!
 //! Not in `npm test`: it needs the engine binary. CI builds it in the
 //! control-plane job and runs this file with its own floors. Run locally:
 //!   node --import tsx --test src/package-reconcile.e2e.ts
@@ -25,6 +30,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createServer, connect, type Server, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
 
@@ -37,6 +43,8 @@ const ADMIN = "admin-token";
 const RENDER = "render-token";
 const REPO = resolve(import.meta.dirname, "../../..");
 const ENGINE_BIN = resolve(process.env.NBE_ENGINE_BIN ?? join(REPO, "target/release/nbe-engine"));
+/** A package whose preflight takes about a second: a wide window for the race test. */
+const DRESS = join(REPO, "tests/fixtures/dress_show");
 /** The longest wait for an engine to (de)register, or for a report to show a change. */
 const REPORT_MS = 20_000;
 /** How long the connection is watched for a reconnect storm after a failed load. */
@@ -47,13 +55,18 @@ let state: ControlPlaneState;
 let engine: ChildProcess | undefined;
 const engineLog: string[] = [];
 let ws: WebSocket;
+/** A second operator connection: its commands are not serialized with `ws`'s. */
+let ws2: WebSocket;
+let proxy: Server;
+let proxyPort = 0;
+const proxied = new Set<Socket>();
 let auditPath = "";
 let pkgDir = "";
 /** The stateVersion `show.load` was applied at: the control plane's load generation. */
 let loadStateVersion = -1;
 const ticks: Array<Record<string, unknown>> = [];
 
-function send(command: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+function send(command: string, payload: Record<string, unknown> = {}, on: WebSocket = ws): Promise<Record<string, unknown>> {
   const id = randomUUID();
   return new Promise((res, rej) => {
     const timer = setTimeout(() => rej(new Error(`no response to ${command}`)), 120_000);
@@ -61,16 +74,16 @@ function send(command: string, payload: Record<string, unknown> = {}): Promise<R
       const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
       if (msg.requestId !== id) return;
       clearTimeout(timer);
-      ws.off("message", onMsg);
+      on.off("message", onMsg);
       res(msg);
     };
-    ws.on("message", onMsg);
-    ws.send(JSON.stringify({ v: "0.3", id, command, payload }));
+    on.on("message", onMsg);
+    on.send(JSON.stringify({ v: "0.3", id, command, payload }));
   });
 }
 
-async function ok(command: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-  const r = await send(command, payload);
+async function ok(command: string, payload: Record<string, unknown> = {}, on: WebSocket = ws): Promise<Record<string, unknown>> {
+  const r = await send(command, payload, on);
   assert.equal(r.status, "ok", `${command}: ${JSON.stringify(r)}`);
   return r;
 }
@@ -81,6 +94,40 @@ function auditRecords(): Array<Record<string, unknown>> {
     .split("\n")
     .filter((l) => l.length > 0)
     .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+/** The engine's own log lines containing `needle` (its `directive` log runs at info). */
+function engineLines(needle: string): number {
+  return engineLog.join("").split(needle).length - 1;
+}
+const reloads = () => engineLines("show.resync: the package was reloaded");
+const failedAttempts = () => engineLines("show.resync: the package did not load");
+
+async function lastApplied(): Promise<number | null> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/nbe/v0.3/status`);
+  const body = (await res.json()) as { renderNode?: { lastAppliedStateVersion?: number | null } };
+  return body.renderNode?.lastAppliedStateVersion ?? null;
+}
+
+/**
+ * Drop the engine's connection with the engine process still running: a
+ * reconnect, so the resync arrives at the identity the engine already holds.
+ * Resolves once the engine has registered again and applied that resync.
+ */
+async function reconnect(): Promise<void> {
+  for (const s of proxied) s.destroy();
+  if ((await until(() => server.wsBridge.renderNodeCount() === 0, REPORT_MS)) === null) {
+    throw new Error("the control plane never noticed the connection go");
+  }
+  if ((await until(() => server.wsBridge.renderNodeCount() === 1, REPORT_MS)) === null) {
+    throw new Error(`the engine never reconnected:\n${engineLog.join("")}`);
+  }
+  const sv = state.stateVersion;
+  const deadline = Date.now() + REPORT_MS;
+  while ((await lastApplied()) !== sv) {
+    if (Date.now() > deadline) throw new Error("the engine never applied its resync");
+    await new Promise((r) => setTimeout(r, 25));
+  }
 }
 
 /** Render registrations so far: every accepted render-role handshake. */
@@ -115,10 +162,11 @@ async function startEngine(): Promise<void> {
   engine = spawn(ENGINE_BIN, [], {
     env: {
       ...process.env,
-      NBE_CP_URL: `ws://127.0.0.1:${server.port}/nbe/v0.3`,
+      NBE_CP_URL: `ws://127.0.0.1:${proxyPort}/nbe/v0.3`,
       NBE_RENDER_TOKEN: RENDER,
       NBE_HOUSE_RATE: "30",
-      RUST_LOG: "warn",
+      RUST_LOG: "warn,nbe_engine::directive=info",
+      NO_COLOR: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -175,7 +223,33 @@ before(async () => {
     persistence: { onDirty: () => {}, flushNow: () => {} },
     warn: () => {},
   });
+  proxy = createServer((client) => {
+    const upstream = connect(server.port, "127.0.0.1");
+    proxied.add(client);
+    proxied.add(upstream);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const drop = () => {
+      client.destroy();
+      upstream.destroy();
+      proxied.delete(client);
+      proxied.delete(upstream);
+    };
+    for (const s of [client, upstream]) {
+      s.on("error", drop);
+      s.on("close", drop);
+    }
+  });
+  await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", () => r()));
+  proxyPort = (proxy.address() as { port: number }).port;
   await startEngine();
+  ws2 = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
+    headers: { authorization: `Bearer ${ADMIN}`, "x-nbe-role": "admin" },
+  });
+  await new Promise<void>((res, rej) => {
+    ws2.once("open", () => res());
+    ws2.once("error", rej);
+  });
   ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
     headers: { authorization: `Bearer ${ADMIN}`, "x-nbe-role": "admin" },
   });
@@ -198,6 +272,9 @@ before(async () => {
 after(async () => {
   engine?.kill("SIGKILL");
   ws?.close();
+  ws2?.close();
+  for (const s of proxied) s.destroy();
+  proxy?.close();
   if (server) await server.close();
 });
 
@@ -238,6 +315,7 @@ test("[v0.4.8 row 5] a package that cannot load: A1 is reported missing, the sla
   renameSync(pkgDir, moved);
   try {
     const registrationsBefore = renderRegistrations();
+    const attemptsBefore = failedAttempts();
     const from = ticks.length;
     await startEngine();
     const missing = await until(() => state.itemStateOf("A1") === "MISSING", REPORT_MS);
@@ -252,11 +330,100 @@ test("[v0.4.8 row 5] a package that cannot load: A1 is reported missing, the sla
         audited: auditRecords().some((r) => r["command"] === "engine:missing"),
         connected: server.wsBridge.renderNodeCount(),
         newRegistrations: renderRegistrations() - registrationsBefore,
+        // The retry rule makes a load attempt on every resync at a failed
+        // identity. One resync came, so one attempt: none between resyncs.
+        loadAttempts: failedAttempts() - attemptsBefore,
       },
-      { a1: "MISSING", controlPlaneSlate: true, engineSlate: true, audited: true, connected: 1, newRegistrations: 1 },
-      "the failure surfaced as missing and the slate, on one connection that stayed up",
+      { a1: "MISSING", controlPlaneSlate: true, engineSlate: true, audited: true, connected: 1, newRegistrations: 1, loadAttempts: 1 },
+      "the failure surfaced as missing and the slate, on one connection that stayed up, with one load attempt",
     );
   } finally {
     renameSync(moved, pkgDir);
   }
+});
+
+test("[v0.4.8 row 5] the retry rule: once the path is fixed, a reconnect at the same identity heals it, with no stop/load/start and no engine restart", async () => {
+  // Continues from the failure above: the package is back on disk (its
+  // `finally`), the engine that failed to load it is still running and holds
+  // nothing, and A1 is MISSING with the slate up.
+  const pid = engine?.pid;
+  let from = ticks.length;
+  const holding = await engineReport(() => true, from);
+  assert.deepEqual(
+    { a1: state.itemStateOf("A1"), recordSpaceMib: holding["recordSpaceMib"] },
+    { a1: "MISSING", recordSpaceMib: 0 },
+    "precondition: the failed load left the engine holding no package",
+  );
+  const reloadsBefore = reloads();
+  const registrationsBefore = renderRegistrations();
+  await reconnect();
+  from = ticks.length;
+  const after = await engineReport((d) => (d["recordSpaceMib"] as number) > 0, from);
+  // The operator's recovery for a MISSING item, with nothing reloaded by hand.
+  await ok("item.reset", { itemId: "A1" });
+  await ok("view.cut", { itemRef: "A1" });
+  from = ticks.length;
+  const onAir = await engineReport((d) => d["fallbackActive"] === false, from);
+  assert.deepEqual(
+    {
+      reloadedAtTheSameIdentity: reloads() - reloadsBefore,
+      reloaded: (after["recordSpaceMib"] as number) > 0,
+      sameEngineProcess: engine?.pid === pid,
+      newRegistrations: renderRegistrations() - registrationsBefore,
+      generation: state.packageLoadStateVersion,
+      a1: state.itemStateOf("A1"),
+      controlPlaneSlate: state.fallbackActive,
+      engineSlate: onAir["fallbackActive"],
+    },
+    {
+      reloadedAtTheSameIdentity: 1,
+      reloaded: true,
+      sameEngineProcess: true,
+      newRegistrations: 1,
+      generation: loadStateVersion,
+      a1: "LIVE",
+      controlPlaneSlate: false,
+      engineSlate: false,
+    },
+    "healed by one reload on the reconnect, at the identity of the original show.load",
+  );
+});
+
+test("[v0.4.8 row 5] the generation is the version show.load is forwarded at, even when another connection's command lands during its preflight", async () => {
+  // PR #40's two-key pass: the generation was `ctx.stateVersion`, read before
+  // the handler's await. A command on another connection that bumps while
+  // the preflight runs left it one behind the forwarded directive's, and the
+  // first reconnect after reloaded the package mid-show for nothing.
+  await ok("show.stop", {});
+  let loaded: Record<string, unknown> = {};
+  let landedInside = false;
+  for (let attempt = 0; attempt < 3 && !landedInside; attempt++) {
+    const pending = send("show.load", { packagePath: DRESS, mode: "reload" });
+    await new Promise((r) => setTimeout(r, 100));
+    await ok("automation.hold", { hold: attempt % 2 === 0 }, ws2);
+    loaded = await pending;
+    assert.equal(loaded["status"], "ok", JSON.stringify(loaded));
+    const row = auditRecords().find((r) => r["command"] === "show.load" && r["stateVersionAfter"] === loaded["stateVersion"]);
+    // The other connection's bump landed inside the load exactly when the
+    // load's own row spans two versions.
+    landedInside = row !== undefined && (row["stateVersionAfter"] as number) - (row["stateVersionBefore"] as number) === 2;
+  }
+  assert.ok(landedInside, "precondition: the second connection's command landed inside the load's preflight");
+  const generation = state.packageLoadStateVersion;
+  await ok("show.start", {});
+  await ok("view.cut", { itemRef: "A1" });
+  // The engine has applied everything, the forwarded show.load included.
+  const deadline = Date.now() + 2 * REPORT_MS;
+  while ((await lastApplied()) !== state.stateVersion) {
+    assert.ok(Date.now() < deadline, "the engine never applied the load and the cut");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const reloadsBefore = reloads();
+  await reconnect();
+  await new Promise((r) => setTimeout(r, 500));
+  assert.deepEqual(
+    { generation, reloadsOnTheReconnect: reloads() - reloadsBefore, view: state.viewItem },
+    { generation: loaded["stateVersion"], reloadsOnTheReconnect: 0, view: "A1" },
+    "the recorded generation is the forwarded directive's, so the reconnect loads nothing",
+  );
 });
