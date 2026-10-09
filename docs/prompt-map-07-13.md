@@ -3080,6 +3080,21 @@ item):
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
   the recall leg's record above ("a static reader for the deferred cells").
+- **Position 4: `show.stop`'s `stopVersion` across the grace wait** (the
+  user's word of 2026-10-09, from PR #40's two-key pass; older than that
+  branch). `show.stop` reads `ctx.stateVersion` as `stopVersion`, emits its
+  stop directives at it, then awaits `waitForGrace` for up to 2 s before the
+  dispatcher's bump (`commands/show.ts`). A command on another connection
+  that bumps during the wait is assigned that same version, so two commands'
+  directives carry one `stateVersion`, and the grace wait can be met by the
+  other command's acknowledgement. It is the shape of the package generation
+  race, which `afterBump` fixed for `show.load` (the package-reconcile
+  record's delta, below). *Read while writing this line, not run:* with
+  outputs active, `show.stop` already sends `record.stop`, `stream.stop` and
+  its own `show.stop` at one `stateVersion`, and the engine's gate skips a
+  directive whose version is not above the last it applied (`channel.rs`
+  `classify`: `<=`). Whether the second and third are skipped is the first
+  thing to establish when this item is built.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -3249,12 +3264,15 @@ hold.
 **Neither side held a load generation**, so both were added, minimally, in
 memory:
 - **The control plane:** `ControlPlaneState.packageLoadStateVersion`
-  (`state.ts`). `show.load`'s handler sets it to `ctx.stateVersion` right
-  after `state.loadPackage` (`commands/show.ts`), and `loadPackage` and
-  `unloadPackage` clear it. The `show.load` directive is forwarded at that
-  same `stateVersion`.
+  (`state.ts`). ~~`show.load`'s handler sets it to `ctx.stateVersion` right
+  after `state.loadPackage` (`commands/show.ts`)~~ *(§2c, 2026-10-09: it now
+  records the version the dispatcher assigns, through `afterBump`;
+  `ctx.stateVersion` could be overtaken, Defect 1 in the delta below)*, and
+  `loadPackage` and `unloadPackage` clear it. The `show.load` directive is
+  forwarded at that same `stateVersion`.
 - **The engine:** `EngineState.loaded_package` (`state.rs`,
-  `LoadedPackage { path, load_state_version, ok }`). `record_load` writes it,
+  `LoadedPackage { path, load_state_version~~, ok~~ }`; §2c, 2026-10-09:
+  `ok` is gone with the no-retry rule, below). `record_load` writes it,
   from `on_show_load` with the directive's `state_version`, and from
   `reconcile_package`. There is also `package_load_attempts`, a counter the
   guards observe (G3's load count). `package_generation` already existed: it
@@ -3262,8 +3280,12 @@ memory:
 - **Nothing on disk.** The control plane's persistence never restores a
   package (`persistence.ts` `restore`: `this.state.pkg = null`, and an
   explicit `show.load` is required). So a generation cannot outlive its
-  package across a restart. The restored `stateVersion` also keeps the next
-  load's generation above every earlier one.
+  package across a restart. ~~The restored `stateVersion` also keeps the next
+  load's generation above every earlier one.~~ *(§2c, 2026-10-09: not every.
+  `show.load` is not flushed at once: persistence writes after a 250 ms
+  debounce (`persistence.ts`), so a crash inside that window restores a
+  version below the last load's. A repeated generation also needs the same
+  path, that exact version, and an engine that missed the new load.)*
 
 **The identity, as built.** The pair is `(packagePath,
 packageLoadStateVersion)`:
@@ -3292,17 +3314,22 @@ fingerprinting.
 
 **The comparison** (`reconcile_package`):
 - **no identity:** nothing;
-- **equal path and generation:** nothing, and it returns whether that load
-  failed;
+- **equal path and generation:** nothing~~, and it returns whether that load
+  failed~~;
 - **different, or none loaded:** `load_package`. On failure it logs at
-  `error`, calls `forget_package()` and records the failed identity.
+  `error`, calls `forget_package()`~~ and records the failed identity~~.
+  *(§2c, 2026-10-09: a failed load is no longer recorded, so a resync at its
+  identity retries; the delta below.)*
 
 `forget_package` clears the index, the packaged slate, the media, the audio
 assets and per-item audio, the watches and the record target, and moves
 `package_generation`. Nothing of the previous show stays renderable or
-audible. Recording the failed identity means a resync at the same identity
+audible. ~~Recording the failed identity means a resync at the same identity
 does not retry it (no retry loop). The operator's next `show.load` is a new
-generation, and that does.
+generation, and that does.~~ *(§2c, 2026-10-09: there was no loop to
+prevent. Only a sequence gap makes the engine request a resync, and a failed
+load is not one. What the record did was block a heal, and the user's word
+reversed it: the delta below.)*
 
 **Failure semantics.** A failed load is not connection-fatal. The channel
 applies a resync with `handler.apply(&frame).await?`, so an `Err` drops the
@@ -3386,8 +3413,10 @@ single-machine. It is a record, not a bound.
   - the resync is `Ok`;
   - `missing` A1 once, the View still A1, running, the slate up, the
     generated slate's pixels, one attempt;
-  - a second resync at the same identity makes no new attempt and reports
-    `missing` again;
+  - ~~a second resync at the same identity makes no new attempt and reports
+    `missing` again~~ *(§2c, 2026-10-09: a second resync at the same identity
+    retries once and reports `missing` again, and nothing retries between
+    resyncs)*;
 - **G5b**, a divergent package that fails: the generated slate, then BLACK
   after the next take, never the previous show's red;
 - a resync naming no package leaves the engine's package alone;
@@ -3434,7 +3463,7 @@ power-limited (§2a): the adapter is 45 W, and the battery discharged on AC in
 |---|---|---|
 | F1 | No reconciliation (the pre-fix tree) | 5 of 8 fail. G1: `left: ([0, 0, 0, 255], 0)` for `([255, 0, 0, 255], 1)`. G2 and G4 stay red after one load. G5: `left: (0, Some("A1"), true, false, [0, 0, 0, 255], 0)`: no missing, no slate, black. G5b: red, then red. End to end, both fail: `reloaded: false`, and `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, `engineSlate: false` |
 | F2 | Void-only: reload only when no package is loaded | G2 and G4: `left: ([255, 0, 0, 255], 1)`, the previous show's A1, one load. G5b: red, then red |
-| F3 | Always reload (the equality check removed) | G3: `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, …)`. G5: `(attempts, missing): the same identity is not retried`, `left: (2, 1)`: the retry loop |
+| F3 | Always reload (the equality check removed) | G3: `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, …)`. G5: `(attempts, missing): the same identity is not retried`, `left: (2, 1)`: ~~the retry loop~~ a retry at the same identity, not a loop (§2c, 2026-10-09) |
 | F4 | Path-only identity (the generation ignored) | G4 alone: `left: ([255, 0, 0, 255], 1)`: the re-authored package never reloads |
 | F5 | A failed load made connection-fatal (the resync refused) | G5: `a load failure must not refuse the resync (the connection would drop): Err(Invalid("show.resync: the package did not load"))`; G5b panics on the same `Err`. End to end, the storm: `engine never registered`, with `control plane connection dropped; reconnecting err=invalid directive: show.resync: the package did not load` at `delay_ms` 100, 200, 400, 800, 1600, 3200, 6400 and 10000 |
 | F6 | No `missing` emitted (the failure swallowed) | G5: `left: (0, Some("A1"), true, true, [191, 89, 13, 255], 1)`: the slate up, nothing reported. End to end: `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, while the engine's slate is up: the two sides disagree |
@@ -3458,7 +3487,8 @@ path does not consult the package. So a take renders black and reports
 nothing (G5b's second value). The control plane already holds the item
 MISSING, so the operator has the signal. The recovery is the next
 `show.load`, a new generation, and the control plane allows that only off
-air.
+air. *(§2c, 2026-10-09: or, under the retry rule, the next resync once the
+package is back on disk.)*
 
 **Recorded alongside: R11 reopens.** The gate's full workspace run at
 `3e1aa2c` failed one test outside this change,
@@ -3467,6 +3497,123 @@ ceiling. That is R11's post-fix sighting 5, and the third under the ceiling,
 so by the user's rule of 2026-10-06 R11 reopens (Finding R11 above, and the
 register row in `docs/soak-protocol.md` §5). The quiescent re-run was
 508/0/3, matching CI. The fix's own suites never touch the stream thread.
+
+**The two-key pass's delta (the user's word of 2026-10-09).** PR #40's
+two-key pass, at `2090afa`, found two defects the build had not. It also
+falsified the no-retry rule's rationale. The user ruled on its four open
+items: fix both defects, reverse the rule, and correct the spec and these
+records.
+
+- **Defect 1, the generation race.**
+  - **The cause.** `show.load` recorded `ctx.stateVersion`, which the
+    dispatcher reads before the handler runs (`stateVersion:
+    state.stateVersion + 1`, `dispatch.ts`). The version the command is
+    actually assigned comes from the bump after the handler's
+    `await loadPackage(…)`.
+  - **Why it could differ.** Commands are serialized per connection only
+    (`server.ts`, `session.tail`). Another connection's command, an
+    automation action, or an engine `itemEvent` (`server.ts` bumps on each)
+    could bump while the preflight ran.
+  - **Reproduced twice.** The other connection's `automation.hold` took
+    `stateVersion=1`, `show.load` returned 2, and the generation read 1. The
+    first reconnect after that reloaded the package mid-show: 975 ms.
+  - **Fixed** in the tree's own shape for after-handler effects,
+    `HandlerOutput` (`extraDirectives` already wait for the bump). The new
+    `afterBump(sv)` is called by the dispatcher right after the bump, before
+    the forward at `sv`, with no await between. `show.load` records its
+    generation there.
+  - **A doc corrected.** `HandlerCtx.stateVersion`'s doc claimed "assigned by
+    the dispatcher bump". It now says what the field is: the expected version,
+    which an async handler can be overtaken on. It points at `afterBump`.
+  - **The window left.** Between the handler's return and the bump, the
+    control plane holds the new package with no generation. A snapshot built
+    in that window names no identity and reconciles nothing, and the
+    forwarded `show.load` follows it on the same connection.
+- **Defect 2, a failed `show.load` then a resync at its identity.**
+  - **The cause.** `on_show_load` recorded the failed identity (`ok: false`).
+    Its failure path leaves the previous show's index in place; that path is
+    unchanged, as ordered.
+  - **The effect.** A resync at that identity took `reconcile_package`'s
+    `!current.ok` early return, which skipped `forget_package`. The slate on
+    air was the previous show's packaged slate, and the next take aired the
+    previous show's A1.
+  - **Fixed by the retry rule, not at the early return.** The order placed
+    the fix at that return, and the same ruling deleted the return. A failed
+    load, by `show.load` or by a resync, is now never recorded. So a resync
+    naming it goes through the load, and the load's failure calls
+    `forget_package`. No path through `reconcile_package` returns past a
+    failure.
+  - **`show.load` untouched.** Its load and its error are unchanged. Only its
+    recording line changed: it now records a success alone.
+- **The retry rule, reversed.**
+  - **Why.** The no-retry record's rationale ("no retry loop") was false. Only
+    a sequence gap makes the engine request a resync (`channel.rs`, the one
+    `ResyncRequest`), and a failed load is not one, so a retry cannot loop.
+    What the record did was block a heal.
+  - **The rule now.** A resync at an identity whose load failed retries it.
+  - **The code.** `LoadedPackage` loses `ok`, and `record_load` records
+    successes only. `forget_package` also clears `loaded_package`, so after a
+    failed reconciliation the engine holds nothing and the next resync
+    retries.
+  - **What the user should know.** The retry runs only when a resync arrives,
+    and nothing in the tree lets the operator request one. So a package put
+    back on disk heals at the next reconnect or sequence gap. Until the
+    operator's `item.reset` and a take, the control plane holds the item
+    MISSING with the slate up.
+- **The markers consequence of any mid-show reload** (recorded, not changed).
+  - `load_package` calls `markers::clear()` first: `show.load`'s own
+    behaviour, so that a new show never inherits markers.
+  - A reload while a recording runs therefore empties the store the
+    recorder's sidecar is written from at finalize (`record/writer.rs`,
+    `markers::list()`). The in-progress recording's sidecar loses the markers
+    added before the reload. The recorder keeps writing; the load does not
+    touch the record session.
+  - The reloads that can meet a running recording:
+    - the retry rule's heal;
+    - a divergent or same-path reload, when the engine's recorder ran through
+      the outage;
+    - the race-born reload fixed above.
+- **Queued: `show.stop`'s `stopVersion`** (position 4 in the queue above). The
+  same shape, older than this branch: `ctx.stateVersion` held across a 2 s
+  await.
+- **Guards.**
+  - **The counts move:** `package_reconcile` 8 → 10, the end-to-end 2 → 4,
+    and the CI floors with them.
+  - **G5** now pins one attempt per resync and none between: two resyncs give
+    `(2, 1)`, and after frames and 200 ms the attempts are still 2.
+  - **G6** (Defect 2): a failed `show.load`, then a resync at its identity.
+    `(missing, slate, after the take)` is `(1, GENERATED_SLATE, BLACK)`.
+  - **G7** (the heal), giving `((1, GENERATED_SLATE, 1), (0, PACKAGED_SLATE,
+    2), RED)`:
+    - a resync at a missing path fails;
+    - the package is written;
+    - a resync at the same identity, with the slate as the control plane
+      holds it, loads it;
+    - the take airs it.
+  - **End to end.** The engine now connects through a TCP proxy, so a test
+    can drop the connection with the engine process still running.
+    - **Test 2** adds `loadAttempts: 1`.
+    - **Test 3** heals: one reload at the same identity in the same engine
+      process, then `item.reset` and a cut. A1 is LIVE and both slates are
+      down.
+    - **Test 4** lands a second connection's `automation.hold` inside a
+      dress-package load's preflight. The landing is proven by the load's
+      audit row spanning two versions. A reconnect after that loads nothing.
+
+**Falsified**, the delta's guards. Each mutation was restored from saved
+copies, checked identical and rebuilt.
+
+The runs were 2026-10-09 04:06–04:16, on AC under `caffeinate`, with no sleep
+or battery event. Each run started at load 1.99–2.42. They are power-limited:
+the battery discharged on AC in 29 of 116 samples, down to −178 mA. The
+unmutated tree went first: `package_reconcile` 10/10 and the end-to-end 4/4.
+
+| # | Mutation | Signature |
+|---|---|---|
+| N1 | Defect 1's fix reverted: the generation is `ctx.stateVersion` again | end to end, test 4: `generation: 9` for `10`, `reloadsOnTheReconnect: 1` for `0`. The race landed, and the reconnect reloaded mid-show |
+| N2 | `forget_package` removed from the load's failure branch | G6: `left: (1, [12, 200, 90, 255], [255, 0, 0, 255])`, the previous show's slate and then its red A1. G5b fails the same way |
+| N3 | The no-retry record kept: a failed identity is recorded as held | G7: the healing resync gives `(0, [191, 89, 13, 255], 1)`, no attempt and the generated slate, then `[0, 0, 0, 255]` after the take. G5: `((1, 0), 1)`. End to end, test 3: `reloadedAtTheSameIdentity: 0`, `reloaded: false` |
+| N4 | A failed load re-requests a resync (a loop) | end to end, test 2: `loadAttempts: 4114` for `1`. The engine-only G5 cannot see this, since nothing answers its request, and the end-to-end does |
 
 ---
 
