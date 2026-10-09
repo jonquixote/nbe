@@ -2359,6 +2359,10 @@ at `619846c`.
       slate and clears the View, as does a resync reporting `false`.
     - **Queued (not this PR):** route `show.unload` to the engine, clearing its
       package, View, preview and `Held`, so an unloaded show goes off air.
+      *(Cross-reference, 2026-10-09: SPEC v0.4.8 row 5's package
+      reconciliation leaves the no-package snapshot to this item. A resync
+      naming no package reconciles nothing; see the package-reconcile record,
+      after the zombie-registration fix's.)*
 - **The limiter exemption** (`0e3b69b`; seam fix `3270bc1`), on the user's
   decision of 2026-09-27. A rule's actions, and autoFollow's, dispatch without
   §10.7's per-connection command limiter; sessions keep it unchanged. The
@@ -3190,6 +3194,262 @@ source, so there is nothing to rebuild. Every run started at load 2.07–2.36.
 | Z2 | Listeners first, the failure swallowed | `closed: 'never…'`, `registrations: 1`, `audited: []`, but `registrationsAfterTheEngineGoes: 0`: the close is heard, and the third state lasts until the engine leaves. Each half of the fix carries its own weight |
 | Z3 | The send result ignored again | the send-failure test alone: `closed: 'never…'`, `registrations: 1`, `audited: []` |
 
+### The package-reconcile fix — a resync reconciles the package by load identity (2026-10-09, branch `package-reconcile`)
+
+**The order** (the user's words of 2026-10-08): reconcile the package by load
+identity on every resync. It is SPEC v0.4.8 row 5 and the queue's position 1
+above. The strike of that queue line waits for the merge: it lands in a
+post-merge records commit on main, by the merge SHA.
+
+**The premises, each read at `7cd9d1a` before anything changed.** All six
+hold.
+- *The snapshot carries `packagePath`, and the engine ignores it.*
+  `state.ts` `resyncSnapshot` sends `packagePath: this.pkg?.packagePath ??
+  null`. `directive.rs` reads `packagePath` in one place, `on_show_load`, and
+  `on_resync` never touches it.
+- *`show.start` only starts the clock.* `on_show_start` is
+  `self.state.clock.lock().unwrap().start(); Ok(())`. Everything
+  package-shaped is set in `on_show_load`: the index, the packaged slate, the
+  media, the audio-level watches and the record target.
+- *The control plane refuses `show.load` while RUNNING.* `commands/show.ts`:
+  `"cannot load a package while the view is live"` (`E_FORBIDDEN_STATE`). So
+  there is no recovery on air, and the manual path was stop, load, start.
+- *The resync carries overlay IDs only.* `visibleOverlays:
+  Array.from(this.visibleOverlays)`: names, which resolve only against a
+  loaded package.
+- *`packagePath` has no spec status in §5.9.4.* Rule 1's field list at HEAD:
+  "`showState`, `viewItem`, `viewItemStartFrame`, `viewItemEnd`,
+  `previewItem`, item states, scene states, visible overlays,
+  `automationHold`, and the `stateVersion` it was taken at". The field was on
+  the wire with no spec and no schema.
+- *The divergent case is rule 4's.* Rule 4: "Directives issued while no render
+  node was connected MUST NOT be replayed. The snapshot, not the backlog, is
+  the recovery mechanism." A stop, load and start during the outage is that
+  backlog, so only the snapshot can carry the new package.
+
+**Two names in the order that the tree does not hold.** The tree wins.
+- **"§2e".** `docs/implementation-standards.md` has sections 1, 2, 2a, 2b,
+  2c, 3, 4, 4a and 5, and no §2e. The power rule applied is the one the tree
+  has: the soak protocol's precondition 6, as the falsification records under
+  §2a have applied it. The adapter is 45 W, so every timing run here is
+  power-limited. That is recorded, not void.
+- **"§2a's read of stateVersion on both sides".** §2a is the standards'
+  falsification section, and it names no stateVersion read. It is read as
+  this order's item 2(a), the load generation each side holds, below.
+
+**Neither side held a load generation**, so both were added, minimally, in
+memory:
+- **The control plane:** `ControlPlaneState.packageLoadStateVersion`
+  (`state.ts`). `show.load`'s handler sets it to `ctx.stateVersion` right
+  after `state.loadPackage` (`commands/show.ts`), and `loadPackage` and
+  `unloadPackage` clear it. The `show.load` directive is forwarded at that
+  same `stateVersion`.
+- **The engine:** `EngineState.loaded_package` (`state.rs`,
+  `LoadedPackage { path, load_state_version, ok }`). `record_load` writes it,
+  from `on_show_load` with the directive's `state_version`, and from
+  `reconcile_package`. There is also `package_load_attempts`, a counter the
+  guards observe (G3's load count). `package_generation` already existed: it
+  is the render and audio side's load boundary, not the identity.
+- **Nothing on disk.** The control plane's persistence never restores a
+  package (`persistence.ts` `restore`: `this.state.pkg = null`, and an
+  explicit `show.load` is required). So a generation cannot outlive its
+  package across a restart. The restored `stateVersion` also keeps the next
+  load's generation above every earlier one.
+
+**The identity, as built.** The pair is `(packagePath,
+packageLoadStateVersion)`:
+- the control plane sends it on every resync (`resyncSnapshot`, through the
+  strict `ResyncPackageSchema`);
+- the engine holds `loaded_package` and compares the two.
+
+`ResyncPackage::read` (`nbe-protocol`) refuses a generation with no path, and
+`identity()` is `Some` only when both are present. So an older control plane,
+which sends the path without the generation, reconciles nothing.
+
+**The extraction's shape.** `on_show_load`'s body moved, unchanged, into
+`load_package(&self, path)`, which begins by counting the attempt.
+`on_show_load` parses the path, calls `load_package`, then `record_load` at
+the directive's `state_version`, and returns the load's result. That keeps
+its error, so `show.load`'s behaviour is unchanged. `load_package` has two
+callers, read at the branch head:
+- `on_show_load`, which the dispatcher still runs on the blocking pool;
+- `reconcile_package`, which `on_resync` awaits through `spawn_blocking`
+  before anything else in the snapshot applies.
+
+The dispatcher's `RESYNC` arm became `self.on_resync(d).await?`. The load
+lands first, because the View, the overlays and the end all reference its
+content. Content is trusted as-is, as `show.load` trusts it: no
+fingerprinting.
+
+**The comparison** (`reconcile_package`):
+- **no identity:** nothing;
+- **equal path and generation:** nothing, and it returns whether that load
+  failed;
+- **different, or none loaded:** `load_package`. On failure it logs at
+  `error`, calls `forget_package()` and records the failed identity.
+
+`forget_package` clears the index, the packaged slate, the media, the audio
+assets and per-item audio, the watches and the record target, and moves
+`package_generation`. Nothing of the previous show stays renderable or
+audible. Recording the failed identity means a resync at the same identity
+does not retry it (no retry loop). The operator's next `show.load` is a new
+generation, and that does.
+
+**Failure semantics.** A failed load is not connection-fatal. The channel
+applies a resync with `handler.apply(&frame).await?`, so an `Err` drops the
+connection and every reconnect would retry the load (F5 below shows the
+storm). Instead the rest of the resync applies: the show state, the View,
+the preview, the overlays, the slate and the end. Then, if an item is on air,
+the engine:
+- engages its slate (`FallbackSource::Held`). With no package this is the
+  generated slate, `[191, 89, 13, 255]`;
+- emits `itemEvent missing` for it, with detail `packageNotLoaded`.
+
+The control plane already handles that event. `server.ts` passes it to
+`state.markMissing`, which sets the item MISSING and, for the View item,
+`fallbackActive`. It is audited as `engine:missing`. With no item on air,
+nothing is reported and the slate stays where the snapshot put it. This
+matches `markMissing`, which raises the slate only for the View item.
+
+**Why load identity** (the decision record). The alternatives the user
+weighed:
+- **Warn-only:** the restarted engine stays dark for the rest of the show,
+  and recovery is still stop-load-start on air.
+- **Void-only (reload only when the engine holds no package):** it heals a
+  restart but not the divergent case. A stop and a load of another package,
+  or the same path re-authored, during the outage leaves the engine rendering
+  the previous show under the new show's item names. F2 shows both.
+- **Connection-fatal on a failed load:** a refused resync drops the
+  connection, and the reconnect retries the same load, a storm with no
+  operator signal. F5 shows it.
+- **Path alone:** it misses a same-path reload with new content (F4).
+
+The generation is the cheapest value both sides already agree on: the
+`stateVersion` of the `show.load` the engine applied.
+
+**Scope: the no-package snapshot is out.** A `show.unload` during the outage
+leaves a snapshot naming no package, and that reconciles nothing. Routing
+`show.unload` to the engine is a separate queued item, in Prompt 11's WU8
+record, under PR #34's release-parity fix ("route `show.unload` to the
+engine"). It now points back here.
+
+**The latency, measured** (`package-reconcile.measure.ts`, R9's convention:
+not a test, not in `npm test`, VOID at load 3.0). The real control plane and
+the real release engine. Each sample kills the engine, restarts it, and times
+from its registration (the resync sent) to `/status`'s
+`lastAppliedStateVersion` reaching the resync's `stateVersion`. The two tiers
+are a baseline with no package, and the dress package loaded and running with
+A1 on air. The dress package is `tests/fixtures/dress_show`: 136 KB, three
+video assets, one image and one audio. The run was 2026-10-09
+00:14:10–00:16:27, on AC (adapter 45 W, Low Power Mode on), under
+`caffeinate`, with no sleep or battery event and no discharge on AC (0 of 27
+samples). It started at load 2.41, after a wait for load under 2.5:
+
+```
+baseline (no package named, no load): n=5 ms=[31.1, 3.4, 2.6, 2.4, 3.3] median=3.3 max=31.1 load 2.37 3.10 2.74 -> 2.37 3.10 2.74
+reload (the dress package reloaded on resync): n=5 ms=[1273.3, 1270.8, 1268.5, 1264.3, 1275.6] median=1270.8 max=1275.6 load 2.37 3.10 2.74 -> 2.50 3.11 2.75
+added by the reconciliation (median reload - median baseline): 1267.5 ms
+```
+
+**About 1.27 s added, on the reload path only.** It is the package's own load
+time: `show.load`'s video decode, which already runs on the blocking pool. An
+equal identity, the blip reconnect, adds no load (G3: one attempt, no
+boundary crossed). During that time §5.9.4 rule 2's hold applies, and a
+restarted engine has nothing to hold. The number is power-limited and
+single-machine. It is a record, not a bound.
+
+**Guards.** The counts move:
+- `package_reconcile` 8, new;
+- mirror 22 → 24;
+- `npm test` 137 → 139;
+- the package-reconcile end-to-end 2, new.
+
+**`package_reconcile.rs` (8, GPU; pixels through the real render loop, the
+`prompt13_recall` shape):**
+- **G1**, a fresh engine resynced mid-item: BLACK before, then A1's red after
+  exactly one load;
+- **G2**, a divergent package: the new show's green A1, after two loads;
+- **G3**, an equal identity: one attempt, no load boundary crossed, still
+  red;
+- **G4**, a same-path reload with a new generation, the file re-authored to
+  green: green, after two loads;
+- **G5**, a package that does not load:
+  - the resync is `Ok`;
+  - `missing` A1 once, the View still A1, running, the slate up, the
+    generated slate's pixels, one attempt;
+  - a second resync at the same identity makes no new attempt and reports
+    `missing` again;
+- **G5b**, a divergent package that fails: the generated slate, then BLACK
+  after the next take, never the previous show's red;
+- a resync naming no package leaves the engine's package alone;
+- a package identity that does not read refuses the resync before anything
+  applies.
+
+**The audit trio:**
+- `resync_package.json`: 4 valid cases and 6 invalid ones, the invalid ones
+  being a generation with no path, −1, 1.5, `"12"`, a numeric path and an
+  unknown key;
+- `mirror.rs` +2: the fixture read both ways, and the Rust and TypeScript
+  field sets compared;
+- `protocol.test.ts` +1.
+
+**The rest:**
+- `resync-snapshot.test.ts` +1: a loaded package is named with its
+  generation, and no package names neither.
+- `package-reconcile.e2e.ts` (2), the real engine killed and restarted. The
+  witness is one only a loaded manifest produces: the package declares a
+  record directory, and the engine's report measures `recordSpaceMib`
+  against it (0 with no package).
+  - **Test 1:** the snapshot pair equals `show.load`'s path and response
+    `stateVersion`. The restarted engine measures the record target again,
+    and A1 stays LIVE with no slate.
+  - **Test 2:** the package is renamed away during the outage. A1 goes
+    MISSING, both slates are up, `engine:missing` is audited, and a 3 s watch
+    sees one connection and exactly one new registration.
+
+The success path is unchanged and green at the branch head:
+- the resync pins: `prompt13_recall` 6, `resync_end` 7, `reconnect` 2,
+  `prompt03` 10, and `resync-handshake.test.ts` 3 in `npm test`;
+- `show.load`'s suites: `prompt04` 17, `prompt05` 34, `prompt11_slate` 7,
+  `take_duration` 9, `integration` 1, and the engine's lib 54;
+- the resync-end end-to-end 3/3.
+
+**Falsified** on the normative machine, 2026-10-09 00:17–00:45. Each mutation
+was restored from a saved copy, checked identical, and the release engine
+rebuilt (`falsify.sh`). The runs were on AC under `caffeinate`, with no sleep
+or battery event, and each run started at load 2.32–2.48. They are
+power-limited (§2a): the adapter is 45 W, and the battery discharged on AC in
+71 of 331 samples, down to −787 mA.
+
+| # | Mutation | Signature |
+|---|---|---|
+| F1 | No reconciliation (the pre-fix tree) | 5 of 8 fail. G1: `left: ([0, 0, 0, 255], 0)` for `([255, 0, 0, 255], 1)`. G2 and G4 stay red after one load. G5: `left: (0, Some("A1"), true, false, [0, 0, 0, 255], 0)`: no missing, no slate, black. G5b: red, then red. End to end, both fail: `reloaded: false`, and `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, `engineSlate: false` |
+| F2 | Void-only: reload only when no package is loaded | G2 and G4: `left: ([255, 0, 0, 255], 1)`, the previous show's A1, one load. G5b: red, then red |
+| F3 | Always reload (the equality check removed) | G3: `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, …)`. G5: `(attempts, missing): the same identity is not retried`, `left: (2, 1)`: the retry loop |
+| F4 | Path-only identity (the generation ignored) | G4 alone: `left: ([255, 0, 0, 255], 1)`: the re-authored package never reloads |
+| F5 | A failed load made connection-fatal (the resync refused) | G5: `a load failure must not refuse the resync (the connection would drop): Err(Invalid("show.resync: the package did not load"))`; G5b panics on the same `Err`. End to end, the storm: `engine never registered`, with `control plane connection dropped; reconnecting err=invalid directive: show.resync: the package did not load` at `delay_ms` 100, 200, 400, 800, 1600, 3200, 6400 and 10000 |
+| F6 | No `missing` emitted (the failure swallowed) | G5: `left: (0, Some("A1"), true, true, [191, 89, 13, 255], 1)`: the slate up, nothing reported. End to end: `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, while the engine's slate is up: the two sides disagree |
+| F7 | A failed load's remains kept (`forget_package` skipped) | G5b alone: `left: ([12, 200, 90, 255], [255, 0, 0, 255])`: the previous show's packaged slate, then its red A1 after the next take |
+| F8 | The load lands AFTER the rest of the resync | G1, G2 and G4: `left: ([0, 0, 0, 255], …)`: the load clears the View the resync just set, so a correct load still shows black |
+
+**Adjacent paths, read at the branch head.**
+- **The callers of the extracted body:** `on_show_load` and
+  `reconcile_package`, and no others.
+- **The emitters of `ItemEvent::Missing`:** at `7cd9d1a` there were none in
+  the engine, and the variant was wire-only. The one emitter is this
+  reconciliation's.
+- **Its handlers:** the control plane's `itemEvent` path in `server.ts` (to
+  `state.markMissing`), and `protocol.ts`'s `ItemLifecycleFrameSchema` enum. Both are
+  unchanged.
+- **§13.4.1 is unchanged:** `show.resync` has no row, and `missing` arrives
+  on the existing engine-event path.
+
+**Observed, not changed.** After a failed reconciliation, the engine's take
+path does not consult the package. So a take renders black and reports
+nothing (G5b's second value). The control plane already holds the item
+MISSING, so the operator has the signal. The recovery is the next
+`show.load`, a new generation, and the control plane allows that only off
+air.
 
 ---
 
