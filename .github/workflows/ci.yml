@@ -663,6 +663,11 @@ jobs:
         # failed reload never leaves the previous show renderable; a resync
         # naming no package leaves the engine's alone; an incoherent identity
         # is refused. Floors equal at the full count (8, new).
+        # 8 -> 10 (PR #40's delta, the user's word of 2026-10-09): a failed
+        # show.load, then a resync at its identity, never airs the previous
+        # show; and the retry rule, a failed load healing on the next resync at
+        # the same identity once the path is fixed. G5 now pins one attempt per
+        # resync and none between them.
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test package_reconcile -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -674,12 +679,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "package_reconcile: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=8 exercised>=8)"
-          if [ "$ran" -lt 8 ]; then
-            echo "FAIL package_reconcile: expected at least 8 tests to run, got $ran"; exit 1
+          echo "package_reconcile: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=10)"
+          if [ "$ran" -lt 10 ]; then
+            echo "FAIL package_reconcile: expected at least 10 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 8 ]; then
-            echo "FAIL package_reconcile: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 10 ]; then
+            echo "FAIL package_reconcile: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "the protocol mirror actually ran (the wire audit, SPEC v0.4.8 row 2's trio)"
         # The mirror holds Rust, TypeScript and the spec to one wire. It had no
@@ -1132,6 +1137,11 @@ jobs:
         # cannot load reports the item missing with the slate up, on one
         # connection that stays up. The file never skips: a missing binary
         # fails its `before`.
+        # 2 -> 4 (PR #40's delta, the user's word of 2026-10-09): the retry
+        # rule's heal (a reconnect at the same identity, through the file's
+        # TCP proxy, reloads the fixed package with no stop/load/start), and
+        # the generation race (a second connection's command during the
+        # load's preflight; the reconnect after loads nothing).
         run: |
           set -u
           out=$(node --import tsx --test src/package-reconcile.e2e.ts 2>&1) && rc=0 || rc=$?
@@ -1142,10 +1152,10 @@ jobs:
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "package-reconcile e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=2 exercised>=2)"
+          echo "package-reconcile e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile e2e: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 2 ]; then echo "FAIL package-reconcile e2e: expected at least 2 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 2 ]; then echo "FAIL package-reconcile e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
