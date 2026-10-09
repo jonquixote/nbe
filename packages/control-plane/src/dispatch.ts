@@ -183,7 +183,14 @@ export interface HandlerCtx {
   state: ControlPlaneState;
   bridge: RenderBridge;
   persistence: PersistHooks;
-  /** The command's own stateVersion (assigned by the dispatcher bump). */
+  /**
+   * The stateVersion this command expects the dispatcher's bump to assign:
+   * the current version plus one, read before the handler runs. An async
+   * handler can be overtaken: commands are serialized per connection only, so
+   * another connection's command, an automation action or an engine event can
+   * bump while it awaits, and the version actually assigned is then higher.
+   * A handler that must record the version it was assigned uses `afterBump`.
+   */
   stateVersion: number;
   /** Per-connection hooks (telemetry subscribe/unsubscribe side effects). */
   systemHooks?: import("./commands/system.js").SystemHooks | undefined;
@@ -195,6 +202,13 @@ export interface HandlerOutput {
   extraDirectives?: Array<{ command: string; target?: Record<string, unknown>; payload: Record<string, unknown> }>;
   /** warning to log (exact strings asserted in tests) */
   warnings?: string[];
+  /**
+   * Called with the stateVersion the dispatcher assigned this command, right
+   * after the bump and before its directives are forwarded at that version,
+   * with no await in between. `show.load` records its load generation here
+   * (SPEC v0.4.8 row 5): `ctx.stateVersion` can be stale by then.
+   */
+  afterBump?: (stateVersion: number) => void;
 }
 
 type Payload = Record<string, unknown>;
@@ -317,6 +331,7 @@ export async function dispatch(
   // 7. exactly one bump per accepted command
   state.bump();
   const sv = state.stateVersion;
+  out.afterBump?.(sv);
 
   // deprecation warning rides the next telemetry tick (Assumption 17)
   if (resolved.deprecated && resolved.warning) {

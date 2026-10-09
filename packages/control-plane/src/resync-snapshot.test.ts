@@ -135,3 +135,26 @@ test("[v0.4.8 row 3] a recall onto a timed item starts its clock at the recall",
   await run(deps, "snapshot.recall", { name: "on-t1" });
   assert.deepEqual(endAfter(state, 500), { itemRef: "T1", remainingFrames: 75 }, "500 ms after the recall, 2500 ms remain");
 });
+
+test("[v0.4.8 row 5] the snapshot names the package with its load generation, and no package names neither", async () => {
+  // `show.load`'s handler records the generation (its own stateVersion); here
+  // it is set as the handler sets it. The e2e asserts the real handler.
+  const { state } = makeDeps();
+  const pair = () => {
+    const s = state.resyncSnapshot() as Record<string, unknown>;
+    return { packagePath: s["packagePath"], packageLoadStateVersion: s["packageLoadStateVersion"] };
+  };
+  const ungenerationed = pair(); // loaded outside the command path: no generation
+  state.packageLoadStateVersion = 4;
+  const loaded = pair();
+  state.unloadPackage();
+  assert.deepEqual(
+    { ungenerationed, loaded, unloaded: pair() },
+    {
+      ungenerationed: { packagePath: "/tmp/none", packageLoadStateVersion: null },
+      loaded: { packagePath: "/tmp/none", packageLoadStateVersion: 4 },
+      unloaded: { packagePath: null, packageLoadStateVersion: null },
+    },
+    "the pair travels together; an unload clears both",
+  );
+});

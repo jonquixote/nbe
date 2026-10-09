@@ -653,6 +653,39 @@ jobs:
           if [ "$exercised" -lt 7 ]; then
             echo "FAIL resync_end: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: "the package-reconcile suite actually ran (SPEC v0.4.8 row 5)"
+        # Eight tests through the real render loop (GPU required, as in
+        # prompt13_recall; no adapter fails loudly, no SKIP). A restarted
+        # engine reloads its package and the on-air item renders again; a
+        # divergent package is replaced; an equal identity loads nothing; a
+        # same-path reload with a new generation reloads; a package that does
+        # not load is not fatal (missing, the generated slate, no retry); a
+        # failed reload never leaves the previous show renderable; a resync
+        # naming no package leaves the engine's alone; an incoherent identity
+        # is refused. Floors equal at the full count (8, new).
+        # 8 -> 10 (PR #40's delta, the user's word of 2026-10-09): a failed
+        # show.load, then a resync at its identity, never airs the previous
+        # show; and the retry rule, a failed load healing on the next resync at
+        # the same identity once the path is fixed. G5 now pins one attempt per
+        # resync and none between them.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test package_reconcile -- --nocapture 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL package_reconcile: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "package_reconcile: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=10 exercised>=10)"
+          if [ "$ran" -lt 10 ]; then
+            echo "FAIL package_reconcile: expected at least 10 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 10 ]; then
+            echo "FAIL package_reconcile: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: "the protocol mirror actually ran (the wire audit, SPEC v0.4.8 row 2's trio)"
         # The mirror holds Rust, TypeScript and the spec to one wire. It had no
         # floor of its own; v0.4.8 row 2 adds two of its tests as the take
@@ -662,6 +695,9 @@ jobs:
         # 20 -> 22 (v0.4.8 row 3): the resync end's audit legs (its shared
         # fixture reads, round-trips and refuses, the clamped zero among the
         # valid; the keys agree with ResyncViewItemEndSchema both ways).
+        # 22 -> 24 (v0.4.8 row 5): the resync package pair's audit legs (its
+        # fixture reads, round-trips and refuses; the keys agree with
+        # ResyncPackageSchema both ways).
         run: |
           set -u
           out=$(cargo test -p nbe-protocol --test mirror -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -673,12 +709,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "mirror: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=22 exercised>=22)"
-          if [ "$ran" -lt 22 ]; then
-            echo "FAIL mirror: expected at least 22 tests to run, got $ran"; exit 1
+          echo "mirror: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=24 exercised>=24)"
+          if [ "$ran" -lt 24 ]; then
+            echo "FAIL mirror: expected at least 24 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 22 ]; then
-            echo "FAIL mirror: expected at least 22 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 24 ]; then
+            echo "FAIL mirror: expected at least 24 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "the recall suite actually ran (Prompt 13 re-plan P1, the recall leg)"
         # Six tests on a real render loop: a recall puts the recalled item on
@@ -1093,6 +1129,33 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL resync-end e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
+      - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
+        # failures. 2 tests (new), on the real engine built above, killed and
+        # restarted mid-show: the restarted engine reloads the package (its
+        # report measures the package's record target again); a package that
+        # cannot load reports the item missing with the slate up, on one
+        # connection that stays up. The file never skips: a missing binary
+        # fails its `before`.
+        # 2 -> 4 (PR #40's delta, the user's word of 2026-10-09): the retry
+        # rule's heal (a reconnect at the same identity, through the file's
+        # TCP proxy, reloads the fixed package with no stop/load/start), and
+        # the generation race (a second connection's command during the
+        # load's preflight; the reconnect after loads nothing).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/package-reconcile.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "package-reconcile e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
