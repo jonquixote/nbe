@@ -565,7 +565,7 @@ progress** — this drain on the test server's reader, that teardown on the stre
 thread's exit. A run that trips either is a sighting to record, not a load
 excuse.
 
-### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)
+### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ **REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)
 
 **Resolution, recorded 2026-09-26 (§2c: the open entry stands below, unedited).**
 Both halves of the resolution condition landed together in `bb7d4a2`:
@@ -621,6 +621,15 @@ PR #37's two-key pass. R11 stays resolved, and a third such sighting reopens
 it. Queued with them: measure the exit path's true duration, the run loop's
 return and the encoders' drop (VideoToolbox's invalidation is the suspect).
 The sightings, their captures and the queue line are in the register row.*
+
+*Reopened 2026-10-09, by the rule above, on post-fix sighting 5. The
+package-reconcile PR's gate hit it in a full workspace run at `3e1aa2c`:
+`phase=exiting`, `encoder_open_us=324828`, the one-minute load 2.34–2.79
+throughout, on AC with no discharge in the window. That is the third
+`exiting`-phase sighting under the ceiling. `stream.rs` is unchanged since
+`592444a`. The re-run was 508/0/3, and CI at the same head was 508/0/3. The
+queued measurement of the exit path is R11's open work, put to the user and
+not started. The capture is in the register row.*
 
 ### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
@@ -3450,6 +3459,14 @@ nothing (G5b's second value). The control plane already holds the item
 MISSING, so the operator has the signal. The recovery is the next
 `show.load`, a new generation, and the control plane allows that only off
 air.
+
+**Recorded alongside: R11 reopens.** The gate's full workspace run at
+`3e1aa2c` failed one test outside this change,
+`a_slow_exit_inside_the_backstop_is_a_clean_stop`: `phase=exiting`, under the
+ceiling. That is R11's post-fix sighting 5, and the third under the ceiling,
+so by the user's rule of 2026-10-06 R11 reopens (Finding R11 above, and the
+register row in `docs/soak-protocol.md` §5). The quiescent re-run was
+508/0/3, matching CI. The fix's own suites never touch the stream thread.
 
 ---
 
