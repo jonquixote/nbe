@@ -3258,8 +3258,10 @@ item):
    The clamp makes it unreachable from the end's computation, but any throw
    while the snapshot is built does the same. **The fix direction:** install
    the listeners before `sendResync`, or deregister the session on a throw.
-- ~~**Position 1 after PR #39's merge:**~~ **In flight, PR #40 (SPEC v0.4.8
-  row 5): the package-reload gap, a design question.** *(It read ~~"Behind
+- ~~**Position 1 after PR #39's merge:**~~ ~~**In flight, PR #40 (SPEC v0.4.8
+  row 5): the package-reload gap, a design question.**~~ **FIXED** by
+  `b961cc5` (PR #40, SPEC v0.4.8 row 5; the package-reconcile record is
+  below). *(It read ~~"Behind
   it:"~~, §2c. §2c, 2026-10-10: it left the numbered queue when PR #40 took it
   up, and it is struck FIXED by the merge SHA after the user's merge. The
   numbered positions below are the user's word of 2026-10-09, ruling on PR
@@ -3484,7 +3486,9 @@ source, so there is nothing to rebuild. Every run started at load 2.07–2.36.
 identity on every resync. It is SPEC v0.4.8 row 5 and the queue's position 1
 above *(§2c, 2026-10-10: that line is now marked in flight, PR #40, and the
 numbered queue begins with R11)*. The strike of that queue line waits for the merge: it lands in a
-post-merge records commit on main, by the merge SHA.
+post-merge records commit on main, by the merge SHA. *(Done, 2026-10-11:
+struck FIXED by `b961cc5`, the merge of PR #40. Main's history takes only
+pull-request merges, so the strike rides in PR #41's records.)*
 
 **The premises, each read at `7cd9d1a` before anything changed.** All six
 hold.
