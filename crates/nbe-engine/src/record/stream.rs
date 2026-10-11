@@ -298,6 +298,127 @@ enum StreamControl {
     Stop,
 }
 
+/// A boundary on the stream session's teardown path — R11's exit-path
+/// measurement (the user's word of 2026-10-10). Thread-side marks are set by
+/// the stream thread, the rest by the waiter in `stop_thread` and
+/// `stop_and_close`. In path order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum TeardownMark {
+    /// Thread: entered `OpeningEncoders`.
+    OpenStart,
+    /// Thread: the encoders are open (`Running`).
+    OpenEnd,
+    /// Waiter: `stop_thread` entered (the frame channel drops, `Stop` is
+    /// sent, the backstop starts).
+    StopRequested,
+    /// Thread: the run loop returned (`Exiting`).
+    RunReturned,
+    /// Thread: the exit-delay test seam is over (equal to `RunReturned` in
+    /// production, where the delay is zero).
+    ExitDelayEnd,
+    /// Thread: the H.264 session is dropped (VideoToolbox invalidation).
+    EncoderDropped,
+    /// Thread: the AAC converter is dropped (`AudioConverterDispose`).
+    AacDropped,
+    /// Thread: `Done`, the exit event about to fire.
+    DoneSent,
+    /// Waiter: the exit event arrived (the backstop did not expire).
+    DoneReceived,
+    /// Waiter: the thread is joined.
+    Joined,
+    /// Waiter: the transport confirmed its shutdown, or timed out.
+    TransportClosed,
+}
+
+impl TeardownMark {
+    pub const ALL: [TeardownMark; 11] = [
+        TeardownMark::OpenStart,
+        TeardownMark::OpenEnd,
+        TeardownMark::StopRequested,
+        TeardownMark::RunReturned,
+        TeardownMark::ExitDelayEnd,
+        TeardownMark::EncoderDropped,
+        TeardownMark::AacDropped,
+        TeardownMark::DoneSent,
+        TeardownMark::DoneReceived,
+        TeardownMark::Joined,
+        TeardownMark::TransportClosed,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TeardownMark::OpenStart => "openStart",
+            TeardownMark::OpenEnd => "openEnd",
+            TeardownMark::StopRequested => "stopRequested",
+            TeardownMark::RunReturned => "runReturned",
+            TeardownMark::ExitDelayEnd => "exitDelayEnd",
+            TeardownMark::EncoderDropped => "encoderDropped",
+            TeardownMark::AacDropped => "aacDropped",
+            TeardownMark::DoneSent => "doneSent",
+            TeardownMark::DoneReceived => "doneReceived",
+            TeardownMark::Joined => "joined",
+            TeardownMark::TransportClosed => "transportClosed",
+        }
+    }
+}
+
+/// When each [`TeardownMark`] was reached, in µs since the session opened.
+///
+/// Permanent rather than test-only, so that a sighting in a real show
+/// carries the whole teardown, not only the phase it stopped in. The cost is
+/// one `Instant::now()` and one atomic store per mark, eleven per stream
+/// session, and one `info` line per stream stop. No sleeps, no locks, no
+/// awaits, and the path's order is unchanged.
+#[derive(Debug)]
+pub struct TeardownTimeline {
+    epoch: Instant,
+    /// µs since `epoch`, plus one; 0 means not reached.
+    marks: [AtomicU64; 11],
+}
+
+impl Default for TeardownTimeline {
+    fn default() -> Self {
+        Self {
+            epoch: Instant::now(),
+            marks: Default::default(),
+        }
+    }
+}
+
+impl TeardownTimeline {
+    fn mark(&self, m: TeardownMark) {
+        let us = self.epoch.elapsed().as_micros() as u64;
+        self.marks[m as usize].store(us + 1, Ordering::SeqCst);
+    }
+
+    /// When `m` was reached, in µs since the session opened.
+    pub fn at_us(&self, m: TeardownMark) -> Option<u64> {
+        match self.marks[m as usize].load(Ordering::SeqCst) {
+            0 => None,
+            v => Some(v - 1),
+        }
+    }
+
+    /// Every mark reached, relative to the stop request, as one line:
+    /// `openStart=-412.3ms … transportClosed=+803.0ms` (a mark before the stop
+    /// is negative). Marks not reached are left out. With no stop yet, the
+    /// marks are relative to the session's open.
+    pub fn summary(&self) -> String {
+        let origin = self.at_us(TeardownMark::StopRequested).unwrap_or(0) as i64;
+        TeardownMark::ALL
+            .iter()
+            .filter_map(|&m| {
+                self.at_us(m).map(|us| {
+                    let rel = us as i64 - origin;
+                    format!("{}={:+.1}ms", m.as_str(), rel as f64 / 1000.0)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// What the stream thread has done — observable to tests and measurements,
 /// never on the wire.
 #[derive(Debug, Default)]
@@ -320,6 +441,8 @@ pub struct StreamStats {
     pub encode_us_total: AtomicU64,
     pub video_units_published: AtomicU64,
     pub audio_packets_published: AtomicU64,
+    /// The teardown path's boundaries (R11's exit-path measurement).
+    pub teardown: TeardownTimeline,
 }
 
 impl StreamStats {
@@ -336,11 +459,12 @@ impl StreamStats {
     /// thread was and how far its encoders got.
     pub fn capture(&self) -> String {
         format!(
-            "phase={}, encoder_ready={}, encoder_open_us={}, aac_ready={}",
+            "phase={}, encoder_ready={}, encoder_open_us={}, aac_ready={}, teardown: {}",
             self.phase().as_str(),
             self.encoder_ready.load(Ordering::SeqCst),
             self.encoder_open_us.load(Ordering::SeqCst),
             self.aac_ready.load(Ordering::SeqCst),
+            self.teardown.summary(),
         )
     }
 }
@@ -556,6 +680,14 @@ impl StreamSession {
             Some(p) => p.shutdown_and_wait(PublisherHandle::stop_timeout()).await,
             None => true,
         };
+        self.stats.teardown.mark(TeardownMark::TransportClosed);
+        // R11's exit-path measurement: every stop says where its time went.
+        tracing::info!(
+            thread_exited = thread_exited.is_ok(),
+            transport_closed,
+            teardown = %self.stats.teardown.summary(),
+            "stream teardown"
+        );
         self.closed = true;
         self.surface_pool = None;
         if let Err(capture) = thread_exited {
@@ -599,6 +731,7 @@ impl StreamSession {
     /// ~~Polled `try_recv` every 5 ms against a 500 ms wall cap~~ (§2c): the
     /// event was there all along; the wall clock was the assertion.
     async fn stop_thread(&mut self) -> Result<(), String> {
+        self.stats.teardown.mark(TeardownMark::StopRequested);
         self.frame_tx.take();
         if let Some(c) = self.control_tx.take() {
             let _ = c.send(StreamControl::Stop);
@@ -610,9 +743,11 @@ impl StreamSession {
             // Fired, or dropped unfired (a panicked thread has exited too):
             // either way it is no longer running.
             Ok(Ok(())) | Ok(Err(_)) => {
+                self.stats.teardown.mark(TeardownMark::DoneReceived);
                 if let Some(h) = self.handle.take() {
                     let _ = h.join();
                 }
+                self.stats.teardown.mark(TeardownMark::Joined);
                 Ok(())
             }
             Err(_elapsed) => {
@@ -697,20 +832,33 @@ struct StreamThreadArgs {
 }
 
 fn run_stream_thread(args: StreamThreadArgs) {
+    let stats = args.stats.clone();
+    stats.teardown.mark(TeardownMark::OpenStart);
     args.stats.set_phase(StreamThreadPhase::OpeningEncoders);
     {
         let mut t = StreamThread::open(&args);
+        stats.teardown.mark(TeardownMark::OpenEnd);
         args.stats.set_phase(StreamThreadPhase::Running);
         t.run(&args);
+        stats.teardown.mark(TeardownMark::RunReturned);
         args.stats.set_phase(StreamThreadPhase::Exiting);
         if !args.exit_delay.is_zero() {
             std::thread::sleep(args.exit_delay);
         }
+        stats.teardown.mark(TeardownMark::ExitDelayEnd);
         // `t` drops here: the VideoToolbox session is invalidated, which
         // releases any buffer it still retains — before `done` says the
-        // thread is finished with the pool's surfaces.
+        // thread is finished with the pool's surfaces. The two codec drops
+        // are spelled out, in the order the fields would drop (the encoder,
+        // then AAC), so R11's measurement can time each.
+        let StreamThread { encoder, aac, .. } = t;
+        drop(encoder);
+        stats.teardown.mark(TeardownMark::EncoderDropped);
+        drop(aac);
+        stats.teardown.mark(TeardownMark::AacDropped);
     }
     args.stats.set_phase(StreamThreadPhase::Done);
+    stats.teardown.mark(TeardownMark::DoneSent);
     // `done` is the exit EVENT `stop_thread` awaits: fired last.
     let StreamThreadArgs { done_tx, .. } = args;
     let _ = done_tx.send(());
