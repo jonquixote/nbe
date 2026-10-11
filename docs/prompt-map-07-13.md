@@ -3049,8 +3049,12 @@ item):
    The clamp makes it unreachable from the end's computation, but any throw
    while the snapshot is built does the same. **The fix direction:** install
    the listeners before `sendResync`, or deregister the session on a throw.
-- **Position 1 after PR #39's merge: the package-reload gap, a design
-  question.** *(It read ~~"Behind it:"~~, §2c.)* The control
+- ~~**Position 1 after PR #39's merge:**~~ **In flight, PR #40 (SPEC v0.4.8
+  row 5): the package-reload gap, a design question.** *(It read ~~"Behind
+  it:"~~, §2c. §2c, 2026-10-10: it left the numbered queue when PR #40 took it
+  up, and it is struck FIXED by the merge SHA after the user's merge. The
+  numbered positions below are the user's word of 2026-10-09, ruling on PR
+  #40's fresh two-key pass.)* The control
   plane sends `packagePath` in the snapshot, but `on_resync` never reads it;
   only `show.load` does (`directive.rs`), and §5.9.4's field list does not
   name it. A restarted engine rejoins with the View, the overlays and now the
@@ -3058,7 +3062,60 @@ item):
   is on air, which compounds the clip-bus cell above. What a restarted engine
   should reload ("package, assets, overlays") is a resync-semantics decision
   for the user.
-- **Position 2: surface a failed re-resync on the `resyncRequest` path** (the
+- **Position 1: R11's exit-path measurement** (the user's word of 2026-10-09,
+  ordering the queue). R11 reopened on 2026-10-09, on post-fix sighting 5
+  (Finding R11 above, and the register row in `docs/soak-protocol.md` §5).
+  The work is the one queued on 2026-10-06: measure the stream thread's exit
+  path, the run loop's return and the encoders' drop (VideoToolbox's
+  invalidation is the suspect), against the 1100 ms backstop.
+- **Position 2: `show.stop`'s `stopVersion` across the grace wait** *(moved
+  from position 4 and amended, the user's word of 2026-10-09; §2c,
+  2026-10-10)* (the user's word of 2026-10-09, from PR #40's two-key pass;
+  older than that branch). `show.stop` reads `ctx.stateVersion` as
+  `stopVersion`, emits its stop directives at it, then awaits `waitForGrace`
+  for up to 2 s before the dispatcher's bump (`commands/show.ts`). A command
+  on another connection that bumps during the wait is assigned that same
+  version, so two commands' directives carry one `stateVersion`, and the grace
+  wait can be met by the other command's acknowledgement. It is the shape of
+  the package generation race, which `afterBump` fixed for `show.load` (the
+  package-reconcile record's delta, below). *Read while writing this line, not
+  run:* with outputs active, `show.stop` already sends `record.stop`,
+  `stream.stop` and its own `show.stop` at one `stateVersion`, and the
+  engine's gate skips a directive whose version is not above the last it
+  applied (`channel.rs` `classify`: `<=`). ~~Whether the second and third are
+  skipped is the first thing to establish when this item is built.~~
+  *(§2c, 2026-10-10, the user's word on the fresh pass's read, which confirms
+  it as a read:)*
+  - **What the read says will happen.** With outputs active, the gate always
+    skips `show.stop`'s own directive, so the engine's own stop (its clock)
+    never runs from it. If `record.stop` applies, `stream.stop` is skipped too.
+    If `record.stop` fails (nothing recording), `stream.stop` applies.
+  - **Each skip leaves a gap.** A skipped directive's sequence number is never
+    consumed (`classify` returns before advancing `expected_seq`), so the next
+    directive meets a sequence gap. The engine sends `resyncRequest`, and the
+    control plane resyncs it (rule 5).
+  - **The resync does not stop outputs.** `on_resync` has no output handling,
+    and the snapshot carries no record or stream state. So, read and not run,
+    a skipped `stream.stop` leaves the stream running after `show.stop`.
+  - **The interaction with row 5.** Every output-active stop therefore ends in
+    a resync, when the next directive arrives, and that resync runs the
+    package reconciliation.
+    - *The tree, on "therefore in a package reload":* the resync reloads only
+      when the identity has moved by then. A resync at the held identity loads
+      nothing (G3; the two-key pass's same-identity reconnects gave reloads
+      `[0, 0, 0, 0, 0]`).
+    - The stop-load-start workflow does move it. The next directive is then
+      the forwarded `show.load`, which meets the gap and is dropped. So the
+      load runs inside the resync's reconciliation instead of as `show.load`:
+      about 1.27 s on the dress package (`package-reconcile.measure.ts`). That
+      is this PR's latency story, moved onto the stop path.
+    - Before row 5, that dropped `show.load` was never applied at all.
+  - **Establish first.** The item keeps its establish-first character: its
+    first step is the test that shows the skips on the real gate.
+  - **The scope is a design choice, the user's word when the item is built:**
+    one `stateVersion` per emitted directive (the dispatcher bumping for
+    each), or a gate that accepts equal versions from one command.
+- **~~Position 2~~ Position 3: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
   throw there is answered only as an `E_ENGINE` reply on the engine's own
@@ -3076,25 +3133,19 @@ item):
     (`resync.handshakeFailed`). Whether to tear down the established session
     on a persistent failure, handing recovery to the now-honest connect path,
     is the user's word when the item is built.
-- **Position 3: the deferred-cell reader**, a static reader that compares each
+- **~~Position 3~~ Position 4: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
   the recall leg's record above ("a static reader for the deferred cells").
-- **Position 4: `show.stop`'s `stopVersion` across the grace wait** (the
-  user's word of 2026-10-09, from PR #40's two-key pass; older than that
-  branch). `show.stop` reads `ctx.stateVersion` as `stopVersion`, emits its
-  stop directives at it, then awaits `waitForGrace` for up to 2 s before the
-  dispatcher's bump (`commands/show.ts`). A command on another connection
-  that bumps during the wait is assigned that same version, so two commands'
-  directives carry one `stateVersion`, and the grace wait can be met by the
-  other command's acknowledgement. It is the shape of the package generation
-  race, which `afterBump` fixed for `show.load` (the package-reconcile
-  record's delta, below). *Read while writing this line, not run:* with
-  outputs active, `show.stop` already sends `record.stop`, `stream.stop` and
-  its own `show.stop` at one `stateVersion`, and the engine's gate skips a
-  directive whose version is not above the last it applied (`channel.rs`
-  `classify`: `<=`). Whether the second and third are skipped is the first
-  thing to establish when this item is built.
+- **Position 5: a failed engine-side `show.load` heals itself** (the user's
+  word of 2026-10-09, ruling on PR #40's fresh two-key pass; the
+  package-reconcile record's silent-window paragraph, below, is the
+  observation). On a `show.load` failure the engine does what a failed resync
+  load already does (SPEC v0.4.8 row 5): `forget_package`, the slate, and a
+  report. Today the channel logs `directive failed` and nothing else
+  (`channel.rs`). It likely arrives with the queued `show.unload` routing
+  (Prompt 11's WU8 record, "route `show.unload` to the engine"), which also
+  clears the engine's package.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -3222,7 +3273,8 @@ source, so there is nothing to rebuild. Every run started at load 2.07–2.36.
 
 **The order** (the user's words of 2026-10-08): reconcile the package by load
 identity on every resync. It is SPEC v0.4.8 row 5 and the queue's position 1
-above. The strike of that queue line waits for the merge: it lands in a
+above *(§2c, 2026-10-10: that line is now marked in flight, PR #40, and the
+numbered queue begins with R11)*. The strike of that queue line waits for the merge: it lands in a
 post-merge records commit on main, by the merge SHA.
 
 **The premises, each read at `7cd9d1a` before anything changed.** All six
@@ -3271,8 +3323,11 @@ memory:
   `loadPackage` and `unloadPackage` clear it. The `show.load` directive is
   forwarded at that same `stateVersion`.
 - **The engine:** `EngineState.loaded_package` (`state.rs`,
-  `LoadedPackage { path, load_state_version~~, ok~~ }`; §2c, 2026-10-09:
-  `ok` is gone with the no-retry rule, below). `record_load` writes it,
+  ~~`LoadedPackage { path, load_state_version, ok }`~~
+  `LoadedPackage { path, load_state_version }`; §2c, 2026-10-09: `ok` is gone
+  with the no-retry rule, below. *(§2c, 2026-10-10: the strike sat inside the
+  code span, where it rendered as literal tildes, so it is restructured to
+  render; the text is unchanged.)*) `record_load` writes it,
   from `on_show_load` with the directive's `state_version`, and from
   `reconcile_package`. There is also `package_load_attempts`, a counter the
   guards observe (G3's load count). `package_generation` already existed: it
@@ -3463,7 +3518,7 @@ power-limited (§2a): the adapter is 45 W, and the battery discharged on AC in
 |---|---|---|
 | F1 | No reconciliation (the pre-fix tree) | 5 of 8 fail. G1: `left: ([0, 0, 0, 255], 0)` for `([255, 0, 0, 255], 1)`. G2 and G4 stay red after one load. G5: `left: (0, Some("A1"), true, false, [0, 0, 0, 255], 0)`: no missing, no slate, black. G5b: red, then red. End to end, both fail: `reloaded: false`, and `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, `engineSlate: false` |
 | F2 | Void-only: reload only when no package is loaded | G2 and G4: `left: ([255, 0, 0, 255], 1)`, the previous show's A1, one load. G5b: red, then red |
-| F3 | Always reload (the equality check removed) | G3: `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, …)`. G5: `(attempts, missing): the same identity is not retried`, `left: (2, 1)`: ~~the retry loop~~ a retry at the same identity, not a loop (§2c, 2026-10-09) |
+| F3 | Always reload (the equality check removed) | G3: `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, …)`. ~~G5: `(attempts, missing): the same identity is not retried`, `left: (2, 1)`:~~ ~~the retry loop~~ ~~a retry at the same identity, not a loop (§2c, 2026-10-09)~~ *(§2c, 2026-10-10: at `7879e87` F3 no longer fails G5, which now pins one attempt per resync and expects the retry. F3 re-run fresh at `7879e87`, restored from a copy and rebuilt, release binary byte-identical after: G3 alone fails in the engine suite, `left: (2, 1, [255, 0, 0, 255])` for `(1, 0, [255, 0, 0, 255])`, and G5 passes; end to end, test 4 fails, `reloadsOnTheReconnect: 1` for `0`.)* |
 | F4 | Path-only identity (the generation ignored) | G4 alone: `left: ([255, 0, 0, 255], 1)`: the re-authored package never reloads |
 | F5 | A failed load made connection-fatal (the resync refused) | G5: `a load failure must not refuse the resync (the connection would drop): Err(Invalid("show.resync: the package did not load"))`; G5b panics on the same `Err`. End to end, the storm: `engine never registered`, with `control plane connection dropped; reconnecting err=invalid directive: show.resync: the package did not load` at `delay_ms` 100, 200, 400, 800, 1600, 3200, 6400 and 10000 |
 | F6 | No `missing` emitted (the failure swallowed) | G5: `left: (0, Some("A1"), true, true, [191, 89, 13, 255], 1)`: the slate up, nothing reported. End to end: `a1: 'never missing: LIVE'`, `audited: false`, `controlPlaneSlate: false`, while the engine's slate is up: the two sides disagree |
@@ -3573,7 +3628,8 @@ records.
     - a divergent or same-path reload, when the engine's recorder ran through
       the outage;
     - the race-born reload fixed above.
-- **Queued: `show.stop`'s `stopVersion`** (position 4 in the queue above). The
+- **Queued: `show.stop`'s `stopVersion`** (position ~~4~~ 2 in the queue above;
+  §2c, 2026-10-10, moved by the user's word of 2026-10-09). The
   same shape, older than this branch: `ctx.stateVersion` held across a 2 s
   await.
 - **Guards.**
@@ -3613,7 +3669,35 @@ unmutated tree went first: `package_reconcile` 10/10 and the end-to-end 4/4.
 | N1 | Defect 1's fix reverted: the generation is `ctx.stateVersion` again | end to end, test 4: `generation: 9` for `10`, `reloadsOnTheReconnect: 1` for `0`. The race landed, and the reconnect reloaded mid-show |
 | N2 | `forget_package` removed from the load's failure branch | G6: `left: (1, [12, 200, 90, 255], [255, 0, 0, 255])`, the previous show's slate and then its red A1. G5b fails the same way |
 | N3 | The no-retry record kept: a failed identity is recorded as held | G7: the healing resync gives `(0, [191, 89, 13, 255], 1)`, no attempt and the generated slate, then `[0, 0, 0, 255]` after the take. G5: `((1, 0), 1)`. End to end, test 3: `reloadedAtTheSameIdentity: 0`, `reloaded: false` |
-| N4 | A failed load re-requests a resync (a loop) | end to end, test 2: `loadAttempts: 4114` for `1`. The engine-only G5 cannot see this, since nothing answers its request, and the end-to-end does |
+| N4 | A failed load re-requests a resync (a loop) | end to end, test 2: `loadAttempts: 4114` for `1`. The engine-only G5 cannot see this, since nothing answers its request, and the end-to-end does. *(Added 2026-10-10, from the fresh pass: test 3 also fails, `reloadedAtTheSameIdentity: 0` while `reloaded: true`. That is consistent with the loop reloading the restored package by itself before test 3's reconnect, which then finds an equal identity. The fresh pass counted `loadAttempts: 4066`; the count varies run to run.)* |
+
+**Recorded 2026-10-10 (the user's word of 2026-10-09, ruling on PR #40's
+fresh two-key pass).**
+
+- **The counts.** The delta is six commits, `0392383..7879e87`. The order of
+  2026-10-09 said seven; the delta report's table listed six. Its §2c
+  corrections to this record are eight strikes in seven places; the order
+  said six. Neither count had been written into this record.
+- **The silent window after a failed engine-side `show.load`** (docs only, no
+  behaviour change).
+  - When the engine's own `show.load` fails, the previous show keeps
+    rendering under the new show's item names, and nothing is reported. The
+    channel logs `directive failed` and drops the error (`channel.rs`), so the
+    control plane holds the new package and hears nothing.
+  - The failure path leaves the previous show's index, media and audio in
+    place, partly overwritten: the attempt is counted, decode sessions are
+    released, markers are cleared, `package_path` is replaced, and the new
+    slate may be installed.
+  - It lasts until the next reconnect or sequence gap. That resync names the
+    new identity and reconciles it: a reload, or on failure `forget_package`,
+    the slate and `missing` (G6).
+  - It is older than this PR and unchanged by it, as ordered. The heal is
+    queued at position 5 in the queue above.
+- **Disk headroom.** 7.5 GiB was free at the fresh pass and 7.3 GiB at this
+  note, under the soak protocol's 8 GiB precondition (`docs/soak-protocol.md`
+  §2, precondition 3). R14's power measurements (its work order's step 5,
+  Finding R14 above) and the AC-5 soak behind them stay blocked until
+  housekeeping frees space.
 
 ---
 
