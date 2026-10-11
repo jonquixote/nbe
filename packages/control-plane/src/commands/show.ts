@@ -49,6 +49,17 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
       state.preflightPassed = loaded.exitCode === 0;
       state.preflightWarnings = loaded.warnings;
       return {
+        // The load generation (SPEC v0.4.8 row 5): the stateVersion the
+        // dispatcher ASSIGNS this command, which the forwarded `show.load`
+        // directive carries to the engine too. A resync compares the two, so
+        // an engine that missed this load (a restart, or a stop-load-start
+        // while it was away) reloads. Not `ctx.stateVersion`, read before the
+        // await above: another connection's command can bump while the
+        // preflight runs (PR #40's two-key pass), and the generation must be
+        // the version the directive is forwarded at.
+        afterBump: (sv) => {
+          state.packageLoadStateVersion = sv;
+        },
         data: {
           packagePath: loaded.pkg.packagePath,
           showId: loaded.pkg.showId,

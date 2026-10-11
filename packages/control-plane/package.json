@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "gen:manifest-types": "node scripts/gen-manifest-types.mjs",
     "test:rehearsal": "node --import tsx --test src/dress-rehearsal.test.ts",
-    "measure:automation": "node --import tsx src/automation-latency.measure.ts"
+    "measure:automation": "node --import tsx src/automation-latency.measure.ts",
+    "measure:package-reconcile": "node --import tsx src/package-reconcile.measure.ts"
   },
   "dependencies": {
     "uuid": "^11.1.0",

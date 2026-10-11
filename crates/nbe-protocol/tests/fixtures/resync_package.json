@@ -1,0 +1,25 @@
+{
+  "$comment": [
+    "SPEC v0.4.8 row 5: show.resync's package identity, the package path and the control plane's",
+    "load generation (the stateVersion of its last show.load). Read by BOTH readers: nbe-protocol's",
+    "mirror (ResyncPackage::read, which the engine reads) and the control plane's protocol.test.ts",
+    "(ResyncPackageSchema, which the control plane parses its own snapshot's pair through before",
+    "sending). `valid` must read on both sides and round-trip in Rust; `invalid` must be refused by",
+    "both. A path with no generation is valid: it names no identity, so nothing is reconciled (the",
+    "shape a control plane from before this row sends)."
+  ],
+  "valid": [
+    { "name": "a loaded package and its load generation", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": 12 } },
+    { "name": "no package loaded", "pair": { "packagePath": null, "packageLoadStateVersion": null } },
+    { "name": "a path with no generation: no identity, nothing reconciled", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": null } },
+    { "name": "generation zero is a generation", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": 0 } }
+  ],
+  "invalid": [
+    { "name": "a generation with no package path", "pair": { "packagePath": null, "packageLoadStateVersion": 12 } },
+    { "name": "a negative generation", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": -1 } },
+    { "name": "a fractional generation", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": 1.5 } },
+    { "name": "a generation that is not a number", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": "12" } },
+    { "name": "a path that is not a string", "pair": { "packagePath": 7, "packageLoadStateVersion": 12 } },
+    { "name": "an unknown key", "pair": { "packagePath": "/shows/tonight", "packageLoadStateVersion": 12, "packageHash": "abc" } }
+  ]
+}

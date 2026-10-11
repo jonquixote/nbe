@@ -849,3 +849,86 @@ fn rust_and_typescript_agree_on_the_resync_view_item_end_fields() {
         "Rust's and TypeScript's resync end have the same keys"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SPEC v0.4.8 row 5: show.resync's package identity
+// ---------------------------------------------------------------------------
+
+fn resync_package_fixture() -> serde_json::Value {
+    let path = repo_root().join("crates/nbe-protocol/tests/fixtures/resync_package.json");
+    serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture is readable"))
+        .expect("the fixture is JSON")
+}
+
+/// The shared fixture, Rust's half (the control plane's half is in
+/// `protocol.test.ts`): every valid pair reads through `ResyncPackage::read`
+/// and round-trips exactly, and every invalid one is refused, as the engine
+/// refuses the resync that carries it.
+#[test]
+fn resync_package_fixture_reads_round_trips_and_refuses() {
+    let fixture = resync_package_fixture();
+    let valid = fixture["valid"].as_array().expect("valid cases");
+    let invalid = fixture["invalid"].as_array().expect("invalid cases");
+    assert!(
+        valid.len() >= 4 && invalid.len() >= 6,
+        "the fixture is not empty"
+    );
+    for case in valid {
+        let wire = &case["pair"];
+        let pair = ResyncPackage::read(wire.clone())
+            .unwrap_or_else(|e| panic!("{}: does not read: {e}", case["name"]));
+        round_trip(&pair);
+        assert_eq!(
+            &serde_json::to_value(&pair).unwrap(),
+            wire,
+            "{}: what Rust writes back is what the control plane sent",
+            case["name"]
+        );
+    }
+    for case in invalid {
+        assert!(
+            ResyncPackage::read(case["pair"].clone()).is_err(),
+            "{}: must be refused",
+            case["name"]
+        );
+    }
+}
+
+/// Rust's wire keys and `ResyncPackageSchema`'s, in both directions.
+#[test]
+fn rust_and_typescript_agree_on_the_resync_package_fields() {
+    let value = serde_json::to_value(ResyncPackage {
+        package_path: Some("/p".into()),
+        package_load_state_version: Some(1),
+    })
+    .unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        ours,
+        ["packageLoadStateVersion", "packagePath"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "the Rust pair's wire keys"
+    );
+    let ts = ts_protocol();
+    let start = ts
+        .find("ResyncPackageSchema = z")
+        .expect("TypeScript has a ResyncPackageSchema");
+    let rest = &ts[start..];
+    let block = &rest[..rest.find(".strict()").expect("the schema is strict")];
+    let theirs: BTreeSet<String> = block
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter_map(|l| {
+            let t = l.trim_start();
+            let key = t.split(':').next()?;
+            (t.contains(':') && key.chars().all(|c| c.is_ascii_alphanumeric()))
+                .then(|| key.to_string())
+        })
+        .collect();
+    assert_eq!(
+        ours, theirs,
+        "Rust's and TypeScript's pair have the same keys"
+    );
+}

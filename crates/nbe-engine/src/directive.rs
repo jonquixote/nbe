@@ -133,7 +133,7 @@ impl DirectiveHandler {
             "stream.stop" => self.on_stream_stop(d).await?,
             "marker.add" => self.on_marker_add(d)?,
             "snapshot.recall" => self.on_recall(d)?,
-            nbe_protocol::command::RESYNC => self.on_resync(d)?,
+            nbe_protocol::command::RESYNC => self.on_resync(d).await?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
             }
@@ -150,6 +150,29 @@ impl DirectiveHandler {
     }
 
     fn on_show_load(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let path = d
+            .payload
+            .get("packagePath")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DirectiveError::Invalid("show.load missing packagePath".into()))?;
+        let result = self.load_package(path);
+        // SPEC v0.4.8 row 5: the load's identity is this directive's
+        // stateVersion, the control plane's load generation for the package.
+        // Recorded only when the load worked: a failed one leaves the engine
+        // not holding this identity, so a resync naming it retries the load.
+        if result.is_ok() {
+            self.record_load(path, d.state_version);
+        }
+        result
+    }
+
+    /// The package load: `show.load`'s body, shared with a resync that
+    /// reconciles (SPEC v0.4.8 row 5), so the two cannot drift. Runs on the
+    /// blocking pool in both cases.
+    fn load_package(&self, path: &str) -> Result<(), DirectiveError> {
+        self.state
+            .package_load_attempts
+            .fetch_add(1, Ordering::SeqCst);
         // [RI-8] release-then-rebuild, FIRST: a load→load with no stop in
         // between must not stack the previous show's sessions onto the cap.
         // Outstanding leases go stale (epoch bump) and their Drop is a no-op.
@@ -157,11 +180,6 @@ impl DirectiveHandler {
         // No cross-show pollution: a newly loaded show never inherits the
         // previous show's markers.
         crate::record::markers::clear();
-        let path = d
-            .payload
-            .get("packagePath")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DirectiveError::Invalid("show.load missing packagePath".into()))?;
         *self.state.package_path.lock().unwrap() = Some(path.to_string());
         let fallback = load_fallback_asset(path)?;
         *self.state.fallback.lock().unwrap() = Some(fallback);
@@ -1405,7 +1423,7 @@ impl DirectiveHandler {
         Ok(())
     }
 
-    fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    async fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let snapshot = &d.payload;
         // SPEC v0.4.8 row 3: the on-air timed item's end, read BEFORE anything
         // is applied. An end that does not read, or that names an item other
@@ -1427,6 +1445,26 @@ impl DirectiveHandler {
                 Some(end)
             }
         };
+        // SPEC v0.4.8 row 5: the package identity, also read before anything
+        // applies. A load generation with no path refuses the resync.
+        let package = nbe_protocol::ResyncPackage::read(serde_json::json!({
+            "packagePath": snapshot.get("packagePath").cloned().unwrap_or(serde_json::Value::Null),
+            "packageLoadStateVersion": snapshot
+                .get("packageLoadStateVersion")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        }))
+        .map_err(|e| {
+            DirectiveError::Invalid(format!(
+                "show.resync: the package identity does not read: {e}"
+            ))
+        })?;
+        // The package lands FIRST: the View, the overlays and the end all
+        // reference its content. A load failure is not fatal (a refused resync
+        // would drop the connection, and every reconnect would retry the load):
+        // the rest of the snapshot still applies, and the on-air item is
+        // reported missing below.
+        let unloadable = self.reconcile_package(&package).await;
         let show_state = snapshot
             .get("showState")
             .and_then(|v| v.as_str())
@@ -1511,9 +1549,101 @@ impl DirectiveHandler {
                 .collect();
             self.replace_overlays(ids, now);
         }
+        // SPEC v0.4.8 row 5: the package the snapshot names is not loaded, so
+        // the on-air item cannot render. Say so through the surface the
+        // protocol already has: `itemEvent missing`, which the control plane
+        // turns into MISSING and `fallbackActive` (`markMissing`), and the
+        // engine's slate to match, generated, since no package means no
+        // packaged slate. With no item on air nothing is reported, and the
+        // slate stays where the snapshot put it.
+        if unloadable {
+            if let Some(item_ref) = snapshot.get("viewItem").and_then(|v| v.as_str()) {
+                self.state
+                    .engage_fallback(crate::state::FallbackSource::Held);
+                self.outgoing.push(EngineFrame::ItemEvent {
+                    v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                    item_ref: item_ref.to_string(),
+                    event: ItemEvent::Missing,
+                    detail: Some("packageNotLoaded".to_string()),
+                });
+            }
+        }
         self.state.set_last_applied(d.state_version);
         info!(sv = d.state_version, "show.resync applied");
         Ok(())
+    }
+
+    /// Reconcile the engine's package with the snapshot's (SPEC v0.4.8 row 5).
+    /// Returns true when the package the snapshot names did not load.
+    ///
+    /// - No identity (no package named, the `show.unload` case queued
+    ///   separately; or no generation, an older control plane): nothing.
+    /// - Equal to the load the engine holds: nothing. A blip reconnect costs
+    ///   zero and never touches media the engine is rendering.
+    /// - Anything else (different, none loaded, or a load that failed, which
+    ///   the engine never holds): `show.load`'s own body, on the blocking
+    ///   pool. Content is trusted as-is, as `show.load` trusts it.
+    ///
+    /// The retry rule (the user's word of 2026-10-09): a resync at an identity
+    /// whose load failed retries it, so a package put back on disk heals on
+    /// the next resync, with no stop, load and start and no engine restart.
+    /// It cannot loop: a resync comes only from a connect or a `SeqGap`
+    /// (`channel.rs`), and a failed load is neither, so each resync makes at
+    /// most one attempt. A failure clears every remain of any previous
+    /// package (`forget_package`), so no path through here can leave the
+    /// previous show renderable: there is no early return past the failure.
+    async fn reconcile_package(&self, package: &nbe_protocol::ResyncPackage) -> bool {
+        let Some((path, version)) = package.identity() else {
+            return false;
+        };
+        if let Some(current) = self.state.loaded_package.lock().unwrap().as_ref() {
+            if current.path == path && current.load_state_version == version {
+                return false;
+            }
+        }
+        let handler = self.clone();
+        let owned = path.to_string();
+        let result = tokio::task::spawn_blocking(move || handler.load_package(&owned))
+            .await
+            .map_err(|e| DirectiveError::Invalid(format!("the package load panicked: {e}")))
+            .and_then(|r| r);
+        match result {
+            Ok(()) => {
+                info!(path, version, "show.resync: the package was reloaded");
+                self.record_load(path, version);
+                false
+            }
+            Err(e) => {
+                tracing::error!(path, err = %e, "show.resync: the package did not load; the on-air item is reported missing");
+                self.forget_package();
+                true
+            }
+        }
+    }
+
+    /// The identity of a package load that worked.
+    fn record_load(&self, path: &str, load_state_version: u64) {
+        *self.state.loaded_package.lock().unwrap() = Some(crate::state::LoadedPackage {
+            path: path.to_string(),
+            load_state_version,
+        });
+    }
+
+    /// After a failed reconciliation: nothing of any previous package stays
+    /// renderable or audible, and the engine holds no load, so the next
+    /// resync retries. The index, the packaged slate, the media and the
+    /// per-show watches go; the generation moves so the render loop and the
+    /// audio driver drop what they uploaded.
+    fn forget_package(&self) {
+        *self.state.loaded_package.lock().unwrap() = None;
+        *self.state.package.lock().unwrap() = None;
+        *self.state.fallback.lock().unwrap() = None;
+        *self.state.video.lock().unwrap() = crate::video::VideoLibrary::default();
+        self.state.audio_assets.lock().unwrap().clear();
+        self.state.item_audio.lock().unwrap().clear();
+        *self.state.audio_level_watches.lock().unwrap() = Arc::new(Vec::new());
+        *self.state.record_dir.lock().unwrap() = None;
+        self.state.package_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// `visibleOverlays` as a full snapshot, not a patch: the on-air set is

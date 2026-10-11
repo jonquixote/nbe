@@ -8,7 +8,7 @@
 //! - No mutate-then-throw: every precondition check runs before any write.
 //! - Persistance lives in `persistence.ts` (async, dirty-flag + debounce).
 
-import { CpError, ResyncViewItemEndSchema, type ResyncViewItemEnd } from "./protocol.js";
+import { CpError, ResyncPackageSchema, ResyncViewItemEndSchema, type ResyncViewItemEnd } from "./protocol.js";
 
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
 export type SceneState = "IDLE" | "ARMED" | "VIEW" | "TRANSITIONING";
@@ -144,6 +144,15 @@ export class ControlPlaneState {
    * estimate is good to about a frame.
    */
   viewItemTakenAtMs: number | null = null;
+  /**
+   * The load generation: the `stateVersion` at which `show.load` applied the
+   * current package (`commands/show.ts` sets it; a load and an unload reset
+   * it). The `show.load` directive is forwarded at that same version, so the
+   * engine knows the generation of the load it applied, and a resync compares
+   * the two (SPEC v0.4.8 row 5). `null` with no package, or a package loaded
+   * outside the command path (a test calling `loadPackage` directly).
+   */
+  packageLoadStateVersion: number | null = null;
   /** Last `masterClockFrame` the engine reported, for the field above. */
   lastKnownMasterFrame = 0;
   previewItem: string | null = null;
@@ -350,9 +359,16 @@ export class ControlPlaneState {
 
   resyncSnapshot(nowMs: number = Date.now()): Record<string, unknown> {
     const viewItemEnd = this.viewItemEnd(nowMs);
+    // The package identity (SPEC v0.4.8 row 5): the path and the load
+    // generation travel as a pair, parsed before they are sent.
+    const pkg = ResyncPackageSchema.parse({
+      packagePath: this.pkg?.packagePath ?? null,
+      packageLoadStateVersion: this.pkg ? this.packageLoadStateVersion : null,
+    });
     return {
       showState: this.showState,
-      packagePath: this.pkg?.packagePath ?? null,
+      packagePath: pkg.packagePath,
+      packageLoadStateVersion: pkg.packageLoadStateVersion,
       viewItem: this.viewItem,
       viewItemStartFrame: this.viewItem === null ? null : this.viewItemStartFrame,
       ...(viewItemEnd === undefined ? {} : { viewItemEnd }),
@@ -437,6 +453,7 @@ export class ControlPlaneState {
     this.preflightPassed = false;
     this.viewItem = null;
     this.viewItemTakenAtMs = null;
+    this.packageLoadStateVersion = null;
     this.previewItem = null;
     this.itemStates.clear();
     this.sceneStates.clear();
@@ -453,6 +470,7 @@ export class ControlPlaneState {
     this.showState = "UNLOADED";
     this.viewItem = null;
     this.viewItemTakenAtMs = null;
+    this.packageLoadStateVersion = null;
     this.previewItem = null;
     this.itemStates.clear();
     this.sceneStates.clear();
