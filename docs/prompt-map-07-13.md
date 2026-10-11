@@ -565,7 +565,7 @@ progress** — this drain on the test server's reader, that teardown on the stre
 thread's exit. A run that trips either is a sighting to record, not a load
 excuse.
 
-### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ **REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)
+### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41; the merge SHA is recorded after the user's merge)
 
 **Resolution, recorded 2026-09-26 (§2c: the open entry stands below, unedited).**
 Both halves of the resolution condition landed together in `bb7d4a2`:
@@ -825,20 +825,121 @@ max(296.96 × 2, 289.35 + 1000) = **1289.35 ms**.
   `the_exit_backstop_fits_the_section_16_1_window` pins.
 - **Per configuration:** `immediate` alone gives 1296.07 ms, and `running`
   alone (production's `stream.stop`) gives 1005.02 ms, which fits.
-- **So nothing moved.** The constant, the test and R11's status are
-  unchanged, put to the user rather than chosen here:
-  - the formula over both configurations, which needs §16.1's budget changed;
+- ~~**So nothing moved.** The constant, the test and R11's status are
+  unchanged, put to the user rather than chosen here:~~
+  - the formula over both configurations, which needs §16.1's budget changed
+    (a);
   - or over production's configuration, 1005 ms, with the slow-exit test
     stopping a running thread so its 800 ms delay measures the exit and not
-    the open.
+    the open (b).
 
-  R11 stays reopened until that word.
+  ~~R11 stays reopened until that word.~~ *(§2c, 2026-10-11: the user ruled
+  (b); R11's closure is below.)*
 
 **Guard, a hang still fails the test.** With the encoder drop made never to
 complete, the slow-exit test fails at the current backstop:
 `… teardown: openStart=+0.1ms openEnd=+270.4ms stopRequested=+0.0ms runReturned=+270.4ms exitDelayEnd=+1076.0ms`.
 The timeline ends at `exitDelayEnd`, so it names the hung phase, the encoder
 drop. Restored from the copy (identical), the stream lib tests pass 12/12.
+
+**R11 closes: RESOLVED BY MEASUREMENT** (the user's words of 2026-10-11,
+ruling (b) on PR #41). The closure line, with PR #41's merge SHA, is added
+after the user's merge.
+
+- **The mechanism.**
+  - The backstop's clock starts at the stop request, but the thread reads
+    `Stop` only inside `run`.
+  - So a stop that lands during a cold VideoToolbox open (286–540 ms across
+    sightings 1–6) spends the budget before the exit begins.
+  - The old test's own 800 ms delay left it 300 ms.
+  - Hypothesis 2 of the filing (a cold VideoToolbox start) is confirmed.
+  - The invalidation is not the cost: the encoder drop was at most 6.14 ms
+    over 200 runs.
+- **The ruling, and why.** (a) is rejected:
+  - §16.1's 2 s `show.stop` window is an operator-facing guarantee;
+  - the 800 ms that would break it is the test's own injected delay, not a
+    production cost;
+  - loosening the spec to fit a test artifact is backwards.
+
+  The measurement showed that the quantity the timeout spans (the open's
+  remainder plus the exit) is not the one the test names (a slow exit). (b)
+  aligns all three: the backstop, the test and the name.
+- **The backstop: 1005 ms.** The formula is max(max × 2, p99 + 1 s) over
+  production's running configuration: max(6.44 × 2, 5.03 + 1000) =
+  max(12.88, 1005.03), so `STREAM_THREAD_EXIT_BACKSTOP` = 1005 ms.
+- **The margin analysis:**
+  - **A stop during the open.** The worst observed stop → `done` for a stop
+    during the open is about 547 ms: the sightings' opens of 286–540 ms plus
+    at most 6.5 ms of exit. The standalone `immediate` max was 296.96 ms.
+    1005 ms covers 547 ms about 1.8×.
+  - **The restructured slow-exit test** needs 800 ms plus the exit (at most
+    6.44 ms), leaving 199 ms, about 31× the measured exit.
+  - **Slower machines.** CI runs about 1.7× the normative rise times. At 1.7×
+    the exit is about 11 ms, and sighting 2's 539 ms open (at load 37.5)
+    becomes about 916 ms, so a stop during it lands at about 927 ms, still
+    inside 1005.
+  - **CI itself** never opens VideoToolbox (it has no hardware encoder), so
+    its stream tests do not exercise the open.
+  - **Why not 1100.** §16.1's ceiling allows up to 1100 ms (2000 − 800
+    transport − 100 ack). 1005 is kept: it is the ruling's formula, and it
+    covers the observed and the 1.7×-scaled worst cases. The 95 ms more would
+    only cover opens past about a second, which the backstop exists to
+    report.
+  - **The sum.** With the transport's 800 ms it is 1805 ms, leaving 195 ms of
+    acknowledgement headroom inside §16.1's 2 s (100 ms before).
+    `the_exit_backstop_fits_the_section_16_1_window` pins both the value
+    (1005 ms) and the sum (1805 ms). §16.1's text is untouched.
+- **The test, restructured.** `a_slow_exit_inside_the_backstop_is_a_clean_stop`
+  now waits until the thread is `Running` (its encoders open) before it
+  stops, so its 800 ms delay measures the exit, as the name says. Its
+  assertions stand. The stop-during-open case is now its own test,
+  `a_stop_during_the_encoder_open_waits_for_the_open_inside_the_backstop`.
+  The timeline proves the stop landed during the open
+  (`openEnd > stopRequested`) and that the exit waited for it
+  (`doneReceived ≥ openEnd`), inside the backstop.
+- **One other test changed, of necessity.**
+  `a_hung_exit_is_reported_with_the_thread_phase` asserts the operator-facing
+  message, `did not exit within 1100 ms`, which now reads 1005 ms. Only that
+  literal changed, with a §2c note.
+- **§2c, struck and not erased:**
+  - the constant's doc comment keeps its old sizing text struck: ~~"Sized to
+    §16.1's 2 s `show.stop` window … 1900 ms ≤ 2000 ms … 100 ms of ack-pump
+    headroom"~~, with its provenance (`bb7d4a2`, Prompt 11 WU0);
+  - the slow-exit test's doc keeps ~~"The test stopped straight after
+    open."~~ with why it failed;
+  - the pin's doc notes that it was 1100 ms and 1900 ms.
+- **Guards.**
+  - **The hang guard, against the restructured test** (2026-10-11
+    02:00, on AC, load 2.39). With the encoder drop made to never complete,
+    the slow-exit test fails at the new backstop:
+    `Teardown("stream thread did not exit within 1005 ms (phase=exiting, encoder_ready=true, encoder_open_us=243118, aac_ready=true, teardown: openStart=-255.0ms openEnd=-0.8ms stopRequested=+0.0ms runReturned=+0.1ms exitDelayEnd=+809.0ms)")`.
+    The stop landed on a running thread (`openEnd` before `stopRequested`),
+    as restructured. The timeline ends at `exitDelayEnd`, so it names the
+    hung phase, the encoder drop. Restored from the copy (identical) and
+    rebuilt, it is green: `test result: ok. 1 passed`.
+  - **The restructured slow-exit test, run 100 times** (the test alone
+    per process, each launched under load 2.5; loads 1.89–2.47): 100 pass,
+    0 fail. That was the expected count: 800 ms plus about 6 ms is well under
+    1005.
+  - **The stop-during-open test, run 100 times** (loads 1.76–2.36):
+    100 pass, 0 fail. Each run's timeline checked that the stop landed during
+    the open and that the exit waited for it.
+  - The stream suites ran in full, green; see the gate.
+- **The instrumentation stays permanent.** Sighting 6 is its justification:
+  `phase=exiting, … encoder_open_us=345845, … teardown: openStart=+0.1ms
+  openEnd=+356.9ms stopRequested=+0.0ms runReturned=+356.9ms`. It is the
+  first capture that showed where the time went: the stop landed before the
+  open began, and the thread saw it 356.9 ms later. Five earlier sightings
+  had only the phase.
+- **Sightings 1–6, against the mechanism.** Every one is the old test's
+  shape:
+  - the stop landed during the encoder open;
+  - the open's remainder (286–540 ms cold; sighting 2's 539 ms at load 37.5)
+    plus the injected 800 ms crossed 1100 ms, with the thread in `exiting`;
+  - sighting 1's message was lost, and it is consistent with the rest.
+
+  None was a slow exit. With the test restructured, its budget covers the
+  exit alone.
 
 ### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
@@ -3274,7 +3375,9 @@ item):
   should reload ("package, assets, overlays") is a resync-semantics decision
   for the user.
 - **Position 1: R11's exit-path measurement** (the user's word of 2026-10-09,
-  ordering the queue). R11 reopened on 2026-10-09, on post-fix sighting 5
+  ordering the queue). *(In flight: PR #41, resolved by measurement under the
+  user's ruling (b) of 2026-10-11; it is struck FIXED by PR #41's merge SHA
+  after the user's merge.)* R11 reopened on 2026-10-09, on post-fix sighting 5
   (Finding R11 above, and the register row in `docs/soak-protocol.md` §5).
   The work is the one queued on 2026-10-06: measure the stream thread's exit
   path, the run loop's return and the encoders' drop (VideoToolbox's
