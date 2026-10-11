@@ -101,14 +101,30 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// carries the thread's phase and encoder state, so a sighting names where the
 /// thread was ([`StreamThreadPhase`]).
 ///
-/// Sized to §16.1's 2 s `show.stop` window. This plus the transport's
+/// **1005 ms, measured** (R11's exit-path measurement; the user's ruling of
+/// 2026-10-11). The formula is max(max × 2, p99 + 1 s) over production's
+/// configuration, a `stream.stop` on a running thread: stop → `done` had a p99
+/// of 5.03 ms and a max of 6.44 ms (n = 100), so max(12.88, 1005.03) ms. A stop
+/// that lands while the thread is still opening its encoders waits for the
+/// open, because the thread reads `Stop` only inside `run`. The worst such case
+/// observed is about 547 ms: cold VideoToolbox opens of 286–540 ms in R11's
+/// sightings, plus at most 6.5 ms of exit. 1005 ms covers that about 1.8×.
+/// Waited in sequence with the transport's `PublisherHandle::stop_timeout()`
+/// (800 ms), the total is 1805 ms, inside §16.1's 2 s `show.stop` window with
+/// 195 ms of ack-pump headroom. `the_exit_backstop_fits_the_section_16_1_window`
+/// pins the value and the sum.
+///
+/// ~~Sized to §16.1's 2 s `show.stop` window. This plus the transport's
 /// `PublisherHandle::stop_timeout()` (800 ms), waited in sequence, is
 /// 1900 ms ≤ 2000 ms, beside record's parallel 1.5 s. That leaves 100 ms of
 /// ack-pump headroom (record keeps 500) for the slowest *successful* stop, and
 /// only a thread that takes over a second to exit ever gets near it; a healthy
 /// exit takes milliseconds (measured in the R11 record). No test asserts that
 /// latency — it would be the wall-clock bound this constant replaced.
-/// `the_exit_backstop_fits_the_section_16_1_window` pins the arithmetic.
+/// `the_exit_backstop_fits_the_section_16_1_window` pins the arithmetic.~~
+/// Superseded (§2c, 2026-10-11): that 1100 ms was sized from the window, not
+/// measured. It is kept here struck, with its provenance (`bb7d4a2`, Prompt 11
+/// WU0).
 ///
 /// ~~`STREAM_THREAD_STOP_TIMEOUT` = 500 ms: "Bounded wait for the stream thread
 /// to exit inside `stop_and_close`. The thread drops its encoder on the way out
@@ -118,7 +134,7 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// a thread's exit, polled every 5 ms. It expired twice, once at load 27.3 and
 /// once at 2.59 under the quiescence ceiling, with the cause unknown both times
 /// (`docs/prompt-map-07-13.md`, Finding R11).
-pub const STREAM_THREAD_EXIT_BACKSTOP: Duration = Duration::from_millis(1100);
+pub const STREAM_THREAD_EXIT_BACKSTOP: Duration = Duration::from_millis(1005);
 
 /// Where the stream thread is in its life — R11's capture. Stored in
 /// [`StreamStats::phase`] as the thread moves, read by `stop_thread` when the
@@ -1157,8 +1173,29 @@ mod tests {
     // thread both exist (no runtime -> no thread -> nothing to wait on).
     // -----------------------------------------------------------------------
 
+    /// Wait until the stream thread has opened its encoders and is running.
+    async fn until_running(s: &StreamSession) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while s.stats().phase() != StreamThreadPhase::Running {
+            assert!(
+                Instant::now() < deadline,
+                "the stream thread never reached Running: {}",
+                s.stats().capture()
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// A thread that takes 800 ms to exit is SLOW, not dead: the rebound wait
     /// passes it. The old 500 ms cap failed it — that is the falsification.
+    ///
+    /// The stop lands on a RUNNING thread, its encoders open, so the 800 ms
+    /// delay measures the exit, as the name says (R11's measurement; the
+    /// user's ruling of 2026-10-11). ~~The test stopped straight after open.~~
+    /// (§2c) Then the stop landed during the encoder open, and the open's
+    /// remainder (286–540 ms cold) spent the budget before the exit began.
+    /// That is every R11 sighting. `a_stop_during_the_encoder_open_…` covers
+    /// that case now.
     #[tokio::test]
     async fn a_slow_exit_inside_the_backstop_is_a_clean_stop() {
         let _serial = STOP_SERIAL.lock().await;
@@ -1171,6 +1208,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             slow,
         );
+        until_running(&s).await;
         let started = Instant::now();
         s.stop_and_close()
             .await
@@ -1182,6 +1220,47 @@ mod tests {
             "the wait must have waited for the exit event ({took:?} < {slow:?})"
         );
         assert_eq!(s.stats().phase(), StreamThreadPhase::Done);
+    }
+
+    /// A stop that lands while the thread is still opening its encoders waits
+    /// for the open, because the thread reads `Stop` only inside `run`. The
+    /// exit still lands inside the backstop: production's worst observed is
+    /// about 547 ms. Before R11's restructure, the slow-exit test covered this
+    /// by accident (the user's ruling of 2026-10-11).
+    #[tokio::test]
+    async fn a_stop_during_the_encoder_open_waits_for_the_open_inside_the_backstop() {
+        let _serial = STOP_SERIAL.lock().await;
+        let sel = crate::record::tap_path::select_stream(true).unwrap();
+        let mut s = StreamSession::open(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+        );
+        s.stop_and_close()
+            .await
+            .expect("a stop during the open is a clean stop once the open completes");
+        let stats = s.stats();
+        let t = &stats.teardown;
+        let stop = t
+            .at_us(TeardownMark::StopRequested)
+            .expect("the stop was requested");
+        let open_end = t.at_us(TeardownMark::OpenEnd).expect("the open completed");
+        let done = t
+            .at_us(TeardownMark::DoneReceived)
+            .expect("the exit event arrived");
+        assert!(
+            open_end > stop,
+            "precondition: the stop landed during the encoder open ({})",
+            t.summary()
+        );
+        assert!(
+            done >= open_end,
+            "the exit waited for the open ({})",
+            t.summary()
+        );
+        assert!(s.is_closed());
+        assert_eq!(stats.phase(), StreamThreadPhase::Done);
     }
 
     /// A thread that never exits inside the backstop is the deadlock the
@@ -1207,8 +1286,10 @@ mod tests {
             msg.starts_with("E_NETWORK: "),
             "the teardown token, got: {msg}"
         );
+        // The backstop's value, as the operator reads it (§2c, 2026-10-11:
+        // it read "1100 ms" before R11's measured value).
         assert!(
-            msg.contains("did not exit within 1100 ms"),
+            msg.contains("did not exit within 1005 ms"),
             "the backstop is named, got: {msg}"
         );
         assert!(
@@ -1225,10 +1306,22 @@ mod tests {
     /// `stop_timeout_leaves_headroom_inside_spec_window` pins its own: the
     /// thread backstop and the transport's stop, waited in sequence, fit
     /// §16.1's 2 s `show.stop` window; and the backstop tolerates the slow
-    /// exit the old 500 ms cap refused.
+    /// exit the old 500 ms cap refused. The value is R11's measured one
+    /// (1005 ms), so the sum is 1805 ms (§2c, 2026-10-11: it was 1100 ms
+    /// and 1900 ms).
     #[test]
     fn the_exit_backstop_fits_the_section_16_1_window() {
+        assert_eq!(
+            STREAM_THREAD_EXIT_BACKSTOP,
+            Duration::from_millis(1005),
+            "R11's measured backstop: max(max × 2, p99 + 1 s) over a running stop"
+        );
         let sequential = STREAM_THREAD_EXIT_BACKSTOP + PublisherHandle::stop_timeout();
+        assert_eq!(
+            sequential,
+            Duration::from_millis(1805),
+            "the backstop and the transport's stop, in sequence"
+        );
         assert!(
             sequential <= Duration::from_millis(1900),
             "thread backstop + transport stop must leave ack headroom inside §16.1's 2 s, got {sequential:?}"
