@@ -104,11 +104,16 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// **1005 ms, measured** (R11's exit-path measurement; the user's ruling of
 /// 2026-10-11). The formula is max(max × 2, p99 + 1 s) over production's
 /// configuration, a `stream.stop` on a running thread: stop → `done` had a p99
-/// of 5.03 ms and a max of 6.44 ms (n = 100), so max(12.88, 1005.03) ms. A stop
-/// that lands while the thread is still opening its encoders waits for the
-/// open, because the thread reads `Stop` only inside `run`. The worst such case
-/// observed is about 547 ms: cold VideoToolbox opens of 286–540 ms in R11's
-/// sightings, plus at most 6.5 ms of exit. 1005 ms covers that about 1.8×.
+/// of ~~5.03 ms~~ 5.025 ms and a max of 6.44 ms (n = 100), so ~~max(12.88,
+/// 1005.03) ms~~ max(12.88, 1005.025) ms. A stop that lands while the thread is
+/// still opening its encoders waits for the open, because the thread reads
+/// `Stop` only inside `run`. The worst such case observed is ~~about 547 ms:
+/// cold VideoToolbox opens of 286–540 ms in R11's sightings, plus at most
+/// 6.5 ms of exit~~ about 557 ms: cold VideoToolbox opens of 286–540 ms in
+/// R11's sightings, about 11 ms more for the rest of the open (the AAC open),
+/// and at most 6.44 ms of exit. 1005 ms covers that about 1.8×, on the
+/// reference machine. (§2c, 2026-10-12: the figures, recomputed from the raw
+/// measurement on PR #41's fresh two-key pass.)
 /// Waited in sequence with the transport's `PublisherHandle::stop_timeout()`
 /// (800 ms), the total is 1805 ms, inside §16.1's 2 s `show.stop` window with
 /// 195 ms of ack-pump headroom. `the_exit_backstop_fits_the_section_16_1_window`
@@ -1225,8 +1230,9 @@ mod tests {
     /// A stop that lands while the thread is still opening its encoders waits
     /// for the open, because the thread reads `Stop` only inside `run`. The
     /// exit still lands inside the backstop: production's worst observed is
-    /// about 547 ms. Before R11's restructure, the slow-exit test covered this
-    /// by accident (the user's ruling of 2026-10-11).
+    /// ~~about 547 ms~~ about 557 ms (§2c, 2026-10-12). Before R11's
+    /// restructure, the slow-exit test covered this by accident (the user's
+    /// ruling of 2026-10-11).
     #[tokio::test]
     async fn a_stop_during_the_encoder_open_waits_for_the_open_inside_the_backstop() {
         let _serial = STOP_SERIAL.lock().await;
@@ -1245,6 +1251,10 @@ mod tests {
         let stop = t
             .at_us(TeardownMark::StopRequested)
             .expect("the stop was requested");
+        // The load-bearing check is this `expect`: when `stop_and_close`
+        // returns, the open must already have ended. A waiter that returns
+        // without waiting for the thread fails here. That is the falsification
+        // PR #41's fresh two-key pass ran (2026-10-12). Do not simplify it away.
         let open_end = t.at_us(TeardownMark::OpenEnd).expect("the open completed");
         let done = t
             .at_us(TeardownMark::DoneReceived)
@@ -1254,6 +1264,9 @@ mod tests {
             "precondition: the stop landed during the encoder open ({})",
             t.summary()
         );
+        // Vacuous in the current code: the thread sends `done` only after its
+        // open ends, so this cannot fail on its own. It states the intent; the
+        // `expect` above is what discriminates.
         assert!(
             done >= open_end,
             "the exit waited for the open ({})",
