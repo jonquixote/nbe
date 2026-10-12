@@ -824,7 +824,8 @@ max(296.96 × 2, 289.35 + 1000) = **1289.35 ms**.
   §16.1's 2 s `show.stop` window, which
   `the_exit_backstop_fits_the_section_16_1_window` pins.
 - **Per configuration:** `immediate` alone gives 1296.07 ms, and `running`
-  alone (production's `stream.stop`) gives 1005.02 ms, which fits.
+  alone (production's `stream.stop`) gives ~~1005.02 ms~~ 1005.025 ms (the raw
+  p99 is 5025 µs; §2c, 2026-10-12, the user's word on PR #41's fresh two-key pass), which fits.
 - ~~**So nothing moved.** The constant, the test and R11's status are
   unchanged, put to the user rather than chosen here:~~
   - the formula over both configurations, which needs §16.1's budget changed
@@ -865,24 +866,44 @@ after the user's merge.
   remainder plus the exit) is not the one the test names (a slow exit). (b)
   aligns all three: the backstop, the test and the name.
 - **The backstop: 1005 ms.** The formula is max(max × 2, p99 + 1 s) over
-  production's running configuration: max(6.44 × 2, 5.03 + 1000) =
-  max(12.88, 1005.03), so `STREAM_THREAD_EXIT_BACKSTOP` = 1005 ms.
+  production's running configuration: ~~max(6.44 × 2, 5.03 + 1000) =
+  max(12.88, 1005.03)~~ max(6.44 × 2, 5.025 + 1000) = max(12.88, 1005.025), so
+  `STREAM_THREAD_EXIT_BACKSTOP` = 1005 ms. *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass: the raw p99 is 5025 µs,
+  `scratchpad/r11/inst-running.jsonl`, stop → `doneReceived`. It read 1005.03
+  here and 1005.02 above, two roundings of 1005.025.)*
 - **The margin analysis:**
-  - **A stop during the open.** The worst observed stop → `done` for a stop
+  - **A stop during the open.** ~~The worst observed stop → `done` for a stop
     during the open is about 547 ms: the sightings' opens of 286–540 ms plus
-    at most 6.5 ms of exit. The standalone `immediate` max was 296.96 ms.
-    1005 ms covers 547 ms about 1.8×.
+    at most 6.5 ms of exit.~~ The worst observed stop → `done` for a stop
+    during the open is about 557 ms:
+    - the sightings' VideoToolbox opens ran 286–540 ms;
+    - the whole open adds about 11 ms to the VideoToolbox open, the AAC
+      open (median 10.99 ms, range 10.73–21.92 ms over the 200 measured runs:
+      `openEnd − openStart − encoderOpenUs`; sighting 6, 10.95 ms);
+    - the exit is at most 6.44 ms.
+
+    The standalone `immediate` max was 296.96 ms. ~~1005 ms covers 547 ms
+    about 1.8×.~~ 1005 ms covers about 557 ms about 1.8× (1.80×), on the
+    reference machine. *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass.)*
   - **The restructured slow-exit test** needs 800 ms plus the exit (at most
     6.44 ms), leaving 199 ms, about 31× the measured exit.
-  - **Slower machines.** CI runs about 1.7× the normative rise times. At 1.7×
+  - ~~**Slower machines.** CI runs about 1.7× the normative rise times. At 1.7×
     the exit is about 11 ms, and sighting 2's 539 ms open (at load 37.5)
     becomes about 916 ms, so a stop during it lands at about 927 ms, still
-    inside 1005.
-  - **CI itself** never opens VideoToolbox (it has no hardware encoder), so
-    its stream tests do not exercise the open.
+    inside 1005.~~ *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass: the 1.7× had no source in the tree, and the
+    tree's own data contradict it. No extrapolation replaces it.)*
+  - **The tree's CI-vs-normative rise factor, recorded as context and not
+    applied:** at least 1.86×. The normative rises are 974 and 1034 ms (the
+    R12/R13 baseline, above), and CI's healthy rises are 1971–2980 ms at step 4
+    and 1927–2009 ms at step 6 (the R13 record, above). It is not applied to
+    the open: sighting 2 was itself measured at load 37.5, so scaling it again
+    would double-count.
+  - **CI** never opens VideoToolbox (it has no hardware encoder), so the
+    cold-open path does not arise there.
   - **Why not 1100.** §16.1's ceiling allows up to 1100 ms (2000 − 800
     transport − 100 ack). 1005 is kept: it is the ruling's formula, and it
-    covers the observed and the 1.7×-scaled worst cases. The 95 ms more would
+    covers ~~the observed and the 1.7×-scaled worst cases~~ the worst observed
+    case about 1.8× (§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass). The 95 ms more would
     only cover opens past about a second, which the backstop exists to
     report.
   - **The sum.** With the transport's 800 ms it is 1805 ms, leaving 195 ms of
@@ -3429,7 +3450,13 @@ item):
   - **The scope is a design choice, the user's word when the item is built:**
     one `stateVersion` per emitted directive (the dispatcher bumping for
     each), or a gate that accepts equal versions from one command.
-- **~~Position 2~~ Position 3: surface a failed re-resync on the `resyncRequest` path** (the
+- **Position 3: R16, the dress rehearsal's step 10 samples the transition
+  tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
+  pass). A harness-side fix: step 10 must not sample the transition tick. It
+  reads its baseline from a tick that postdates the engine's stop report,
+  with no retries and no tolerance. The register row is R16 in
+  `docs/soak-protocol.md` §5.
+- **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
   throw there is answered only as an `E_ENGINE` reply on the engine's own
@@ -3447,11 +3474,18 @@ item):
     (`resync.handshakeFailed`). Whether to tear down the established session
     on a persistent failure, handing recovery to the now-honest connect path,
     is the user's word when the item is built.
-- **~~Position 3~~ Position 4: the deferred-cell reader**, a static reader that compares each
+- **Position 5: R17, the control plane reports a refused stream as live**
+  (the user's word of 2026-10-12, establish-first). On CI the engine refuses
+  `stream.start`, and the control plane's telemetry still reports the stream
+  `live` for five ticks, until the dress's own `stream.stop`. The first step
+  is to establish what the control plane hears of the refusal and what an
+  operator sees. It is cross-referenced with R16, the same observed-state lag
+  on another surface. The register row is R17 in `docs/soak-protocol.md` §5.
+- **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
   the recall leg's record above ("a static reader for the deferred cells").
-- **Position 5: a failed engine-side `show.load` heals itself** (the user's
+- **~~Position 5~~ Position 7: a failed engine-side `show.load` heals itself** (the user's
   word of 2026-10-09, ruling on PR #40's fresh two-key pass; the
   package-reconcile record's silent-window paragraph, below, is the
   observation). On a `show.load` failure the engine does what a failed resync
@@ -4008,7 +4042,7 @@ fresh two-key pass).**
     new identity and reconciles it: a reload, or on failure `forget_package`,
     the slate and `missing` (G6).
   - It is older than this PR and unchanged by it, as ordered. The heal is
-    queued at position 5 in the queue above.
+    queued at position ~~5~~ 7 in the queue above (renumbered 2026-10-12).
 - **Disk headroom.** 7.5 GiB was free at the fresh pass and 7.3 GiB at this
   note, under the soak protocol's 8 GiB precondition (`docs/soak-protocol.md`
   §2, precondition 3). R14's power measurements (its work order's step 5,
