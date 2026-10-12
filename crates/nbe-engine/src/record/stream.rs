@@ -101,14 +101,35 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// carries the thread's phase and encoder state, so a sighting names where the
 /// thread was ([`StreamThreadPhase`]).
 ///
-/// Sized to §16.1's 2 s `show.stop` window. This plus the transport's
+/// **1005 ms, measured** (R11's exit-path measurement; the user's ruling of
+/// 2026-10-11). The formula is max(max × 2, p99 + 1 s) over production's
+/// configuration, a `stream.stop` on a running thread: stop → `done` had a p99
+/// of ~~5.03 ms~~ 5.025 ms and a max of 6.44 ms (n = 100), so ~~max(12.88,
+/// 1005.03) ms~~ max(12.88, 1005.025) ms. A stop that lands while the thread is
+/// still opening its encoders waits for the open, because the thread reads
+/// `Stop` only inside `run`. The worst such case observed is ~~about 547 ms:
+/// cold VideoToolbox opens of 286–540 ms in R11's sightings, plus at most
+/// 6.5 ms of exit~~ about 557 ms: cold VideoToolbox opens of 286–540 ms in
+/// R11's sightings, about 11 ms more for the rest of the open (the AAC open),
+/// and at most 6.44 ms of exit. 1005 ms covers that about 1.8×, on the
+/// reference machine. (§2c, 2026-10-12: the figures, recomputed from the raw
+/// measurement on PR #41's fresh two-key pass.)
+/// Waited in sequence with the transport's `PublisherHandle::stop_timeout()`
+/// (800 ms), the total is 1805 ms, inside §16.1's 2 s `show.stop` window with
+/// 195 ms of ack-pump headroom. `the_exit_backstop_fits_the_section_16_1_window`
+/// pins the value and the sum.
+///
+/// ~~Sized to §16.1's 2 s `show.stop` window. This plus the transport's
 /// `PublisherHandle::stop_timeout()` (800 ms), waited in sequence, is
 /// 1900 ms ≤ 2000 ms, beside record's parallel 1.5 s. That leaves 100 ms of
 /// ack-pump headroom (record keeps 500) for the slowest *successful* stop, and
 /// only a thread that takes over a second to exit ever gets near it; a healthy
 /// exit takes milliseconds (measured in the R11 record). No test asserts that
 /// latency — it would be the wall-clock bound this constant replaced.
-/// `the_exit_backstop_fits_the_section_16_1_window` pins the arithmetic.
+/// `the_exit_backstop_fits_the_section_16_1_window` pins the arithmetic.~~
+/// Superseded (§2c, 2026-10-11): that 1100 ms was sized from the window, not
+/// measured. It is kept here struck, with its provenance (`bb7d4a2`, Prompt 11
+/// WU0).
 ///
 /// ~~`STREAM_THREAD_STOP_TIMEOUT` = 500 ms: "Bounded wait for the stream thread
 /// to exit inside `stop_and_close`. The thread drops its encoder on the way out
@@ -118,7 +139,7 @@ pub const STREAM_CHANNEL_BOUND: usize = 2;
 /// a thread's exit, polled every 5 ms. It expired twice, once at load 27.3 and
 /// once at 2.59 under the quiescence ceiling, with the cause unknown both times
 /// (`docs/prompt-map-07-13.md`, Finding R11).
-pub const STREAM_THREAD_EXIT_BACKSTOP: Duration = Duration::from_millis(1100);
+pub const STREAM_THREAD_EXIT_BACKSTOP: Duration = Duration::from_millis(1005);
 
 /// Where the stream thread is in its life — R11's capture. Stored in
 /// [`StreamStats::phase`] as the thread moves, read by `stop_thread` when the
@@ -298,6 +319,127 @@ enum StreamControl {
     Stop,
 }
 
+/// A boundary on the stream session's teardown path — R11's exit-path
+/// measurement (the user's word of 2026-10-10). Thread-side marks are set by
+/// the stream thread, the rest by the waiter in `stop_thread` and
+/// `stop_and_close`. In path order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum TeardownMark {
+    /// Thread: entered `OpeningEncoders`.
+    OpenStart,
+    /// Thread: the encoders are open (`Running`).
+    OpenEnd,
+    /// Waiter: `stop_thread` entered (the frame channel drops, `Stop` is
+    /// sent, the backstop starts).
+    StopRequested,
+    /// Thread: the run loop returned (`Exiting`).
+    RunReturned,
+    /// Thread: the exit-delay test seam is over (equal to `RunReturned` in
+    /// production, where the delay is zero).
+    ExitDelayEnd,
+    /// Thread: the H.264 session is dropped (VideoToolbox invalidation).
+    EncoderDropped,
+    /// Thread: the AAC converter is dropped (`AudioConverterDispose`).
+    AacDropped,
+    /// Thread: `Done`, the exit event about to fire.
+    DoneSent,
+    /// Waiter: the exit event arrived (the backstop did not expire).
+    DoneReceived,
+    /// Waiter: the thread is joined.
+    Joined,
+    /// Waiter: the transport confirmed its shutdown, or timed out.
+    TransportClosed,
+}
+
+impl TeardownMark {
+    pub const ALL: [TeardownMark; 11] = [
+        TeardownMark::OpenStart,
+        TeardownMark::OpenEnd,
+        TeardownMark::StopRequested,
+        TeardownMark::RunReturned,
+        TeardownMark::ExitDelayEnd,
+        TeardownMark::EncoderDropped,
+        TeardownMark::AacDropped,
+        TeardownMark::DoneSent,
+        TeardownMark::DoneReceived,
+        TeardownMark::Joined,
+        TeardownMark::TransportClosed,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TeardownMark::OpenStart => "openStart",
+            TeardownMark::OpenEnd => "openEnd",
+            TeardownMark::StopRequested => "stopRequested",
+            TeardownMark::RunReturned => "runReturned",
+            TeardownMark::ExitDelayEnd => "exitDelayEnd",
+            TeardownMark::EncoderDropped => "encoderDropped",
+            TeardownMark::AacDropped => "aacDropped",
+            TeardownMark::DoneSent => "doneSent",
+            TeardownMark::DoneReceived => "doneReceived",
+            TeardownMark::Joined => "joined",
+            TeardownMark::TransportClosed => "transportClosed",
+        }
+    }
+}
+
+/// When each [`TeardownMark`] was reached, in µs since the session opened.
+///
+/// Permanent rather than test-only, so that a sighting in a real show
+/// carries the whole teardown, not only the phase it stopped in. The cost is
+/// one `Instant::now()` and one atomic store per mark, eleven per stream
+/// session, and one `info` line per stream stop. No sleeps, no locks, no
+/// awaits, and the path's order is unchanged.
+#[derive(Debug)]
+pub struct TeardownTimeline {
+    epoch: Instant,
+    /// µs since `epoch`, plus one; 0 means not reached.
+    marks: [AtomicU64; 11],
+}
+
+impl Default for TeardownTimeline {
+    fn default() -> Self {
+        Self {
+            epoch: Instant::now(),
+            marks: Default::default(),
+        }
+    }
+}
+
+impl TeardownTimeline {
+    fn mark(&self, m: TeardownMark) {
+        let us = self.epoch.elapsed().as_micros() as u64;
+        self.marks[m as usize].store(us + 1, Ordering::SeqCst);
+    }
+
+    /// When `m` was reached, in µs since the session opened.
+    pub fn at_us(&self, m: TeardownMark) -> Option<u64> {
+        match self.marks[m as usize].load(Ordering::SeqCst) {
+            0 => None,
+            v => Some(v - 1),
+        }
+    }
+
+    /// Every mark reached, relative to the stop request, as one line:
+    /// `openStart=-412.3ms … transportClosed=+803.0ms` (a mark before the stop
+    /// is negative). Marks not reached are left out. With no stop yet, the
+    /// marks are relative to the session's open.
+    pub fn summary(&self) -> String {
+        let origin = self.at_us(TeardownMark::StopRequested).unwrap_or(0) as i64;
+        TeardownMark::ALL
+            .iter()
+            .filter_map(|&m| {
+                self.at_us(m).map(|us| {
+                    let rel = us as i64 - origin;
+                    format!("{}={:+.1}ms", m.as_str(), rel as f64 / 1000.0)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// What the stream thread has done — observable to tests and measurements,
 /// never on the wire.
 #[derive(Debug, Default)]
@@ -320,6 +462,8 @@ pub struct StreamStats {
     pub encode_us_total: AtomicU64,
     pub video_units_published: AtomicU64,
     pub audio_packets_published: AtomicU64,
+    /// The teardown path's boundaries (R11's exit-path measurement).
+    pub teardown: TeardownTimeline,
 }
 
 impl StreamStats {
@@ -336,11 +480,12 @@ impl StreamStats {
     /// thread was and how far its encoders got.
     pub fn capture(&self) -> String {
         format!(
-            "phase={}, encoder_ready={}, encoder_open_us={}, aac_ready={}",
+            "phase={}, encoder_ready={}, encoder_open_us={}, aac_ready={}, teardown: {}",
             self.phase().as_str(),
             self.encoder_ready.load(Ordering::SeqCst),
             self.encoder_open_us.load(Ordering::SeqCst),
             self.aac_ready.load(Ordering::SeqCst),
+            self.teardown.summary(),
         )
     }
 }
@@ -556,6 +701,14 @@ impl StreamSession {
             Some(p) => p.shutdown_and_wait(PublisherHandle::stop_timeout()).await,
             None => true,
         };
+        self.stats.teardown.mark(TeardownMark::TransportClosed);
+        // R11's exit-path measurement: every stop says where its time went.
+        tracing::info!(
+            thread_exited = thread_exited.is_ok(),
+            transport_closed,
+            teardown = %self.stats.teardown.summary(),
+            "stream teardown"
+        );
         self.closed = true;
         self.surface_pool = None;
         if let Err(capture) = thread_exited {
@@ -599,6 +752,7 @@ impl StreamSession {
     /// ~~Polled `try_recv` every 5 ms against a 500 ms wall cap~~ (§2c): the
     /// event was there all along; the wall clock was the assertion.
     async fn stop_thread(&mut self) -> Result<(), String> {
+        self.stats.teardown.mark(TeardownMark::StopRequested);
         self.frame_tx.take();
         if let Some(c) = self.control_tx.take() {
             let _ = c.send(StreamControl::Stop);
@@ -610,9 +764,11 @@ impl StreamSession {
             // Fired, or dropped unfired (a panicked thread has exited too):
             // either way it is no longer running.
             Ok(Ok(())) | Ok(Err(_)) => {
+                self.stats.teardown.mark(TeardownMark::DoneReceived);
                 if let Some(h) = self.handle.take() {
                     let _ = h.join();
                 }
+                self.stats.teardown.mark(TeardownMark::Joined);
                 Ok(())
             }
             Err(_elapsed) => {
@@ -697,20 +853,33 @@ struct StreamThreadArgs {
 }
 
 fn run_stream_thread(args: StreamThreadArgs) {
+    let stats = args.stats.clone();
+    stats.teardown.mark(TeardownMark::OpenStart);
     args.stats.set_phase(StreamThreadPhase::OpeningEncoders);
     {
         let mut t = StreamThread::open(&args);
+        stats.teardown.mark(TeardownMark::OpenEnd);
         args.stats.set_phase(StreamThreadPhase::Running);
         t.run(&args);
+        stats.teardown.mark(TeardownMark::RunReturned);
         args.stats.set_phase(StreamThreadPhase::Exiting);
         if !args.exit_delay.is_zero() {
             std::thread::sleep(args.exit_delay);
         }
+        stats.teardown.mark(TeardownMark::ExitDelayEnd);
         // `t` drops here: the VideoToolbox session is invalidated, which
         // releases any buffer it still retains — before `done` says the
-        // thread is finished with the pool's surfaces.
+        // thread is finished with the pool's surfaces. The two codec drops
+        // are spelled out, in the order the fields would drop (the encoder,
+        // then AAC), so R11's measurement can time each.
+        let StreamThread { encoder, aac, .. } = t;
+        drop(encoder);
+        stats.teardown.mark(TeardownMark::EncoderDropped);
+        drop(aac);
+        stats.teardown.mark(TeardownMark::AacDropped);
     }
     args.stats.set_phase(StreamThreadPhase::Done);
+    stats.teardown.mark(TeardownMark::DoneSent);
     // `done` is the exit EVENT `stop_thread` awaits: fired last.
     let StreamThreadArgs { done_tx, .. } = args;
     let _ = done_tx.send(());
@@ -1009,8 +1178,29 @@ mod tests {
     // thread both exist (no runtime -> no thread -> nothing to wait on).
     // -----------------------------------------------------------------------
 
+    /// Wait until the stream thread has opened its encoders and is running.
+    async fn until_running(s: &StreamSession) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while s.stats().phase() != StreamThreadPhase::Running {
+            assert!(
+                Instant::now() < deadline,
+                "the stream thread never reached Running: {}",
+                s.stats().capture()
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// A thread that takes 800 ms to exit is SLOW, not dead: the rebound wait
     /// passes it. The old 500 ms cap failed it — that is the falsification.
+    ///
+    /// The stop lands on a RUNNING thread, its encoders open, so the 800 ms
+    /// delay measures the exit, as the name says (R11's measurement; the
+    /// user's ruling of 2026-10-11). ~~The test stopped straight after open.~~
+    /// (§2c) Then the stop landed during the encoder open, and the open's
+    /// remainder (286–540 ms cold) spent the budget before the exit began.
+    /// That is every R11 sighting. `a_stop_during_the_encoder_open_…` covers
+    /// that case now.
     #[tokio::test]
     async fn a_slow_exit_inside_the_backstop_is_a_clean_stop() {
         let _serial = STOP_SERIAL.lock().await;
@@ -1023,6 +1213,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             slow,
         );
+        until_running(&s).await;
         let started = Instant::now();
         s.stop_and_close()
             .await
@@ -1034,6 +1225,55 @@ mod tests {
             "the wait must have waited for the exit event ({took:?} < {slow:?})"
         );
         assert_eq!(s.stats().phase(), StreamThreadPhase::Done);
+    }
+
+    /// A stop that lands while the thread is still opening its encoders waits
+    /// for the open, because the thread reads `Stop` only inside `run`. The
+    /// exit still lands inside the backstop: production's worst observed is
+    /// ~~about 547 ms~~ about 557 ms (§2c, 2026-10-12). Before R11's
+    /// restructure, the slow-exit test covered this by accident (the user's
+    /// ruling of 2026-10-11).
+    #[tokio::test]
+    async fn a_stop_during_the_encoder_open_waits_for_the_open_inside_the_backstop() {
+        let _serial = STOP_SERIAL.lock().await;
+        let sel = crate::record::tap_path::select_stream(true).unwrap();
+        let mut s = StreamSession::open(
+            "rtmp://127.0.0.1:9/live/k",
+            sel,
+            params(),
+            Arc::new(AtomicU64::new(0)),
+        );
+        s.stop_and_close()
+            .await
+            .expect("a stop during the open is a clean stop once the open completes");
+        let stats = s.stats();
+        let t = &stats.teardown;
+        let stop = t
+            .at_us(TeardownMark::StopRequested)
+            .expect("the stop was requested");
+        // The load-bearing check is this `expect`: when `stop_and_close`
+        // returns, the open must already have ended. A waiter that returns
+        // without waiting for the thread fails here. That is the falsification
+        // PR #41's fresh two-key pass ran (2026-10-12). Do not simplify it away.
+        let open_end = t.at_us(TeardownMark::OpenEnd).expect("the open completed");
+        let done = t
+            .at_us(TeardownMark::DoneReceived)
+            .expect("the exit event arrived");
+        assert!(
+            open_end > stop,
+            "precondition: the stop landed during the encoder open ({})",
+            t.summary()
+        );
+        // Vacuous in the current code: the thread sends `done` only after its
+        // open ends, so this cannot fail on its own. It states the intent; the
+        // `expect` above is what discriminates.
+        assert!(
+            done >= open_end,
+            "the exit waited for the open ({})",
+            t.summary()
+        );
+        assert!(s.is_closed());
+        assert_eq!(stats.phase(), StreamThreadPhase::Done);
     }
 
     /// A thread that never exits inside the backstop is the deadlock the
@@ -1059,8 +1299,10 @@ mod tests {
             msg.starts_with("E_NETWORK: "),
             "the teardown token, got: {msg}"
         );
+        // The backstop's value, as the operator reads it (§2c, 2026-10-11:
+        // it read "1100 ms" before R11's measured value).
         assert!(
-            msg.contains("did not exit within 1100 ms"),
+            msg.contains("did not exit within 1005 ms"),
             "the backstop is named, got: {msg}"
         );
         assert!(
@@ -1077,10 +1319,22 @@ mod tests {
     /// `stop_timeout_leaves_headroom_inside_spec_window` pins its own: the
     /// thread backstop and the transport's stop, waited in sequence, fit
     /// §16.1's 2 s `show.stop` window; and the backstop tolerates the slow
-    /// exit the old 500 ms cap refused.
+    /// exit the old 500 ms cap refused. The value is R11's measured one
+    /// (1005 ms), so the sum is 1805 ms (§2c, 2026-10-11: it was 1100 ms
+    /// and 1900 ms).
     #[test]
     fn the_exit_backstop_fits_the_section_16_1_window() {
+        assert_eq!(
+            STREAM_THREAD_EXIT_BACKSTOP,
+            Duration::from_millis(1005),
+            "R11's measured backstop: max(max × 2, p99 + 1 s) over a running stop"
+        );
         let sequential = STREAM_THREAD_EXIT_BACKSTOP + PublisherHandle::stop_timeout();
+        assert_eq!(
+            sequential,
+            Duration::from_millis(1805),
+            "the backstop and the transport's stop, in sequence"
+        );
         assert!(
             sequential <= Duration::from_millis(1900),
             "thread backstop + transport stop must leave ack headroom inside §16.1's 2 s, got {sequential:?}"

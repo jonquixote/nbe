@@ -210,6 +210,13 @@ not forbid the merge; it forbids the merge going unrecorded. State it in the
 report, and leave the merged section carrying every half of the substance the
 original mandate covered.
 
+**Post-merge records ride the next PR** (the user's word of 2026-10-12). Some
+records can only be written after a merge, such as a queue line struck FIXED
+by the merge SHA, or a finding's closure line. They land in the next pull
+request to main, never as a direct push: main takes pull-request merges only.
+The first instance is `b806d06` in PR #41, which struck PR #40's queue line
+FIXED by `b961cc5`.
+
 ## 3. Prompt structure
 
 Every implementation prompt uses this skeleton:

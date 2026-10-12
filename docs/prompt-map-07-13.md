@@ -565,7 +565,7 @@ progress** — this drain on the test server's reader, that teardown on the stre
 thread's exit. A run that trips either is a sighting to record, not a load
 excuse.
 
-### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ **REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)
+### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41; the merge SHA is recorded after the user's merge)
 
 **Resolution, recorded 2026-09-26 (§2c: the open entry stands below, unedited).**
 Both halves of the resolution condition landed together in `bb7d4a2`:
@@ -630,6 +630,337 @@ throughout, on AC with no discharge in the window. That is the third
 `592444a`. The re-run was 508/0/3, and CI at the same head was 508/0/3. The
 queued measurement of the exit path is R11's open work, put to the user and
 not started. The capture is in the register row.*
+
+### R11's exit-path measurement (2026-10-10, branch `r11-exit-path`; the user's word of 2026-10-10)
+
+A measurement work order. The verdict rule was fixed before any numbers
+existed:
+- **BOUNDED:** every run completes, and the slowest are a bounded tail (max
+  within about 2× p99). The backstop becomes max(max × 2, p99 + 1 s).
+- **HEAVY-TAILED:** report the tail and the phase carrying it, and do not
+  widen the backstop.
+- **UNBOUNDED:** a run hangs. Stop and report.
+
+**The sightings, from the register** (`docs/soak-protocol.md` §5, the R11 row).
+
+| # | When and where | Test | Phase | Load (1m) | `encoder_open_us` | Counted |
+|---|---|---|---|---|---|---|
+| 1 | 2026-09-27, the executor's machine during WU8 | `a_slow_exit_inside_the_backstop_is_a_clean_stop` | unknown (the message was lost) | 4.90, a minute later | — | unconfirmed |
+| 2 | 2026-10-03, PR #35's two-key pass, at `592444a` | the same | `exiting` | 37.5 | 539120 | over the ceiling |
+| 3 | 2026-10-05, PR #37's pass, a full workspace run at `9473da3` | the same | `exiting` | 2.40 → 2.32 | 286487 | under, the first |
+| 4 | 2026-10-05, run 19 of 20 of the test alone | the same | `exiting` | 2.15 | 340090 | under, the second |
+| 5 | 2026-10-09, PR #40's gate, a full workspace run at `3e1aa2c` | the same | `exiting` | 2.34–2.79 | 324828 | under, the third: R11 reopens |
+| 6 | 2026-10-10, this measurement's loop, iteration 9 of 100, the test alone | the same | `exiting` | 2.19 | 345845 | under, the first with the teardown timeline |
+
+Sighting 5's raw line (`ws-head.raw.log`):
+`Teardown("stream thread did not exit within 1100 ms (phase=exiting, encoder_ready=true, encoder_open_us=324828, aac_ready=true)")`
+at `stream.rs:1029`.
+
+**The exit path, read at `01e6de2`.** From the stop request to the join:
+1. **`stop_thread` starts the clock.** It drops the frame sender, sends `Stop`
+   on the control channel, and starts the backstop:
+   `tokio::time::timeout(STREAM_THREAD_EXIT_BACKSTOP, done_rx)`.
+2. **The thread may still be opening its encoders.** `StreamThread::open` is
+   synchronous: the H.264 `EncodeSession::open` (VideoToolbox), then the AAC
+   `AacEncoder::with_bitrate` (AudioToolbox). The thread reads its control
+   channel only inside `run`, so a stop that lands during the open waits for
+   it. **This phase can block, on VideoToolbox's session creation**, and the
+   backstop's clock is already running.
+3. **`run` returns** on its next iteration: `control_rx.try_recv` sees `Stop`,
+   or `frame_rx.recv_timeout(10 ms)` sees the dropped sender. At most one
+   in-progress encode and one AAC drain stand in the way.
+4. **`Exiting`.** The test seam's exit delay runs here; it is zero in
+   production.
+5. **The encoder drop:** `EncodeSession::drop` calls
+   `VTCompressionSessionInvalidate`. **This can block, on VideoToolbox.**
+6. **The AAC drop:** `AudioConverterDispose`.
+7. **`Done`**, and the `done` oneshot fires.
+8. **The waiter wakes and joins** the thread, whose body is finished.
+9. **Then, outside the backstop, the transport.**
+   `PublisherHandle::shutdown_and_wait(800 ms)` is the socket teardown, after
+   the thread.
+
+There is no file finalize on this path (that is the record take's).
+
+**Where 1100 ms lives.** `STREAM_THREAD_EXIT_BACKSTOP` in `record/stream.rs`,
+chosen in `bb7d4a2` (Prompt 11 WU0). It is §16.1's 2 s `show.stop` window,
+less the transport's 800 ms, less 100 ms of acknowledgement headroom (its doc
+comment). `the_exit_backstop_fits_the_section_16_1_window` pins the sum.
+
+**The instrumentation (permanent).** `StreamStats::teardown`, a
+`TeardownTimeline` of eleven marks in µs since the session opened:
+- openStart, openEnd, stopRequested, runReturned;
+- exitDelayEnd, encoderDropped, aacDropped;
+- doneSent, doneReceived, joined, transportClosed.
+
+The thread sets its own marks, and the waiter (`stop_thread`,
+`stop_and_close`) sets the rest. Every stop logs one `info` line ("stream
+teardown") with the timeline. The backstop's capture now carries it too, so a
+sighting names the mark it stopped at.
+
+Production behaviour is unchanged:
+- no sleeps, locks or awaits, and the path's order is the same;
+- the two codec drops are spelled out, in the order the fields dropped them.
+
+Why permanent: a sighting in a real show then carries the whole teardown.
+The cost is one `Instant::now()` and one atomic store per mark, eleven per
+session, plus one log line per stop. Tests and measurements read it through
+`StreamStats::teardown`.
+
+**The measurement.** `crates/nbe-engine/tests/r11_exit_path.rs`, an
+`#[ignore]`d measurement in `zerocopy_bench`'s convention.
+- **One teardown per process,** so VideoToolbox opens cold, as it does in
+  each lib-test process.
+- **The stream tests' configuration:** `rtmp://127.0.0.1:9/live/k` (nothing
+  listens), `select_stream(true)`, 640×360 at 30 fps, and production's exit
+  path (no exit delay).
+- **`immediate`:** stop straight after open, as the lib suite's stream tests
+  do.
+- **`running`:** stop once the encoders are open and the thread has run
+  100 ms, as a show's `stream.stop` does.
+
+The conditions:
+- Two guarded runs on 2026-10-10: 20:33–20:49 and 20:50–21:01.
+- AC, 45 W adapter, Low Power Mode on, no sleep or battery event. Power-limited:
+  discharge on AC in 47 of 194 samples (to −958 mA) and 12 of 130 (to −267 mA).
+- Every run launched under load 2.5; the load read inside the runs was
+  1.93–2.98. None voided.
+- n = 100 per configuration and build.
+- A driver bug (an output path expanded before its variables were set) lost
+  three of the first run's four batches; they were re-run in the second.
+
+**`immediate`, instrumented (n = 100, ms, nearest-rank):**
+
+| phase | median | p95 | p99 | max |
+|---|---:|---:|---:|---:|
+| encoder open | 251.89 | 266.33 | 292.25 | 293.01 |
+| open remaining when the stop landed | 251.98 | 266.40 | 292.31 | 293.10 |
+| loop reaction after the open | 0.00 | 0.00 | 0.00 | 0.00 |
+| encoder drop (VT invalidation) | 3.49 | 3.84 | 5.61 | 6.02 |
+| AAC drop | 0.14 | 0.20 | 0.22 | 0.24 |
+| `done` to the waiter waking | 0.05 | 0.08 | 0.10 | 0.11 |
+| join | 0.04 | 0.06 | 0.08 | 0.09 |
+| **stop → `done` (what the backstop bounds)** | **255.72** | **270.77** | **296.07** | **296.96** |
+| transport, after the join | 7.60 | 7.70 | 7.76 | 7.79 |
+| stop → closed | 262.93 | 278.52 | 302.28 | 303.16 |
+
+**`running`, instrumented (n = 100, ms):**
+
+| phase | median | p95 | p99 | max |
+|---|---:|---:|---:|---:|
+| loop reaction | 0.07 | 0.09 | 0.10 | 0.10 |
+| encoder drop (VT invalidation) | 4.33 | 4.68 | 4.72 | 6.14 |
+| AAC drop | 0.16 | 0.20 | 0.24 | 0.25 |
+| `done` to the waiter waking | 0.05 | 0.08 | 0.08 | 0.09 |
+| join | 0.05 | 0.08 | 0.11 | 0.11 |
+| **stop → `done`** | **4.61** | **4.99** | **5.03** | **6.44** |
+| transport | 7.19 | 7.73 | 7.75 | 7.76 |
+| stop → closed | 11.66 | 12.65 | 12.74 | 14.26 |
+
+**The five slowest, every phase (ms):**
+- **`immediate`, open remaining → encoder drop → AAC → stop→`done` →
+  transport:**
+  - 293.10 → 3.61 → 0.20 → 296.96 → 6.14
+  - 292.31 → 3.57 → 0.12 → 296.07 → 6.19
+  - 283.47 → 5.61 → 0.21 → 289.35 → 5.17
+  - 268.23 → 5.17 → 0.22 → 273.68 → 6.24
+  - 266.40 → 6.02 → 0.24 → 272.74 → 7.79
+- **`running`, loop reaction → encoder drop → AAC → stop→`done` → transport:**
+  - 0.04 → 6.14 → 0.22 → 6.44 → 7.71
+  - 0.09 → 4.68 → 0.18 → 5.00 → 6.15
+  - 0.08 → 4.71 → 0.15 → 4.99 → 7.67
+  - 0.08 → 4.72 → 0.14 → 5.03 → 7.70
+  - 0.07 → 4.70 → 0.17 → 4.99 → 6.86
+
+**The instrumentation does not perturb.** `stop_and_close` was timed from
+outside, against the uninstrumented `stream.rs` (n = 100 each, ms):
+
+| configuration, build | median | p95 | p99 | max | not ok |
+|---|---:|---:|---:|---:|---:|
+| `immediate`, uninstrumented | 263.28 | 270.15 | 277.09 | 341.52 | 0 |
+| `immediate`, instrumented | 262.93 | 278.52 | 302.28 | 303.16 | 0 |
+| `running`, uninstrumented | 12.23 | 12.79 | 12.85 | 12.86 | 0 |
+| `running`, instrumented | 11.68 | 12.67 | 12.76 | 14.28 | 0 |
+
+The medians are within 0.6 ms. The tails cross both ways (the uninstrumented
+max is the highest). `immediate`'s spread is the encoder open's own
+variance, and the marks cost microseconds. The stream suites were green on
+both builds: the lib's `record::stream` 12, `prompt10_rtmp` 20 (1 ignored),
+`prompt10_stream_cmds` 21, `prompt10_telemetry` 5, `stream_url_precedence`
+15.
+
+**`a_slow_exit_inside_the_backstop_is_a_clean_stop` ×100** (instrumented, the
+test alone per process): **99 pass, 1 fail**. The failure is sighting 6, at
+load 2.19:
+
+`Teardown("stream thread did not exit within 1100 ms (phase=exiting, encoder_ready=true, encoder_open_us=345845, aac_ready=true, teardown: openStart=+0.1ms openEnd=+356.9ms stopRequested=+0.0ms runReturned=+356.9ms)")`
+
+The stop landed before the open began. The thread saw it 356.9 ms later,
+then began the test's 800 ms exit delay, so it would have exited about
+1157 ms after the stop, past the 1100 ms backstop.
+
+**The sightings, against the measured shape.** The exit path proper (the
+thread sees `Stop` → `done`) is a few milliseconds, at most 6.44 here. Every
+sighting is the test's own arithmetic:
+- the test stops straight after open, so its stop lands during the encoder
+  open;
+- the backstop's clock includes the rest of that open;
+- the test then adds 800 ms;
+- so the test's budget for (the open's remainder plus the exit) is 300 ms.
+
+Every counted sighting's open was 286–540 ms, at or past that budget once
+spawn and scheduling are added. Cold opens measured standalone here run
+252 ms median and 303 ms max. In the lib binary, and under load, they ran
+longer (sighting 2's 539 ms at load 37.5). Hypothesis 2 of the filing (a
+cold VideoToolbox start) is the mechanism, now measured. It is the open, not
+the invalidation: the invalidation is the encoder drop, 6.1 ms at most.
+
+**The verdict: BOUNDED, and blocked by SPEC §16.1.** The basis is stop →
+`done` over every instrumented run in the stream tests' configurations
+(n = 200): median 6.44 ms, p95 262.59, p99 289.35, max 296.96. Every run
+completed, and max/p99 = 1.03, within 2×. The rule's backstop is then
+max(296.96 × 2, 289.35 + 1000) = **1289.35 ms**.
+- **The collision.** 1289 ms plus the transport's 800 ms is 2089 ms, over
+  §16.1's 2 s `show.stop` window, which
+  `the_exit_backstop_fits_the_section_16_1_window` pins.
+- **Per configuration:** `immediate` alone gives 1296.07 ms, and `running`
+  alone (production's `stream.stop`) gives ~~1005.02 ms~~ 1005.025 ms (the raw
+  p99 is 5025 µs; §2c, 2026-10-12, the user's word on PR #41's fresh two-key pass), which fits.
+- ~~**So nothing moved.** The constant, the test and R11's status are
+  unchanged, put to the user rather than chosen here:~~
+  - the formula over both configurations, which needs §16.1's budget changed
+    (a);
+  - or over production's configuration, 1005 ms, with the slow-exit test
+    stopping a running thread so its 800 ms delay measures the exit and not
+    the open (b).
+
+  ~~R11 stays reopened until that word.~~ *(§2c, 2026-10-11: the user ruled
+  (b); R11's closure is below.)*
+
+**Guard, a hang still fails the test.** With the encoder drop made never to
+complete, the slow-exit test fails at the current backstop:
+`… teardown: openStart=+0.1ms openEnd=+270.4ms stopRequested=+0.0ms runReturned=+270.4ms exitDelayEnd=+1076.0ms`.
+The timeline ends at `exitDelayEnd`, so it names the hung phase, the encoder
+drop. Restored from the copy (identical), the stream lib tests pass 12/12.
+
+**R11 closes: RESOLVED BY MEASUREMENT** (the user's words of 2026-10-11,
+ruling (b) on PR #41). The closure line, with PR #41's merge SHA, is added
+after the user's merge.
+
+- **The mechanism.**
+  - The backstop's clock starts at the stop request, but the thread reads
+    `Stop` only inside `run`.
+  - So a stop that lands during a cold VideoToolbox open (286–540 ms across
+    sightings 1–6) spends the budget before the exit begins.
+  - The old test's own 800 ms delay left it 300 ms.
+  - Hypothesis 2 of the filing (a cold VideoToolbox start) is confirmed.
+  - The invalidation is not the cost: the encoder drop was at most 6.14 ms
+    over 200 runs.
+- **The ruling, and why.** (a) is rejected:
+  - §16.1's 2 s `show.stop` window is an operator-facing guarantee;
+  - the 800 ms that would break it is the test's own injected delay, not a
+    production cost;
+  - loosening the spec to fit a test artifact is backwards.
+
+  The measurement showed that the quantity the timeout spans (the open's
+  remainder plus the exit) is not the one the test names (a slow exit). (b)
+  aligns all three: the backstop, the test and the name.
+- **The backstop: 1005 ms.** The formula is max(max × 2, p99 + 1 s) over
+  production's running configuration: ~~max(6.44 × 2, 5.03 + 1000) =
+  max(12.88, 1005.03)~~ max(6.44 × 2, 5.025 + 1000) = max(12.88, 1005.025), so
+  `STREAM_THREAD_EXIT_BACKSTOP` = 1005 ms. *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass: the raw p99 is 5025 µs,
+  `scratchpad/r11/inst-running.jsonl`, stop → `doneReceived`. It read 1005.03
+  here and 1005.02 above, two roundings of 1005.025.)*
+- **The margin analysis:**
+  - **A stop during the open.** ~~The worst observed stop → `done` for a stop
+    during the open is about 547 ms: the sightings' opens of 286–540 ms plus
+    at most 6.5 ms of exit.~~ The worst observed stop → `done` for a stop
+    during the open is about 557 ms:
+    - the sightings' VideoToolbox opens ran 286–540 ms;
+    - the whole open adds about 11 ms to the VideoToolbox open, the AAC
+      open (median 10.99 ms, range 10.73–21.92 ms over the 200 measured runs:
+      `openEnd − openStart − encoderOpenUs`; sighting 6, 10.95 ms);
+    - the exit is at most 6.44 ms.
+
+    The standalone `immediate` max was 296.96 ms. ~~1005 ms covers 547 ms
+    about 1.8×.~~ 1005 ms covers about 557 ms about 1.8× (1.80×), on the
+    reference machine. *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass.)*
+  - **The restructured slow-exit test** needs 800 ms plus the exit (at most
+    6.44 ms), leaving 199 ms, about 31× the measured exit.
+  - ~~**Slower machines.** CI runs about 1.7× the normative rise times. At 1.7×
+    the exit is about 11 ms, and sighting 2's 539 ms open (at load 37.5)
+    becomes about 916 ms, so a stop during it lands at about 927 ms, still
+    inside 1005.~~ *(§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass: the 1.7× had no source in the tree, and the
+    tree's own data contradict it. No extrapolation replaces it.)*
+  - **The tree's CI-vs-normative rise factor, recorded as context and not
+    applied:** at least 1.86×. The normative rises are 974 and 1034 ms (the
+    R12/R13 baseline, above), and CI's healthy rises are 1971–2980 ms at step 4
+    and 1927–2009 ms at step 6 (the R13 record, above). It is not applied to
+    the open: sighting 2 was itself measured at load 37.5, so scaling it again
+    would double-count.
+  - **CI** never opens VideoToolbox (it has no hardware encoder), so the
+    cold-open path does not arise there.
+  - **Why not 1100.** §16.1's ceiling allows up to 1100 ms (2000 − 800
+    transport − 100 ack). 1005 is kept: it is the ruling's formula, and it
+    covers ~~the observed and the 1.7×-scaled worst cases~~ the worst observed
+    case about 1.8× (§2c, 2026-10-12, the user's word on PR #41's fresh two-key pass). The 95 ms more would
+    only cover opens past about a second, which the backstop exists to
+    report.
+  - **The sum.** With the transport's 800 ms it is 1805 ms, leaving 195 ms of
+    acknowledgement headroom inside §16.1's 2 s (100 ms before).
+    `the_exit_backstop_fits_the_section_16_1_window` pins both the value
+    (1005 ms) and the sum (1805 ms). §16.1's text is untouched.
+- **The test, restructured.** `a_slow_exit_inside_the_backstop_is_a_clean_stop`
+  now waits until the thread is `Running` (its encoders open) before it
+  stops, so its 800 ms delay measures the exit, as the name says. Its
+  assertions stand. The stop-during-open case is now its own test,
+  `a_stop_during_the_encoder_open_waits_for_the_open_inside_the_backstop`.
+  The timeline proves the stop landed during the open
+  (`openEnd > stopRequested`) and that the exit waited for it
+  (`doneReceived ≥ openEnd`), inside the backstop.
+- **One other test changed, of necessity.**
+  `a_hung_exit_is_reported_with_the_thread_phase` asserts the operator-facing
+  message, `did not exit within 1100 ms`, which now reads 1005 ms. Only that
+  literal changed, with a §2c note.
+- **§2c, struck and not erased:**
+  - the constant's doc comment keeps its old sizing text struck: ~~"Sized to
+    §16.1's 2 s `show.stop` window … 1900 ms ≤ 2000 ms … 100 ms of ack-pump
+    headroom"~~, with its provenance (`bb7d4a2`, Prompt 11 WU0);
+  - the slow-exit test's doc keeps ~~"The test stopped straight after
+    open."~~ with why it failed;
+  - the pin's doc notes that it was 1100 ms and 1900 ms.
+- **Guards.**
+  - **The hang guard, against the restructured test** (2026-10-11
+    02:00, on AC, load 2.39). With the encoder drop made to never complete,
+    the slow-exit test fails at the new backstop:
+    `Teardown("stream thread did not exit within 1005 ms (phase=exiting, encoder_ready=true, encoder_open_us=243118, aac_ready=true, teardown: openStart=-255.0ms openEnd=-0.8ms stopRequested=+0.0ms runReturned=+0.1ms exitDelayEnd=+809.0ms)")`.
+    The stop landed on a running thread (`openEnd` before `stopRequested`),
+    as restructured. The timeline ends at `exitDelayEnd`, so it names the
+    hung phase, the encoder drop. Restored from the copy (identical) and
+    rebuilt, it is green: `test result: ok. 1 passed`.
+  - **The restructured slow-exit test, run 100 times** (the test alone
+    per process, each launched under load 2.5; loads 1.89–2.47): 100 pass,
+    0 fail. That was the expected count: 800 ms plus about 6 ms is well under
+    1005.
+  - **The stop-during-open test, run 100 times** (loads 1.76–2.36):
+    100 pass, 0 fail. Each run's timeline checked that the stop landed during
+    the open and that the exit waited for it.
+  - The stream suites ran in full, green; see the gate.
+- **The instrumentation stays permanent.** Sighting 6 is its justification:
+  `phase=exiting, … encoder_open_us=345845, … teardown: openStart=+0.1ms
+  openEnd=+356.9ms stopRequested=+0.0ms runReturned=+356.9ms`. It is the
+  first capture that showed where the time went: the stop landed before the
+  open began, and the thread saw it 356.9 ms later. Five earlier sightings
+  had only the phase.
+- **Sightings 1–6, against the mechanism.** Every one is the old test's
+  shape:
+  - the stop landed during the encoder open;
+  - the open's remainder (286–540 ms cold; sighting 2's 539 ms at load 37.5)
+    plus the injected 800 ms crossed 1100 ms, with the thread in `exiting`;
+  - sighting 1's message was lost, and it is consistent with the rest.
+
+  None was a slow exit. With the test restructured, its budget covers the
+  exit alone.
 
 ### Finding R11 (as filed 2026-09-25, kept per §2c) — the stream thread's 500 ms teardown wait expired twice, once under the ceiling
 
@@ -3049,8 +3380,10 @@ item):
    The clamp makes it unreachable from the end's computation, but any throw
    while the snapshot is built does the same. **The fix direction:** install
    the listeners before `sendResync`, or deregister the session on a throw.
-- ~~**Position 1 after PR #39's merge:**~~ **In flight, PR #40 (SPEC v0.4.8
-  row 5): the package-reload gap, a design question.** *(It read ~~"Behind
+- ~~**Position 1 after PR #39's merge:**~~ ~~**In flight, PR #40 (SPEC v0.4.8
+  row 5): the package-reload gap, a design question.**~~ **FIXED** by
+  `b961cc5` (PR #40, SPEC v0.4.8 row 5; the package-reconcile record is
+  below). *(It read ~~"Behind
   it:"~~, §2c. §2c, 2026-10-10: it left the numbered queue when PR #40 took it
   up, and it is struck FIXED by the merge SHA after the user's merge. The
   numbered positions below are the user's word of 2026-10-09, ruling on PR
@@ -3063,7 +3396,9 @@ item):
   should reload ("package, assets, overlays") is a resync-semantics decision
   for the user.
 - **Position 1: R11's exit-path measurement** (the user's word of 2026-10-09,
-  ordering the queue). R11 reopened on 2026-10-09, on post-fix sighting 5
+  ordering the queue). *(In flight: PR #41, resolved by measurement under the
+  user's ruling (b) of 2026-10-11; it is struck FIXED by PR #41's merge SHA
+  after the user's merge.)* R11 reopened on 2026-10-09, on post-fix sighting 5
   (Finding R11 above, and the register row in `docs/soak-protocol.md` §5).
   The work is the one queued on 2026-10-06: measure the stream thread's exit
   path, the run loop's return and the encoders' drop (VideoToolbox's
@@ -3115,7 +3450,13 @@ item):
   - **The scope is a design choice, the user's word when the item is built:**
     one `stateVersion` per emitted directive (the dispatcher bumping for
     each), or a gate that accepts equal versions from one command.
-- **~~Position 2~~ Position 3: surface a failed re-resync on the `resyncRequest` path** (the
+- **Position 3: R16, the dress rehearsal's step 10 samples the transition
+  tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
+  pass). A harness-side fix: step 10 must not sample the transition tick. It
+  reads its baseline from a tick that postdates the engine's stop report,
+  with no retries and no tolerance. The register row is R16 in
+  `docs/soak-protocol.md` §5.
+- **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
   throw there is answered only as an `E_ENGINE` reply on the engine's own
@@ -3133,11 +3474,18 @@ item):
     (`resync.handshakeFailed`). Whether to tear down the established session
     on a persistent failure, handing recovery to the now-honest connect path,
     is the user's word when the item is built.
-- **~~Position 3~~ Position 4: the deferred-cell reader**, a static reader that compares each
+- **Position 5: R17, the control plane reports a refused stream as live**
+  (the user's word of 2026-10-12, establish-first). On CI the engine refuses
+  `stream.start`, and the control plane's telemetry still reports the stream
+  `live` for five ticks, until the dress's own `stream.stop`. The first step
+  is to establish what the control plane hears of the refusal and what an
+  operator sees. It is cross-referenced with R16, the same observed-state lag
+  on another surface. The register row is R17 in `docs/soak-protocol.md` §5.
+- **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
   the recall leg's record above ("a static reader for the deferred cells").
-- **Position 5: a failed engine-side `show.load` heals itself** (the user's
+- **~~Position 5~~ Position 7: a failed engine-side `show.load` heals itself** (the user's
   word of 2026-10-09, ruling on PR #40's fresh two-key pass; the
   package-reconcile record's silent-window paragraph, below, is the
   observation). On a `show.load` failure the engine does what a failed resync
@@ -3275,7 +3623,9 @@ source, so there is nothing to rebuild. Every run started at load 2.07–2.36.
 identity on every resync. It is SPEC v0.4.8 row 5 and the queue's position 1
 above *(§2c, 2026-10-10: that line is now marked in flight, PR #40, and the
 numbered queue begins with R11)*. The strike of that queue line waits for the merge: it lands in a
-post-merge records commit on main, by the merge SHA.
+post-merge records commit on main, by the merge SHA. *(Done, 2026-10-11:
+struck FIXED by `b961cc5`, the merge of PR #40. Main's history takes only
+pull-request merges, so the strike rides in PR #41's records.)*
 
 **The premises, each read at `7cd9d1a` before anything changed.** All six
 hold.
@@ -3692,7 +4042,7 @@ fresh two-key pass).**
     new identity and reconciles it: a reload, or on failure `forget_package`,
     the slate and `missing` (G6).
   - It is older than this PR and unchanged by it, as ordered. The heal is
-    queued at position 5 in the queue above.
+    queued at position ~~5~~ 7 in the queue above (renumbered 2026-10-12).
 - **Disk headroom.** 7.5 GiB was free at the fresh pass and 7.3 GiB at this
   note, under the soak protocol's 8 GiB precondition (`docs/soak-protocol.md`
   §2, precondition 3). R14's power measurements (its work order's step 5,
