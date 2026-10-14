@@ -3548,6 +3548,114 @@ item):
       path the gate skips. Letting the engine's own stop quiesce the outputs
       therefore matches §16.1 as written, rather than requiring its
       amendment. *(§2c, 2026-10-14, the user's word on the fresh pass.)* The ruling remains the user's.
+
+  **The fix: (C), one directive carries the stop** (the user's ruling of
+  2026-10-14). (B) is rejected outright, and (A) is the fallback, fired
+  only if a prove-first item below finds a gap that cannot be honestly
+  closed.
+  - The control plane sends only the forwarded `show.stop`; the
+    `record.stop` / `stream.stop` bundle is deleted.
+  - The engine's `on_show_stop_inner` quiesce arm is the stop.
+
+  **Prove-first, answered from the tree at `067e709` before the code:**
+  - **(a) Quiesce completeness: complete.**
+    - *The record half is the standalone `record.stop`.* It runs
+      `stop_and_finish(RECORD_STOP_TIMEOUT)` (1500 ms, `record/thread.rs`)
+      and sets `Idle`. It clears the markers on `Ok`, keeps them on
+      `Timeout` (the take is force-abandoned with its file kept), and clears
+      them on other errors.
+    - *The marker sidecar is written on this path.* `writer.finish()` is "the
+      single place files finalize", and it writes `<stem>.markers.json` from
+      `markers::list()` (`writer.rs:919`). `stop_and_finish` awaits that
+      finish, and the caller's `markers::clear()` runs only after it.
+    - *The stream half is the standalone `stream.stop`.* It is
+      `stop_and_close()` (R11's 1005 ms thread backstop, then the transport's
+      800 ms), then `Idle` with the selection and tap cleared.
+    - *`force` and the `quiesceOutputs=false` refusal are unchanged.* The
+      `(_, true)` arm abandons both outputs (no finish, markers cleared, a
+      warning). The `(false, false)` arm refuses.
+    - *One difference, the test seam only.* A session-less record stop
+      clears the markers here and keeps them in standalone `record.stop`.
+    - *Worst case per phase.* The record half takes at most 1500 ms on the
+      blocking pool. It runs concurrently with the stream half, at most
+      1005 + 800 = 1805 ms. Stopping the clock, releasing the sessions and
+      clearing the transition take microseconds. So the engine acknowledges
+      within about 1805 ms, 195 ms inside §16.1's 2 s.
+    - *A stale comment.* The arm's own comment ("1500 ms record + 800 ms
+      stream = 2.3 s") predates R11's backstop and undercounts the stream
+      half. It is corrected, comment only.
+  - **(b) What the grace window waits for under (C).**
+    - *The tree has no countdown.* The order named `grace-window.telemetry.ts`;
+      no such file, and no telemetry countdown, exists in the tree.
+    - *What the window is.* It is `waitForGrace` (`server.ts`), awaited in
+      `show.stop`'s handler *before* the dispatcher forwards `show.stop`. It
+      resolves on any acknowledgement at or above the version (`noteApplied`).
+    - *What it gates under (C).* With the bundle gone, the window gates the
+      stop's response and the control plane's belief about the outputs. It
+      waits for `show.stop`'s own acknowledgement, so it moves after the
+      forward: it cannot wait for a directive not yet sent.
+    - *The §16.1 arithmetic.* The engine needs at most about 1805 ms. The
+      control plane waits 2000 ms from the forward. The stop is graceful if
+      it is acknowledged inside that window.
+  - **(c) The version: satisfied by construction for the directive; the wait
+    is fixed.**
+    - Under (C) the handler sends nothing itself. The only directive is the
+      dispatcher's forward, at the bumped version.
+    - The wait uses that version through a new `HandlerOutput.afterForward(sv)`,
+      which the dispatcher awaits after the forward: bump, send, wait, with no
+      await between the bump and the send.
+    - The wait is for the *exact* acknowledgement of that version, not "at
+      or above". The engine acknowledges each applied directive at its own
+      version, in order, so a later command's acknowledgement cannot stand
+      in for a failed stop's.
+  - **(d) The control plane learns from the acknowledgement** (the design,
+    recorded before the code). The handler sets `showState: STOPPED` before
+    the bump, as today, and leaves `recordState` / `streamState` alone. Then
+    `afterForward` waits up to 2000 ms for the exact acknowledgement.
+    - **Acknowledged.** The engine sends it only once every active output has
+      quiesced; the arm withholds it on the first failure. The outputs go to
+      `idle`.
+    - **Not acknowledged** (a timeout, an acknowledgement withheld after a
+      failed quiesce, or no render node). The control plane surfaces
+      `SHOW_STOP_FORCE_WARNING`, as today.
+      - The outputs are **held at their prior state** (`recording` / `live`),
+        not `idle`: the control plane cannot know. "Held" names that state.
+      - The operator sees the warning, and the tick's `streamState: live`
+        beside the engine's own `streamTransportState`, which is not live
+        once the engine has dropped the session.
+      - What heals it: the operator's explicit `record.stop` / `stream.stop`.
+        The control plane marks the output `idle` and forwards; the engine
+        refuses harmlessly when it is already idle.
+      - Reconciling from the engine's report is R17's queued item. A late
+        acknowledgement, after the window, is not acted on; that is named and
+        queued with R17.
+    - **`force`.** The engine abandons the outputs (no finish) and
+      acknowledges. The control plane waits for the same exact
+      acknowledgement, with the force warning: acknowledged, the outputs go
+      `idle`; not acknowledged, they are held.
+    - **No active output.** Forward only, no wait, as today.
+  - **(e) `on_resync`'s output blindness.**
+    - Under (C) the engine never acknowledges a stop whose quiesce failed,
+      so the control plane holds the outputs per (d).
+    - A later resync carries no output state and changes none. The engine
+      has already taken and dropped (abandoned) the failed session, so its
+      outputs are idle.
+    - The tick shows the control plane's `streamState: live` beside the
+      engine's own transport state, which is not live.
+    - It heals by the explicit stops, or by R17's reconciliation. Output
+      state on the resync is out of scope here and is queued in R17's
+      territory.
+  - **One finding from the read.** `show.stop` was the only command that
+    sent more than one directive at one version. `view.take`, `view.cut`,
+    `overlay.show`, `overlay.hide` and `snapshot.recall` are each
+    `forward: false` with exactly one extra directive. Under (C) every
+    command sends exactly one, so the stale gate cannot drop a sibling
+    anywhere in the tree.
+  - **Not in the tree.** The order names a "severest-missing-slate"
+    `show.stop` leg at 2947–2949; no such test or line exists. Every
+    `show.stop` caller found is updated: `render-channel.test.ts`,
+    `dispatch.test.ts`, `automation.test.ts`, the e2e files and the dress
+    rehearsal.
 - **Position 3: R16, the dress rehearsal's step 10 samples the transition
   tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
