@@ -472,11 +472,18 @@ impl DirectiveHandler {
                 }
                 (true, false) => {
                     // Concurrent teardowns: the sequential worst case (1500 ms
-                    // record + 800 ms stream = 2.3 s) exceeds the §16.1 2 s
+                    // record + 1805 ms stream = 3.3 s; the stream's half is
+                    // R11's 1005 ms thread-exit backstop then the transport's
+                    // 800 ms, `record/stream.rs`) exceeds the §16.1 2 s
                     // window, so the record finish runs on the blocking pool
-                    // while the stream close awaits — first failure still wins
+                    // while the stream close awaits: the worst case is
+                    // max(1500, 1805) = 1805 ms — first failure still wins
                     // the withheld ack, both arms still warn. The record body
                     // is byte-identical behavior, moved verbatim.
+                    // ~~(1500 ms record + 800 ms stream = 2.3 s)~~ (§2c,
+                    // 2026-10-14: written before R11's backstop; it undercounted
+                    // the stream half.) Since v0.4.8 row 6 this arm is the
+                    // stop: the control plane sends `show.stop` alone.
                     let handler = self.clone();
                     let record_join = tokio::task::spawn_blocking(move || {
                         handler.quiesce_record_for_show_stop(record_active)

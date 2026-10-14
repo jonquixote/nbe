@@ -1032,11 +1032,19 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   ] as const) {
     await probe(command, payload as Record<string, unknown>);
   }
-  // `show.stop` sets `streamState` and `recordState` idle unconditionally
-  // (commands/show.ts); they change only if an output was active — the path
-  // the pass found this probe never took. Start both first.
+  // `show.stop` sets `streamState` and `recordState` idle on the engine's
+  // acknowledgement of its own directive (commands/show.ts; v0.4.8 row 6);
+  // they change only if an output was active — the path the pass found this
+  // probe never took. Start both first, and acknowledge the stop as the
+  // engine does once its outputs have quiesced.
   await setup("record.start", {});
   await setup("stream.start", {});
+  render.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (msg.kind === "directive" && msg.command === "show.stop") {
+      render.send(JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: msg.stateVersion }));
+    }
+  });
   await probe("show.stop", {});
   await probe("show.unload", {});
 

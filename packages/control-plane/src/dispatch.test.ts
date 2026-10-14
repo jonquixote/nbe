@@ -249,7 +249,14 @@ test("automation.hold flips the flag; trigger suppression is the engine's job", 
 });
 
 test("show.stop quiescence truth table: !quiesce+!force with active outputs -> E_FORBIDDEN_STATE", async (t) => {
-  const { deps } = makeDeps();
+  // The engine's acknowledgement, as the server supplies it: exact version.
+  const waited: number[] = [];
+  const { deps, bridge } = makeDeps({
+    waitForAck: async (_ms, stateVersion) => {
+      waited.push(stateVersion);
+      return true;
+    },
+  });
   try {
     await d(deps, "show.load", { packagePath: pkgPath });
   } catch (e) {
@@ -265,9 +272,36 @@ test("show.stop quiescence truth table: !quiesce+!force with active outputs -> E
     () => d(deps, "show.stop", { quiesceOutputs: false, force: false }),
     (e: unknown) => e instanceof CpError && e.code === "E_FORBIDDEN_STATE",
   );
-  await d(deps, "show.stop", { quiesceOutputs: true, force: false });
+  bridge.drain();
+  const r = await d(deps, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(deps.state.showState, "STOPPED");
   assert.equal(deps.state.recordState, "idle");
+  // v0.4.8 row 6: one directive, and the wait is for the version the
+  // dispatcher assigned it — bump, send, wait.
+  assert.deepEqual(
+    bridge.drain().map((x) => [x.command, x.stateVersion]),
+    [["show.stop", r.stateVersion]],
+    "show.stop is the only directive: no record.stop / stream.stop bundle",
+  );
+  assert.deepEqual(waited, [r.stateVersion], "the wait is for the dispatcher's bumped version");
+});
+
+test("show.stop with active outputs and no acknowledgement holds them (v0.4.8 row 6)", async (t) => {
+  const { deps } = makeDeps(); // no render node: nothing can acknowledge
+  try {
+    await d(deps, "show.load", { packagePath: pkgPath });
+  } catch (e) {
+    if (e instanceof CpError && (e.code === "E_PREFLIGHT_FAILED" || e.code === "E_ENGINE")) {
+      t.skip("nbe-preflight binary not available");
+      return;
+    }
+    throw e;
+  }
+  await d(deps, "show.start", {});
+  await d(deps, "record.start", {});
+  await d(deps, "show.stop", { quiesceOutputs: true, force: false });
+  assert.equal(deps.state.showState, "STOPPED");
+  assert.equal(deps.state.recordState, "recording", "held: the control plane cannot know the output stopped");
 });
 
 test("mock bridge records directives in order with directive stateVersion", async (t) => {

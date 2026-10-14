@@ -137,45 +137,40 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
         throw new CpError("E_FORBIDDEN_STATE", "outputs active; pass quiesceOutputs or force");
       }
 
-      const warnings: string[] = [];
-      // SPEC §16.1 step order: stop the outputs first, then the clock. The
-      // stop directives are emitted at this command's stateVersion, which is
-      // also the version the engine acknowledges (SPEC §5.9.5).
-      const stopVersion = ctx.stateVersion;
-      const extraDirectives = outputsWereActive
-        ? [
-            { command: "record.stop", payload: {} },
-            { command: "stream.stop", payload: {} },
-          ]
-        : [];
-      if (outputsWereActive) deps.emitDirectivesNow?.(extraDirectives, stopVersion);
-
-      if (outputsWereActive) {
-        if (force) {
-          warnings.push(SHOW_STOP_FORCE_WARNING);
-          deps.warn?.(SHOW_STOP_FORCE_WARNING);
-        } else {
-          // The graceful window is a wait for the engine's appliedStateVersion
-          // acknowledgement (SPEC §5.9.5), not a sleep. Timing out — or having
-          // no render node at all — forces the stop and logs.
-          const graceMs = deps.showStopGraceMs ?? 2000;
-          const acked = deps.waitForGrace
-            ? await deps.waitForGrace(graceMs, stopVersion)
-            : false;
-          if (!acked) {
-            warnings.push(SHOW_STOP_FORCE_WARNING);
-            deps.warn?.(SHOW_STOP_FORCE_WARNING);
-          }
-        }
-      }
-
-      state.recordState = "idle";
-      state.streamState = "idle";
       state.showState = "STOPPED";
       deps.persistence.flushNow();
+      if (!outputsWereActive) return {};
 
-      // Already emitted above, at the same stateVersion, before the wait.
-      return { warnings };
+      // SPEC §5.9.5 (v0.4.8 row 6): `show.stop` is the only directive. The
+      // engine quiesces its own outputs on it (§16.1 steps 1–2) and
+      // acknowledges it only once they have stopped, or been abandoned under
+      // `force`. The control plane learns the outputs' state from that
+      // acknowledgement, never at send: bump, send, then wait for the exact
+      // version.
+      //
+      // ~~The stop directives are emitted at this command's stateVersion,
+      // which is also the version the engine acknowledges~~ (§2c,
+      // 2026-10-14): `record.stop` + `stream.stop` + `show.stop` at one
+      // version; the engine's stale-version gate (§5.9.6) applied the first
+      // and skipped the rest, and the stream stayed on air (PR #42).
+      return {
+        afterForward: async (stopVersion) => {
+          const graceMs = deps.showStopGraceMs ?? 2000;
+          const acked = deps.waitForAck ? await deps.waitForAck(graceMs, stopVersion) : false;
+          if (force || !acked) deps.warn?.(SHOW_STOP_FORCE_WARNING);
+          if (acked) {
+            state.recordState = "idle";
+            state.streamState = "idle";
+            deps.persistence.flushNow();
+          }
+          // Not acknowledged (a timeout, an acknowledgement the engine
+          // withheld after a failed quiesce, or no render node): the outputs
+          // are HELD at their prior state, since the control plane cannot
+          // know them. The operator's explicit record.stop / stream.stop
+          // heals it; reconciling from the engine's report is R17's.
+          return {};
+        },
+      };
     },
   });
 

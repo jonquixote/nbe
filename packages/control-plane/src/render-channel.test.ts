@@ -445,8 +445,27 @@ test("resyncRequest gets a fresh snapshot on that connection", async () => {
 // ---------------------------------------------------------------------------
 // §5.9.5 appliedStateVersion and the show.stop grace window
 // ---------------------------------------------------------------------------
+//
+// v0.4.8 row 6 (the (C) fix, 2026-10-14): `show.stop` is the only directive,
+// and the control plane learns the outputs' state from ITS acknowledgement —
+// the exact version, never a later one, and never at send.
 
-test("show.stop: acknowledged within the window is graceful, with no warning", async (t) => {
+const FORCE_WARNING = "show.stop: graceful output shutdown exceeded 2 s; force-stopping outputs";
+
+/** Acks every directive of `command` on `render`, after `delayMs`, as the engine does once applied. */
+function ackOn(render: WebSocket, command: string, delayMs = 0, onDirective?: (sv: number) => void): void {
+  render.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (msg.kind !== "directive" || msg.command !== command) return;
+    onDirective?.(msg.stateVersion as number);
+    setTimeout(
+      () => render.send(JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: msg.stateVersion })),
+      delayMs,
+    );
+  });
+}
+
+test("show.stop: acknowledged within the window is graceful; the outputs go idle on the ack, not at send", async (t) => {
   if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
   const admin = conn("admin", ADMIN);
   await connect(admin);
@@ -456,48 +475,213 @@ test("show.stop: acknowledged within the window is graceful, with no warning", a
 
   await send(admin, "show.load", { packagePath: pkgPath });
   await send(admin, "show.start", {});
-  state.recordState = "recording"; // an active output to quiesce
+  state.recordState = "recording"; // active outputs to quiesce
+  state.streamState = "live";
 
-  // The engine acknowledges as soon as it sees the stop directives.
-  render.on("message", (buf: Buffer) => {
-    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
-    if (msg.kind === "directive" && msg.command === "record.stop") {
-      render.send(
-        JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: msg.stateVersion }),
-      );
-    }
+  // The engine sees show.stop, quiesces (60 ms here), then acknowledges it.
+  // Between the send and the ack the control plane must still hold the
+  // outputs' prior state: it cannot know them yet.
+  let atSend: [string, string] | null = null;
+  ackOn(render, "show.stop", 60, () => {
+    atSend = [state.recordState, state.streamState];
   });
 
   const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(r.status, "ok");
+  assert.deepEqual(atSend, ["recording", "live"], "between the send and the ack the outputs are held, not idle");
   assert.equal(state.showState, "STOPPED");
+  assert.equal(state.recordState, "idle", "idle once the ack arrived");
+  assert.equal(state.streamState, "idle", "idle once the ack arrived");
   assert.deepEqual(warnings, [], "an acknowledged stop logs no force warning");
-  assert.ok(
-    directives.some((d) => d.command === "record.stop"),
-    "the stop directives must reach the engine before the wait",
+  const after = directives.filter((d) => (d.stateVersion as number) >= (r.stateVersion as number));
+  assert.deepEqual(
+    after.map((d) => [d.command, d.stateVersion]),
+    [["show.stop", r.stateVersion]],
+    "show.stop is the only directive, at the dispatcher's version: no record.stop / stream.stop bundle",
   );
   admin.close();
   render.close();
 });
 
-test("show.stop: unacknowledged times out, forces, and logs the exact warning", async (t) => {
+test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the outputs", async (t) => {
   if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
   const admin = conn("admin", ADMIN);
   await connect(admin);
-  const render = conn("render", RENDER); // connected but deliberately silent
+  // Connected but silent: a timeout, or an ack the engine withheld because a
+  // quiesce failed — the control plane cannot tell the two apart.
+  const render = conn("render", RENDER);
+  await connect(render);
+
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  state.recordState = "recording";
+  state.streamState = "live";
+
+  const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
+  assert.equal(r.status, "ok");
+  assert.deepEqual(warnings, [FORCE_WARNING], "the timeout branch must be reachable in production, with the exact string");
+  assert.equal(state.showState, "STOPPED");
+  assert.equal(state.recordState, "recording", "not acknowledged: the control plane cannot know, so it holds");
+  assert.equal(state.streamState, "live", "not acknowledged: the control plane cannot know, so it holds");
+  admin.close();
+  render.close();
+});
+
+test("show.stop: a later command's acknowledgement does not stand in for the stop's own", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  const admin = conn("admin", ADMIN);
+  await connect(admin);
+  const second = conn("admin", ADMIN);
+  await connect(second);
+  const render = conn("render", RENDER);
   await connect(render);
 
   await send(admin, "show.load", { packagePath: pkgPath });
   await send(admin, "show.start", {});
   state.recordState = "recording";
 
+  // The engine never acknowledges show.stop (its quiesce failed), but a
+  // second operator's command lands inside the window and IS acknowledged,
+  // at a higher version. An "at or above" wait would take that as the stop's.
+  let holdVersion: number | null = null;
+  ackOn(render, "automation.hold", 0, (sv) => {
+    holdVersion = sv;
+  });
+  let fired = false;
+  render.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (fired || msg.kind !== "directive" || msg.command !== "show.stop") return;
+    fired = true;
+    void send(second, "automation.hold", { hold: true });
+  });
+
   const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(r.status, "ok");
-  assert.deepEqual(
-    warnings,
-    ["show.stop: graceful output shutdown exceeded 2 s; force-stopping outputs"],
-    "the timeout branch must be reachable in production, with the exact string",
+  assert.ok(fired, "the second command was sent inside the window");
+  assert.ok(
+    holdVersion !== null && holdVersion > (r.stateVersion as number),
+    `the later command was acknowledged inside the window, above the stop's version (${holdVersion} > ${r.stateVersion})`,
   );
+  assert.deepEqual(warnings, [FORCE_WARNING], "the stop was never acknowledged: warned");
+  assert.equal(state.recordState, "recording", "held: a later ack is not the stop's outcome");
+  admin.close();
+  second.close();
+  render.close();
+});
+
+test("show.stop: a reconnect's resync at the stop's own version does not stand in for the stop's acknowledgement", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  const admin = conn("admin", ADMIN);
+  await connect(admin);
+  const first = conn("render", RENDER);
+  await connect(first);
+
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  state.streamState = "live";
+
+  // The stop reaches the first render connection, which drops before applying
+  // it. The engine reconnects inside the window, and its resync is stamped
+  // with the control plane's version — during the wait, the stop's own. The
+  // resync carries no output state, so its acknowledgement is not the stop's.
+  let resyncVersion: number | null = null;
+  first.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (msg.kind !== "directive" || msg.command !== "show.stop") return;
+    first.close();
+    const second = conn("render", RENDER);
+    second.on("message", (b: Buffer) => {
+      const m = JSON.parse(b.toString("utf8")) as Record<string, unknown>;
+      if (m.kind === "directive" && m.command === RESYNC_COMMAND) {
+        resyncVersion = m.stateVersion as number;
+        second.send(JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: m.stateVersion }));
+      }
+    });
+  });
+
+  const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
+  assert.equal(r.status, "ok");
+  assert.equal(resyncVersion, r.stateVersion, "the reconnect's resync was acknowledged at the stop's own version");
+  assert.deepEqual(warnings, [FORCE_WARNING], "the stop itself was never acknowledged");
+  assert.equal(state.streamState, "live", "held: a resync's acknowledgement says nothing about the stop");
+  admin.close();
+});
+
+test("show.stop: a resync requested on the same connection inside the window does not stand in either", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  const admin = conn("admin", ADMIN);
+  await connect(admin);
+  const render = conn("render", RENDER);
+  await connect(render);
+
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  state.recordState = "recording";
+
+  // The engine meets a gap on the stop itself (an earlier directive was
+  // dropped on the way), so it does not apply it: it asks for a resync, and
+  // acknowledges that, at the stop's version.
+  let resyncVersion: number | null = null;
+  render.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (msg.kind !== "directive") return;
+    if (msg.command === "show.stop") {
+      render.send(JSON.stringify({ v: "0.3", kind: "resyncRequest", reason: "seqGap" }));
+    } else if (msg.command === RESYNC_COMMAND && resyncVersion === null && state.showState === "STOPPED") {
+      resyncVersion = msg.stateVersion as number;
+      render.send(JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: msg.stateVersion }));
+    }
+  });
+
+  const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
+  assert.equal(r.status, "ok");
+  assert.equal(resyncVersion, r.stateVersion, "the requested resync was acknowledged at the stop's own version");
+  assert.deepEqual(warnings, [FORCE_WARNING]);
+  assert.equal(state.recordState, "recording", "held");
+  admin.close();
+  render.close();
+});
+
+test("show.stop force: the control plane still waits for the ack, warns, and goes idle on it", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  const admin = conn("admin", ADMIN);
+  await connect(admin);
+  const render = conn("render", RENDER);
+  await connect(render);
+
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  state.streamState = "live";
+  let atSend: string | null = null;
+  ackOn(render, "show.stop", 30, () => {
+    atSend = state.streamState;
+  });
+
+  const r = await send(admin, "show.stop", { quiesceOutputs: false, force: true });
+  assert.equal(r.status, "ok");
+  assert.equal(atSend, "live", "held until the engine acknowledges the abandon");
+  assert.equal(state.streamState, "idle");
+  assert.deepEqual(warnings, [FORCE_WARNING], "force always warns (§16.1's truth table)");
+  admin.close();
+  render.close();
+});
+
+test("show.stop with no active output: forwarded, no wait, no warning", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  const admin = conn("admin", ADMIN);
+  await connect(admin);
+  const render = conn("render", RENDER); // silent: nothing to wait for
+  const directives = collect(render, "directive");
+  await connect(render);
+
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  const t0 = Date.now();
+  const r = await send(admin, "show.stop", {});
+  assert.equal(r.status, "ok");
+  assert.ok(Date.now() - t0 < 150, `no wait without an active output (took ${Date.now() - t0} ms; the test window is 150)`);
+  assert.deepEqual(warnings, []);
+  await until(() => directives.some((d) => d.command === "show.stop"));
   admin.close();
   render.close();
 });

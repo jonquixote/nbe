@@ -1156,15 +1156,21 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
-      - name: "the show.stop-version establishing end-to-end ran (queue position 2, establish-first)"
-        # Four legs on the real gate (E1 record+stream, E2 stream, E3 record,
-        # E4 neither) record what show.stop's one stateVersion does today; NO
-        # FIX. E1-E3 need a hardware H.264 encoder: on this runner the engine
-        # refuses record.start / stream.start and those legs skip loudly on the
-        # engine log's own refusal (the dress rehearsal's capability gate).
-        # E4, the control, runs everywhere. Two floors, rule 8: ran = `# tests`
-        # (4), exercised = `# pass` (1 here: E4; 4 on the normative machine,
-        # where the local gate must exercise every leg).
+      - name: "the show.stop end-to-end ran (queue position 2: the (C) fix, SPEC v0.4.8 row 6)"
+        # Six legs on the real gate, behind a tap on the render channel: E1
+        # record+stream, E2 stream, E3 record (inverted by the (C) fix: show.stop
+        # is the only directive, the outputs stop, no skip, no gap), E4 neither
+        # (the control), concurrent (a second operator's command inside the ack
+        # window) and held (a real finalize failure withholds the ack; the
+        # control plane holds the outputs). Every leg but E4 needs a hardware
+        # H.264 encoder: on this runner the engine refuses record.start /
+        # stream.start and those legs skip loudly on the engine log's own
+        # refusal (the dress rehearsal's capability gate). E4, the control, runs
+        # everywhere. Two floors, rule 8: ran = `# tests` (6), exercised =
+        # `# pass` (1 here: E4; 6 on the normative machine, where the local gate
+        # must exercise every leg). ~~"the show.stop-version establishing
+        # end-to-end ran (queue position 2, establish-first)": four legs, NO
+        # FIX, ran>=4~~ (§2c, 2026-10-14: PR #42's establishing step, inverted).
         run: |
           set -u
           out=$(node --import tsx --test src/show-stop-version.e2e.ts 2>&1) && rc=0 || rc=$?
@@ -1176,9 +1182,9 @@ jobs:
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "show-stop-version e2e: ran=$ran exercised=$exercised skipped=${skipped:-?} failed=${failed:-?} (floors ran>=4 exercised>=1; 4 exercised on the normative machine)"
+          echo "show-stop-version e2e: ran=$ran exercised=$exercised skipped=${skipped:-?} failed=${failed:-?} (floors ran>=6 exercised>=1; 6 exercised on the normative machine)"
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL show-stop-version e2e: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 4 ]; then echo "FAIL show-stop-version e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$ran" -lt 6 ]; then echo "FAIL show-stop-version e2e: expected at least 6 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL show-stop-version e2e: expected at least 1 test (the E4 control) to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
