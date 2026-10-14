@@ -3402,8 +3402,8 @@ item):
   is on air, which compounds the clip-bus cell above. What a restarted engine
   should reload ("package, assets, overlays") is a resync-semantics decision
   for the user.
-- **Position 1: R11's exit-path measurement** (the user's word of 2026-10-09,
-  ordering the queue). ~~*(In flight: PR #41, resolved by measurement under the
+- ~~**Position 1: R11's exit-path measurement**~~ (the user's word of 2026-10-09,
+  ordering the queue; *the label struck as the earlier strikes are, §2c, 2026-10-14, the user's word on the fresh pass*). ~~*(In flight: PR #41, resolved by measurement under the
   user's ruling (b) of 2026-10-11; it is struck FIXED by PR #41's merge SHA
   after the user's merge.)*~~ **FIXED** by `a6fc4d8` (PR #41; R11 resolved by
   measurement; the record is under Finding R11). R11 reopened on 2026-10-09, on post-fix sighting 5
@@ -3494,12 +3494,17 @@ item):
     bumping during the 2 s wait. The matrix sends nothing concurrently; it
     stands as read.
 
+  *Known limit of the clock observables (§2c, 2026-10-14, the user's word on the fresh pass, no test change):
+  `clockStoppedAfterResync`, and E4's `clockRanAfterStop: false`, would also
+  pass on a stale engine report, which reads frame 0. E1's `live` comes only
+  from a fresh report.*
+
   **Falsified.** Each mutation was restored from saved copies, checked
   identical, and the engine rebuilt; green after:
 
   | # | Mutation | Result |
   |---|---|---|
-  | A | each emitted directive stamped with its own `stateVersion` (the dispatcher bumps per emission) | E1–E3 fail and E4 passes. E1: `skippedAtStop: 0`, `clockRanAfterStop: false`, no gap, `streamOnAirAfterResync: false`. The stream was still on air in the 2 s after `show.stop`'s response, because the engine applies `record.stop`'s finish before `stream.stop` (its directive loop is sequential) |
+  | A | each emitted directive stamped with its own `stateVersion` (the dispatcher bumps per emission) | E1–E3 fail and E4 passes. E1: `skippedAtStop: 0`, `clockRanAfterStop: false`, no gap, `streamOnAirAfterResync: false`. ~~The stream was still on air in the 2 s after `show.stop`'s response, because the engine applies `record.stop`'s finish before `stream.stop` (its directive loop is sequential)~~ *(§2c, 2026-10-14, the user's word on the fresh pass: NOT MEASURED. The fresh pass's own run under A read `streamOnAirAfterStop: false`. Whether bytes arrive in that window is a race between the control plane's reply and the engine closing the stream. Under A there is no resync, so "after the resync" meant only the window after `view.fallback`. The substance stands: A inverts the skips, with `skippedAtStop: 0`, the clock stopped and no gap.)* |
   | B | the gate accepts an equal version (`classify`: `<` for `<=`, ungrouped) | E1–E3 fail and E4 passes. E1: `skippedAtStop: 0`, the clock stopped, `streamOnAirAfterStop: false`, no gap |
   | C | for the control: a directive that succeeds at `stopVersion` before `show.stop`'s own | all four fail. E4: `skippedAtStop: 1`, `clockRanAfterStop: true`, a gap and a resync |
 
@@ -3512,9 +3517,13 @@ item):
     per emission). It breaks `dispatch.ts`'s "exactly ONE stateVersion bump
     for the accepted command", and the stop's single acknowledged version
     (§5.9.5 step 2; the grace waits on the first emission's version).
-    Mutation A made every skip vanish. The engine still applies
+    Mutation A made every skip vanish. ~~The engine still applies
     `record.stop`'s finish before `stream.stop`, so the stream outlives the
-    record finish.
+    record finish.~~ *(§2c, 2026-10-14, the user's word on the fresh pass: not measured, and the pass's run under A
+    contradicts it; see the falsification table.)* It also collides with
+    §5.9.1: "Every directive emitted for one command carries that command's
+    version", beside §5.9.5 step 1. So any fix that re-stamps directives
+    answers to two spec mandates, not one. *(§2c, 2026-10-14, the user's word on the fresh pass.)*
   - **(B) A gate that accepts equal versions from one command.** It needs
     grouping on the wire: an ungrouped gate cannot tell one command's
     directives from a replay at the same version. It touches the invariant
@@ -3533,6 +3542,12 @@ item):
       So the spec itself mandates several directives at one version, and the
       implementation's gate drops all but the first that succeeds.
     - (C) would change §5.9.5.
+    - §16.1, steps 1–2, already says that when `show.stop` is received "the
+      engine MUST issue an internal `record.stop`" if recording is active,
+      and an internal `stream.stop` if streaming is active. That is the very
+      path the gate skips. Letting the engine's own stop quiesce the outputs
+      therefore matches §16.1 as written, rather than requiring its
+      amendment. *(§2c, 2026-10-14, the user's word on the fresh pass.)* The ruling remains the user's.
 - **Position 3: R16, the dress rehearsal's step 10 samples the transition
   tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
