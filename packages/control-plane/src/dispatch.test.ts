@@ -304,6 +304,57 @@ test("show.stop with active outputs and no acknowledgement holds them (v0.4.8 ro
   assert.equal(deps.state.recordState, "recording", "held: the control plane cannot know the output stopped");
 });
 
+test("a command emits at most one directive: a forward plus an extra, or two extras, is refused before the bump and the send (SPEC §5.9.6 rule 4)", async () => {
+  const { deps, bridge, state } = makeDeps();
+  const registry = buildRegistry(deps);
+  const run = (command: string, payload: Record<string, unknown>) =>
+    dispatch(deps, registry, { connectionId: "test", role: "admin", envelope: env(command, payload) });
+  const refused = (e: unknown) =>
+    e instanceof CpError && e.code === "E_ENGINE" && /would emit 2 directives at one stateVersion/.test(e.message);
+
+  // The shape of PR #42's defect: a forwarded command whose handler also
+  // returns an extra directive, so two directives would share one version.
+  registry.set("automation.hold", {
+    forward: true,
+    handler: () => ({ extraDirectives: [{ command: "record.stop", payload: {} }] }),
+  });
+  // And a non-forwarded command with two extras.
+  registry.set("view.fallback", {
+    forward: false,
+    handler: () => ({
+      extraDirectives: [
+        { command: "record.stop", payload: {} },
+        { command: "stream.stop", payload: {} },
+      ],
+    }),
+  });
+  for (const [command, payload] of [
+    ["automation.hold", { hold: true }],
+    ["view.fallback", {}],
+  ] as const) {
+    const before = state.stateVersion;
+    await assert.rejects(() => run(command, payload), refused, `${command}: refused`);
+    assert.equal(state.stateVersion, before, `${command}: no bump`);
+    assert.deepEqual(bridge.drain(), [], `${command}: nothing reached the wire`);
+  }
+
+  // The two legal shapes still pass, one directive each.
+  registry.set("automation.hold", { forward: true, handler: () => ({}) });
+  registry.set("view.fallback", {
+    forward: false,
+    handler: () => ({ extraDirectives: [{ command: "view.fallback", payload: {} }] }),
+  });
+  const a = await run("automation.hold", { hold: true });
+  const b = await run("view.fallback", {});
+  assert.deepEqual(
+    bridge.drain().map((x) => [x.command, x.stateVersion]),
+    [
+      ["automation.hold", a.stateVersion],
+      ["view.fallback", b.stateVersion],
+    ],
+  );
+});
+
 test("mock bridge records directives in order with directive stateVersion", async (t) => {
   const { deps, bridge } = makeDeps();
   try {

@@ -11,7 +11,7 @@ import {
   type PreflightResult,
 } from "../package.js";
 import type { CommandRegistry, DispatchDeps, HandlerCtx, HandlerOutput } from "../dispatch.js";
-import { SHOW_STOP_FORCE_WARNING } from "../dispatch.js";
+import { SHOW_STOP_FORCE_WARNING, SHOW_STOP_HELD_WARNING } from "../dispatch.js";
 
 export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
   reg.set("show.load", {
@@ -157,7 +157,8 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
         afterForward: async (stopVersion) => {
           const graceMs = deps.showStopGraceMs ?? 2000;
           const acked = deps.waitForAck ? await deps.waitForAck(graceMs, stopVersion) : false;
-          if (force || !acked) deps.warn?.(SHOW_STOP_FORCE_WARNING);
+          if (!acked) deps.warn?.(SHOW_STOP_HELD_WARNING);
+          else if (force) deps.warn?.(SHOW_STOP_FORCE_WARNING);
           if (acked) {
             state.recordState = "idle";
             state.streamState = "idle";

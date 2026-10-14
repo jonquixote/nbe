@@ -450,7 +450,11 @@ test("resyncRequest gets a fresh snapshot on that connection", async () => {
 // and the control plane learns the outputs' state from ITS acknowledgement —
 // the exact version, never a later one, and never at send.
 
-const FORCE_WARNING = "show.stop: graceful output shutdown exceeded 2 s; force-stopping outputs";
+// The exact strings (`dispatch.ts`). ~~"show.stop: graceful output shutdown
+// exceeded 2 s; force-stopping outputs"~~ (§2c, 2026-10-14): one text named
+// both outcomes, and the control plane no longer force-stops anything.
+const HELD_WARNING = "show.stop: no acknowledgement within 2 s; outputs held until an explicit record.stop / stream.stop";
+const FORCE_WARNING = "show.stop: force: outputs abandoned without a graceful shutdown";
 
 /** Acks every directive of `command` on `render`, after `delayMs`, as the engine does once applied. */
 function ackOn(render: WebSocket, command: string, delayMs = 0, onDirective?: (sv: number) => void): void {
@@ -519,7 +523,7 @@ test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the
 
   const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(r.status, "ok");
-  assert.deepEqual(warnings, [FORCE_WARNING], "the timeout branch must be reachable in production, with the exact string");
+  assert.deepEqual(warnings, [HELD_WARNING], "the timeout branch must be reachable in production, with the exact string");
   assert.equal(state.showState, "STOPPED");
   assert.equal(state.recordState, "recording", "not acknowledged: the control plane cannot know, so it holds");
   assert.equal(state.streamState, "live", "not acknowledged: the control plane cannot know, so it holds");
@@ -562,7 +566,7 @@ test("show.stop: a later command's acknowledgement does not stand in for the sto
     holdVersion !== null && holdVersion > (r.stateVersion as number),
     `the later command was acknowledged inside the window, above the stop's version (${holdVersion} > ${r.stateVersion})`,
   );
-  assert.deepEqual(warnings, [FORCE_WARNING], "the stop was never acknowledged: warned");
+  assert.deepEqual(warnings, [HELD_WARNING], "the stop was never acknowledged: warned");
   assert.equal(state.recordState, "recording", "held: a later ack is not the stop's outcome");
   admin.close();
   second.close();
@@ -602,7 +606,7 @@ test("show.stop: a reconnect's resync at the stop's own version does not stand i
   const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(r.status, "ok");
   assert.equal(resyncVersion, r.stateVersion, "the reconnect's resync was acknowledged at the stop's own version");
-  assert.deepEqual(warnings, [FORCE_WARNING], "the stop itself was never acknowledged");
+  assert.deepEqual(warnings, [HELD_WARNING], "the stop itself was never acknowledged");
   assert.equal(state.streamState, "live", "held: a resync's acknowledgement says nothing about the stop");
   admin.close();
 });
@@ -636,7 +640,7 @@ test("show.stop: a resync requested on the same connection inside the window doe
   const r = await send(admin, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(r.status, "ok");
   assert.equal(resyncVersion, r.stateVersion, "the requested resync was acknowledged at the stop's own version");
-  assert.deepEqual(warnings, [FORCE_WARNING]);
+  assert.deepEqual(warnings, [HELD_WARNING]);
   assert.equal(state.recordState, "recording", "held");
   admin.close();
   render.close();
@@ -661,7 +665,7 @@ test("show.stop force: the control plane still waits for the ack, warns, and goe
   assert.equal(r.status, "ok");
   assert.equal(atSend, "live", "held until the engine acknowledges the abandon");
   assert.equal(state.streamState, "idle");
-  assert.deepEqual(warnings, [FORCE_WARNING], "force always warns (§16.1's truth table)");
+  assert.deepEqual(warnings, [FORCE_WARNING], "force, acknowledged: the force warning (§16.1's truth table: warning logged)");
   admin.close();
   render.close();
 });
