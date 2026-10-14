@@ -3638,9 +3638,13 @@ item):
       `SHOW_STOP_FORCE_WARNING`, as today.
       - The outputs are **held at their prior state** (`recording` / `live`),
         not `idle`: the control plane cannot know. "Held" names that state.
-      - The operator sees the warning, and the tick's `streamState: live`
-        beside the engine's own `streamTransportState`, which is not live
-        once the engine has dropped the session.
+      - ~~The operator sees the warning, and~~ The tick's `streamState: live`
+        sits beside the engine's own `streamTransportState`, which is not
+        live once the engine has dropped the session. *(§2c, 2026-10-14, the
+        fresh pass on PR #43: the warning reaches `deps.warn` only, which is
+        `console.warn` in production; `HandlerOutput.warnings` is never read.
+        So only someone watching the control plane's console sees it. The
+        operator surface is queued under R17, position 5.)*
       - What heals it: the operator's explicit `record.stop` / `stream.stop`.
         The control plane marks the output `idle` and forwards; the engine
         refuses harmlessly when it is already idle.
@@ -3689,7 +3693,9 @@ item):
     `afterForward(stopVersion)`, which waits on `waitForAck(2000,
     stopVersion)`.
     - Acknowledged: `recordState` and `streamState` go `idle`.
-    - Not acknowledged: they are held, and `SHOW_STOP_FORCE_WARNING` is logged.
+    - Not acknowledged: they are held, and ~~`SHOW_STOP_FORCE_WARNING`~~
+      `SHOW_STOP_HELD_WARNING` is logged *(§2c, the PR #43 delta: the one text
+      split in two, below)*.
     - `force` logs it either way.
     - With no active output: forward only, no wait.
   - **`dispatch.ts`.** `HandlerOutput.afterForward` is awaited after the
@@ -3739,7 +3745,7 @@ item):
   | E3 record | the same | 0 / 0 | — | `recording` at send, `idle` after | finalized, with the sidecar |
   | E4 control | the same | 0 / 0 | — | no wait (no output) | — |
   | concurrent | `show.stop` at S; the second operator's `view.fallback`, sent the moment the stop crossed the wire, at S+1; acks S, S+1 | 0 / 0 | off air, `closed` | `idle` after the ack | finalized, with the sidecar |
-  | held | `show.stop` at S fails: `E_DISK: marker sidecar: Permission denied` (the record directory made read-only); no ack of S | 0 / 0 | off air, `closed`: the stream half succeeded | **held** `recording`/`live`, with the warning; the tick shows `streamState: live` beside the engine's `closed`. The operator's `record.stop` / `stream.stop` heal it to `idle`; the engine, already idle, refuses both (`E_FORBIDDEN_STATE`), with no gap | not finalized: no sidecar |
+  | held | `show.stop` at S fails: `E_DISK: marker sidecar: Permission denied` (the record directory made read-only); no ack of S | 0 / 0 | off air, `closed`: the stream half succeeded | **held** `recording`/`live`, with the warning; the tick shows `streamState: live` beside the engine's `closed`. The operator's `record.stop` / `stream.stop` heal it to `idle`; the engine, already idle, refuses both (`E_FORBIDDEN_STATE`), with no gap | ~~not finalized: no sidecar~~ finalized: ffprobe reads 2 streams, 2.005 s. Only the marker-sidecar write failed (`E_DISK … Permission denied`), so no sidecar *(§2c, 2026-10-14, the fresh pass on PR #43; my gate's held leg reads the same 2.005333 s)* |
 
   **The guards, each falsified.** Each mutation was restored from a saved
   copy and checked identical with `cmp`. The control plane runs from source
@@ -3769,8 +3775,12 @@ item):
     outputs still held, and S's, later, shows them idle.
   - A client that discards a frame below the newest version it has seen
     would keep the held outputs until `system.status`.
-  - Recorded in §5.9.5 item 3; nothing else is changed. Whether clients need
-    a rule is put to the user.
+  - Recorded in §5.9.5 item 3; nothing else is changed. ~~Whether clients need
+    a rule is put to the user.~~ **Ruled 2026-10-14 (the user's word on PR
+    #43's fresh pass): no new rule. Clients must not assume version-ordered
+    frames across connections.** Each frame carries its own command's
+    version (§5.4.1 rule 2) and its send-time snapshot. §5.9.5 item 3 now
+    states the client side as a MUST NOT.
 
   **Timing** (`show-stop.measure.ts`, at `a249c51`, 2026-10-14
   10:43–10:52 UTC). n = 20, 0 void, every sample a clean stop, each one E1
@@ -3803,6 +3813,76 @@ item):
   and skips the other five loudly; its floors are ran ≥ 6, exercised ≥ 1. The
   run at the merge is recorded with the merge bookend in the next PR, per the
   standing pattern.
+
+  **The fresh pass's delta** (the user's ruling of 2026-10-14 on PR #43's
+  two-key pass: five corrections and the dispatch pin; docs and one test,
+  no engine change). The fresh pass found the mechanism sound: no path to a
+  false idle, and F1–F5 reproduced at the committed head. Its corrections:
+  1. **§5.9.6 rule 4 forbade what the tree does.** `sendResync` stamps a
+     `show.resync` with the current version (`server.ts`), and the render
+     node applies a resync ahead of the gate. So `show.stop` at S, then
+     `show.resync` at S, on one connection, is the design: unit test 26
+     drives it. Rule 4 is struck and rewritten.
+     - It now governs commands: a command emits at most one directive.
+     - `show.resync` is carved out by name. It is not a command's
+       directive; it is the recovery channel, and it runs ahead of the gate.
+     - **Two emitters, named.** The command dispatcher sends at most one
+       directive per command. The resync path (`server.ts` `sendResync`) sends
+       `show.resync` on a connect and on rule 5's request. ~~"Only the
+       dispatcher sends directives"~~ (the build report's claim) was false.
+  2. **The dispatch pin** (new, code). `dispatch.ts` step 6b counts the
+     command's directives, its forward plus its extras, and refuses more
+     than one with `E_ENGINE`, before the bump and before any send.
+     - The guard is `dispatch.test.ts`: "a command emits at most one
+       directive: a forward plus an extra, or two extras, is refused before
+       the bump and the send". It registers both bad shapes and asserts the
+       refusal, no bump and an empty wire, then that the two legal shapes
+       still pass.
+     - No handler in the tree trips it. One that did would be a programming
+       error: its state mutations stand unbumped, refused loudly rather than
+       dropped silently by the render node.
+     - **Falsified.** The guard was disabled (`if (false && directiveCount >
+       1)`). The pin failed: `Missing expected rejection (refused):
+       automation.hold: refused`. Restored from the copy, `cmp`-identical,
+       `tsc` clean, green.
+  3. **The ordering ruling** is recorded above and in §5.9.5 item 3.
+  4. **The held row** is corrected above. The take finalized; only its
+     sidecar failed.
+  5. **The warning.**
+     - *Text.* `SHOW_STOP_FORCE_WARNING` said "graceful output shutdown
+       exceeded 2 s; force-stopping outputs". That was Prompt 02c's exact
+       string, and since row 6 the control plane holds, not force-stops. One
+       text named two outcomes, so each now has its own (`dispatch.ts`):
+       - `SHOW_STOP_HELD_WARNING`: not acknowledged within the window, the
+         outputs held;
+       - `SHOW_STOP_FORCE_WARNING`, its text corrected: `force`,
+         acknowledged, the outputs abandoned.
+     - It is not wire-visible: `deps.warn` only, not in a frame, response or
+       audit row. So no §13.4.1 cell reads it, and §13.4.1 is unchanged. It
+       lives in TypeScript; no engine rebuild was needed.
+     - *Reach.* Recorded, not fixed: console-only (see (d) above). The
+       operator surface is queued under R17 (position 5).
+  6. **Provenance of the falsifications.** Which tree each run used:
+     - **F1, F2 and the e2e half of F3** (03:31–03:33 PDT): `show.ts`
+       identical to `a249c51`'s, with `server.ts` from before the resync fix.
+       So was their restored 6/6 at 03:35.
+     - **F3 and F4's unit halves and F5** (03:42): files `cmp`-identical to
+       `a249c51`'s, minutes before that commit (03:43:30).
+     - **The fresh pass re-ran all five at `6f067ca`**, with matching values:
+       F1's E1 wire list exactly, F3 7/36, F4 3/36, F5 2/36.
+     - **The local gate's load.**
+       - The first workspace run ended at 3.14 (over the ceiling).
+       - The rerun read 1.72 at the start and 1.91 at the end, with 5 of 22
+         samples at or above 3.0 (peak 3.42) as the suite starts its
+         parallel tests.
+       - No timing claim rests on either. Their pass counts (511/0/4, twice)
+         stand.
+       - The timing harness voids a sample at 3.0, and starts each below
+         2.5. My run's per-sample loads were 1.85–2.88, and the fresh pass's
+         timing run peaked at 2.69 over 40 samples.
+       - The fresh pass voided its own workspace run as a quiet-machine
+         datum (4 of 22 samples at or above 3.0, peak 3.37). Its 511/0/4
+         stands.
 - **Position 3: R16, the dress rehearsal's step 10 samples the transition
   tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
@@ -3834,6 +3914,19 @@ item):
   is to establish what the control plane hears of the refusal and what an
   operator sees. It is cross-referenced with R16, the same observed-state lag
   on another surface. The register row is R17 in `docs/soak-protocol.md` §5.
+  - **Queued 2026-10-14 (the user's word on PR #43's fresh pass): a held
+    stop on an operator surface.**
+    - When `show.stop` goes unacknowledged, the control plane holds the
+      outputs (SPEC v0.4.8 row 6) and logs `SHOW_STOP_HELD_WARNING` to its
+      console only.
+    - An operator-facing held-outputs state belongs on an operator surface,
+      not a console: an audit row at minimum, and the tick. The tick's only
+      warnings channel today is `deprecationWarnings`, so it needs a field of
+      its own or a general channel.
+    - It sits with this item because it is the same gap: the control plane's
+      belief about an output, beside the engine's report, with nothing that
+      tells the operator they differ. The late-acknowledgement
+      reconciliation, queued here with row 6, is its other half.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
