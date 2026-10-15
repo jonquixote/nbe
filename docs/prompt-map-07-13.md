@@ -3917,8 +3917,13 @@ item):
   - The engine reports on its own 1000 ms deadline schedule (`channel.rs`
     pump).
   - So a tick between the stop's apply and the engine's next report carries
-    the pre-stop frame. The phase between the two cadences is fixed per run
-    by the connect and subscribe order, which is why some runs never show it.
+    the pre-stop frame. ~~The phase between the two cadences is fixed per run
+    by the connect and subscribe order, which is why some runs never show it.~~
+    The phase between the two cadences is not fixed. Node's `setInterval`
+    drifts with event-loop lag while the engine's deadline schedule does not,
+    and where the stop lands matters too, so whether a run shows the race is
+    phase luck. That strengthens the not-by-construction point *(§2c,
+    2026-10-14, the fresh pass on PR #44)*.
   - Read on a plain local run: the response took 5 ms, and the ack arrived
     1 ms after it. The first `STOPPED` tick came 915 ms after the ack,
     carrying frame 0: that run's phase hid the race. With the race arranged,
@@ -3933,8 +3938,13 @@ item):
   `ENGINE_TELEMETRY_TTL_MS` (2000) after the stop's acknowledgement
   reached the control plane**. The proof:
   1. **The acknowledgement's arrival.** `ackedAt` is read in the dress's own
-     process when `server.awaitApplied(stopVersion)` resolves, which is in
-     the turn that processed the acknowledgement.
+     process when `server.awaitApplied(stopVersion)` resolves, ~~which is in
+     the turn that processed the acknowledgement~~ no earlier than the turn
+     that processed the acknowledgement. It is read in a later microtask, or
+     later still when the acknowledgement had already arrived
+     (`waitForGrace`'s already-acknowledged branch). The proof needs only "no
+     earlier than the ack", so the step still holds *(§2c, 2026-10-14, the
+     fresh pass on PR #44)*.
   2. **The control plane's freshness rule.** `engineConnected` is
      `engineFresh`: `now − receivedAt ≤ 2000`, with the tick's `ts` that same
      `now` (`telemetry.ts` `buildTick`). So a fresh tick with
@@ -3974,7 +3984,9 @@ item):
   **The exercise: 25 consecutive kept runs, every one green** (the dress,
   normative machine, 2026-10-15 01:55–02:55 UTC, knob 1500 ms on every run).
   31 runs were started to keep 25.
-  - **Load.** Each run started only below a 1-minute load of 2.5 (2.20–2.49).
+  - **Load.** Each run started only below a 1-minute load of 2.5 (~~2.20–2.49~~
+    the kept 25 started at 2.20–2.49; voided run 28 started at 2.04 *(§2c,
+    2026-10-14, the fresh pass on PR #44)*).
     A run that ended at 3.0 or over is void per the tree's rule, and was kept
     out of the count.
     - Six were voided: runs 1, 14, 15, 20, 22 and 28, which ended at 3.13,
@@ -4004,10 +4016,16 @@ item):
     - `pmset -g log` shows no `Sleep`, `Wake` or `Using Batt` in the window.
     - Runs were under `caffeinate -i`, not the protocol's `-i -s`. The pmset
       check above is what rules out a sleep.
-  - **A comment-only edit straddles the batch.** At 01:53:37 UTC the stale
-    "the tick does NOT carry showState" comment in the dress was annotated
-    (§2c). Every kept run started after that, so the kept 25 ran the
-    committed file.
+  - **A comment-only edit ~~straddles~~ preceded the batch.** At 01:53:37 UTC
+    the stale "the tick does NOT carry showState" comment in the dress was
+    annotated (§2c). ~~Every kept run started after that, so the kept 25 ran
+    the committed file.~~
+    - It landed after the falsification pair (01:48–01:52 UTC) and before
+      every batch run (run 1 started at 01:55:12). So all 31 batch runs ran
+      the committed file.
+    - The falsification pair ran a file that differed from it only by that
+      comment, so its behaviour was identical.
+    - *(§2c, 2026-10-14, the fresh pass on PR #44.)*
 - **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
