@@ -4058,6 +4058,94 @@ item):
     (`resync.handshakeFailed`). Whether to tear down the established session
     on a persistent failure, handing recovery to the now-honest connect path,
     is the user's word when the item is built.
+
+  **The read (2026-10-14, at `b93db99`; the work order of 2026-10-14),
+  recorded before the code.**
+  - **The `resyncRequest` handler** (`server.ts`):
+    `} else if (frame.kind === "resyncRequest") { sendResync(session); }`.
+    - Its result is ignored. `sendResync` has returned whether the socket
+      accepted the resync since PR #39, and it throws if the snapshot cannot
+      be built (`state.resyncSnapshot`: `ResyncPackageSchema.parse`,
+      `ResyncViewItemEndSchema.parse`).
+    - A throw escapes `handleMessage` and is caught at the session's tail:
+      `ws.send(JSON.stringify(errorResponse(randomUUID(), state.stateVersion,
+      "E_ENGINE", String(err))))`. It is neither audited nor warned.
+  - **What reaches the engine today.**
+    - On a throw: that error response. It is not a `DirectiveFrame`, so the
+      engine logs `unparseable frame from control plane` (`channel.rs`) and
+      carries on, connected.
+    - On a refused send: nothing at all.
+    - Either way the gate's `expected_seq` does not advance, so every later
+      directive is a gap that re-requests. That is the frozen engine.
+  - **Row 4's close semantics** (§5.9.4 rule 1, its failure half) cover a
+    connect only: "it MUST close that connection (1011, `show.resync handshake
+    failed`), hold no registration for it, and surface the failure". Rule 5,
+    the re-request, has no failure half.
+  - **The handshake's failure shape, the mirror to copy:**
+    1. `forget()`.
+    2. `audit.record({ kind: "command", outcome: "rejected", role, tokenId,
+       command: "show.resync", event: "resync.handshakeFailed",
+       stateVersionBefore, stateVersionAfter, detail: { error } })`.
+    3. `deps.warn(...)`.
+    4. `ws.close(1011, "show.resync handshake failed")`.
+  - **`sendDirect`'s failure shapes** (`render-bridge.ts`, read in full). Every
+    failure is `false`:
+    - no registration (`if (!session) return false`);
+    - the sender refuses, either `if (session.closed) return false` or
+      `if (ws.bufferedAmount > 256 * 1024) return false; // backpressure`;
+    - a sender throw, caught, logged (`render-bridge: direct send failed`)
+      and returned as `false`.
+  - **The split depends on what that `false` can be. Answer: never a
+    persistent failure on a live connection.**
+    - **A sender throw is unreachable.** `ws` 8.21.3's `send` throws only
+      while `CONNECTING`, which a server-side socket never is once
+      connected. On `CLOSING` or `CLOSED` it calls `sendAfterClose`: no
+      throw, the frame dropped. And `JSON.stringify` cannot throw on the
+      snapshot, which holds only strings, numbers, booleans, arrays and
+      objects from Maps.
+    - **So a `false` is backpressure** (it drains) **or a connection
+      already gone** (`forget()` has run, and keeping it is moot).
+    - **A persistent failure, the snapshot build, is an exception, never a
+      `false`.** The tree distinguishes the two classes the ruling splits on,
+      so the order's stop condition does not fire.
+    - One wrinkle, recorded: a socket mid-close reads as *sent*. The sender
+      returns true after `sendAfterClose`, and the close that follows tears
+      the session down and hands recovery to the connect path.
+
+  **The design** (the user's ruling of 2026-10-14, the split):
+  - **Each failed re-resync is audited and warned.** The event is
+    `resync.requestFailed`, the handshake's sibling: kind `command`, outcome
+    `rejected`, command `show.resync`. Its detail is `{ error, cause:
+    "snapshot" | "send", reason, sessionKept }`, where `reason` is the
+    engine's `resyncRequest` reason. The audit kinds are unchanged.
+  - **A throw while the snapshot is built is the persistent class.** The
+    handler runs `forget()`, the audit, the warn, then `ws.close(1011, "show.resync request failed")`, in the handshake's
+    order, leaving no registration. Recovery passes to the engine's
+    reconnect loop and a clean slate, where rule 1's handshake retries it
+    loudly.
+  - **A refused send is the transient class.** The handler audits and
+    warns, and keeps the session. The next directive's gap re-requests.
+  - **The rate.** Every failure is its own audit row: no coalescing, because
+    the audit is the record. The steady state under a persistent throw
+    follows from the engine's backoff (`channel.rs` `run_forever`: 100 ms,
+    doubling to a 10 s cap, reset only by a connection that outlived the
+    current delay):
+    1. The established connection outlived its delay, so after the 1011 the
+       engine reconnects in 100 ms.
+    2. Each reconnect's handshake builds the same snapshot, throws, and
+       closes within milliseconds, never outliving its delay. So the delays
+       run 200, 400, 800, 1600, 3200, 6400, then 10 000 ms.
+    3. That gives one `resync.requestFailed` row, then `resync.handshakeFailed`
+       rows at about 0.1, 0.3, 0.7, 1.5, 3.1, 6.3, 12.7, 22.7 s and every 10 s
+       after: about 11 in the first minute, then 6 a minute, each with its
+       warn.
+    4. The rate is paced by the engine's backoff, not by directives.
+  - **Under a transient refusal.** One row per refused re-request. Those
+    come only as directives reach the engine and meet a gap, so the rate is
+    bounded by the directives that get through, and none are sent while the
+    socket stays backed up.
+  - **Scope.** The warn reaches the console, as `SHOW_STOP_HELD_WARNING`
+    does. An operator surface is R17's queued item (position 5).
 - **Position 5: R17, the control plane reports a refused stream as live**
   (the user's word of 2026-10-12, establish-first). On CI the engine refuses
   `stream.start`, and the control plane's telemetry still reports the stream
