@@ -3420,7 +3420,9 @@ item):
   The work is the one queued on 2026-10-06: measure the stream thread's exit
   path, the run loop's return and the encoders' drop (VideoToolbox's
   invalidation is the suspect), against the 1100 ms backstop.
-- **Position 2: `show.stop`'s `stopVersion` across the grace wait** *(moved
+- ~~**Position 2: `show.stop`'s `stopVersion` across the grace wait**~~
+  **FIXED** by `95583c5` (PR #43, the (C) fix; SPEC v0.4.8 row 6; struck in
+  the next PR, the standing pattern of §2c). *(moved
   from position 4 and amended, the user's word of 2026-10-09; §2c,
   2026-10-10)* (the user's word of 2026-10-09, from PR #40's two-key pass;
   older than that branch). `show.stop` reads `ctx.stateVersion` as
@@ -3883,12 +3885,147 @@ item):
        - The fresh pass voided its own workspace run as a quiet-machine
          datum (4 of 22 samples at or above 3.0, peak 3.37). Its 511/0/4
          stands.
+  **Merged: PR #43 is `95583c5`** (the bookend, the standing pattern of §2c).
+  Main's CI at `95583c5`, run `38664008411`, read per test (§2b): every job
+  green (rust 40/40 steps, control-plane 27/27, dress 17/17).
+  - rust: workspace 511 passed, 0 failed, 4 ignored; every floor green.
+  - control-plane: npm 146; the show.stop e2e ran 6, exercised 1 (E4, the
+    control), and skipped 5 on the encoder refusal.
+  - dress: 27/27, `ok 24` (step 10). DRESS-COUNTS for CI (sha `95583c5`): 2
+    drops, 195 underruns and 1 watchdog trip, within the backstops.
+  - Position 2 is FIXED by it.
 - **Position 3: R16, the dress rehearsal's step 10 samples the transition
   tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
   reads its baseline from a tick that postdates the engine's stop report,
   with no retries and no tolerance. The register row is R16 in
   `docs/soak-protocol.md` §5.
+
+  **The fix (2026-10-14, the work order of 2026-10-14; branch
+  `r16-step10-baseline`).** Harness only: no engine or control-plane change.
+
+  **Interplay with PR #43, read at HEAD (`95583c5`).** #43 does not remove
+  the race. Step 10's show has no active output: step 9 stops its own stream
+  on both paths. So `show.stop` takes the handler's no-output path, forward
+  only and no wait (`commands/show.ts`; SPEC §5.9.5 item 3, "With no active
+  output, `show.stop` is forwarded and not waited on").
+  - The response returns before the engine applies the stop, and the control
+    plane has already set `showState: STOPPED`.
+  - Its tick, on its own 1000 ms `setInterval` per subscriber (`server.ts`
+    `startTelemetry`), carries the last engine report it received (`buildTick`,
+    `world.last`).
+  - The engine reports on its own 1000 ms deadline schedule (`channel.rs`
+    pump).
+  - So a tick between the stop's apply and the engine's next report carries
+    the pre-stop frame. ~~The phase between the two cadences is fixed per run
+    by the connect and subscribe order, which is why some runs never show it.~~
+    The phase between the two cadences is not fixed. Node's `setInterval`
+    drifts with event-loop lag while the engine's deadline schedule does not,
+    and where the stop lands matters too, so whether a run shows the race is
+    phase luck. That strengthens the not-by-construction point *(§2c,
+    2026-10-14, the fresh pass on PR #44)*.
+  - Read on a plain local run: the response took 5 ms, and the ack arrived
+    1 ms after it. The first `STOPPED` tick came 915 ms after the ack,
+    carrying frame 0: that run's phase hid the race. With the race arranged,
+    the knob below, it carried frame 426.
+  - The fix lands regardless, correct by construction rather than by phase.
+
+  **The witness, and why it is honest.** The tick carries no applied
+  version, no sequence and no engine report time. Its `ts` is the control
+  plane's, and its `showState` is set before the forward. What it does carry,
+  under the control plane's own rule, is freshness. So the baseline is **the
+  first tick with `engineConnected: true` whose `ts` is more than
+  `ENGINE_TELEMETRY_TTL_MS` (2000) after the stop's acknowledgement
+  reached the control plane**. The proof:
+  1. **The acknowledgement's arrival.** `ackedAt` is read in the dress's own
+     process when `server.awaitApplied(stopVersion)` resolves, ~~which is in
+     the turn that processed the acknowledgement~~ no earlier than the turn
+     that processed the acknowledgement. It is read in a later microtask, or
+     later still when the acknowledgement had already arrived
+     (`waitForGrace`'s already-acknowledged branch). The proof needs only "no
+     earlier than the ack", so the step still holds *(§2c, 2026-10-14, the
+     fresh pass on PR #44)*.
+  2. **The control plane's freshness rule.** `engineConnected` is
+     `engineFresh`: `now − receivedAt ≤ 2000`, with the tick's `ts` that same
+     `now` (`telemetry.ts` `buildTick`). So a fresh tick with
+     `ts > ackedAt + 2000` carries a report received strictly after the
+     acknowledgement, on the same socket.
+  3. **The engine's ordering.** The engine queues the acknowledgement only
+     after `clock.stop()` (`on_show_stop_inner`, then `apply`).
+     - Its pump drains queued frames (acks) before it builds a report, and
+       both go down one channel and one socket (`channel.rs`).
+     - A report that arrives after the acknowledgement was therefore built
+       after the stop.
+
+  No retry and no tolerance: that tick is the baseline, and the step asserts
+  that the clock does not move across `RISE_MS` from it, as before. If no such
+  tick arrives within `ENGINE_TELEMETRY_TTL_MS + TELEMETRY_MS`, the step fails
+  and names what it saw.
+
+  The order's cadence fallback was not taken. The "second `STOPPED` tick" is
+  sound only if the engine's next report lands before the control plane's
+  next tick. The margin for that is the per-run phase gap less any lateness
+  in the engine's pump, so it is a timing assumption, not a construction.
+  The step prints a `STEP10` line: the transition tick and the baseline tick,
+  with index, time from the acknowledgement and frame.
+
+  **The knob** (`NBE_DRESS_STOP_DELAY_MS`, harness-only, off by default): the
+  dress delays the `show.stop` directive on its way to the engine. The control
+  plane has answered and is ticking `STOPPED` while the engine's clock still
+  runs: R16's race, arranged on purpose.
+
+  **Falsified, on the normative machine, knob 1500 ms:**
+
+  | Run | Step 10 | `STEP10` |
+  |---|---|---|
+  | The pre-fix shape: no wait for the acknowledgement, the baseline from the first tick after the response | **fails**: `a stopped clock must not advance: 419 -> 0`, R16's signature. 26/27, only step 10 | the baseline is the transition tick, idx 23, frame 419 |
+  | The fix, restored from the copy (`cmp`-identical, `tsc` clean) | **passes**, 27/27 | the transition tick, idx 23, 590 ms *before* the acknowledgement, carried frame 423; the baseline, idx 26, 2414 ms after it, carried frame 0. That run ended at load 3.06, void as a datum; the batch below supplies the in-ceiling greens |
+
+  **The exercise: 25 consecutive kept runs, every one green** (the dress,
+  normative machine, 2026-10-15 01:55–02:55 UTC, knob 1500 ms on every run).
+  31 runs were started to keep 25.
+  - **Load.** Each run started only below a 1-minute load of 2.5 (~~2.20–2.49~~
+    the kept 25 started at 2.20–2.49; voided run 28 started at 2.04 *(§2c,
+    2026-10-14, the fresh pass on PR #44)*).
+    A run that ended at 3.0 or over is void per the tree's rule, and was kept
+    out of the count.
+    - Six were voided: runs 1, 14, 15, 20, 22 and 28, which ended at 3.13,
+      3.98, 3.88, 3.38, 3.61 and 3.83. All six were green anyway (27/27,
+      step 10 `ok`).
+    - The kept 25 ended at 2.04–2.96.
+    - An `opencode` process outside this work was using about 15% CPU
+      during the batch, beside the terminal's 55%.
+  - **The kept 25.** Each was 27/27, with `ok 24 - [RI-1] step 10`.
+    - **The injection fired 25 of 25.** `stopDelayFired: 1`, and the
+      acknowledgement came 1500–1505 ms after the response.
+    - **The race was realized 25 of 25.** Every transition tick carried a
+      running frame (420–429) and was built 548–608 ms *before* the
+      acknowledgement.
+    - The pre-fix step would have read each of those as its frozen frame.
+      Its falsification above failed on exactly that.
+    - Every baseline tick came three ticks after the transition tick,
+      2396–2457 ms after the acknowledgement, at frame 0, and `later` was 0.
+  - **Power** (precondition 6). 62 samples over the batch, once a minute:
+    every one on AC, 45 W adapter, Low Power Mode on, so the whole batch is
+    power-limited, not void.
+    - The battery was 98% and charging at the start, then 100% and charged.
+    - One sample read −28 mA, at 02:41:06 during kept run 24: a discharge
+      on AC. `ioreg` printed it as an unsigned wrap, 18446744073709551588.
+      It marks that run power-limited, which the adapter already does, not
+      void.
+    - `pmset -g log` shows no `Sleep`, `Wake` or `Using Batt` in the window.
+    - Runs were under `caffeinate -i`, not the protocol's `-i -s`. The pmset
+      check above is what rules out a sleep.
+  - **A comment-only edit ~~straddles~~ preceded the batch.** At 01:53:37 UTC
+    the stale "the tick does NOT carry showState" comment in the dress was
+    annotated (§2c). ~~Every kept run started after that, so the kept 25 ran
+    the committed file.~~
+    - It landed after the falsification pair (01:48–01:52 UTC) and before
+      every batch run (run 1 started at 01:55:12). So all 31 batch runs ran
+      the committed file.
+    - The falsification pair ran a file that differed from it only by that
+      comment, so its behaviour was identical.
+    - *(§2c, 2026-10-14, the fresh pass on PR #44.)*
 - **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
