@@ -27,6 +27,7 @@ import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { tempDir } from "./test-tmp.js";
+import { ENGINE_TELEMETRY_TTL_MS } from "./telemetry.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
 
@@ -153,6 +154,8 @@ const PKG = resolve(import.meta.dirname, "../../../tests/fixtures/dress_show");
 const ENGINE_BIN = resolve(import.meta.dirname, "../../../target/debug/nbe-engine");
 
 let server: ControlPlaneServer;
+/** How many `show.stop` directives R16's knob delayed (`NBE_DRESS_STOP_DELAY_MS`). */
+let stopDelayFired = 0;
 let state: ControlPlaneState;
 let engine: ChildProcess;
 let engineLog: string[] = [];
@@ -260,6 +263,21 @@ before(async () => {
     warn: () => {},
   });
 
+  // R16's falsification knob (harness-only; off unless set). Delays the
+  // `show.stop` directive on its way to the engine by this many ms, so the
+  // control plane has answered and is ticking STOPPED while the engine's clock
+  // still runs: the race R16 caught on CI, arranged on purpose. Nothing else
+  // is delayed, and nothing else is sent during step 10.
+  const stopDelayMs = Number(process.env.NBE_DRESS_STOP_DELAY_MS ?? 0);
+  if (stopDelayMs > 0) {
+    const send = server.bridge.send.bind(server.bridge);
+    server.bridge.send = (d) => {
+      if (d.command !== "show.stop") return send(d);
+      stopDelayFired += 1;
+      setTimeout(() => send(d), stopDelayMs);
+    };
+  }
+
   // The engine is a separate process reached over the real protocol — no
   // in-process bridge, no mock. That is the whole point of this test.
   engine = spawn(ENGINE_BIN, [], {
@@ -301,7 +319,9 @@ before(async () => {
     // §10.1's telemetry tick does NOT carry showState — it rides on the
     // §5.4.1 stateChange frame instead. Observed on the wire, and recorded as
     // an [RI-3] finding: a dashboard holding only telemetry cannot say whether
-    // the show is running.
+    // the show is running. (§2c, 2026-10-14: true when written. SPEC v0.4 row
+    // 4 put `showState` on the tick, control-plane owned, and step 10's
+    // `STEP10` line finds the transition tick by it.)
     if (frame["kind"] === "stateChange") {
       const st = (frame["state"] as Record<string, unknown> | undefined)?.["showState"];
       if (typeof st === "string") showStates.push(st);
@@ -1127,7 +1147,7 @@ test("[R13] step 6 (normative): the sfx bus rose within 3000 ms", () => {
 
 test("[RI-1] step 10: show.stop acknowledges inside the grace window and the clock stops", async () => {
   const started = Date.now();
-  await ok("show.stop", {});
+  const reply = await ok("show.stop", {});
   const elapsed = Date.now() - started;
   assert.ok(
     elapsed <= STOP_MS,
@@ -1138,12 +1158,71 @@ test("[RI-1] step 10: show.stop acknowledges inside the grace window and the clo
     showStates.includes("STOPPED"),
     `show.stop must announce STOPPED; saw ${JSON.stringify(showStates)}`,
   );
-  const stopped = await untilTelemetry("a tick after show.stop", () => true);
-  const frozen = ((stopped["data"] as Record<string, unknown>)["masterClockFrame"] ??
-    0) as number;
+
+  // R16: the frozen frame is read from a tick whose engine report POSTDATES
+  // the stop, never from the transition tick. ~~`untilTelemetry("a tick after
+  // show.stop", () => true)`~~ (§2c, 2026-10-14, the user's ruling): the first
+  // tick after the response. The control plane answers a stop with no active
+  // output without waiting for the engine (SPEC §5.9.5), and its tick carries
+  // the last engine report it received, which can predate the stop: CI read
+  // `592 -> 0` (run 38127329748).
+  //
+  // The witness, by construction:
+  // 1. The stop's acknowledgement reaches the control plane at `ackedAt`
+  //    (`awaitApplied`, in this process).
+  // 2. A tick with `engineConnected: true` carries an engine report received
+  //    no more than ENGINE_TELEMETRY_TTL_MS before the tick's own `ts`
+  //    (`telemetry.ts`, `buildTick`: `engineFresh`, `ts: now`). A fresh tick
+  //    with `ts > ackedAt + ENGINE_TELEMETRY_TTL_MS` therefore carries a
+  //    report received after the acknowledgement.
+  // 3. The engine sends its acknowledgements and its reports down one
+  //    ordered queue (`channel.rs`, the pump drains the acks before it builds
+  //    a report), and it queues the acknowledgement only after the clock has
+  //    stopped (`directive.rs`, `on_show_stop_inner`, then `apply`). A report
+  //    that arrives after the acknowledgement was built after the stop.
+  // No retry and no tolerance: the baseline tick is that one, and the clock
+  // must not move from it across the window.
+  const stopVersion = reply["stateVersion"] as number;
+  const transitionIdx = ticks.length;
+  assert.ok(
+    await server.awaitApplied(stopVersion, STOP_MS),
+    `the engine must acknowledge show.stop (stateVersion ${stopVersion}) within ${STOP_MS} ms`,
+  );
+  const ackedAt = Date.now();
+  const tickData = (t: Record<string, unknown> | undefined) => (t?.["data"] ?? {}) as Record<string, unknown>;
+  const baseline = await untilTelemetry(
+    "a fresh tick built more than the engine-report TTL after the stop's acknowledgement",
+    (t) => tickData(t)["engineConnected"] === true && (tickData(t)["ts"] as number) > ackedAt + ENGINE_TELEMETRY_TTL_MS,
+    ENGINE_TELEMETRY_TTL_MS + TELEMETRY_MS,
+  );
+  const baselineIdx = ticks.indexOf(baseline);
+  const frozen = (tickData(baseline)["masterClockFrame"] ?? 0) as number;
   await new Promise((r) => setTimeout(r, RISE_MS));
-  const later = ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["masterClockFrame"] ??
-    0) as number;
+  const later = (tickData(ticks.at(-1))["masterClockFrame"] ?? 0) as number;
+  const transition = ticks.slice(transitionIdx).find((t) => tickData(t)["showState"] === "STOPPED");
+  console.log(
+    `STEP10 ${JSON.stringify({
+      stopVersion,
+      responseMs: elapsed,
+      ackAfterResponseMs: ackedAt - (started + elapsed),
+      stopDelayMs: Number(process.env.NBE_DRESS_STOP_DELAY_MS ?? 0),
+      stopDelayFired,
+      transitionTick: transition
+        ? {
+            index: ticks.indexOf(transition),
+            msFromAck: (tickData(transition)["ts"] as number) - ackedAt,
+            masterClockFrame: tickData(transition)["masterClockFrame"],
+            engineConnected: tickData(transition)["engineConnected"],
+          }
+        : null,
+      baselineTick: {
+        index: baselineIdx,
+        msFromAck: (tickData(baseline)["ts"] as number) - ackedAt,
+        masterClockFrame: frozen,
+      },
+      later,
+    })}`,
+  );
   assert.equal(later, frozen, `a stopped clock must not advance: ${frozen} -> ${later}`);
 });
 
