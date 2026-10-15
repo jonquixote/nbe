@@ -34,7 +34,9 @@ export interface AuditRecord {
    * - an automation outcome, beside the action's `command`
    *   (`automation.rateLimited`, `autoFollow.suppressedByHold`);
    * - a directive-path record under kind `command`, with
-   *   `command: "show.resync"` (`resync.viewItemEnd`, `resync.handshakeFailed`).
+   *   `command: "show.resync"` (`resync.viewItemEnd`, `resync.handshakeFailed`,
+   *   `resync.requestFailed`: SPEC v0.4.8 row 7, a failed re-resync on the
+   *   engine's request, with `detail.cause` `"snapshot"` or `"send"`).
    *
    * An engine item event carries none: it is named in `command` instead
    * (`engine:end`). (§2c, PR #39's two-key pass: this said "for a non-command
