@@ -249,7 +249,14 @@ test("automation.hold flips the flag; trigger suppression is the engine's job", 
 });
 
 test("show.stop quiescence truth table: !quiesce+!force with active outputs -> E_FORBIDDEN_STATE", async (t) => {
-  const { deps } = makeDeps();
+  // The engine's acknowledgement, as the server supplies it: exact version.
+  const waited: number[] = [];
+  const { deps, bridge } = makeDeps({
+    waitForAck: async (_ms, stateVersion) => {
+      waited.push(stateVersion);
+      return true;
+    },
+  });
   try {
     await d(deps, "show.load", { packagePath: pkgPath });
   } catch (e) {
@@ -265,9 +272,87 @@ test("show.stop quiescence truth table: !quiesce+!force with active outputs -> E
     () => d(deps, "show.stop", { quiesceOutputs: false, force: false }),
     (e: unknown) => e instanceof CpError && e.code === "E_FORBIDDEN_STATE",
   );
-  await d(deps, "show.stop", { quiesceOutputs: true, force: false });
+  bridge.drain();
+  const r = await d(deps, "show.stop", { quiesceOutputs: true, force: false });
   assert.equal(deps.state.showState, "STOPPED");
   assert.equal(deps.state.recordState, "idle");
+  // v0.4.8 row 6: one directive, and the wait is for the version the
+  // dispatcher assigned it — bump, send, wait.
+  assert.deepEqual(
+    bridge.drain().map((x) => [x.command, x.stateVersion]),
+    [["show.stop", r.stateVersion]],
+    "show.stop is the only directive: no record.stop / stream.stop bundle",
+  );
+  assert.deepEqual(waited, [r.stateVersion], "the wait is for the dispatcher's bumped version");
+});
+
+test("show.stop with active outputs and no acknowledgement holds them (v0.4.8 row 6)", async (t) => {
+  const { deps } = makeDeps(); // no render node: nothing can acknowledge
+  try {
+    await d(deps, "show.load", { packagePath: pkgPath });
+  } catch (e) {
+    if (e instanceof CpError && (e.code === "E_PREFLIGHT_FAILED" || e.code === "E_ENGINE")) {
+      t.skip("nbe-preflight binary not available");
+      return;
+    }
+    throw e;
+  }
+  await d(deps, "show.start", {});
+  await d(deps, "record.start", {});
+  await d(deps, "show.stop", { quiesceOutputs: true, force: false });
+  assert.equal(deps.state.showState, "STOPPED");
+  assert.equal(deps.state.recordState, "recording", "held: the control plane cannot know the output stopped");
+});
+
+test("a command emits at most one directive: a forward plus an extra, or two extras, is refused before the bump and the send (SPEC §5.9.6 rule 4)", async () => {
+  const { deps, bridge, state } = makeDeps();
+  const registry = buildRegistry(deps);
+  const run = (command: string, payload: Record<string, unknown>) =>
+    dispatch(deps, registry, { connectionId: "test", role: "admin", envelope: env(command, payload) });
+  const refused = (e: unknown) =>
+    e instanceof CpError && e.code === "E_ENGINE" && /would emit 2 directives at one stateVersion/.test(e.message);
+
+  // The shape of PR #42's defect: a forwarded command whose handler also
+  // returns an extra directive, so two directives would share one version.
+  registry.set("automation.hold", {
+    forward: true,
+    handler: () => ({ extraDirectives: [{ command: "record.stop", payload: {} }] }),
+  });
+  // And a non-forwarded command with two extras.
+  registry.set("view.fallback", {
+    forward: false,
+    handler: () => ({
+      extraDirectives: [
+        { command: "record.stop", payload: {} },
+        { command: "stream.stop", payload: {} },
+      ],
+    }),
+  });
+  for (const [command, payload] of [
+    ["automation.hold", { hold: true }],
+    ["view.fallback", {}],
+  ] as const) {
+    const before = state.stateVersion;
+    await assert.rejects(() => run(command, payload), refused, `${command}: refused`);
+    assert.equal(state.stateVersion, before, `${command}: no bump`);
+    assert.deepEqual(bridge.drain(), [], `${command}: nothing reached the wire`);
+  }
+
+  // The two legal shapes still pass, one directive each.
+  registry.set("automation.hold", { forward: true, handler: () => ({}) });
+  registry.set("view.fallback", {
+    forward: false,
+    handler: () => ({ extraDirectives: [{ command: "view.fallback", payload: {} }] }),
+  });
+  const a = await run("automation.hold", { hold: true });
+  const b = await run("view.fallback", {});
+  assert.deepEqual(
+    bridge.drain().map((x) => [x.command, x.stateVersion]),
+    [
+      ["automation.hold", a.stateVersion],
+      ["view.fallback", b.stateVersion],
+    ],
+  );
 });
 
 test("mock bridge records directives in order with directive stateVersion", async (t) => {

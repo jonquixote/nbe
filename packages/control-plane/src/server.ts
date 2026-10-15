@@ -128,7 +128,18 @@ interface ClientSession {
   /** Pushes a server-initiated frame (SPEC §5.4.1); false when dropped. */
   push: (frame: unknown) => boolean;
   /** Render sessions only: this session's own directive channel. */
-  render: { registration: RenderRegistration; lastApplied: number | null } | null;
+  render: {
+    registration: RenderRegistration;
+    lastApplied: number | null;
+    /**
+     * The most recent acknowledged versions of commands' directives, exactly
+     * (for `waitForAck`). An acknowledgement of a version this session was
+     * sent a `show.resync` at is the resync's, and is not kept here.
+     */
+    acked: number[];
+    /** The versions this session was sent `show.resync` at, most recent last. */
+    resyncs: number[];
+  } | null;
   /** Deprecation warnings this subscriber has not yet been shown. */
   pendingDeprecations: DeprecationRecord[];
   /** Drops this connection. `http.close()` waits forever on live sockets. */
@@ -208,17 +219,30 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const engineEventListeners = new Set<(frame: AudioLevelCrossingFrame) => void>();
 
   // -- SPEC §5.9.5: the quiescence acknowledgement -------------------------
-  // `show.stop` waits for a render node to confirm it applied the stop
-  // directives. Waiters resolve on the ack, or false on timeout / no node.
-  const ackWaiters = new Set<{ version: number; resolve: (acked: boolean) => void }>();
+  // `show.stop` waits for a render node to confirm it applied its directive.
+  // Waiters resolve on the ack, or false on timeout / no node.
+  //
+  // An `exact` waiter (show.stop, v0.4.8 row 6) resolves only on the
+  // acknowledgement of its own version, and never on a resync's: during the
+  // wait the control plane's version IS the stop's, so a reconnect's (or a
+  // gap's) `show.resync` is stamped with it, and its acknowledgement says
+  // nothing about the stop, which the resync does not carry (§5.9.6). The
+  // others resolve on any version at or above theirs.
+  const ackWaiters = new Set<{ version: number; exact: boolean; resolve: (acked: boolean) => void }>();
 
   function noteApplied(session: ClientSession, version: number): void {
     if (!session.render) return;
     const prev = session.render.lastApplied;
     if (prev !== null && version <= prev) return; // stale ack: log and ignore
     session.render.lastApplied = version;
+    const ownAck = !session.render.resyncs.includes(version);
+    if (ownAck) {
+      session.render.acked.push(version);
+      if (session.render.acked.length > 64) session.render.acked.shift();
+    }
     for (const waiter of [...ackWaiters]) {
-      if (version >= waiter.version) {
+      const met = waiter.exact ? ownAck && version === waiter.version : version >= waiter.version;
+      if (met) {
         ackWaiters.delete(waiter);
         waiter.resolve(true);
       }
@@ -229,12 +253,15 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     return [...clients.values()].filter((c) => c.render !== null && !c.closed);
   }
 
-  async function waitForGrace(ms: number, version: number): Promise<boolean> {
+  async function waitForGrace(ms: number, version: number, exact = false): Promise<boolean> {
     const nodes = renderSessions();
-    if (nodes.length === 0) return false; // nothing can acknowledge; force it
-    if (nodes.some((n) => (n.render!.lastApplied ?? -1) >= version)) return true;
+    if (nodes.length === 0) return false; // nothing can acknowledge
+    const already = exact
+      ? nodes.some((n) => n.render!.acked.includes(version))
+      : nodes.some((n) => (n.render!.lastApplied ?? -1) >= version);
+    if (already) return true;
     return new Promise<boolean>((resolve) => {
-      const waiter = { version, resolve };
+      const waiter = { version, exact, resolve };
       ackWaiters.add(waiter);
       const timer = setTimeout(() => {
         ackWaiters.delete(waiter);
@@ -265,12 +292,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         detail: { ...d, severity: d.outcome === "refused" ? "warn" : "info" },
       });
     },
-    waitForGrace,
-    emitDirectivesNow: (directives, stateVersion) => {
-      for (const d of directives) {
-        bridge.send({ command: d.command, target: d.target ?? {}, payload: d.payload, stateVersion });
-      }
-    },
+    waitForAck: (ms, stateVersion) => waitForGrace(ms, stateVersion, true),
     warn: opts.warn ?? ((m) => console.warn(m)),
   };
   const registry = buildRegistry(deps);
@@ -490,6 +512,11 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   function sendResync(session: ClientSession): boolean {
     const now = Date.now();
     const payload = state.resyncSnapshot(now);
+    // Noted before the send: the acknowledgement can only follow it.
+    if (session.render) {
+      session.render.resyncs.push(state.stateVersion);
+      if (session.render.resyncs.length > 16) session.render.resyncs.shift();
+    }
     const sent =
       session.render?.registration.sendDirect({
         command: RESYNC_COMMAND,
@@ -678,7 +705,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         return true;
       };
       try {
-        session.render = { registration: wsBridge.register(renderSender), lastApplied: null };
+        session.render = { registration: wsBridge.register(renderSender), lastApplied: null, acked: [], resyncs: [] };
         if (!sendResync(session)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);

@@ -40,8 +40,22 @@ export interface ClockWait {
   wait(ms: number): Promise<void>;
 }
 
-export const SHOW_STOP_FORCE_WARNING =
-  "show.stop: graceful output shutdown exceeded 2 s; force-stopping outputs";
+/**
+ * `show.stop`'s two warnings (SPEC §5.9.5 item 3, v0.4.8 row 6). Logged
+ * through `deps.warn` only (`console.warn` in production): not on the wire,
+ * not in the audit, so no §13.4.1 cell reads them.
+ *
+ * ~~`SHOW_STOP_FORCE_WARNING = "show.stop: graceful output shutdown exceeded
+ * 2 s; force-stopping outputs"`~~ (§2c, 2026-10-14, the fresh pass on PR #43):
+ * Prompt 02c's exact string, one text for two outcomes. Since v0.4.8 row 6
+ * the control plane holds unacknowledged outputs rather than force-stopping
+ * them, so each outcome now has its own text.
+ */
+/** `force` with active outputs, acknowledged: the engine abandoned them. */
+export const SHOW_STOP_FORCE_WARNING = "show.stop: force: outputs abandoned without a graceful shutdown";
+/** Not acknowledged within the window: the control plane holds the outputs. */
+export const SHOW_STOP_HELD_WARNING =
+  "show.stop: no acknowledgement within 2 s; outputs held until an explicit record.stop / stream.stop";
 
 export interface DispatchDeps {
   state: ControlPlaneState;
@@ -64,20 +78,20 @@ export interface DispatchDeps {
    */
   recordBoundDecision?: (d: BoundDecision) => void;
   /**
-   * Waits for an `appliedStateVersion` >= `stateVersion` from a render node.
-   * Resolves true when acknowledged in time, false on timeout or when no
-   * render node is connected. Supplied in production by the server.
+   * Waits for the render node's acknowledgement of EXACTLY `stateVersion`
+   * (SPEC §5.9.5, v0.4.8 row 6): `show.stop` waits for its own
+   * acknowledgement, which a later command's cannot stand in for. Resolves
+   * true when acknowledged in time, false on timeout or when no render node
+   * is connected. Supplied in production by the server.
+   *
+   * ~~`waitForGrace`: an acknowledgement at or above the version~~, and
+   * ~~`emitDirectivesNow`: directives sent at the command's version before
+   * the handler returned~~ (§2c, 2026-10-14): together they were `show.stop`'s
+   * bundle, whose same-version stops the engine's gate skipped (PR #42's
+   * evidence). The bundle is gone, and the engine quiesces its outputs
+   * itself on `show.stop` (§16.1).
    */
-  waitForGrace?: (ms: number, stateVersion: number) => Promise<boolean>;
-  /**
-   * Emits directives immediately, at the given stateVersion, before the
-   * handler returns. `show.stop` needs this: the engine cannot acknowledge
-   * a stop it has not been told about.
-   */
-  emitDirectivesNow?: (
-    directives: Array<{ command: string; target?: Record<string, unknown>; payload: Record<string, unknown> }>,
-    stateVersion: number,
-  ) => void;
+  waitForAck?: (ms: number, stateVersion: number) => Promise<boolean>;
   rateLimiter?: RateLimiter;
   warn?: (message: string) => void;
 }
@@ -209,6 +223,14 @@ export interface HandlerOutput {
    * (SPEC v0.4.8 row 5): `ctx.stateVersion` can be stale by then.
    */
   afterBump?: (stateVersion: number) => void;
+  /**
+   * Awaited after the command's directive is forwarded at the stateVersion
+   * the dispatcher assigned, before the response returns: bump, send, wait.
+   * `show.stop` waits here for the engine's acknowledgement of its own
+   * directive (SPEC §5.9.5, v0.4.8 row 6). Its `data` is merged into the
+   * response.
+   */
+  afterForward?: (stateVersion: number) => Promise<Pick<HandlerOutput, "data">>;
 }
 
 type Payload = Record<string, unknown>;
@@ -328,6 +350,19 @@ export async function dispatch(
     parsed.data as Payload,
   );
 
+  // 6b. at most one directive per command (SPEC §5.9.6 rule 4): the render
+  // node's gate applies at most the first of two at one version and drops
+  // the rest silently (v0.4.8 row 6; PR #42's evidence). No handler in the
+  // tree trips this; one that does is a programming error, refused loudly
+  // here, before the bump and before anything reaches the wire.
+  const directiveCount = (def.forward ? 1 : 0) + (out.extraDirectives?.length ?? 0);
+  if (directiveCount > 1) {
+    throw new CpError(
+      "E_ENGINE",
+      `${command} would emit ${directiveCount} directives at one stateVersion; a command emits at most one (SPEC §5.9.6)`,
+    );
+  }
+
   // 7. exactly one bump per accepted command
   state.bump();
   const sv = state.stateVersion;
@@ -338,7 +373,7 @@ export async function dispatch(
     state.noteDeprecation(opts.envelope.command, command);
   }
 
-  // 9. render directives, all tagged with the same stateVersion
+  // 9. the render directive (at most one, 6b), tagged with this version
   if (def.forward) {
     deps.bridge.send({
       command,
@@ -356,6 +391,10 @@ export async function dispatch(
     });
   }
 
+  // 10. a command that waits on its own directive's outcome waits here, after
+  // the send (show.stop's acknowledgement, §5.9.5)
+  const after = out.afterForward ? await out.afterForward(sv) : {};
+
   deps.persistence.onDirty();
-  return { data: out.data ?? {}, stateVersion: sv };
+  return { data: { ...(out.data ?? {}), ...(after.data ?? {}) }, stateVersion: sv };
 }
