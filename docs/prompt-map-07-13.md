@@ -4146,6 +4146,78 @@ item):
     socket stays backed up.
   - **Scope.** The warn reaches the console, as `SHOW_STOP_HELD_WARNING`
     does. An operator surface is R17's queued item (position 5).
+
+  **The code and the evidence** (2026-10-14, branch `resync-request-audit`;
+  struck FIXED by its merge SHA in the next PR). Row 4's record, the
+  zombie-registration fix below, is the handshake this mirrors.
+  - **`server.ts` `resyncOnRequest(reason)`** replaces the bare
+    `sendResync(session)`. It builds and sends the re-resync inside a guard.
+    - A throw runs `forget()`, then audits `resync.requestFailed` with
+      `{ error, cause: "snapshot", reason, sessionKept: false }`, warns, and
+      calls `ws.close(1011, "show.resync request failed")`.
+    - A `false` audits `{ cause: "send", sessionKept }` and warns. It keeps
+      the session (`sessionKept` is false only if the connection had already
+      closed).
+    - `audit.ts` documents the event. The kinds are unchanged.
+  - **Guards, on a fake socket** (`resync-handshake.test.ts`, +3; the suite is
+    6/6):
+    - **G1:** the snapshot throws on an established connection's request.
+      The result: closed `{1011, "show.resync request failed"}`,
+      registrations 0, no resync, no error reply, audited `[{rejected,
+      show.resync, snapshot, seqGap, sessionKept: false}]`, warned, and the
+      next connect's first directive is `show.resync` (registrations 1).
+    - **G2:** the first re-request's send is refused. The result: the socket
+      open, registrations 1, audited `[{…, send, seqGap, sessionKept:
+      true}]`, warned; the next request's resync arrives, and an operator's
+      directive flows.
+    - **G4:** a re-resync that succeeds audits nothing and warns nothing.
+  - **Guards, on the real engine** (`resync-request.e2e.ts`, 3/3, normative
+    machine). Each leg drops one directive on its way to the engine, so the
+    next one meets a real sequence gap:
+    - **snapshot:** `{"audited":[{"cause":"snapshot","reason":"seqGap",
+      "sessionKept":false}],"warned":true,"gapRequests":1,"reconnects":1,
+      "handshakeFailures":0,"registrations":1}`. The engine reconnected, its
+      handshake resync applied, and directives applied again.
+    - **send:** `{"audited":[{"cause":"send","reason":"seqGap",
+      "sessionKept":true}],"warned":true,"frozenUntilTheNextRequest":true,
+      "gapRequests":2,"reconnects":0,"registrations":1}`. The engine stayed
+      frozen until the next gap re-requested, and then it resynced and
+      directives applied.
+    - **persistent:** one `resync.requestFailed`, then `resync.handshakeFailed`
+      rows at **104, 309, 712, 1518, 3122, 6327, 12 730 and 22 735 ms**: the
+      engine's backoff, as the design computed (0.1, 0.3, 0.7, 1.5, 3.1, 6.3,
+      12.7, 22.7 s). That is 9 attempts and 8 rows, one per attempt, each
+      warned. Five directives sent in that time added no rows.
+  - **G3, the falsification of the whole.** `resyncOnRequest(frame.reason)`
+    was put back to the silent `sendResync(session)`, restored from the copy
+    and `cmp`-identical, with `tsc` clean.
+    - **Unit:** G1 and G2 fail. G1 read `closed: 'never: the socket stayed
+      open'`, `registrations: 1`, `errorReplies: ['E_ENGINE']`, `audited:
+      []`, `warned: false`: the frozen ceiling, made observable. G2 failed
+      at "the refused send is audited". G4 passes either way, as it should.
+      Restored: 6/6.
+    - **Real engine:** all three legs fail. snapshot failed at "the failed
+      re-resync is audited", and send at "the refused re-resync is audited".
+      persistent read `{"requestFailed":[],"attempts":0,
+      "handshakeFailedRows":0}`: in 25 s of failures the engine was never
+      torn down. Restored from the copy (`cmp`-identical). The gate's run at
+      `84a5e4f` is 3/3, and its persistent leg read the backoff again: 107,
+      312, 716, 1520, 3125, 6329, 12 736 and 22 742 ms.
+  - **The gate at `84a5e4f`** (normative machine; on AC, 45 W adapter, Low
+    Power Mode on, so power-limited; no sleep or battery event):
+    - Rust: workspace 511 passed, 0 failed, 4 ignored (twice); `spec_budgets`
+      2/2; clippy, fmt and tsc clean.
+    - Control plane: npm 149 (146 plus the three new guards); automation
+      32; effects 2; handshake suite 6.
+    - E2e, every leg exercised: slate-release 4, recall 2, take-duration 3,
+      resync-end 3, package-reconcile 4, show-stop 6, resync-request 3.
+    - Dress: 27/27, DRESS-COUNTS normative 0 drops and 0 underruns, load
+      2.31–2.59.
+    - **Voids, named.** Both workspace runs crossed 3.0 as the suite ran:
+      10 of 22 samples (peak 3.59), then 13 of 22 (peak 4.23) after starting
+      at 2.22. So did the control-plane and e2e window, 28 of 77 samples
+      (peak 5.80). Each is void as a quiet-machine datum. Their pass counts
+      stand, and no timing claim rests on them.
 - **Position 5: R17, the control plane reports a refused stream as live**
   (the user's word of 2026-10-12, establish-first). On CI the engine refuses
   `stream.start`, and the control plane's telemetry still reports the stream
@@ -4166,6 +4238,8 @@ item):
       belief about an output, beside the engine's report, with nothing that
       tells the operator they differ. The late-acknowledgement
       reconciliation, queued here with row 6, is its other half.
+    - The failed re-resync's warn (queue position 4, SPEC v0.4.8 row 7) is
+      console-only too, and belongs on the same operator surface.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
