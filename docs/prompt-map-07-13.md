@@ -2048,7 +2048,7 @@ Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines 
 | audio crossfade §8.7.5 | Mix crossfades over same duration | Yes, wired (`directive.rs:480-488`; `audio_control.rs:111-141`); curve linear (spec-legal; "equal-power" comment FIXED to linear in Step 3) | Mapping pinned (`prompt06.rs:1407-1427`); no take→master e2e | Partial | GAP-10 |
 | audio cut ramp §8.7.6 | Cut + ≥5 ms ramp | Yes (`directive.rs:472-488`; 5 ms floor `audio.rs:25,104-106`); §8.7.7 unwired | Partial, same prompt06 tests | Partial | GAP-10 |
 | AC-17 latency | ≤2 frames; mix first frame by next frame | Yes, next-boundary discipline (`directive.rs:443`) | Cut proven (`prompt04.rs:161-212`); mix first-frame unbisected | Partial | GAP-11 |
-| AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | GAP-12 |
+| AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | — *(no value recorded; §2c, 2026-10-14: this cell was missing, so GAP-12 rendered under Falsified? and Gap stood empty)* | GAP-12 |
 | §17.2 TRANSITIONING | Scene-state publication + §17.3 events | No engine counterpart; resync silently clears in-flight transition (`directive.rs:863-865`) | No | No | GAP-7 |
 
 GAP findings (spec-cited, Step 3 routes each): **GAP-1** wipe/sting/dve degrade to cut silently (v0.5); **GAP-2** move unimplemented, AC-23 unmet (v0.5); **GAP-3** easing families unapplied (v0.5); **GAP-4** per-element timing absent (v0.5); **GAP-5** preset/overrides ignored (v0.5); **GAP-6** duration edges unpinned + uncapped — Step 3 adds goldens for default/zero/one, clamp decision recorded (max accepted today); **GAP-7** back-to-back + TRANSITIONING unreported — Step 3 adds two-take golden; publication is v0.5; **GAP-8** cut-mid-mix abrupt — Step 3 adds golden pinning current behavior; **GAP-9** mix-mid-mix pop — Step 1's row (discover/define/test/falsify); **GAP-10** audio curve comment false + §8.7.7/bed unwired + no e2e — comment fix in Step 3, rest v0.5; **GAP-11** mix first-frame + e2e legs — Step 3 bisects start+1; **GAP-12** AC-24 as-written unproven — v0.5 (needs move).
@@ -2390,6 +2390,7 @@ at `619846c`.
   | the limiter removed | `a rule that would fire twice in one frame fires once…` | `fired once in the frame` — `2 !== 1` |
   | hold suppression removed | `a held engine fires nothing…` | `held: nothing dispatched` — `1 !== 0` |
   | pending not cancelled when a hold engages | `a hold cancels every pending action…` | `only the hold itself dispatched` (actual: three actors) |
+
 - **WU3** (`75f7ad4`): the trigger adapters.
   - **Where each is wired.** `mediaStart` (B3) on a take; `mediaEnd` on the
     recorded `PLAYING → DONE`; `timer`; `timeOfDay`; `hotkey` on an
@@ -2411,6 +2412,7 @@ at `619846c`.
   | hotkey only on accepted commands | `hotkey fires when its binding fires, whatever…` | deep-equal: `[]` vs the hotkey event |
   | streamHealth without a baseline | `streamHealth fires on a change TO…` | `after live` |
   | audioLevel unwired | `audioLevel fires on the engine's matching crossing…` | deep-equal: `[]` vs the audioLevel event |
+
 - **WU4** (`4d11ba9`): `autoFollow`, normative since v0.1 and unimplemented until
   now.
   - **What it does.** When an item carrying it completes (`PLAYING → DONE`), the
@@ -2441,6 +2443,7 @@ at `619846c`.
   |---|---|---|
   | the limiter does not count autoFollow | `autoFollow advances once per completion, never twice, and the limiter counts it` | `no second advance in the frame` — `2 !== 1` |
   | a completion with no next item audited again | `autoFollow on the last rundown item is a no-op that audits nothing` | `nothing attempted, nothing audited` (deep-equal) |
+
 - **WU6** (`d455aa0`): ladder rung 2, built as the user decided on 2026-09-27.
   The §4a stop is resolved; the draft's "buildable" row is struck with the
   tree's correction.
@@ -3894,8 +3897,9 @@ item):
   - dress: 27/27, `ok 24` (step 10). DRESS-COUNTS for CI (sha `95583c5`): 2
     drops, 195 underruns and 1 watchdog trip, within the backstops.
   - Position 2 is FIXED by it.
-- **Position 3: R16, the dress rehearsal's step 10 samples the transition
-  tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
+- ~~**Position 3: R16, the dress rehearsal's step 10 samples the transition
+  tick**~~ **FIXED** by `b93db99` (PR #44; harness only; struck in the next
+  PR, the standing pattern of §2c) (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
   reads its baseline from a tick that postdates the engine's stop report,
   with no retries and no tolerance. The register row is R16 in
@@ -4026,6 +4030,16 @@ item):
     - The falsification pair ran a file that differed from it only by that
       comment, so its behaviour was identical.
     - *(§2c, 2026-10-14, the fresh pass on PR #44.)*
+  **Merged: PR #44 is `b93db99`** (the bookend, the standing pattern of §2c).
+  Main's CI at `b93db99`, run `38685803055`, read per test (§2b): every job
+  green (rust 40/40 steps, control-plane 27/27, dress 17/17).
+  - rust: workspace 511 passed, 0 failed, 4 ignored; all 30 floor lines green.
+  - control-plane: npm 146; the show.stop e2e ran 6, exercised 1 and
+    skipped 5.
+  - dress: 27/27, with `ok 24 - [RI-1] step 10`. DRESS-COUNTS for CI (sha
+    `b93db99`): 1 drop, 188 underruns, 0 watchdog trips, within the
+    backstops.
+  - Position 3 and the R16 register row are FIXED by it.
 - **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
