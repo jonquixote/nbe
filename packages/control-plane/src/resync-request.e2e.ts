@@ -1,7 +1,10 @@
 //! Queue position 4 (SPEC v0.4.8 row 7): a failed re-resync on the engine's
-//! `resyncRequest`, on the real engine. The unit guards (`resync-handshake.test.ts`
-//! G1–G4) pin the control plane's side on a fake socket. These pin what the
-//! engine does with it.
+//! `resyncRequest`, on the real engine. The unit guards in
+//! `resync-handshake.test.ts` (G1, G2 and G4, with G3 their falsification, and
+//! the teardown-order pair) pin the control plane's side on a real server and
+//! a real socket, the engine scripted by the test. ~~G1–G4 … on a fake
+//! socket~~ (§2c, the fresh pass on PR #45.) These pin what the real engine
+//! does with it.
 //!
 //! The engine asks again only after a sequence gap. Each leg makes one: the
 //! harness drops one directive on its way to the engine, so the next directive
@@ -284,10 +287,15 @@ test("[queue 4] persistent: every snapshot throws; the failures are paced by the
     console.log(`RR-LEG persistent ${JSON.stringify({ ...observed, handshakeFailedAtMs: handshakeRows })}`);
     assert.deepEqual(observed.requestFailed, [{ cause: "snapshot", reason: "seqGap", sessionKept: false }]);
     assert.ok(observed.warnedEveryRow, "every failure is warned");
-    // One row per connection the engine opened: every reconnect's handshake
-    // failed and was audited, and nothing else was. The connection still open
-    // at the cut-off may not have closed yet, so the rows trail the attempts
-    // by at most one.
+    // One row per failure, never coalesced. The engine logs one "dropped" line
+    // per connection that ends. The first is the request failure's own 1011,
+    // whose row is the `resync.requestFailed` above; each later one is a
+    // failed reconnect handshake with its `resync.handshakeFailed` row. So the
+    // handshake rows are the attempts less one, or equal to the attempts if
+    // the cut-off falls between a handshake's audit and the engine's log line.
+    // ~~"The connection still open at the cut-off may not have closed yet, so
+    // the rows trail the attempts by at most one."~~ (§2c, the fresh pass on
+    // PR #45: the gap is structural, not the cut-off.)
     assert.ok(
       observed.handshakeFailedRows === observed.attempts || observed.handshakeFailedRows === observed.attempts - 1,
       `one audit row per attempt: ${observed.handshakeFailedRows} rows, ${observed.attempts} attempts`,

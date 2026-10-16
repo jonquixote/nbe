@@ -4137,9 +4137,16 @@ item):
        run 200, 400, 800, 1600, 3200, 6400, then 10 000 ms.
     3. That gives one `resync.requestFailed` row, then `resync.handshakeFailed`
        rows at about 0.1, 0.3, 0.7, 1.5, 3.1, 6.3, 12.7, 22.7 s and every 10 s
-       after: about 11 in the first minute, then 6 a minute, each with its
-       warn.
-    4. The rate is paced by the engine's backoff, not by directives.
+       after: ~~about 11 in the first minute~~ 1 + 11 = 12 rows in the first
+       minute (one `resync.requestFailed`, then 11 `resync.handshakeFailed`),
+       then 6 a minute, each with its warn. *(§2c, the fresh pass on PR #45:
+       the 11 counted only the handshake rows.)*
+    4. The rate is paced by the engine's backoff, ~~not by directives~~ once
+       the connection is torn down. Before that, each request already in
+       flight at the teardown adds its own row, so the extra rows are bounded
+       by the requests already in flight. The fresh pass's probe sent three
+       requests in flight and got three `snapshot` rows on one connection.
+       *(§2c, the fresh pass on PR #45.)*
   - **Under a transient refusal.** One row per refused re-request. Those
     come only as directives reach the engine and meet a gap, so the rate is
     bounded by the directives that get through, and none are sent while the
@@ -4159,8 +4166,9 @@ item):
       the session (`sessionKept` is false only if the connection had already
       closed).
     - `audit.ts` documents the event. The kinds are unchanged.
-  - **Guards, on a fake socket** (`resync-handshake.test.ts`, +3; the suite is
-    6/6):
+  - **Guards, ~~on a fake socket~~ on a real server and a real socket, the
+    engine scripted by the test** (`resync-handshake.test.ts`, +3; the suite is
+    6/6; §2c, the fresh pass on PR #45):
     - **G1:** the snapshot throws on an established connection's request.
       The result: closed `{1011, "show.resync request failed"}`,
       registrations 0, no resync, no error reply, audited `[{rejected,
@@ -4184,10 +4192,17 @@ item):
       frozen until the next gap re-requested, and then it resynced and
       directives applied.
     - **persistent:** one `resync.requestFailed`, then `resync.handshakeFailed`
-      rows at **104, 309, 712, 1518, 3122, 6327, 12 730 and 22 735 ms**: the
+      rows at **104, 309, 712, 1518, 3122, 6327, 12 730 and 22 735 ms** (that
+      run's load was not recorded; the in-ceiling measurements are under G3
+      below): the
       engine's backoff, as the design computed (0.1, 0.3, 0.7, 1.5, 3.1, 6.3,
-      12.7, 22.7 s). That is 9 attempts and 8 rows, one per attempt, each
-      warned. Five directives sent in that time added no rows.
+      12.7, 22.7 s). ~~That is 9 attempts and 8 rows, one per attempt, each
+      warned.~~ The engine logged 9 dropped connections and the audit holds 8
+      `resync.handshakeFailed` rows, one per failure, each warned. The first
+      drop is the request failure's own 1011, whose row is the
+      `resync.requestFailed`; each of the other 8 is a failed handshake.
+      *(§2c, the fresh pass on PR #45: this read as attempts trailing rows at
+      the cut-off.)* Five directives sent in that time added no rows.
   - **G3, the falsification of the whole.** `resyncOnRequest(frame.reason)`
     was put back to the silent `sendResync(session)`, restored from the copy
     and `cmp`-identical, with `tsc` clean.
@@ -4201,8 +4216,22 @@ item):
       persistent read `{"requestFailed":[],"attempts":0,
       "handshakeFailedRows":0}`: in 25 s of failures the engine was never
       torn down. Restored from the copy (`cmp`-identical). The gate's run at
-      `84a5e4f` is 3/3, and its persistent leg read the backoff again: 107,
-      312, 716, 1520, 3125, 6329, 12 736 and 22 742 ms.
+      `84a5e4f` is 3/3. ~~Its persistent leg read the backoff again: 107,
+      312, 716, 1520, 3125, 6329, 12 736 and 22 742 ms.~~ That run sat in the
+      control-plane/e2e window voided below, so no timing is quoted from it
+      *(§2c, the fresh pass on PR #45)*. In-ceiling measurements:
+      - **Mine, at the delta's tree** (2026-10-15, 01:21:35–01:22:01 UTC):
+        105, 309, 716, 1520, 3125, 6329, 12 734 and 22 737 ms. Load was
+        sampled every 2 s and read 2.30–2.54, never at or above 3.0, with no
+        discharge.
+      - **The fresh pass's five runs**, each under the ceiling (peak loads
+        2.51, 2.57, 2.56, 2.02 and 2.52). The first read 105, 310, 713, 1517,
+        3120, 6324, 12 728 and 22 732 ms.
+      - **The engine's constants** (100 ms, doubling to a 10 s cap) give
+        100, 300, 700, 1500, 3100, 6300, 12 700 and 22 700 ms. The measured
+        excess, about 5–40 ms, is accumulated connect overhead.
+      - Two more of my runs crossed 3.0 (peaks 3.04 and 3.36). They are void
+        as data, and their passes (3/3 each) stand.
   - **The gate at `84a5e4f`** (normative machine; on AC, 45 W adapter, Low
     Power Mode on, so power-limited; no sleep or battery event):
     - Rust: workspace 511 passed, 0 failed, 4 ignored (twice); `spec_budgets`
@@ -4218,6 +4247,55 @@ item):
       at 2.22. So did the control-plane and e2e window, 28 of 77 samples
       (peak 5.80). Each is void as a quiet-machine datum. Their pass counts
       stand, and no timing claim rests on them.
+
+  **The fresh pass's delta** (the user's ruling of 2026-10-15 on PR #45's
+  two-key pass, adopted in full: a guard and the docs, no other code):
+  - **D1, the teardown's order, now guarded.** Nothing pinned that the
+    registration is released *before* the close. The socket's own
+    `close → forget` listener masked a missing `forget()`: the pass removed
+    it on either path, and both suites stayed green.
+    - **The probe.** `resync-handshake.test.ts` wraps the server-side
+      `WebSocket.prototype.close`. At the instant the server initiates its
+      1011 close, before any close listener can run, it reads the
+      registrations, the audit rows and the warn.
+    - **One test per path:**
+      - "the order, the request path: forget, audit and warn all precede the
+        1011 close";
+      - "the order, the handshake path: …".
+    - Each asserts `[{ registrations: 0, audited: 1, warned: true }]`. Only
+      the first `close(1011)` is read, because `ws` calls `close` again
+      internally on the echoed frame. The suite is 8/8.
+    - **Falsified, each path.** `forget()` was removed from the request path
+      (`resyncOnRequest`'s catch), and then from the handshake path (the
+      handshake's catch).
+      - Each time only that path's order test failed: `+ registrations: 1,
+        - registrations: 0`, 7/8.
+      - The end-state tests stayed green, which is the masking the pass
+        found.
+      - Restored from the copy, `cmp`-identical, `tsc` clean: 8/8.
+  - **D4, the order goes into the spec** (the user's decision). Rule 1's
+    failure half now states it: release the registration, audit, warn,
+    close (1011, the named reason), as the load-bearing order. Rule 1's old
+    text is struck (§2c). Row 7's "in rule 1's order" now cites real spec
+    text. The alternative, dropping the phrase, was rejected.
+  - **D2.** Row 7 and the impact paragraph claimed the 1011 replaced "an
+    `E_ENGINE` reply or silence". It replaces only the `E_ENGINE` reply; a
+    refused send was silent on the wire and still is. Both are struck and
+    corrected, and the PR body is edited, noting the edit.
+  - **D3.** The 9-and-8 explanation is corrected above and in the e2e
+    comment: 1 + 11 = 12 rows in the first minute. The assertion stands.
+  - **D5.** "Never the directive rate" is struck in rule 5 and above: the
+    extra rows are bounded by the requests already in flight, as the pass's
+    probe showed (3 requests, 3 `snapshot` rows on one connection).
+  - **D6.** Rule 5 now states the mid-close drop: it reports as sent, so
+    nothing is audited, and nothing is lost either.
+  - **D7.** "On a fake socket" is struck above and in the PR body: the unit
+    guards run a real server and a real socket. The e2e header's grouping
+    is corrected: G3 is the falsification, not a guard.
+  - **D8.** The backoff quote from the voided window is struck above and
+    requoted from in-ceiling runs.
+  - **The audit-sink cases** are recorded and queued, with no code: R18 in
+    the register, attached to R17's operator-surface item (position 5).
 - **Position 5: R17, the control plane reports a refused stream as live**
   (the user's word of 2026-10-12, establish-first). On CI the engine refuses
   `stream.start`, and the control plane's telemetry still reports the stream
@@ -4240,6 +4318,11 @@ item):
       reconciliation, queued here with row 6, is its other half.
     - The failed re-resync's warn (queue position 4, SPEC v0.4.8 row 7) is
       console-only too, and belongs on the same operator surface.
+    - **R18 attaches here** (the user's word of 2026-10-15, record and queue).
+      When the audit sink itself is broken, a failure is invisible on that
+      surface by definition. A last-resort surface for audit failure is the
+      open design question. The register row is R18 in
+      `docs/soak-protocol.md` §5.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
