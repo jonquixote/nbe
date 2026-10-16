@@ -726,6 +726,61 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       }
     }
 
+    /**
+     * SPEC §5.9.4 rule 5 with its failure half (v0.4.8 row 7; the user's
+     * ruling of 2026-10-14). A failed re-resync is audited
+     * (`resync.requestFailed`) and warned, never swallowed, and the failure's
+     * class decides the session's fate:
+     * - **The snapshot cannot be built** (a throw): persistent. The next
+     *   request would build the same snapshot, so the session is torn down
+     *   in the handshake's order (forget, audit, warn, close 1011) and
+     *   recovery passes to the engine's reconnect loop, whose handshake
+     *   (rule 1) retries against a clean slate at the engine's backoff.
+     * - **The send is refused** (`false`): transient. `sendDirect` reports
+     *   backpressure, or a connection already gone, as `false`; a sender
+     *   throw is unreachable here (`ws` throws only while CONNECTING). The
+     *   session is kept, and the next directive's gap re-requests.
+     * Each failure is its own audit row: the audit is the record.
+     */
+    function resyncOnRequest(reason: string): void {
+      const requestFailed = (detail: Record<string, unknown>): void => {
+        audit.record({
+          kind: "command",
+          outcome: "rejected",
+          role: session.role,
+          tokenId: session.tokenId,
+          command: RESYNC_COMMAND,
+          event: "resync.requestFailed",
+          stateVersionBefore: state.stateVersion,
+          stateVersionAfter: state.stateVersion,
+          detail,
+        });
+      };
+      let sent: boolean;
+      try {
+        sent = sendResync(session);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        forget();
+        requestFailed({ error, cause: "snapshot", reason, sessionKept: false });
+        deps.warn?.(
+          `show.resync on the engine's request failed (the snapshot could not be built); the render connection is closed and holds no registration: ${error}`,
+        );
+        ws.close(1011, "show.resync request failed");
+        return;
+      }
+      if (!sent) {
+        const error = "the socket did not accept show.resync (a refused send)";
+        const sessionKept = !session.closed;
+        requestFailed({ error, cause: "send", reason, sessionKept });
+        deps.warn?.(
+          sessionKept
+            ? "show.resync on the engine's request was not sent (a refused send); the session is kept, and the engine's next request retries"
+            : "show.resync on the engine's request was not sent: the render connection had already closed",
+        );
+      }
+    }
+
     async function handleMessage(raw: string): Promise<void> {
       let parsed: unknown;
       try {
@@ -778,8 +833,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           // SPEC §5.9.5: the signal show.stop's grace window waits for.
           noteApplied(session, frame.stateVersion);
         } else if (frame.kind === "resyncRequest") {
-          // SPEC §5.9.4: the engine lost continuity; hand it the snapshot.
-          sendResync(session);
+          // SPEC §5.9.4 rule 5: the engine lost continuity; hand it the
+          // snapshot, and never fail silently (v0.4.8 row 7).
+          resyncOnRequest(frame.reason);
         } else if (frame.kind === "audioLevelCrossing") {
           // B1: a crossing is an event for a consumer, not a state to apply.
           // Handed over synchronously — the evaluator's one-frame budget

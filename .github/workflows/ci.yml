@@ -1186,6 +1186,27 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL show-stop-version e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 6 ]; then echo "FAIL show-stop-version e2e: expected at least 6 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL show-stop-version e2e: expected at least 1 test (the E4 control) to execute, got $exercised"; exit 1; fi
+      - name: "the resync-request end-to-end actually ran (queue position 4, SPEC v0.4.8 row 7)"
+        # Three legs on the real engine behind a real sequence gap: a re-resync
+        # whose snapshot cannot be built closes 1011 and the engine reconnects
+        # to a clean slate; a refused send keeps the session and the next gap
+        # unfreezes it; a persistent failure is paced by the engine's backoff.
+        # No hardware encoder is needed, so every leg runs here. Two floors,
+        # rule 8: ran = `# tests` (3), exercised = `# pass` (3).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/resync-request.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok)|^# |RR-LEG" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL resync-request.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "resync-request e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=3 exercised>=3)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL resync-request e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 3 ]; then echo "FAIL resync-request e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 3 ]; then echo "FAIL resync-request e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13

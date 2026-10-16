@@ -230,3 +230,215 @@ test("a failed render handshake leaves an operator's connection untouched", asyn
   );
   admin.close();
 });
+
+// ---------------------------------------------------------------------------
+// SPEC §5.9.4 rule 5's failure half (v0.4.8 row 7; queue position 4): an
+// ESTABLISHED connection that asks again. The re-resync used to ignore its
+// result, and a throw became an unaudited `E_ENGINE` reply the engine logs as
+// an unparseable frame: a frozen engine, every directive a gap, no signal.
+// Now every failure is audited and warned, and its class decides the
+// session's fate (the user's ruling of 2026-10-14): a snapshot that cannot be
+// built tears down; a refused send keeps the session.
+// ---------------------------------------------------------------------------
+
+function requestFailures(): Array<Record<string, unknown>> {
+  if (!existsSync(auditPath)) return [];
+  return readFileSync(auditPath, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((r) => r["event"] === "resync.requestFailed");
+}
+
+/** Every error reply a socket receives (frames that are not directives). */
+function errorRepliesOf(ws: WebSocket): string[] {
+  const out: string[] = [];
+  ws.on("message", (buf: Buffer) => {
+    const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    if (msg.status === "error") out.push(String((msg.error as Record<string, unknown> | undefined)?.["code"]));
+  });
+  return out;
+}
+
+/** A render connection past its handshake: resynced, and the resync acknowledged. */
+async function establishedRender(): Promise<{ ws: WebSocket; directives: Array<Record<string, unknown>>; errors: string[] }> {
+  const ws = conn("render", RENDER);
+  const directives = directivesOf(ws);
+  const errors = errorRepliesOf(ws);
+  await new Promise<void>((res, rej) => {
+    ws.once("open", () => res());
+    ws.once("error", rej);
+  });
+  assert.ok(await until(() => directives.length >= 1), "the handshake's resync arrives");
+  assert.equal(directives[0]!.command, RESYNC_COMMAND);
+  ws.send(JSON.stringify({ v: "0.3", kind: "appliedStateVersion", stateVersion: directives[0]!.stateVersion }));
+  return { ws, directives, errors };
+}
+
+const resyncRequest = JSON.stringify({ v: "0.3", kind: "resyncRequest", reason: "seqGap" });
+const failureRows = () =>
+  requestFailures().map((r) => {
+    const d = (r["detail"] ?? {}) as Record<string, unknown>;
+    return { outcome: r["outcome"], command: r["command"], cause: d["cause"], reason: d["reason"], sessionKept: d["sessionKept"] };
+  });
+
+test("G1: a re-resync whose snapshot cannot be built is audited, warned, closed 1011 with no registration, and the reconnect gets a clean slate", async () => {
+  const { ws: render, directives, errors } = await establishedRender();
+  const resyncsBefore = directives.filter((d) => d.command === RESYNC_COMMAND).length;
+  const closed = closeOf(render);
+  state.failNext = 1;
+  render.send(resyncRequest);
+  const close = await closed;
+  await until(() => server.wsBridge.renderNodeCount() === 0, 500);
+  const registrations = server.wsBridge.renderNodeCount();
+  if (close === null) render.close();
+  assert.deepEqual(
+    {
+      closed: close === null ? "never: the socket stayed open" : { code: close.code, reason: close.reason },
+      registrations,
+      resyncsAfterTheRequest: directives.filter((d) => d.command === RESYNC_COMMAND).length - resyncsBefore,
+      errorReplies: errors,
+      audited: failureRows(),
+      warned: warnings.some((w) => w.includes("show.resync on the engine's request failed")),
+    },
+    {
+      closed: { code: 1011, reason: "show.resync request failed" },
+      registrations: 0,
+      resyncsAfterTheRequest: 0,
+      errorReplies: [],
+      audited: [{ outcome: "rejected", command: RESYNC_COMMAND, cause: "snapshot", reason: "seqGap", sessionKept: false }],
+      warned: true,
+    },
+    "a persistent failure tears down, loudly: never a frozen engine on a live connection",
+  );
+  assert.match(
+    String((requestFailures()[0]?.["detail"] as Record<string, unknown> | undefined)?.["error"]),
+    /injected: the resync snapshot could not be built/,
+    "the audit names the cause",
+  );
+  assert.deepEqual(await nextConnectResyncs(), { firstDirective: RESYNC_COMMAND, registrations: 1 }, "the reconnect gets a clean slate");
+});
+
+test("G2: a re-resync whose send is refused is audited and warned, the session is kept, and the next request unfreezes it", async (t) => {
+  // Refuse the second direct send on each registration: the handshake's
+  // resync goes out, the first re-request's does not.
+  const register = WsRenderBridge.prototype.register;
+  WsRenderBridge.prototype.register = function (this: WsRenderBridge, send) {
+    const registration = register.call(this, send);
+    const sendDirect = registration.sendDirect;
+    let calls = 0;
+    registration.sendDirect = (directive) => (++calls === 2 ? false : sendDirect(directive));
+    return registration;
+  };
+  t.after(() => {
+    WsRenderBridge.prototype.register = register;
+  });
+  const { ws: render, directives, errors } = await establishedRender();
+  const resyncs = () => directives.filter((d) => d.command === RESYNC_COMMAND).length;
+  const closed = closeOf(render, 500);
+  render.send(resyncRequest);
+  assert.ok(await until(() => requestFailures().length === 1), "the refused send is audited");
+  const close = await closed;
+  assert.deepEqual(
+    {
+      closed: close === null ? "open" : { code: close.code, reason: close.reason },
+      registrations: server.wsBridge.renderNodeCount(),
+      resyncsSinceTheHandshake: resyncs() - 1,
+      errorReplies: errors,
+      audited: failureRows(),
+      warned: warnings.some((w) => w.includes("show.resync on the engine's request was not sent")),
+    },
+    {
+      closed: "open",
+      registrations: 1,
+      resyncsSinceTheHandshake: 0,
+      errorReplies: [],
+      audited: [{ outcome: "rejected", command: RESYNC_COMMAND, cause: "send", reason: "seqGap", sessionKept: true }],
+      warned: true,
+    },
+    "a transient failure keeps the session, loudly",
+  );
+  // The next request (the next directive's gap) succeeds, and directives flow.
+  render.send(resyncRequest);
+  assert.ok(await until(() => resyncs() === 2), "the next re-request's resync arrives");
+  const admin = conn("admin", ADMIN);
+  await new Promise<void>((res, rej) => {
+    admin.once("open", () => res());
+    admin.once("error", rej);
+  });
+  admin.send(JSON.stringify({ v: "0.3", id: "00000000-0000-0000-0000-000000000002", command: "automation.hold", payload: { hold: true } }));
+  assert.ok(await until(() => directives.some((d) => d.command === "automation.hold")), "directives flow on the kept session");
+  assert.equal(requestFailures().length, 1, "the successful re-request audited nothing");
+  admin.close();
+  render.close();
+});
+
+test("G4: a re-resync that succeeds audits and warns nothing (no false positives)", async () => {
+  const { ws: render, directives, errors } = await establishedRender();
+  render.send(resyncRequest);
+  assert.ok(await until(() => directives.filter((d) => d.command === RESYNC_COMMAND).length === 2), "the re-request's resync arrives");
+  assert.deepEqual(
+    { audited: requestFailures().length, handshakeFailures: handshakeFailures().length, warnings, errorReplies: errors, registrations: server.wsBridge.renderNodeCount() },
+    { audited: 0, handshakeFailures: 0, warnings: [], errorReplies: [], registrations: 1 },
+  );
+  render.close();
+});
+
+// ---------------------------------------------------------------------------
+// The teardown's ORDER (SPEC §5.9.4 rule 1's failure half; v0.4.8 rows 4 and
+// 7; the fresh pass on PR #45, D1). The end state above (no registration
+// after the close) does not prove the order: the socket's own close listener
+// (`ws.on("close", forget)`) releases the registration too, after the close
+// handshake, so a path that skipped its `forget()` still ends at zero. This
+// probe reads the state at the instant the server INITIATES the 1011 close,
+// before any close listener can run: the registration must already be gone,
+// and the failure already audited and warned.
+// ---------------------------------------------------------------------------
+
+/**
+ * The state at the instant the server initiates its 1011 close, read at the
+ * call. Only the first `close(1011)` is recorded: it is the server's, by
+ * causality. `ws` calls `close` again internally (on the peer's echoed close
+ * frame, and on the client socket in this same process when the frame
+ * arrives), and those later calls are not the initiation.
+ */
+function atServerClose(
+  t: { after: (fn: () => void) => void },
+  audited: () => number,
+  warnedOf: string,
+): Array<{ registrations: number; audited: number; warned: boolean }> {
+  const seen: Array<{ registrations: number; audited: number; warned: boolean }> = [];
+  const close = WebSocket.prototype.close;
+  WebSocket.prototype.close = function (this: WebSocket, code?: number, data?: string | Buffer) {
+    if (code === 1011 && seen.length === 0) {
+      seen.push({
+        registrations: server.wsBridge.renderNodeCount(),
+        audited: audited(),
+        warned: warnings.some((w) => w.includes(warnedOf)),
+      });
+    }
+    return close.call(this, code, data);
+  };
+  t.after(() => {
+    WebSocket.prototype.close = close;
+  });
+  return seen;
+}
+
+test("the order, the request path: forget, audit and warn all precede the 1011 close (rule 1's order, row 7)", async (t) => {
+  const seen = atServerClose(t, () => requestFailures().length, "show.resync on the engine's request failed");
+  const { ws: render } = await establishedRender();
+  const closed = closeOf(render);
+  state.failNext = 1;
+  render.send(resyncRequest);
+  await closed;
+  assert.deepEqual(seen, [{ registrations: 0, audited: 1, warned: true }], "at the instant the close is initiated");
+});
+
+test("the order, the handshake path: forget, audit and warn all precede the 1011 close (rule 1's order, row 4)", async (t) => {
+  const seen = atServerClose(t, () => handshakeFailures().length, "show.resync handshake failed");
+  state.failNext = 1;
+  const render = conn("render", RENDER);
+  await closeOf(render);
+  assert.deepEqual(seen, [{ registrations: 0, audited: 1, warned: true }], "at the instant the close is initiated");
+});

@@ -2048,7 +2048,7 @@ Work order TRANSITIONS Step 0. Every transition kind/parameter the spec defines 
 | audio crossfade §8.7.5 | Mix crossfades over same duration | Yes, wired (`directive.rs:480-488`; `audio_control.rs:111-141`); curve linear (spec-legal; "equal-power" comment FIXED to linear in Step 3) | Mapping pinned (`prompt06.rs:1407-1427`); no take→master e2e | Partial | GAP-10 |
 | audio cut ramp §8.7.6 | Cut + ≥5 ms ramp | Yes (`directive.rs:472-488`; 5 ms floor `audio.rs:25,104-106`); §8.7.7 unwired | Partial, same prompt06 tests | Partial | GAP-10 |
 | AC-17 latency | ≤2 frames; mix first frame by next frame | Yes, next-boundary discipline (`directive.rs:443`) | Cut proven (`prompt04.rs:161-212`); mix first-frame unbisected | Partial | GAP-11 |
-| AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | GAP-12 |
+| AC-24 persistence | Ticker survives complex MOVE untouched | No as written (no move). Honest subset: DSK-above-transition + take-independence for cut/mix (solid stand-ins, hand-built `Transition`, pure-fn unit) | Partial (cut/mix only) | — *(no value recorded; §2c, 2026-10-14: this cell was missing, so GAP-12 rendered under Falsified? and Gap stood empty)* | GAP-12 |
 | §17.2 TRANSITIONING | Scene-state publication + §17.3 events | No engine counterpart; resync silently clears in-flight transition (`directive.rs:863-865`) | No | No | GAP-7 |
 
 GAP findings (spec-cited, Step 3 routes each): **GAP-1** wipe/sting/dve degrade to cut silently (v0.5); **GAP-2** move unimplemented, AC-23 unmet (v0.5); **GAP-3** easing families unapplied (v0.5); **GAP-4** per-element timing absent (v0.5); **GAP-5** preset/overrides ignored (v0.5); **GAP-6** duration edges unpinned + uncapped — Step 3 adds goldens for default/zero/one, clamp decision recorded (max accepted today); **GAP-7** back-to-back + TRANSITIONING unreported — Step 3 adds two-take golden; publication is v0.5; **GAP-8** cut-mid-mix abrupt — Step 3 adds golden pinning current behavior; **GAP-9** mix-mid-mix pop — Step 1's row (discover/define/test/falsify); **GAP-10** audio curve comment false + §8.7.7/bed unwired + no e2e — comment fix in Step 3, rest v0.5; **GAP-11** mix first-frame + e2e legs — Step 3 bisects start+1; **GAP-12** AC-24 as-written unproven — v0.5 (needs move).
@@ -2390,6 +2390,7 @@ at `619846c`.
   | the limiter removed | `a rule that would fire twice in one frame fires once…` | `fired once in the frame` — `2 !== 1` |
   | hold suppression removed | `a held engine fires nothing…` | `held: nothing dispatched` — `1 !== 0` |
   | pending not cancelled when a hold engages | `a hold cancels every pending action…` | `only the hold itself dispatched` (actual: three actors) |
+
 - **WU3** (`75f7ad4`): the trigger adapters.
   - **Where each is wired.** `mediaStart` (B3) on a take; `mediaEnd` on the
     recorded `PLAYING → DONE`; `timer`; `timeOfDay`; `hotkey` on an
@@ -2411,6 +2412,7 @@ at `619846c`.
   | hotkey only on accepted commands | `hotkey fires when its binding fires, whatever…` | deep-equal: `[]` vs the hotkey event |
   | streamHealth without a baseline | `streamHealth fires on a change TO…` | `after live` |
   | audioLevel unwired | `audioLevel fires on the engine's matching crossing…` | deep-equal: `[]` vs the audioLevel event |
+
 - **WU4** (`4d11ba9`): `autoFollow`, normative since v0.1 and unimplemented until
   now.
   - **What it does.** When an item carrying it completes (`PLAYING → DONE`), the
@@ -2441,6 +2443,7 @@ at `619846c`.
   |---|---|---|
   | the limiter does not count autoFollow | `autoFollow advances once per completion, never twice, and the limiter counts it` | `no second advance in the frame` — `2 !== 1` |
   | a completion with no next item audited again | `autoFollow on the last rundown item is a no-op that audits nothing` | `nothing attempted, nothing audited` (deep-equal) |
+
 - **WU6** (`d455aa0`): ladder rung 2, built as the user decided on 2026-09-27.
   The §4a stop is resolved; the draft's "buildable" row is struck with the
   tree's correction.
@@ -3894,8 +3897,9 @@ item):
   - dress: 27/27, `ok 24` (step 10). DRESS-COUNTS for CI (sha `95583c5`): 2
     drops, 195 underruns and 1 watchdog trip, within the backstops.
   - Position 2 is FIXED by it.
-- **Position 3: R16, the dress rehearsal's step 10 samples the transition
-  tick** (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
+- ~~**Position 3: R16, the dress rehearsal's step 10 samples the transition
+  tick**~~ **FIXED** by `b93db99` (PR #44; harness only; struck in the next
+  PR, the standing pattern of §2c) (the user's word of 2026-10-12, ruling on PR #41's fresh two-key
   pass). A harness-side fix: step 10 must not sample the transition tick. It
   reads its baseline from a tick that postdates the engine's stop report,
   with no retries and no tolerance. The register row is R16 in
@@ -4026,6 +4030,16 @@ item):
     - The falsification pair ran a file that differed from it only by that
       comment, so its behaviour was identical.
     - *(§2c, 2026-10-14, the fresh pass on PR #44.)*
+  **Merged: PR #44 is `b93db99`** (the bookend, the standing pattern of §2c).
+  Main's CI at `b93db99`, run `38685803055`, read per test (§2b): every job
+  green (rust 40/40 steps, control-plane 27/27, dress 17/17).
+  - rust: workspace 511 passed, 0 failed, 4 ignored; all 30 floor lines green.
+  - control-plane: npm 146; the show.stop e2e ran 6, exercised 1 and
+    skipped 5.
+  - dress: 27/27, with `ok 24 - [RI-1] step 10`. DRESS-COUNTS for CI (sha
+    `b93db99`): 1 drop, 188 underruns, 0 watchdog trips, within the
+    backstops.
+  - Position 3 and the R16 register row are FIXED by it.
 - **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
@@ -4044,6 +4058,244 @@ item):
     (`resync.handshakeFailed`). Whether to tear down the established session
     on a persistent failure, handing recovery to the now-honest connect path,
     is the user's word when the item is built.
+
+  **The read (2026-10-14, at `b93db99`; the work order of 2026-10-14),
+  recorded before the code.**
+  - **The `resyncRequest` handler** (`server.ts`):
+    `} else if (frame.kind === "resyncRequest") { sendResync(session); }`.
+    - Its result is ignored. `sendResync` has returned whether the socket
+      accepted the resync since PR #39, and it throws if the snapshot cannot
+      be built (`state.resyncSnapshot`: `ResyncPackageSchema.parse`,
+      `ResyncViewItemEndSchema.parse`).
+    - A throw escapes `handleMessage` and is caught at the session's tail:
+      `ws.send(JSON.stringify(errorResponse(randomUUID(), state.stateVersion,
+      "E_ENGINE", String(err))))`. It is neither audited nor warned.
+  - **What reaches the engine today.**
+    - On a throw: that error response. It is not a `DirectiveFrame`, so the
+      engine logs `unparseable frame from control plane` (`channel.rs`) and
+      carries on, connected.
+    - On a refused send: nothing at all.
+    - Either way the gate's `expected_seq` does not advance, so every later
+      directive is a gap that re-requests. That is the frozen engine.
+  - **Row 4's close semantics** (§5.9.4 rule 1, its failure half) cover a
+    connect only: "it MUST close that connection (1011, `show.resync handshake
+    failed`), hold no registration for it, and surface the failure". Rule 5,
+    the re-request, has no failure half.
+  - **The handshake's failure shape, the mirror to copy:**
+    1. `forget()`.
+    2. `audit.record({ kind: "command", outcome: "rejected", role, tokenId,
+       command: "show.resync", event: "resync.handshakeFailed",
+       stateVersionBefore, stateVersionAfter, detail: { error } })`.
+    3. `deps.warn(...)`.
+    4. `ws.close(1011, "show.resync handshake failed")`.
+  - **`sendDirect`'s failure shapes** (`render-bridge.ts`, read in full). Every
+    failure is `false`:
+    - no registration (`if (!session) return false`);
+    - the sender refuses, either `if (session.closed) return false` or
+      `if (ws.bufferedAmount > 256 * 1024) return false; // backpressure`;
+    - a sender throw, caught, logged (`render-bridge: direct send failed`)
+      and returned as `false`.
+  - **The split depends on what that `false` can be. Answer: never a
+    persistent failure on a live connection.**
+    - **A sender throw is unreachable.** `ws` 8.21.3's `send` throws only
+      while `CONNECTING`, which a server-side socket never is once
+      connected. On `CLOSING` or `CLOSED` it calls `sendAfterClose`: no
+      throw, the frame dropped. And `JSON.stringify` cannot throw on the
+      snapshot, which holds only strings, numbers, booleans, arrays and
+      objects from Maps.
+    - **So a `false` is backpressure** (it drains) **or a connection
+      already gone** (`forget()` has run, and keeping it is moot).
+    - **A persistent failure, the snapshot build, is an exception, never a
+      `false`.** The tree distinguishes the two classes the ruling splits on,
+      so the order's stop condition does not fire.
+    - One wrinkle, recorded: a socket mid-close reads as *sent*. The sender
+      returns true after `sendAfterClose`, and the close that follows tears
+      the session down and hands recovery to the connect path.
+
+  **The design** (the user's ruling of 2026-10-14, the split):
+  - **Each failed re-resync is audited and warned.** The event is
+    `resync.requestFailed`, the handshake's sibling: kind `command`, outcome
+    `rejected`, command `show.resync`. Its detail is `{ error, cause:
+    "snapshot" | "send", reason, sessionKept }`, where `reason` is the
+    engine's `resyncRequest` reason. The audit kinds are unchanged.
+  - **A throw while the snapshot is built is the persistent class.** The
+    handler runs `forget()`, the audit, the warn, then `ws.close(1011, "show.resync request failed")`, in the handshake's
+    order, leaving no registration. Recovery passes to the engine's
+    reconnect loop and a clean slate, where rule 1's handshake retries it
+    loudly.
+  - **A refused send is the transient class.** The handler audits and
+    warns, and keeps the session. The next directive's gap re-requests.
+  - **The rate.** Every failure is its own audit row: no coalescing, because
+    the audit is the record. The steady state under a persistent throw
+    follows from the engine's backoff (`channel.rs` `run_forever`: 100 ms,
+    doubling to a 10 s cap, reset only by a connection that outlived the
+    current delay):
+    1. The established connection outlived its delay, so after the 1011 the
+       engine reconnects in 100 ms.
+    2. Each reconnect's handshake builds the same snapshot, throws, and
+       closes within milliseconds, never outliving its delay. So the delays
+       run 200, 400, 800, 1600, 3200, 6400, then 10 000 ms.
+    3. That gives one `resync.requestFailed` row, then `resync.handshakeFailed`
+       rows at about 0.1, 0.3, 0.7, 1.5, 3.1, 6.3, 12.7, 22.7 s and every 10 s
+       after: ~~about 11 in the first minute~~ 1 + 11 = 12 rows in the first
+       minute (one `resync.requestFailed`, then 11 `resync.handshakeFailed`),
+       then 6 a minute, each with its warn. *(§2c, the fresh pass on PR #45:
+       the 11 counted only the handshake rows.)*
+    4. The rate is paced by the engine's backoff, ~~not by directives~~ once
+       the connection is torn down. Before that, each request already in
+       flight at the teardown adds its own row, so the extra rows are bounded
+       by the requests already in flight. The fresh pass's probe sent three
+       requests in flight and got three `snapshot` rows on one connection.
+       *(§2c, the fresh pass on PR #45.)*
+  - **Under a transient refusal.** One row per refused re-request. Those
+    come only as directives reach the engine and meet a gap, so the rate is
+    bounded by the directives that get through, and none are sent while the
+    socket stays backed up.
+  - **Scope.** The warn reaches the console, as `SHOW_STOP_HELD_WARNING`
+    does. An operator surface is R17's queued item (position 5).
+
+  **The code and the evidence** (2026-10-14, branch `resync-request-audit`;
+  struck FIXED by its merge SHA in the next PR). Row 4's record, the
+  zombie-registration fix below, is the handshake this mirrors.
+  - **`server.ts` `resyncOnRequest(reason)`** replaces the bare
+    `sendResync(session)`. It builds and sends the re-resync inside a guard.
+    - A throw runs `forget()`, then audits `resync.requestFailed` with
+      `{ error, cause: "snapshot", reason, sessionKept: false }`, warns, and
+      calls `ws.close(1011, "show.resync request failed")`.
+    - A `false` audits `{ cause: "send", sessionKept }` and warns. It keeps
+      the session (`sessionKept` is false only if the connection had already
+      closed).
+    - `audit.ts` documents the event. The kinds are unchanged.
+  - **Guards, ~~on a fake socket~~ on a real server and a real socket, the
+    engine scripted by the test** (`resync-handshake.test.ts`, +3; the suite is
+    6/6; §2c, the fresh pass on PR #45):
+    - **G1:** the snapshot throws on an established connection's request.
+      The result: closed `{1011, "show.resync request failed"}`,
+      registrations 0, no resync, no error reply, audited `[{rejected,
+      show.resync, snapshot, seqGap, sessionKept: false}]`, warned, and the
+      next connect's first directive is `show.resync` (registrations 1).
+    - **G2:** the first re-request's send is refused. The result: the socket
+      open, registrations 1, audited `[{…, send, seqGap, sessionKept:
+      true}]`, warned; the next request's resync arrives, and an operator's
+      directive flows.
+    - **G4:** a re-resync that succeeds audits nothing and warns nothing.
+  - **Guards, on the real engine** (`resync-request.e2e.ts`, 3/3, normative
+    machine). Each leg drops one directive on its way to the engine, so the
+    next one meets a real sequence gap:
+    - **snapshot:** `{"audited":[{"cause":"snapshot","reason":"seqGap",
+      "sessionKept":false}],"warned":true,"gapRequests":1,"reconnects":1,
+      "handshakeFailures":0,"registrations":1}`. The engine reconnected, its
+      handshake resync applied, and directives applied again.
+    - **send:** `{"audited":[{"cause":"send","reason":"seqGap",
+      "sessionKept":true}],"warned":true,"frozenUntilTheNextRequest":true,
+      "gapRequests":2,"reconnects":0,"registrations":1}`. The engine stayed
+      frozen until the next gap re-requested, and then it resynced and
+      directives applied.
+    - **persistent:** one `resync.requestFailed`, then `resync.handshakeFailed`
+      rows at **104, 309, 712, 1518, 3122, 6327, 12 730 and 22 735 ms** (that
+      run's load was not recorded; the in-ceiling measurements are under G3
+      below): the
+      engine's backoff, as the design computed (0.1, 0.3, 0.7, 1.5, 3.1, 6.3,
+      12.7, 22.7 s). ~~That is 9 attempts and 8 rows, one per attempt, each
+      warned.~~ The engine logged 9 dropped connections and the audit holds 8
+      `resync.handshakeFailed` rows, one per failure, each warned. The first
+      drop is the request failure's own 1011, whose row is the
+      `resync.requestFailed`; each of the other 8 is a failed handshake.
+      *(§2c, the fresh pass on PR #45: this read as attempts trailing rows at
+      the cut-off.)* Five directives sent in that time added no rows.
+  - **G3, the falsification of the whole.** `resyncOnRequest(frame.reason)`
+    was put back to the silent `sendResync(session)`, restored from the copy
+    and `cmp`-identical, with `tsc` clean.
+    - **Unit:** G1 and G2 fail. G1 read `closed: 'never: the socket stayed
+      open'`, `registrations: 1`, `errorReplies: ['E_ENGINE']`, `audited:
+      []`, `warned: false`: the frozen ceiling, made observable. G2 failed
+      at "the refused send is audited". G4 passes either way, as it should.
+      Restored: 6/6.
+    - **Real engine:** all three legs fail. snapshot failed at "the failed
+      re-resync is audited", and send at "the refused re-resync is audited".
+      persistent read `{"requestFailed":[],"attempts":0,
+      "handshakeFailedRows":0}`: in 25 s of failures the engine was never
+      torn down. Restored from the copy (`cmp`-identical). The gate's run at
+      `84a5e4f` is 3/3. ~~Its persistent leg read the backoff again: 107,
+      312, 716, 1520, 3125, 6329, 12 736 and 22 742 ms.~~ That run sat in the
+      control-plane/e2e window voided below, so no timing is quoted from it
+      *(§2c, the fresh pass on PR #45)*. In-ceiling measurements:
+      - **Mine, at the delta's tree** (2026-10-15, 01:21:35–01:22:01 UTC):
+        105, 309, 716, 1520, 3125, 6329, 12 734 and 22 737 ms. Load was
+        sampled every 2 s and read 2.30–2.54, never at or above 3.0, with no
+        discharge.
+      - **The fresh pass's five runs**, each under the ceiling (peak loads
+        2.51, 2.57, 2.56, 2.02 and 2.52). The first read 105, 310, 713, 1517,
+        3120, 6324, 12 728 and 22 732 ms.
+      - **The engine's constants** (100 ms, doubling to a 10 s cap) give
+        100, 300, 700, 1500, 3100, 6300, 12 700 and 22 700 ms. The measured
+        excess, about 5–40 ms, is accumulated connect overhead.
+      - Two more of my runs crossed 3.0 (peaks 3.04 and 3.36). They are void
+        as data, and their passes (3/3 each) stand.
+  - **The gate at `84a5e4f`** (normative machine; on AC, 45 W adapter, Low
+    Power Mode on, so power-limited; no sleep or battery event):
+    - Rust: workspace 511 passed, 0 failed, 4 ignored (twice); `spec_budgets`
+      2/2; clippy, fmt and tsc clean.
+    - Control plane: npm 149 (146 plus the three new guards); automation
+      32; effects 2; handshake suite 6.
+    - E2e, every leg exercised: slate-release 4, recall 2, take-duration 3,
+      resync-end 3, package-reconcile 4, show-stop 6, resync-request 3.
+    - Dress: 27/27, DRESS-COUNTS normative 0 drops and 0 underruns, load
+      2.31–2.59.
+    - **Voids, named.** Both workspace runs crossed 3.0 as the suite ran:
+      10 of 22 samples (peak 3.59), then 13 of 22 (peak 4.23) after starting
+      at 2.22. So did the control-plane and e2e window, 28 of 77 samples
+      (peak 5.80). Each is void as a quiet-machine datum. Their pass counts
+      stand, and no timing claim rests on them.
+
+  **The fresh pass's delta** (the user's ruling of 2026-10-15 on PR #45's
+  two-key pass, adopted in full: a guard and the docs, no other code):
+  - **D1, the teardown's order, now guarded.** Nothing pinned that the
+    registration is released *before* the close. The socket's own
+    `close → forget` listener masked a missing `forget()`: the pass removed
+    it on either path, and both suites stayed green.
+    - **The probe.** `resync-handshake.test.ts` wraps the server-side
+      `WebSocket.prototype.close`. At the instant the server initiates its
+      1011 close, before any close listener can run, it reads the
+      registrations, the audit rows and the warn.
+    - **One test per path:**
+      - "the order, the request path: forget, audit and warn all precede the
+        1011 close";
+      - "the order, the handshake path: …".
+    - Each asserts `[{ registrations: 0, audited: 1, warned: true }]`. Only
+      the first `close(1011)` is read, because `ws` calls `close` again
+      internally on the echoed frame. The suite is 8/8.
+    - **Falsified, each path.** `forget()` was removed from the request path
+      (`resyncOnRequest`'s catch), and then from the handshake path (the
+      handshake's catch).
+      - Each time only that path's order test failed: `+ registrations: 1,
+        - registrations: 0`, 7/8.
+      - The end-state tests stayed green, which is the masking the pass
+        found.
+      - Restored from the copy, `cmp`-identical, `tsc` clean: 8/8.
+  - **D4, the order goes into the spec** (the user's decision). Rule 1's
+    failure half now states it: release the registration, audit, warn,
+    close (1011, the named reason), as the load-bearing order. Rule 1's old
+    text is struck (§2c). Row 7's "in rule 1's order" now cites real spec
+    text. The alternative, dropping the phrase, was rejected.
+  - **D2.** Row 7 and the impact paragraph claimed the 1011 replaced "an
+    `E_ENGINE` reply or silence". It replaces only the `E_ENGINE` reply; a
+    refused send was silent on the wire and still is. Both are struck and
+    corrected, and the PR body is edited, noting the edit.
+  - **D3.** The 9-and-8 explanation is corrected above and in the e2e
+    comment: 1 + 11 = 12 rows in the first minute. The assertion stands.
+  - **D5.** "Never the directive rate" is struck in rule 5 and above: the
+    extra rows are bounded by the requests already in flight, as the pass's
+    probe showed (3 requests, 3 `snapshot` rows on one connection).
+  - **D6.** Rule 5 now states the mid-close drop: it reports as sent, so
+    nothing is audited, and nothing is lost either.
+  - **D7.** "On a fake socket" is struck above and in the PR body: the unit
+    guards run a real server and a real socket. The e2e header's grouping
+    is corrected: G3 is the falsification, not a guard.
+  - **D8.** The backoff quote from the voided window is struck above and
+    requoted from in-ceiling runs.
+  - **The audit-sink cases** are recorded and queued, with no code: R18 in
+    the register, attached to R17's operator-surface item (position 5).
 - **Position 5: R17, the control plane reports a refused stream as live**
   (the user's word of 2026-10-12, establish-first). On CI the engine refuses
   `stream.start`, and the control plane's telemetry still reports the stream
@@ -4064,6 +4316,13 @@ item):
       belief about an output, beside the engine's report, with nothing that
       tells the operator they differ. The late-acknowledgement
       reconciliation, queued here with row 6, is its other half.
+    - The failed re-resync's warn (queue position 4, SPEC v0.4.8 row 7) is
+      console-only too, and belongs on the same operator surface.
+    - **R18 attaches here** (the user's word of 2026-10-15, record and queue).
+      When the audit sink itself is broken, a failure is invisible on that
+      surface by definition. A last-resort surface for audit failure is the
+      open design question. The register row is R18 in
+      `docs/soak-protocol.md` §5.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
