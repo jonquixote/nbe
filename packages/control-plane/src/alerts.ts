@@ -212,6 +212,10 @@ export class OperatorSignals {
   }
 
   private windowElapsed(output: Output, entry: Pending): void {
+    // TEMP FALSIFICATION (claim 8, throwaway branch only): (b) never raises.
+    // A conditional return, so tsc still narrows the code below (CI typechecks
+    // before the e2e step); the window is always positive, so it always returns.
+    if (this.i.windowMs > 0) return;
     if (this.pending.get(output) !== entry || entry.processedAt !== null) return;
     if (this.i.lane.has(ALERT.engineNotReporting.id)) return; // that alert owns it
     const spec = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;

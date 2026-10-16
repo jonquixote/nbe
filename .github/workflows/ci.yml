@@ -978,6 +978,11 @@ jobs:
             | grep -v "^\s*//" || true)
           if [ -n "$hits" ]; then echo "vocabulary violation:"; echo "$hits"; exit 1; fi
       - name: tests pass and actually run (summary echoed for the audit trail)
+        # TEMP FALSIFICATION (claim 8, throwaway branch only, NEVER MERGE):
+        # the (b)-kill above reds npm, and without this the job aborts before
+        # the operator-signals step. This isolation exists only to let the
+        # refused-start leg fail on its own assertion.
+        continue-on-error: true
         run: |
           set -o pipefail
           npm test 2>&1 | tee /tmp/cp-test.log
