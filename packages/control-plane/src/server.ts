@@ -43,7 +43,8 @@ import {
   type Snapshot,
 } from "./automation.js";
 import type { PersistenceHooks } from "./persistence.js";
-import { buildTick, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
+import { buildTick, ENGINE_TELEMETRY_TTL_MS, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
+import { AlertLane, OperatorSignals } from "./alerts.js";
 
 // ---------------------------------------------------------------------------
 // Auth (addendum §2.5): token is authoritative; X-NBE-Role must match.
@@ -211,6 +212,44 @@ export interface ServerOptions {
 export async function createControlPlaneServer(opts: ServerOptions): Promise<ControlPlaneServer> {
   const { state, audit, auth } = opts;
   const world: WorldTelemetry = newWorldTelemetry();
+
+  // -- SPEC §10.1.2 (v0.4.8 row 8): the operator-signal lane -----------------
+  // Alerts live on the state, so every snapshot surface and the tick carry
+  // one list. Each edge (raise, clear) is one audit row under kind `command`,
+  // the tree's kind for control-plane events, never a row per evaluation.
+  const lane = new AlertLane(
+    state,
+    (edge, alert, cause) => {
+      audit.record({
+        kind: "command",
+        command: "alert",
+        ...(alert.auditEvent === null ? {} : { event: alert.auditEvent }),
+        detail: {
+          alert: alert.id,
+          edge,
+          severity: alert.severity,
+          reason: alert.reason,
+          since: alert.since,
+          ...(cause === null ? {} : { cause }),
+        },
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+      });
+    },
+    Date.now,
+  );
+  const signals = new OperatorSignals({
+    state,
+    lane,
+    now: Date.now,
+    // §5.9.5's window: the same one `show.stop` waits for its acknowledgement.
+    windowMs: opts.showStopGraceMs ?? 2000,
+    ttlMs: ENGINE_TELEMETRY_TTL_MS,
+    engineReport: () => world.last,
+    auditSinkOk: () => audit.sinkOk,
+  });
+  const signalTimer = setInterval(() => signals.evaluate(), 250);
+  signalTimer.unref?.();
   const wsBridge = new WsRenderBridge();
   const bridge: RenderBridge = opts.bridge ?? wsBridge;
   const rateLimiter = new RateLimiter();
@@ -236,6 +275,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     if (prev !== null && version <= prev) return; // stale ack: log and ignore
     session.render.lastApplied = version;
     const ownAck = !session.render.resyncs.includes(version);
+    signals.onApplied(version, !ownAck);
     if (ownAck) {
       session.render.acked.push(version);
       if (session.render.acked.length > 64) session.render.acked.shift();
@@ -293,6 +333,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       });
     },
     waitForAck: (ms, stateVersion) => waitForGrace(ms, stateVersion, true),
+    onSent: (command, stateVersion) => signals.onAccepted(command, stateVersion),
     warn: opts.warn ?? ((m) => console.warn(m)),
   };
   const registry = buildRegistry(deps);
@@ -362,6 +403,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       // the response's stateVersion and observable no later than it.
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
+      // §5.9.5: a `show.stop` that returns with outputs still active was not
+      // acknowledged, and they are held. The lane announces it (v0.4.8 row 8).
+      if (command === "show.stop" && state.outputsActive()) signals.held(out.stateVersion);
       hotkeyFired(run.intentSource);
       return { ok: true, stateVersion: out.stateVersion, data: out.data };
     } catch (err) {
@@ -707,6 +751,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       try {
         session.render = { registration: wsBridge.register(renderSender), lastApplied: null, acked: [], resyncs: [] };
         if (!sendResync(session)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
+        signals.onRegistered();
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         forget();
@@ -955,6 +1000,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       clients.clear();
       for (const waiter of ackWaiters) waiter.resolve(false);
       ackWaiters.clear();
+      clearInterval(signalTimer);
+      signals.close();
       automation.close();
       wss.close();
       await new Promise<void>((resolve) => http.close(() => resolve()));

@@ -92,6 +92,12 @@ export interface DispatchDeps {
    * itself on `show.stop` (§16.1).
    */
   waitForAck?: (ms: number, stateVersion: number) => Promise<boolean>;
+  /**
+   * Told of each accepted command once its directive is on the wire, before
+   * any `afterForward` wait: the operator-signal lane's command confirmation
+   * starts its window here (SPEC §10.1.2, v0.4.8 row 8).
+   */
+  onSent?: (command: string, stateVersion: number) => void;
   rateLimiter?: RateLimiter;
   warn?: (message: string) => void;
 }
@@ -390,6 +396,8 @@ export async function dispatch(
       stateVersion: sv,
     });
   }
+
+  deps.onSent?.(command, sv);
 
   // 10. a command that waits on its own directive's outcome waits here, after
   // the send (show.stop's acknowledgement, §5.9.5)

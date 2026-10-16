@@ -82,7 +82,7 @@ function rtmpCommand(streamId: number, payload: Buffer): Buffer {
   h.writeUInt32LE(streamId, 8);
   return Buffer.concat([h, payload]);
 }
-async function startRtmpSink(): Promise<{ port: number; bytes: () => number; close: () => void }> {
+export async function startRtmpSink(): Promise<{ port: number; bytes: () => number; close: () => void }> {
   let media = 0;
   const sockets = new Set<Socket>();
   const srv = createServer((sock) => {

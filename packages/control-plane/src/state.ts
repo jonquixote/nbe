@@ -9,6 +9,7 @@
 //! - Persistance lives in `persistence.ts` (async, dirty-flag + debounce).
 
 import { CpError, ResyncPackageSchema, ResyncViewItemEndSchema, type ResyncViewItemEnd } from "./protocol.js";
+import type { Alert } from "./alerts.js";
 
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
 export type SceneState = "IDLE" | "ARMED" | "VIEW" | "TRANSITIONING";
@@ -121,7 +122,21 @@ export class ControlPlaneState {
   preflightPassed = false;
   /** Warnings from the last preflight (exit 1); gates show.start per §16.1. */
   preflightWarnings: string[] = [];
+  /**
+   * SPEC §10.4 item 7, superseded (v0.4.8 row 8): one slot that only
+   * preflight writes, one error overwriting another. It is kept, written by
+   * preflight alone, for compatibility; the operator-signal lane (`alerts`) is
+   * the general surface.
+   */
   lastError: string | null = null;
+  /**
+   * SPEC §10.1.2 (v0.4.8 row 8): the operator-signal lane, a live view the
+   * server's evaluator keeps (`alerts.ts`). Never persisted: after a restart
+   * it is rebuilt from the state as it then stands.
+   */
+  alerts: Alert[] = [];
+  /** SPEC §10.1.2: R18's fallback flag; false while the audit sink cannot be written. */
+  health: { auditSinkOk: boolean } = { auditSinkOk: true };
 
   viewItem: string | null = null;
   /**
@@ -513,6 +528,8 @@ export class ControlPlaneState {
       automationHold: this.automationHold,
       qualityProfile: this.qualityProfile,
       lastError: this.lastError,
+      alerts: this.alerts.map((a) => ({ ...a })),
+      health: { ...this.health },
     };
   }
 
