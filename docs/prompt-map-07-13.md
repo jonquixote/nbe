@@ -4520,7 +4520,7 @@ item):
          loses it. That leaves the row's exact state, the stream on air while
          the control plane believes it idle, and the alert says so.
   - **Guards, each falsified.**
-    - `alerts.test.ts` (20) drives the evaluator.
+    - `alerts.test.ts` (21) drives the evaluator.
     - `alerts-server.test.ts` (4) runs a real server and real sockets, with
       the engine scripted.
     - `operator-signals.e2e.ts` (4) runs the real engine. On the normative
@@ -4541,6 +4541,37 @@ item):
     | F7 | R18: no row for the sink's own failure | the sink alert's edges audited too | unit: `R18 … attempts no audit row for it` |
     | F8 | R18: the stderr line | the stderr write removed | server: `R18: a sink that really fails …` (`stderr: 0`, not 1) |
     | F9 | the held path, server to engine | the server never reports a held stop | server: `held: a show.stop the engine never acknowledges …`; e2e: held, `the held alert raises` |
+    | F10 | (b) clears on a late exact acknowledgement | the exact ack leaves (b) standing | unit: `(b) a late acknowledgement clears the alert`, `+ 'command.unacknowledged.stream'` |
+    | F11 | (b) clears on a later acknowledgement, and (a) takes over | only an exact ack proves processing | unit: `(b) a later acknowledgement proves the command was processed`; server: the unacknowledged-start test, `(a) takes the contradiction over` |
+    | F12 | a resync's acknowledgement proves nothing | the resync's ack treated as a command's | unit: `(b) a resync's acknowledgement proves nothing`, `- 'command.unacknowledged.stream'` |
+    | F13 | (b) clears on the operator's explicit action | the supersede removed | unit: `(b) the operator's explicit action supersedes the episode` |
+    | F14 | `show.stop` is excluded from (b) | `show.stop` gets a (b) entry of its own | unit: `(b) show.stop is excluded`, `+ 'command.unacknowledged.stream'` |
+    | F15 | (b)'s negative: acknowledged inside the window | the ack ignored, the window timer kept | unit: `(b) negative: acknowledged inside the window raises nothing`, `+ 'command.unacknowledged.record'` |
+    | F16 | row: live beside closed | the `closed` clause removed | unit: `(a) live beside closed …`, `- 'stream.divergence'` |
+    | F17 | row: idle beside live/reconnecting | the idle clause removed | unit: `(a) idle beside live or reconnecting …`, `- 'stream.divergence'` |
+    | F18 | negative: reconnecting beside live | `reconnecting` added to the live clause | unit: `reconnecting beside live is §9.5's survival shape`, `+ 'stream.divergence'` |
+    | F19 | negative: the consistent pairs | `closed` added to the idle clause | unit: `(a) the consistent pairs raise nothing` and the held test (after the heal, idle beside `closed` raised) |
+    | F20 | negative: a stream command pending | (a) compares while one is pending | unit: `(a) negative: while a stream command is pending`, `+ 'stream.divergence'` |
+    | F21 | the not-reporting alert clears when reports resume | its clear removed | unit: `the engine reporting again clears its alert`, `+ 'engine.notReporting'` |
+    | F22 | the held alert heals | its clear removed | unit: the held test, `+ 'outputs.held'`; server: the held test, `the heal clears it` |
+    | F23 | (b) clears when the engine goes not-reporting | the record (b) clear removed | unit: `(b) the engine going not-reporting clears the alert`, `+ 'command.unacknowledged.record'` |
+    | F24 | the `lastError` pin: preflight still writes it | a passing preflight no longer clears it | server: `additive: …`, `+ 'a previous error'`, `- null` |
+    | F25 | additive: every field a client reads today | `lastError` dropped from the snapshot | server: `additive: …`, `- 'lastError'`; the existing `render-channel.test.ts`: `GET /status carries all seven Section 10.4 fields`, `status is missing the §10.4 field lastError` |
+    | F26 | additive: no belief moves | a (b) raise sets the stream idle | server: the unacknowledged-start test, `part A changes no belief: the control plane still believes live`, `'idle' !== 'live'` |
+
+    - **F10–F26 were added after the gate** (a guard per clearing rule, per
+      mapping row and per negative, and for `lastError` and the additive
+      invariant), with one new unit test, `(b) the engine going not-reporting
+      clears the alert`, the ruling's third clearing rule, which had none.
+      F1–F9 were counted against 20 unit tests, F10–F26 against 21. Each of
+      F10–F26 failed only the tests named, was restored from its copy, and
+      read `cmp`-identical.
+    - **The refused-start leg's own falsification was not run.** The leg runs
+      only where the engine refuses the encoder, which is CI; locally it
+      skips. F1 removes the path it asserts through (`windowElapsed`, the
+      same raise the lost-stop leg reads), and F1 failed the lost-stop leg
+      and six unit tests. A run of F1 on CI would need a mutated commit
+      pushed to a branch, and was not made.
 
     - **F3′ shows why waiting for a command after a reconnect is wrong.**
       After a restart the next command may be the operator's own stop, as in
@@ -4550,7 +4581,7 @@ item):
       not-reporting check removed) proved nothing about flicker. The test
       now reads `live` while fresh and then goes stale, and F4b fails it with
       the flicker itself.
-    - **The additive invariant.** `npm test` is 175 (151 existing, plus 24).
+    - **The additive invariant.** `npm test` is 176 (151 existing, plus 25).
       No existing test file was edited, and automation and effects are
       unchanged.
   - **A finding, out of scope.** The `system.status` *command* builds its

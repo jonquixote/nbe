@@ -130,6 +130,18 @@ test("(b) the operator's explicit action supersedes the episode", async () => {
   r.signals.close();
 });
 
+test("(b) the engine going not-reporting clears the alert: that alert owns the unconfirmed state", async () => {
+  const r = rig();
+  r.signals.onAccepted("record.stop", 5);
+  await sleep(WINDOW + 15);
+  assert.deepEqual(r.ids(), [ALERT.recordUnacknowledged.id]);
+  r.stale();
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.engineNotReporting.id]);
+  assert.deepEqual(r.rows.find((x) => x.edge === "cleared"), { edge: "cleared", id: ALERT.recordUnacknowledged.id, event: "command.unacknowledged", cause: "the engine is not reporting" });
+  r.signals.close();
+});
+
 test("(b) show.stop is excluded: it raises no unacknowledged alert of its own", async () => {
   const r = rig();
   r.signals.onAccepted("show.stop", 8);
