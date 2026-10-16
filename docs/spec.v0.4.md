@@ -43,7 +43,10 @@ of that PR, on the user's ruling of 2026-10-14, (C), and until then it is a
 candidate (merged as `95583c5`). **Row 7** was drafted in the re-resync PR
 (branch `resync-request-audit`, 2026-10-14). It is ratified by the user's
 merge of that PR, on the user's ruling of 2026-10-14 (the split), and until
-then it is a candidate.
+then it is a candidate (merged as `461a30b`). **Row 8** was drafted in R17
+spine part A's PR (branch `operator-signal-lane`, 2026-10-15). It is ratified
+by the user's merge of that PR, on the user's design ruling of 2026-10-15 and
+the witness ruling of the same day, and until then it is a candidate.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
@@ -54,6 +57,7 @@ then it is a candidate.
 | 5 | **A resync reconciles the package by load identity** (the user's word of 2026-10-08; the gap was recorded by PR #38's record). The control plane put `packagePath` on every resync and the engine ignored it. A package loads only at `show.load` (`show.start` only starts the clock), so an engine restarted mid-show rejoined holding no package, for the rest of the show, and the manual recovery was a stop-load-start on air. Now the snapshot carries `packagePath` and `packageLoadStateVersion`, the control plane's load generation, which the forwarded `show.load` also carries. The engine compares the pair with the load it applied. Equal: nothing. Different, or none loaded: `show.load`'s own body runs before the rest of the resync. A load that fails is not fatal: the rest applies, nothing of any previous package stays renderable, and with an item on air the slate is up and that item is reported `missing`. A later resync at the same identity retries the load, once per resync; a failed load never requests one, so the retry cannot loop (the user's word of 2026-10-09, reversing the no-retry rule this row first carried). A snapshot naming no package is out of scope (the queued `show.unload` routing). §13.4.1 is unchanged: `show.resync` has no row, and `missing` arrives on the existing engine-event path | 5.9.4 | `package_reconcile.rs` (10, GPU); the wire audit trio: `resync_package.json` (shared fixture), `mirror.rs` (+2), `protocol.test.ts` (+1); `resync-snapshot.test.ts` (+1); `package-reconcile.e2e.ts` (4, the real engine restarted and reconnected). Latency: `package-reconcile.measure.ts`, about 1.27 s added on the dress package. Falsifications: `docs/prompt-map-07-13.md`, the package-reconcile record |
 | 6 | **`show.stop` is one directive, and the engine quiesces its own outputs** (the user's ruling of 2026-10-14, (C); the defect was established by PR #42, merged as `067e709`). §5.9.5 had the control plane send `record.stop` and `stream.stop` at the stop command's version, and the dispatcher then forwarded `show.stop` at the same version: three directives at one version. The render node's stale-version gate, which no spec text named, applies at most the first directive at a version and drops the rest. A drop leaves a sequence gap, and the next directive turns it into a resync, which carries no output state. So with record and stream active, the record stopped, the stream stayed on air through the stop and through the resync, and the control plane reported both idle. Now the control plane sends `show.stop` alone, at the version the dispatcher assigned it, and §16.1 steps 1–2 are the stop: the render node quiesces its own outputs on it. The acknowledgement is `show.stop`'s own and is the quiesce outcome. The control plane waits for that exact version after the send and marks the outputs idle only on it. Without it, it logs the warning and **holds** the outputs at their prior state, because it cannot know them. The gate enters the spec as §5.9.6, the reconnect invariant it is. **§5.9.1 and §16.1 stand as written:** a directive still carries its command's version, and now no command emits more than one; §16.1's steps 1–2 were always the render node's to take | 5.9.5 (rewritten, old text struck), 5.9.6 (new) | `show-stop-version.e2e.ts` (6, the real engine behind a tap on the render channel: E1–E3 inverted, the stream off air and the take finalized with its marker sidecar; E4, the control, unchanged; a concurrent leg, a second operator's command inside the ack window; a held leg, a real finalize failure that withholds the ack); `render-channel.test.ts` (+5, 2 rewritten: the hold between send and ack, the hold on no ack, a later command's ack does not stand in, nor a resync's (a reconnect, and a same-connection request), `force`, no output); `dispatch.test.ts` (~~+1~~ +2, 1 rewritten: one directive, the wait at the dispatcher's version, the hold, and the dispatch pin: a command emits at most one directive, §5.9.6 rule 4); `automation.test.ts` (the row check's stop is acknowledged, as the engine does). Timing: `show-stop.measure.ts`. Falsifications: `docs/prompt-map-07-13.md`, the (C) fix's record |
 | 7 | **A failed re-resync is never silent, and its class decides the session** (the user's ruling of 2026-10-14; queue position 4, adopted from PR #39's two-key pass). Rule 5 had no failure half. On `resyncRequest` the control plane sent the snapshot and ignored the result, and a throw became an unaudited error reply that the render node logs as an unparseable frame. The gate never advances `expected_seq` on a gap (§5.9.6), so every later directive was another gap: a frozen render node on a live connection, accepting commands and sending telemetry, with nothing on air changing and no signal. Now every failure is audited (`resync.requestFailed`, with its cause) and warned, and the class decides. **A snapshot that cannot be built is persistent:** the connection closes (1011, `show.resync request failed`) and holds no registration, and the render node's reconnect handshake (rule 1) retries against a clean slate, paced by its backoff. **A send that is refused is transient:** the session is kept, and the next directive's gap re-requests. What the render node sees that it did not: a 1011 close with that reason, where it got an `E_ENGINE` error response ~~or nothing~~. A refused send was silent on the wire and still is, because the session is kept; the audit and the warn are its surface *(§2c, the fresh pass on PR #45)*. Rule 1's failure half now states its order (release the registration, audit, warn, close), which the tree already followed and a guard now pins *(the fresh pass on PR #45; the user's decision of 2026-10-15)* | 5.9.4 (rule 5's failure half; rule 1's failure half gains its order) | `resync-handshake.test.ts` (~~+3~~ +5: a snapshot that cannot be built tears down and the reconnect resyncs; a refused send keeps the session and the next request unfreezes it; a re-resync that succeeds audits nothing; and the teardown's order on both the request path and the handshake path: registration released, audited and warned at the instant the close is initiated); `resync-request.e2e.ts` (3, the real engine behind a real sequence gap: snapshot, send, and a persistent failure paced by the engine's backoff). Falsifications: `docs/prompt-map-07-13.md`, queue position 4 |
+| 8 | **The operator-signal lane** (the user's design ruling of 2026-10-15; R17 spine part A; queue position 5). The control plane held beliefs about its outputs that the render node's own report could contradict: a refused stream read `live` beside `none`, a held stop `live` beside `closed`, and a stop that did not take `idle` beside `live`. Nothing announced the contradiction. The control plane's warnings reached only a console, and `lastError` was one slot that only preflight wrote. Now one alerts list rides the shared status snapshot: `stateChange`, `system.status`, `GET /status` and the tick. It carries (b) command confirmation: an output command with no exact acknowledgement within §5.9.5's window. It carries (a) standing contradictions, compared only against a fresh report that postdates the anchor. It also carries the held stop, the engine not reporting, and R18's audit-sink fallback, which is the one alert with no audit row. Every other alert is audited on its edges. The row is additive: no belief, enum, automation input, engine or wire change | 10.1 (two fields), 10.1.1 (ownership), 10.1.2 (new), 10.4 (item 7, old text struck) | `alerts.test.ts` (20: every mapping row with its negative, the (b)-to-(a) handoff, edge auditing, R18); `alerts-server.test.ts` (4: every shared surface alike, the held path, a sink that really fails, the additive snapshot); `operator-signals.e2e.ts` (the real engine). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.8. Row 2
 adds one field to a directive payload, `itemDurationFrames`. That is a wire
@@ -76,7 +80,11 @@ send was silent on the wire and still is; §2c, the fresh pass on PR #45). The w
 audit trio (the shared fixtures, `mirror.rs`, `protocol.test.ts`) carries
 neither audit events nor close reasons, so it is untouched; the event's own
 three places move with it: `audit.ts`'s documented events, this rule's text,
-and the guards that pin its shape. The
+and the guards that pin its shape. Row 8 adds two control-plane fields,
+`alerts` and `health`, to the status snapshot and the tick. The render node's
+frames, the directives and the manifest schema are unchanged, so the wire
+audit trio, which covers the render node's frames, is untouched. Its audit rows
+reuse kind `command`; the audit kinds are unchanged. The
 `snapshot.recall` directive is not a new frame: the command was already
 forwarded and is in the command surface. It now carries resolved content, as
 §5.9.1 requires, instead of the snapshot's name.
@@ -2371,7 +2379,9 @@ Telemetry fields:
   "audioDriftMs": 0.4,
   "busPeakDbfs": { "master": -12.3, "mic": -18.0 },
   "recordTapPath": "zeroCopy",
-  "recordTapReason": "Table"
+  "recordTapReason": "Table",
+  "alerts": [],
+  "health": { "auditSinkOk": true }
 }
 ```
 
@@ -2467,7 +2477,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 
 | Owner | Fields |
 |---|---|
-| Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded) |
+| Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded), `alerts` and `health` (§10.1.2, v0.4.8 row 8) |
 | Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
@@ -2482,6 +2492,69 @@ The effective profile MUST NOT exceed the requested one: a show asking for `cons
 The render node reports its fields over `engineTelemetry` (Section 5.9.3) at 1 Hz. The control plane caches the last report with its arrival time and merges. When no report has arrived within the staleness threshold (default 2 seconds), the engine-owned fields report stub values and the tick carries `engineConnected: false`.
 
 The emitted field shape is always complete. A telemetry consumer MUST never see a missing field, whatever the engine's state — an absent field and a stubbed field are different failures and only one of them is diagnosable.
+
+### 10.1.2 The operator-signal lane (normative, new in v0.4.8 row 8)
+
+The control plane holds beliefs about its outputs (`streamState`, `recordState`), and the render node reports what it is doing (`streamTransportState`). The two can contradict each other, and before this section nothing announced it. **The lane is the control plane's single list of what needs an operator.** It carries an alert for every contradiction and every unconfirmed command the control plane can see.
+
+**Where it rides.** `alerts` and `health` are fields of the control plane's status snapshot. So the `stateChange` frame (§5.4.1), `system.status`, `GET /status` (§10.4) and the §10.1 tick all carry the same list. Both are control-plane-owned (§10.1.1) and always present: `alerts` is `[]` when nothing needs anyone, and an empty list means the conditions below were evaluated and are clear.
+
+**An alert** is `{ id, severity, reason, since, auditEvent }`:
+- `id` is stable for the episode, and the same condition never raises twice at once.
+- `severity` is `info`, `warning` or `critical`.
+- `reason` states what the control plane saw.
+- `since` is the Unix time in milliseconds when the episode raised.
+- `auditEvent` is the event its audit rows carry.
+
+| `id` | Raised when | `severity` | `auditEvent` |
+|---|---|---|---|
+| `command.unacknowledged.stream`, `command.unacknowledged.record` | (b) below: an output command was not acknowledged within the window | `warning` | `command.unacknowledged` |
+| `stream.divergence` | (a) below: a standing contradiction between belief and report | `critical` | `stream.divergence` |
+| `outputs.held` | `show.stop` was not acknowledged, and its outputs are held (§5.9.5) | `warning` | `show.stopHeld` |
+| `engine.notReporting` | no engine report within §10.1.1's freshness threshold. Measured from the latest of the last report, the last render registration and the control plane's start, once a render node has registered or while the show runs | `critical` | `engine.notReporting` |
+| `audit.sinkFailed` | the audit sink cannot be written (R18's fallback, below) | `critical` | none |
+
+**Two mechanisms, one question each.** Both are needed:
+- **(b) Command confirmation.** `stream.start`, `stream.stop`, `record.start` and `record.stop`, when given no exact acknowledgement within §5.9.5's window (2000 ms), raise `command.unacknowledged`. A refused or skipped directive is never acknowledged: the render node acknowledges only a directive it applied. So the absence is the signal. `show.stop` is excluded, because it has its own exact wait and `outputs.held` is its surface.
+  - The alert clears when the command is acknowledged late; when a later acknowledgement proves the command was processed (see below); on the operator's next command for that output; or when the render node stops reporting, whose alert then takes over.
+  - A later acknowledgement proves processing because the render node applies directives in arrival order and the control plane sends at increasing versions (§5.9.6). A resync's acknowledgement proves nothing about a command, since the resync carries no output state.
+  - A proof that arrives inside the window raises nothing, and (a) takes the episode over.
+- **(a) Standing contradictions.** With no stream command or `show.stop` pending, the control plane compares its belief with a **fresh** engine report that **postdates the anchor**.
+  - The anchor is the latest of two moments: when the engine is known to have processed the latest stream command or `show.stop`, and the connect or resync acknowledgement.
+  - "Fresh" is §10.1.1's freshness threshold. "Postdates" means the report was received after the anchor.
+  - This is the postdate witness of v0.4.8's R16 fix, held in-process: the control plane knows each report's receipt time and compares it directly.
+  - The comparison covers the stream only: the render node reports no record state.
+
+**The mapping** (CP belief × engine report × freshness × pending command):
+
+| CP `streamState` | Engine `streamTransportState` | Report | Pending | Alert |
+|---|---|---|---|---|
+| any | any | any | an output command whose window elapsed unprocessed | (b) `command.unacknowledged.<output>` |
+| `live` | `none` | fresh, postdating the anchor | none | (a) `stream.divergence`: the start did not take, or the render node lost the stream (a restart; a resync carries no output state) |
+| `live` | `closed` | fresh, postdating the anchor | none, and no held stop | (a) `stream.divergence`: a refused restart. After its first stream the render node reports `closed`, not `none`, once the stream is gone; its publisher closes only on a stop |
+| `live` | `closed` | fresh | a `show.stop` not acknowledged | `outputs.held`, not a divergence |
+| `idle` | `live` or `reconnecting` | fresh | the stop not yet processed | (b) primarily: the stop did not take |
+| `idle` | `live` or `reconnecting` | fresh, postdating the anchor | none | (a) `stream.divergence`: on air while believed idle |
+| `live` | `live` or `reconnecting` | — | — | none: `reconnecting` beside `live` is §9.5's survival shape |
+| `idle` | `none` or `closed` | — | — | none |
+| any | any (the stale stub) | stale (`engineConnected: false`) | — | no divergence; `engine.notReporting` instead |
+
+**Auditing on edges.** Every alert except `audit.sinkFailed` has an audit row (§10.7) when it raises and one when it clears, never one per evaluation.
+- Each row is kind `command`, `command: "alert"`, and the alert's `auditEvent`.
+- Its detail carries the alert's `id`, `edge` (`raised` or `cleared`), `severity`, `reason` and `since`, and a clear's `cause`.
+- The lane is the live view; the audit file stays the record.
+
+**Restart semantics.** The lane is never persisted.
+- After a control plane restart it starts empty and is rebuilt as the conditions are evaluated. A condition that persists raises again, with a new raise row.
+- An episode that outlived the process keeps its raise row and gets no clear row.
+
+**R18's fallback.** When the audit sink itself cannot be written, the failure cannot be recorded there. `audit.sinkFailed` is the one alert with no audit row, neither raised nor cleared; its `auditEvent` is `null`. Its other surfaces are:
+- the snapshot's `health: { auditSinkOk: false }`;
+- one line on the control plane's stderr per failure episode.
+
+It clears when the sink accepts a write. What the control plane does after a failed write is unchanged here: that is R18's queued question.
+
+**Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` and `recordState`, and correcting a belief from a fresher report, are a later row's.
 
 ## 10.2 Dropped-frame definition
 
@@ -2607,7 +2680,7 @@ Response MUST include:
 4. stream health,
 5. recording health,
 6. preflight state,
-7. last error.
+7. ~~last error.~~ the operator-signal lane, `alerts` (§10.1.2), and `health`. *(§2c, v0.4.8 row 8: "last error" was a single slot that only preflight writes, one error overwriting another. The lane is the general surface. `lastError` stays in the response for compatibility, written by preflight alone.)*
 
 ## 10.5 Quality profiles and the degradation ladder
 

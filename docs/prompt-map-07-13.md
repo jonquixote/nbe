@@ -4040,7 +4040,9 @@ item):
     `b93db99`): 1 drop, 188 underruns, 0 watchdog trips, within the
     backstops.
   - Position 3 and the R16 register row are FIXED by it.
-- **~~Position 2~~ ~~Position 3~~ Position 4: surface a failed re-resync on the `resyncRequest` path** (the
+- **~~Position 2~~ ~~Position 3~~ ~~Position 4: surface a failed re-resync on the `resyncRequest` path~~**
+  **FIXED** by `461a30b` (PR #45; SPEC v0.4.8 row 7; struck in the next PR,
+  the standing pattern of §2c). (the
   user's word of 2026-10-08, adopting PR #39's two-key pass). An established
   connection that asks again gets `sendResync` with its result ignored, and a
   throw there is answered only as an `E_ENGINE` reply on the engine's own
@@ -4296,6 +4298,15 @@ item):
     requoted from in-ceiling runs.
   - **The audit-sink cases** are recorded and queued, with no code: R18 in
     the register, attached to R17's operator-surface item (position 5).
+  **Merged: PR #45 is `461a30b`** (the bookend, the standing pattern of §2c).
+  Main's CI at `461a30b`, run `38836482232`, read per test (§2b): every job
+  green (rust 40/40 steps, control-plane 28/28, dress 17/17).
+  - rust: workspace 511 passed, 0 failed, 4 ignored; all 30 floor lines green.
+  - control-plane: npm 151; the show.stop e2e ran 6, exercised 1 and
+    skipped 5; the resync-request e2e ran 3 and exercised 3.
+  - dress: 27/27, with `ok 24`. DRESS-COUNTS for CI (sha `461a30b`): 1 drop,
+    163 underruns, 0 watchdog trips, within the backstops.
+  - Position 4 is FIXED by it.
 - **Position 5: R17, the control plane reports a refused stream as live**
   (the user's word of 2026-10-12, establish-first). On CI the engine refuses
   `stream.start`, and the control plane's telemetry still reports the stream
@@ -4303,8 +4314,11 @@ item):
   is to establish what the control plane hears of the refusal and what an
   operator sees. It is cross-referenced with R16, the same observed-state lag
   on another surface. The register row is R17 in `docs/soak-protocol.md` §5.
-  - **Queued 2026-10-14 (the user's word on PR #43's fresh pass): a held
-    stop on an operator surface.**
+  - ~~**Queued 2026-10-14 (the user's word on PR #43's fresh pass): a held
+    stop on an operator surface.**~~ **LANDED in spine part A** (branch
+    `operator-signal-lane`, 2026-10-15): the audit row (`show.stopHeld`, raised
+    and cleared) and the lane (`outputs.held`). Promoting `held` into the
+    belief enums is part B's. *(§2c.)*
     - When `show.stop` goes unacknowledged, the control plane holds the
       outputs (SPEC v0.4.8 row 6) and logs `SHOW_STOP_HELD_WARNING` to its
       console only.
@@ -4323,6 +4337,227 @@ item):
       surface by definition. A last-resort surface for audit failure is the
       open design question. The register row is R18 in
       `docs/soak-protocol.md` §5.
+
+  **The spine (the user's design ruling of 2026-10-15).** The five R17
+  threads are one defect. The control plane's belief about failure and
+  output state reaches an operator inconsistently, and once that belief is
+  wrong it has no honest way to be corrected. The work splits by risk:
+  - **Spine part A** (this branch, `operator-signal-lane`). An operator-signal
+    lane: alerts on the shared `statusSnapshot`; the control plane announces
+    stream divergence; R18's fallback. It is control-plane-only and
+    **additive**: nothing a client reads today changes meaning, no enum
+    moves, no automation rule's inputs move, there is no engine or wire
+    change, and no audit trio is touched.
+  - **Spine part B.** The behavioural half: the precedence rule (a fresher
+    engine report beats the control plane's belief, and an explicit operator
+    action beats both), `held` promoted into the belief enums, and R17's
+    refusal-lag fix as its proving case.
+  - **Work order 2.** Engine-touching: an engine-reported record state, and
+    output state on the resync snapshot, as its own spec row.
+
+  **The design record, before the code.**
+  - **Three tree corrections to the framing** (the user's map of
+    2026-10-15):
+    1. There are six surfaces, not three. Besides the audit file, the
+       console and the tick, the control plane pushes a `stateChange` frame on
+       every accepted command. That frame, `system.status` and
+       `GET /status` all carry the full `statusSnapshot`. Command error
+       replies make the sixth.
+    2. Stream provenance is already present. The tick carries the engine's
+       own `streamTransportState` beside the control plane's `streamState`,
+       so a refused stream shows `live` beside `none` and a held stop shows
+       `live` beside `closed`. The defect is that nothing announces the
+       contradiction.
+    3. There is no engine-reported record state: only the tap's path and
+       reason, and the free space.
+  - **The four adjustments, ruled:**
+    1. `held` is an alert in part A, not an enum value. Moving the enum is
+       part B's, with the automation question: `streamState` and
+       `recordState` are rule-nameable, and their values are not checked.
+    2. Divergence alerts use PR #44's freshness construction and exclude
+       the stale stub.
+    3. Alerts are audited on their edges, never per tick.
+    4. R18's fallback is the one alert without an audit row.
+  - **Refinements.**
+    - Audit rows carry severity and reason.
+    - Restart semantics are stated (below, once built).
+    - B's spec row must answer the automation transition: whether
+      live→held should fire `stateChange` rules, and that `to: "idle"` rules
+      would stop matching. B also strikes the control plane's dead
+      `"reconnecting"` value (`state.ts:16`).
+  - **The witness ruling (the user's ruling of 2026-10-15, on a stop before
+    the code).** Three findings from the tree:
+    1. A refused or skipped output command is never acknowledged.
+       `directive.rs`'s `apply` returns on the handler's `?` before
+       `set_last_applied` and `ack`, so "postdates the command's ack" cannot
+       fire for the cases the lane exists for.
+    2. The ruled "live beside closed after a stop" cannot happen. After any
+       stop the control plane reads `idle`: `stream.stop` sets it on accept,
+       and `show.stop` sets it on the engine's ack. A fresh `live` beside
+       `closed` is therefore either a held stop or a refused restart, since
+       after a first stream the engine reports `closed`, not `none`
+       (`telemetry.rs:69–80`). The publisher closes only on a stop
+       (`rtmp.rs`); otherwise it redials for ever.
+    3. A row was missing: `idle` beside `live` or `reconnecting`, fresh,
+       after the stop was processed. That is a stop that did not take: PR
+       #42's class, and R17's E1 observation.
+
+    **The witness options, evaluated:**
+    - (a) alone, any acknowledgement at or above the command's version,
+      fails its defining case. In R17's dress run the next directive is the
+      operator's own `stream.stop`, which sets `idle`, so the refused start
+      would never alert.
+    - (b) alone, an acknowledgement window, misses the family of
+      contradictions that arise with no command pending, such as an engine
+      restart.
+    - **(c), both, ruled:**
+      - (b) handles **command confirmation**. `stream.start`,
+        `stream.stop`, `record.start` and `record.stop` with no exact
+        acknowledgement within §5.9.5's 2000 ms window raise
+        "`<command>` unacknowledged". `show.stop` is excluded: it has its own
+        exact wait, and the held alert is its surface.
+      - (a) handles **standing contradictions** with no command pending. It
+        uses PR #44's freshness construction, with the anchor generalized to
+        the more recent of the relevant command's acknowledgement and the
+        connect or resync.
+      - Each alert has its own id, and an episode raises once.
+  - **The mapping table, as amended** (CP belief × engine report ×
+    freshness × pending command; the spec carries it as §10.1.x). Each row
+    is checked against the tree as it is built.
+  - **The window.** `stream.start`'s acknowledgement latency is measured
+    before the window is pinned: n ≥ 20, on the normative machine. The
+    numbers are below, with the margin; the window is not moved without the
+    user's word.
+
+  **Spine part A, built (2026-10-15, branch `operator-signal-lane`).**
+  - **The lane's shape as built.** `ControlPlaneState` carries
+    `alerts: Alert[]` and `health: { auditSinkOk }`. `statusSnapshot()` copies
+    both, and so the `stateChange` frame, `system.status` and `GET /status`
+    carry them; `buildTick` copies the same list onto the tick. An alert is
+    `{ id, severity, reason, since, auditEvent }`, for example:
+    ```json
+    { "id": "command.unacknowledged.stream", "severity": "warning",
+      "reason": "stream.stop (stateVersion 5) was not acknowledged within 2000 ms: refused, skipped or lost; the engine's latest report reads the stream live and the control plane believes it idle",
+      "since": 1792118803211, "auditEvent": "command.unacknowledged" }
+    ```
+    The lane lives in `alerts.ts`: `AlertLane` holds the list and writes its
+    edges, and `OperatorSignals` evaluates the conditions. The server feeds it
+    four ways:
+    - each accepted command, through a new `DispatchDeps.onSent`, called once
+      the directive is on the wire and before any `afterForward` wait;
+    - each acknowledgement, from `noteApplied`, with whether it was a
+      resync's;
+    - each render registration;
+    - a held `show.stop`, when `show.stop` returns with outputs still active.
+
+    The evaluator runs every 250 ms, and (b)'s window is a timer per
+    command. The window is §5.9.5's, the server's `showStopGraceMs`.
+  - **The witness, reused from PR #44 and adapted.** PR #44's test saw only
+    ticks, so it needed a fresh tick whose `ts` was more than the TTL after
+    the acknowledgement. The control plane holds each engine report with its
+    own receipt time, so (a) compares directly: the report must be fresh (no
+    older than the TTL) and received after the anchor.
+    - The anchor is the latest of the processing of the latest stream
+      command or `show.stop`, the connect (a registration), and a resync's
+      acknowledgement.
+    - **The connect was added while building.** The restart e2e showed a new
+      engine's first reports reading `none` about 1.3 s before its resync is
+      acknowledged, because the resync reloads the package (row 5). They
+      describe the new engine's outputs, so the connect is the anchor the
+      ruling names.
+  - **The window, measured before it was pinned** (`stream-start-ack.measure.ts`,
+    the normative machine, 2026-10-16 02:27–02:54 UTC).
+    - **Method.** n = 20, 0 void. Each sample was a fresh control plane and
+      a fresh engine, so the encoder opened cold, with the dress package on
+      air and `stream.start` into a local RTMP sink. Every sample started
+      below a 1-minute load of 2.5 and ended at or below 2.78.
+    - **Power.** On AC, 45 W adapter, Low Power Mode on (power-limited, not
+      void); 100% and charged at both ends; under `caffeinate -i -s`.
+    - **The tree measured** was `461a30b` with the harness's sink exported.
+      The lane was written while it ran. The acknowledgement's latency is the
+      engine's apply (the encoder's open), which the lane does not touch.
+
+    | Send → `stream.start` acknowledged | median | p95 | max | min |
+    |---|---:|---:|---:|---:|
+    | ms (nearest rank) | 136.6 | 161.6 | 169.0 | 4.5 |
+
+    - **The margin.** The worst sample used 169.0 ms of the 2000 ms window
+      (8.4%), leaving 1831 ms. That is not thin, so the window stands at
+      §5.9.5's 2000 ms. R11's sightings recorded cold opens of 250–540 ms
+      under `cargo test`; these samples ran the release engine binary, and
+      their acknowledgements came faster. Why is not measured here.
+    - **One sample (15) was acknowledged in 4.5 ms.** That is not
+      investigated, and is recorded as an unexplained outlier. It does not
+      bear on the margin, which the slowest sample sets.
+  - **Restart semantics, as the tree does it.** The lane lives on the state,
+    and persistence writes only `stateVersion` and the manifest identity, so
+    the lane is never persisted. After a control plane restart it starts
+    empty:
+    - a persisting condition raises again, with a new raise row;
+    - an episode that outlived the process keeps its raise row and never
+      gets a clear row;
+    - (b)'s windows are timers, so a command accepted just before a restart is
+      never confirmed or alerted. Its window dies with the process, and (a)
+      covers the stream afterwards.
+  - **Two readings of the ruling, built and recorded for the two-key pass:**
+    1. **(b) inside the window.** A later acknowledgement arriving inside
+       the window already proves the command was processed. It was refused
+       or skipped, never acknowledged. So no (b) alert raises, and (a) owns
+       the contradiction.
+       - Raising at the window's end and clearing at once would write a
+         zero-length episode.
+       - `alerts-server.test.ts` pins the handoff: the probe command's
+         acknowledgement clears (b), and (a) raises `stream.divergence`.
+    2. **The unacknowledged-stop guard.** The ruling asked for a skip
+       injected as "a success at the same version", PR #42's mutation C.
+       - The tree cannot make (b) see that. An acknowledgement carries only a
+         version, so a success at the stop's own version acknowledges that
+         version, and (b) reads it as the stop's.
+       - PR #45's dispatch pin makes two directives at one version impossible
+         on the control plane's own paths, so this skip cannot recur there.
+       - The guard uses the loss the tree can produce instead: a
+         `stream.stop` that never reaches the engine, as a dropped connection
+         loses it. That leaves the row's exact state, the stream on air while
+         the control plane believes it idle, and the alert says so.
+  - **Guards, each falsified.**
+    - `alerts.test.ts` (20) drives the evaluator.
+    - `alerts-server.test.ts` (4) runs a real server and real sockets, with
+      the engine scripted.
+    - `operator-signals.e2e.ts` (4) runs the real engine. On the normative
+      machine three legs run and the refused start skips; on CI the refused
+      start runs and the other three skip.
+    - Each mutation was restored from a copy and checked `cmp`-identical,
+      then green.
+
+    | # | Guard | Mutation | What failed |
+    |---|---|---|---|
+    | F1 | (b) raises after the window, never before | an output command marked acknowledged at send ("ack immediately") | unit: 6 of 20, among them `(b) an output command unacknowledged within the window raises`; e2e: lost stop, `the alert raises` |
+    | F2 | edge auditing: one raise, one clear per episode | the once-per-episode guard removed (a raise row per evaluation) | unit: `edge auditing: an episode is one raise row and one clear row` |
+    | F3 | (a) after an engine restart | the resync's acknowledgement pushes the anchor beyond every report | unit: 6 of 20, among them `the restart contradiction` |
+    | F3′ | (a) after an engine restart, on the real engine | the connect and the resync both push the anchor beyond every report: after a reconnect, wait for a command | e2e: restart, `the contradiction raises` |
+    | F4b | the flicker guard: a stale stub never raises a divergence | (a) compares the tick's stub (`none` when stale) and the not-reporting check is gone | unit: the flicker guard read `+ 'stream.divergence'`, `- 'engine.notReporting'` |
+    | F5 | the pre-acknowledgement witness | no postdate check | unit: `a report that predates the anchor never raises` |
+    | F6 | the held alert | `held()` raises nothing | unit: `held: live beside closed after an unacknowledged show.stop is the held alert's` |
+    | F7 | R18: no row for the sink's own failure | the sink alert's edges audited too | unit: `R18 … attempts no audit row for it` |
+    | F8 | R18: the stderr line | the stderr write removed | server: `R18: a sink that really fails …` (`stderr: 0`, not 1) |
+    | F9 | the held path, server to engine | the server never reports a held stop | server: `held: a show.stop the engine never acknowledges …`; e2e: held, `the held alert raises` |
+
+    - **F3′ shows why waiting for a command after a reconnect is wrong.**
+      After a restart the next command may be the operator's own stop, as in
+      R17's dress run, and the lost stream would then never be announced.
+    - **The flicker guard was strengthened.** Its first version had no report
+      before going stale, so there was nothing to compare, and F4 (only the
+      not-reporting check removed) proved nothing about flicker. The test
+      now reads `live` while fresh and then goes stale, and F4b fails it with
+      the flicker itself.
+    - **The additive invariant.** `npm test` is 175 (151 existing, plus 24).
+      No existing test file was edited, and automation and effects are
+      unchanged.
+  - **A finding, out of scope.** The `system.status` *command* builds its
+    snapshot with `statusSnapshot()` and no render-node argument, so it always
+    reports `renderNode.connected: false`. The `stateChange` frame and
+    `GET /status` pass the real one. The lane is unaffected: it lives on the
+    state. Recorded, not changed.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
