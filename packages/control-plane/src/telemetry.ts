@@ -6,6 +6,7 @@
 
 import type { EngineTelemetryFrame } from "./protocol.js";
 import type { ControlPlaneState, ShowState } from "./state.js";
+import type { Alert } from "./alerts.js";
 
 export interface TelemetryTick {
   // timing
@@ -59,6 +60,10 @@ export interface TelemetryTick {
    *  through a redial (§9.5), so this is where a redial is visible. Required,
    *  same reason as `recordTapPath`. */
   streamTransportState: string;
+  /** SPEC §10.1.2 (v0.4.8 row 8): the operator-signal lane, control-plane owned, the same list every snapshot surface carries. */
+  alerts: Alert[];
+  /** SPEC §10.1.2: R18's fallback flag. */
+  health: { auditSinkOk: boolean };
 }
 
 /** The stub a telemetry field carries before its subsystem has run (§10.1.1).
@@ -141,6 +146,9 @@ export function buildTick(
     audioDriftMs: f?.audioDriftMs ?? 0,
     busPeakDbfs: f?.busPeakDbfs ?? {},
     engineConnected: engineFresh,
+    // SPEC §10.1.2: the operator-signal lane, the same list `statusSnapshot` carries.
+    alerts: state.alerts.map((a) => ({ ...a })),
+    health: { ...state.health },
     // Deprecation warnings are per-subscriber: the server fans each accepted
     // deprecated command into every subscriber's own cursor and fills this in.
     // A shared drain here would hand the warning to whichever tick fired first.

@@ -72,6 +72,12 @@ export interface AuditRecord {
 
 export class AuditLog {
   private readonly path: string | undefined;
+  private ok = true;
+
+  /** False from a failed write until the next write succeeds (R18's fallback). */
+  get sinkOk(): boolean {
+    return this.ok;
+  }
 
   constructor(path?: string | undefined) {
     this.path = path;
@@ -93,7 +99,20 @@ export class AuditLog {
 
   record(rec: Omit<AuditRecord, "ts"> & { ts?: number }): AuditRecord {
     const full: AuditRecord = { ts: Date.now(), ...rec };
-    if (this.path) appendFileSync(this.path, JSON.stringify(full) + "\n");
+    if (this.path) {
+      try {
+        appendFileSync(this.path, JSON.stringify(full) + "\n");
+        this.ok = true;
+      } catch (err) {
+        // R18's fallback (SPEC §10.1.2, v0.4.8 row 8): a sink that cannot be
+        // written cannot record its own failure. One stderr line per episode,
+        // and `sinkOk` for the operator-signal lane's health flag. The throw
+        // is unchanged: what follows a failed write is R18's queued question.
+        if (this.ok) process.stderr.write(`nbe audit sink failed; failures are not being recorded: ${String(err)}\n`);
+        this.ok = false;
+        throw err;
+      }
+    }
     return full;
   }
 }
