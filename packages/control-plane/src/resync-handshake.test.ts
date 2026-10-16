@@ -383,3 +383,62 @@ test("G4: a re-resync that succeeds audits and warns nothing (no false positives
   );
   render.close();
 });
+
+// ---------------------------------------------------------------------------
+// The teardown's ORDER (SPEC §5.9.4 rule 1's failure half; v0.4.8 rows 4 and
+// 7; the fresh pass on PR #45, D1). The end state above (no registration
+// after the close) does not prove the order: the socket's own close listener
+// (`ws.on("close", forget)`) releases the registration too, after the close
+// handshake, so a path that skipped its `forget()` still ends at zero. This
+// probe reads the state at the instant the server INITIATES the 1011 close,
+// before any close listener can run: the registration must already be gone,
+// and the failure already audited and warned.
+// ---------------------------------------------------------------------------
+
+/**
+ * The state at the instant the server initiates its 1011 close, read at the
+ * call. Only the first `close(1011)` is recorded: it is the server's, by
+ * causality. `ws` calls `close` again internally (on the peer's echoed close
+ * frame, and on the client socket in this same process when the frame
+ * arrives), and those later calls are not the initiation.
+ */
+function atServerClose(
+  t: { after: (fn: () => void) => void },
+  audited: () => number,
+  warnedOf: string,
+): Array<{ registrations: number; audited: number; warned: boolean }> {
+  const seen: Array<{ registrations: number; audited: number; warned: boolean }> = [];
+  const close = WebSocket.prototype.close;
+  WebSocket.prototype.close = function (this: WebSocket, code?: number, data?: string | Buffer) {
+    if (code === 1011 && seen.length === 0) {
+      seen.push({
+        registrations: server.wsBridge.renderNodeCount(),
+        audited: audited(),
+        warned: warnings.some((w) => w.includes(warnedOf)),
+      });
+    }
+    return close.call(this, code, data);
+  };
+  t.after(() => {
+    WebSocket.prototype.close = close;
+  });
+  return seen;
+}
+
+test("the order, the request path: forget, audit and warn all precede the 1011 close (rule 1's order, row 7)", async (t) => {
+  const seen = atServerClose(t, () => requestFailures().length, "show.resync on the engine's request failed");
+  const { ws: render } = await establishedRender();
+  const closed = closeOf(render);
+  state.failNext = 1;
+  render.send(resyncRequest);
+  await closed;
+  assert.deepEqual(seen, [{ registrations: 0, audited: 1, warned: true }], "at the instant the close is initiated");
+});
+
+test("the order, the handshake path: forget, audit and warn all precede the 1011 close (rule 1's order, row 4)", async (t) => {
+  const seen = atServerClose(t, () => handshakeFailures().length, "show.resync handshake failed");
+  state.failNext = 1;
+  const render = conn("render", RENDER);
+  await closeOf(render);
+  assert.deepEqual(seen, [{ registrations: 0, audited: 1, warned: true }], "at the instant the close is initiated");
+});
