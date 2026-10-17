@@ -13,6 +13,12 @@
 ~~**Status: DRAFT, held for the user's review before dispatch** (the user's word of 2026-10-17: "nothing implements unread"). The decisions in §2 belong to the user. An executor does not start until they are answered and this line is struck (§2c).~~
 
 **Status: APPROVED 2026-10-17, with the user's rulings on D1–D6 folded into §2** (§2c). **Dispatch is the user's word.**
+
+**Confirmed by the user, 2026-10-17:**
+- the D2/D4 sequence as built;
+- D3's two-layer enforcement;
+- D4's divergence from `itemEvent`, as intended;
+- row 11 reviewed as Appendix A now, landing and ratifying on the implementing PR, with its text as an early commit and ratification-on-merge stated in the PR's body.
 - One question is still open (§2, D2a). It must be answered before dispatch, because the work items depend on it.
 - Appendix A holds SPEC row 11's candidate text. It is reviewed before dispatch (D5), lands in the spec with the implementing PR, and is ratified on that merge.
 
@@ -128,7 +134,7 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
   - *Required:* the table in row 11 (Appendix A), and one test per row with its negative.
 
 - **D2, `held` and a fresh report.** "held gives way to a fresh report on the precision clause's schedule: the stop's claim stands inside the window; at expiry the claim ends and a fresh report rules. Belief must never insist on a state the engine contradicts after the claim has expired. The alert persists until the real ack, as the witness."
-  - *The sequence this builds* (the builder's reading of D2 with D4; confirm at review):
+  - *The sequence this builds* ~~(the builder's reading of D2 with D4; confirm at review)~~ (**CONFIRMED by the user 2026-10-17**, §2c):
     1. inside `show.stop`'s window, the stop's claim holds;
     2. at expiry, a `live` stream's belief becomes `held` on the command path (D4), and automation sees live→held;
     3. the next fresh report that postdates the expiry corrects `held` to D1's value, as a correction: no automation.
@@ -139,18 +145,22 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
     - which acknowledgements count as "the real ack": `show.stop`'s own late one, or also the acknowledgement of an operator's `stream.stop`/`record.stop` that ends the hold?
     - what clears the alert when none can come?
 
+    *A tree fact for the answer (2026-10-17):* the operator's output commands cannot produce that acknowledgement once the engine has quiesced. The engine refuses `stream.stop` unless its own stream is live (`directive.rs`, `on_stream_stop`: `"stream.stop requires a live stream"`), and a refusal is never acknowledged (§10.1.2's (b)). In the strand case, `closed`, no output command's acknowledgement can come.
+
 - **D3, `held` is an output-active state.** "outputsActive() includes held; stream.stop accepts held — the operator's only way out of a hold; stream.start refuses held, naming the state in the error. Every other reader and precondition names held explicitly, no default fall-through; the prompt audits every belief-enum consumer, and #50's compile-time enum audit enforces exhaustiveness."
   - *The tree:* #50's audit (`automation.ts`'s `Same<…>`) pins each **domain** to its **type** exactly. That catches a value added to one but not the other. It does not make the **consumers** exhaustive.
+  - **Confirmed 2026-10-17: two-layer enforcement.** The domain-to-type audit (#50) is one layer; the `never`-checked consumers are the other.
   - *Required:* every belief-enum consumer handles `idle`, `live` and `held` explicitly, in an exhaustive `switch` whose default is a `never` check, so `tsc` enforces exhaustiveness at each consumer and the audit enforces the domain. The consumers are 0.2's list: `outputsActive()`; `server.ts:408`; `alerts.ts:267` and `:278–281`; `commands/output.ts:35` and `:44`; `commands/show.ts:135`. Any found beyond it are added, and the prompt map records the full list.
   - **`stream.start`** refuses `held` with `E_FORBIDDEN_STATE`, naming the state ("stream is held"). **`stream.stop`** accepts `live` and `held`, and refuses `idle` naming the state. §16's "stream active" reads "`live` or `held`" in row 11.
 
 - **D4, how a correction lands: RATIFIED, with the boundary stated.** "corrections land like itemEvent — one version bump, one audit row (belief.corrected), no stateChange frame. stateChange fires on command-path belief transitions (acceptance, ack, window expiry), not on corrections. Automation reacts to committed intent, not environmental reconciliation. The live→held rule stands: window-expiry driven, command path."
   - *The tree:* `itemEvent` **does** fire automation's `stateChange` events from its snapshots (`server.ts:924`). A correction deliberately does not: like `itemEvent` in its bump, its audit row and the absence of a frame; unlike it for automation.
+  - **Confirmed 2026-10-17:** the divergence from `itemEvent` is intended.
   - *A consequence, recorded:* a refused start corrected `live → idle` fires no `from: "live"` rule. Automation reacts to the stream leaving the air only on the command path.
   - *Required:* `belief.corrected`'s audit detail carries the field, `from`, `to`, the report's token and the report's age.
 
 - **D5, row 11: required.** "drafted with the implementing prompt's design and reviewed before dispatch, same discipline as this brief: §5.9.5's 'prior state', D1's mapping table, D4's frame and boundary."
-  - *Done:* Appendix A, the candidate text, is drafted here for review. The executor lands it in `docs/spec.v0.4.md`, with §2c strikes, in the implementing PR, and row 11 is ratified on that merge.
+  - *Done:* Appendix A, the candidate text, is drafted here for review. The executor lands it in `docs/spec.v0.4.md`, with §2c strikes, **as an early commit of the implementing PR**. **The PR's body states that row 11 ratifies on its merge** (confirmed 2026-10-17).
   - It is not ratified ahead of the code. Unlike row 10, row 11 amends passages that the tree builds today (`show.stop`'s prior-state hold, §16's preconditions), so ratifying it early would make the spec contradict the built behaviour.
 
 - **D6, the dress rehearsal.** "the dress does not hide the race; it rehearses the new truth. After a refused start it waits out the correction to idle (bounded), then asserts stream.stop refuses with the idle-state error — the race becomes a falsification of D3's precondition. Each leg records which path it took."
@@ -194,7 +204,7 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
    - a late acknowledgement never revives it.
 4. **The correction.** With no live claim on the stream, a fresh report postdating the anchor whose token disagrees with the belief (D1) lands as D4. Belief, lane and audit move together. (a)'s `stream.divergence` clears by its own rule once the pair is consistent.
 5. **Automation.** The transition rule holds end to end: a `to: "idle"` rule is silent on a hold; a `from: "live"` rule fires once on live→held and once on a correction live→idle; nothing fires twice.
-6. **The spec row:** land Appendix A in `docs/spec.v0.4.md`, with §2c strikes, adjusted only by D2a's answer and by what the code proves. Ratified on merge.
+6. **The spec row:** land Appendix A in `docs/spec.v0.4.md`, with §2c strikes, **as an early commit**. Adjust it only by what the code proves, and record each adjustment. The PR's body states that row 11 ratifies on its merge.
 7. **The dress rehearsal** (D6).
 
 ## 6. Tests required

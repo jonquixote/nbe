@@ -696,6 +696,8 @@ adopt and record).
   | `39013696039`, PR #51 at `a0b5404`, green (515/0/4) | the workspace tests: the test build finished at 07:28:41.00 (`Finished` in 30.57 s); the post line at 07:29:26 | whole step 3.08–5.43 (pre, 8 samples, post). While building: 3.30, 3.08, 3.49, 4.87. While the tests ran: 4.79, 4.70, 5.06, 5.17, then the post line's 5.43, so 4.70–5.43. The R10 test passed at 07:29:05.60, between 4.70 and 5.06 |
   | `39014021859`, PR #51 at `39db649` (its head), green (515/0/4) | the workspace tests: the test build finished at 07:34:09.36 (`Finished` in 48.54 s); the post line at 07:35:02 | whole step 3.01–5.50 (pre, 11 samples, post). While building: 3.02, 3.01, 3.47, 4.20, 5.50. While the tests ran: 5.25, 5.01, 4.67, 4.54, 4.80, then the post line's 4.17, so 4.17–5.25. The R10 test passed at 07:34:37.49, between 4.67 and 4.54 |
   | `39025809315`, main at `c1fe348` (PR #51's merge), green (515/0/4) | the workspace tests: the test build finished at 10:42:32.22 (`Finished` in 51.53 s); the post line at 10:43:24 | whole step 2.31–6.50 (pre, 11 samples, post). While building: 2.55, 2.31, 3.11, 4.39, 5.56, 6.50. While the tests ran: 6.07, 5.32, 4.53, 3.96, 3.42, then the post line's 3.20, so 3.20–6.07. The R10 test passed at 10:43:02.79, between 4.53 and 3.96 |
+  | `39026282575`, PR #52 at `4403643`, green (515/0/4) | the workspace tests: the test build finished at 10:49:53.74 (`Finished` in 45.58 s); the post line at 10:50:42 | whole step 5.07–8.55 (pre, 10 samples, post). While building: 6.28, 5.52, 5.87, 6.83, 8.55. While the tests ran: 8.29, 7.92, 6.73, 6.01, 5.51, then the post line's 5.07, so 5.07–8.29. The R10 test passed at 10:50:20.98, between 6.73 and 6.01. **The 10th green run** |
+  | `39031255945`, PR #52 at `cfa251b`, rust green (515/0/4); the dress job failed at step 8 (queue position 5 records it; green on rerun) | the workspace tests: the test build finished at 12:08:21.93 (`Finished` in 41.30 s); the post line at 12:09:15 | whole step 1.67–4.96 (pre, 10 samples, post). While building: 1.67, 2.04, 2.80, 4.16, 4.96. While the tests ran: 4.28, 4.30, 3.84, 3.93, 3.41, then the post line's 3.19, so 3.19–4.30. The R10 test passed at 12:08:52.76, between 3.84 and 3.93. The 11th: the rust test step was green, and the ruling counts that step's green runs |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -805,7 +807,13 @@ No new maximum (the peaks were 5.43, 5.50 and 6.50), so the ceiling **holds at
 green instrumented run is the 10th, and the margin tightens to 1.25× there**
 (the amended ruling's item 2). With the maximum still 9.67, that ceiling is
 **12.09 per CPU**, load1 36.2 on the 3-CPU runner; it is recomputed with that
-run's own samples. The image is still `macos-14-arm64` 20260831.0302.1, and
+run's own samples.
+
+**The ceiling at 10 green runs: 12.09 per CPU** (recorded 2026-10-17). The
+10th run, `39026282575`, peaked at 8.55, so the maximum is still 9.67 and the
+ceiling is **1.25 × 9.67 = 12.09 per CPU** (load1 36.2). It held at the 11th
+(`39031255945`, peak 4.96). In the user's words: "Ceiling 12.09 recorded; the
+downward move is the mechanism working." The image is still `macos-14-arm64` 20260831.0302.1, and
 every run had a different runner.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
@@ -5513,11 +5521,48 @@ item):
       design.** `itemEvent` fires automation's `stateChange`s
       (`server.ts:924`); a correction will not. As a consequence, a refused
       start corrected `live → idle` fires no `from: "live"` rule.
+    - **A dress-rehearsal sighting on PR #52, recorded 2026-10-17** (not
+      the change under review: `cfa251b` touched only the brief and the
+      prompt map). CI run `39031255945` attempt 1 failed the dress job:
+      `not ok 10 - [RI-1] step 8: preview.set is visible in telemetry`,
+      `preview.set must succeed; got {"code":"E_FORBIDDEN_STATE","message":"item A1 is DONE"}`.
+      - **The mechanism, read from the tree.** A1 is timed:
+        `durationFrames: 150` at 30 fps, so 5 s
+        (`tests/fixtures/dress_show/manifest.json`). Step 4 takes A1 and
+        waits for the clip bus to rise, and this run's rise took **6025 ms**
+        (`step4RiseMs`; the previous high was 4965 ms, at step 6). So A1 ran
+        to its end and went `DONE` during step 4. Step 5's take of A2
+        resets only a `LIVE` or `PLAYING` item to `READY` (`state.ts:291`),
+        so A1 stayed `DONE`, and step 8's `preview.set A1` was refused.
+      - **The class is R13's late rise**, cascading into step 8: any step-4
+        rise above A1's 5000 ms does it. Step 4's rise is inside its 10 s
+        backstop, but step 8 depends on A1 not ending, and nothing asserts
+        that.
+      - **The rerun** (only the failed job, disclosed): attempt 2's dress job `117394593348` passed, 27/27 with `ok 10`. Its `step4RiseMs` was 2979, under A1's 5000 ms, as the mechanism predicts. Its DRESS-COUNTS (ci, `cfa251b`, attempt 2): drops 0, underruns **231**. That is the first at-gate reading above R12's previous peak of 230. R12's trend rule (a) needs three consecutive bookends above the peak, so it is watched, not opened.**
+      - **Put to the user:** whether to file this as a register entry (R19:
+        dress step 8 coupled to A1's duration through step 4's rise), and
+        whether the fix is the test's (say, step 8 previews an untimed item,
+        or resets A1) rather than the product's.
     - **D5's placement, the builder's reading.** Row 11's candidate is
       Appendix A of the brief, reviewed before dispatch. It lands in the
       spec with the implementing PR and is ratified on that merge, not
       ahead of the code: unlike row 10, it amends passages the tree builds
       today (`show.stop`'s prior-state hold, §16's preconditions).
+  - **Confirmed by the user, 2026-10-17:**
+    - the D2/D4 sequence as built;
+    - D3's two-layer enforcement;
+    - D4's divergence from `itemEvent`, as intended;
+    - row 11 reviewed as Appendix A now, landing and ratifying on the
+      implementing PR, with its text as an early commit and
+      ratification-on-merge stated in the body.
+
+    "Ceiling 12.09 recorded; the downward move is the mechanism working."
+    **D2a is still open.** The user's message asked to "fold the D2a
+    clearing rule into Appendix A verbatim", but no D2a rule text has been
+    given, so nothing is folded and the brief marks it open. The tree fact
+    for the answer: the engine refuses `stream.stop` unless its stream is
+    live (`directive.rs`, `on_stream_stop`), so once the engine has quiesced
+    no output command can produce the real acknowledgement.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
