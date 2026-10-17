@@ -5696,6 +5696,78 @@ item):
   - **R19 leaves the register,** struck per its own exit condition ("the
     entry leaves the list when that fix lands and is falsified"), citing
     the falsification above.
+
+  **Spine part B's implementation: the design, written first** (ORDER 3,
+  the user's word of 2026-10-17: "After ORDER 2 lands, branch the
+  implementing PR off main and begin per the brief"; branch
+  `r17-spine-b-impl`, off `49d29ae`). The brief is
+  `agents/prompts/r17-spine-b-belief.md`; ORDER 3 named it
+  `r17-spine-b-brief.md`, a name the tree does not have. Row 11's text
+  landed as an early commit (`2264e56`).
+  - **`StreamState` gains `held`** (`state.ts:17`), and #50's audit pins the
+    domain to the type with no exception (`streamAudit`). `streamActive()`
+    (`state.ts`) is the one exhaustive switch over the stream belief that
+    `outputsActive()` reads, so `held` is output-active (D3).
+  - **The consumer list (D3)**, from a full read of `streamState` in the
+    control plane's source:
+    - **Value-branching, each an exhaustive `switch` with an `unreachable`
+      default:** `streamActive()` (read by `outputsActive()`, and through it
+      by `server.ts`'s held raise and `show.stop`'s `outputsWereActive`);
+      `stream.start` (refuses `live` and, by name, `held`); `stream.stop`
+      (accepts `live` and `held`, refuses `idle` by name); `show.stop`'s
+      unacknowledged path (`live` → `held`); the lane's (a) divergence
+      (`held` contradicts nothing: the held alert announces it and a fresh
+      report corrects it).
+    - **Pass-through, not value-branching:** the status snapshot
+      (`state.ts:552`), the tick (`telemetry.ts:138`), automation's snapshot
+      (`automation.ts:350`), and two reason strings in the lane.
+  - **The claim and its expiry (§10.1.3).** A stream claim is live while the
+    lane's pending `stream.*` entry is unprocessed and unexpired, or while
+    `show.stop` is inside its window. `windowElapsed` marks `expiredAt`
+    before any other effect. For the stream, it moves the anchor to the
+    expiry, so only a report that postdates it may correct; then (b) raises
+    where it does, so the clause holds. `held()`, which runs when
+    `show.stop`'s wait ends unacknowledged, moves the anchor the same way.
+    A superseded entry and a confirmed one never reach the expiry.
+  - **The correction (§10.1.4).** `OperatorSignals.evaluate()` now runs (a)
+    as before (`divergence()`, row 8 unchanged), then `correction()`. With
+    no live claim and a fresh report postdating the anchor, a mapped token
+    that differs from the belief calls the server's `correct`.
+    - The server lands it like `itemEvent`: it writes the belief, calls
+      `state.bump()` and `persistence.onDirty()`, and writes one audit row.
+    - The row is kind `command`, `command: "engine:report"`,
+      `event: "belief.corrected"`, with `detail` `{ field, from, to, report,
+      reportAgeMs }`.
+    - There is no `stateChange` frame and no `automation.fire` (D4).
+  - **The held alert's clearing (D2a).**
+    - The old heal on outputs inactive is struck (§2c in `alerts.ts`).
+    - **(i)** `heldStopVersion` survives the hold, and its exact
+      acknowledgement clears the alert.
+    - **(ii)** A later stop's own exact acknowledgement (`stream.stop`,
+      `record.stop` or `show.stop`) at or above it clears the alert.
+    - **(iii)** An accepted `show.load` or `show.unload` clears it in
+      `onAccepted`, with the cause named. Dispatch's `onSent` fires for every
+      accepted command (`dispatch.ts:400`), with or without a render node.
+    - **(iv)** A restart empties the lane.
+    - A correction clears nothing.
+  - **Findings so far, recorded, not changed:**
+    1. **The correction pre-empts (a)'s held announcement.** A contradiction
+       with no claim live (an engine restart dropping a live stream, say)
+       still raises `stream.divergence` in the evaluation that sees it. The
+       correction then moves the belief, and the next evaluation (250 ms
+       later) clears the alert as "consistent again". So row 8's critical
+       alert becomes a one-evaluation episode, and the trail is its two
+       edge rows and `belief.corrected`. Whether a correction against the
+       last command's intent should hold an alert until the operator's next
+       command is the user's word.
+    2. **"Held" has a third meaning in the spec:** the show clock's `HELD`
+       ("operator freeze, emergency", §16's clock-state table), beside
+       §13.5's automation hold and the output's `held`.
+    3. **A `stream.stop` from `held` after the engine quiesced is refused
+       engine-side** (`directive.rs`, `on_stream_stop`), so (b) raises
+       "stream.stop unacknowledged" at its window's end. The belief reads
+       `idle` from the accept, and the held alert stands until the show's
+       lifecycle, as D2a rules. Consistent, and noisy.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
