@@ -5472,6 +5472,52 @@ item):
       live", the held stop's own heal path); D4, how a correction lands; D5,
       its own spec row for §5.9.5's "prior state"; D6, the dress rehearsal's
       `stream.stop` race after a refused start.
+  - **The user's rulings on the brief and D1–D6, 2026-10-17. The brief is
+    APPROVED with these answers folded in; dispatch is the user's word.**
+    The rulings are quoted in full in the brief's §2.
+    - **D1:** the report → belief mapping, RATIFIED as proposed (`live` and
+      `reconnecting` → `live`; `none` and `closed` → `idle`). The table lands
+      in row 11.
+    - **D2:** `held` gives way to a fresh report on the precision clause's
+      schedule. The held alert persists until the real acknowledgement.
+    - **D3:** `held` is output-active. `outputsActive()` includes it,
+      `stream.stop` accepts it, `stream.start` refuses it by name, and every
+      consumer is exhaustive.
+    - **D4:** a correction lands like `itemEvent` (one bump, one
+      `belief.corrected` row, no frame). Automation fires on command-path
+      transitions only, never on corrections.
+    - **D5:** row 11 is required, its candidate drafted with the design and
+      reviewed before dispatch.
+    - **D6:** the dress waits out the correction to `idle` (bounded), then
+      asserts `stream.stop` refuses: the race becomes a falsification of D3.
+  - **Unlogged late acknowledgements are a named hardening candidate**
+    (2026-10-17), beside engine refusal-acks: "same class, terminal
+    outcomes dropped on the floor". The current behaviour is correct under
+    the ratified semantics, and the evidence gap is recorded, not patched.
+  - **Read against the tree, with the fold** (recorded, not changed):
+    - **D2a, OPEN, owed before dispatch.** D2 and D3 together can strand
+      the held alert. If `show.stop`'s acknowledgement never comes (withheld
+      after a failed quiesce, or lost), a fresh `closed` corrects
+      `held → idle`, and `stream.stop` then refuses `idle`, so no real
+      acknowledgement can arrive. Two questions are the user's: which
+      acknowledgements count, and what clears the alert when none can come.
+      Today the alert heals when the belief reads outputs inactive
+      (`alerts.ts:267`, row 8's F22). §10.1.2 states no clearing rule for
+      `outputs.held`, so row 11 states the new one.
+    - **D3's "#50's compile-time enum audit enforces exhaustiveness" is
+      narrower in the tree.** The audit pins each domain to its type; it
+      does not make the consumers exhaustive. The brief requires exhaustive
+      `switch`es with a `never` default in every consumer, so `tsc`
+      enforces both.
+    - **D4 departs from the `itemEvent` precedent on automation, by
+      design.** `itemEvent` fires automation's `stateChange`s
+      (`server.ts:924`); a correction will not. As a consequence, a refused
+      start corrected `live → idle` fires no `from: "live"` rule.
+    - **D5's placement, the builder's reading.** Row 11's candidate is
+      Appendix A of the brief, reviewed before dispatch. It lands in the
+      spec with the implementing PR and is ratified on that merge, not
+      ahead of the code: unlike row 10, it amends passages the tree builds
+      today (`show.stop`'s prior-state hold, §16's preconditions).
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
