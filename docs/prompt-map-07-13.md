@@ -4691,7 +4691,180 @@ item):
         - §13.2's `stateChange` fields also include `showState`,
           `viewItem`, `previewItem`, `automationHold`, `fallbackActive` and
           `itemState`. The ruling names the belief vocabulary; whether the
-          row enumerates those too is the row's to state.
+          row enumerates those too is the row's to state. *(The user's scope ruling of 2026-10-16:
+          every field is enumerated. The row's table is below.)*
+  - **Spine B's spec row: SPEC v0.4.8 row 9, drafted 2026-10-16** (branch
+    `spine-b-domain-row`; the user's GO and scope rulings of 2026-10-16; its
+    own PR, ratified on merge, before any implementing prompt).
+    - **The scope, as ruled.**
+      1. Per-field domains in one table. No field inherits another's
+         vocabulary. `streamState` gains `held`, and the dead `reconnecting`
+         is struck.
+      2. Every `stateChange` field is enumerated from tree facts. A domain the
+         tree shows unstable, or owned by unlanded work, is named as an
+         exception with its owner.
+      3. A validation domain, not documentation: preflight and the control
+         plane refuse a value outside it at load, with refusal tests on both
+         readers.
+      4. This design record gains the precedence section, below.
+      5. The first commit lands the staged records (`5b8b70d`).
+      6. Spec work per Standards §1.4, and new vocabulary in `VOCABULARY.md`
+         on the same PR.
+    - **The field domains, with the tree's writers** (the spec's table, with
+      the lines it rests on; every value has a writer except exception 1's):
+
+      | Field | Domain | Writers in the tree |
+      |---|---|---|
+      | `showState` | `UNLOADED`, `LOADED`, `RUNNING`, `STOPPED` (`ShowState`, `state.ts:16`) | `UNLOADED`: initial (`state.ts:120`), `unloadPackage` (`:485`, from `show.unload`, `commands/show.ts:183`), crash recovery (`persistence.ts:71`). `LOADED`: `loadPackage` (`state.ts:467`). `RUNNING`: `show.start` (`commands/show.ts:120`). `STOPPED`: `show.stop` (`:140`) |
+      | `viewItem` | `null`, or a rundown item id | a take (`state.ts:294`; `view.take`, `view.cut`); `null` initially (`:141`) and at load and unload (`:469`, `:486`); `recallSnapshot` (`:453`) |
+      | `previewItem` | `null`, a rundown item id, or a scene id | `preview.set` (`commands/view.ts:32`); **`armScene` writes the scene's id into an empty preview** (`state.ts:414`, from `scene.arm`); `null` initially (`:173`), on a take of the previewed item (`:297`), and at load and unload (`:472`, `:489`); `recallSnapshot` (`:454`) |
+      | `streamState` | `idle`, `live`, `held` | `live`: `stream.start` (`commands/output.ts:36`). `idle`: initial (`state.ts:204`), `stream.stop` (`output.ts:45`), `show.stop`'s acknowledgement (`commands/show.ts:164`). `held`: none yet (exception 1). `reconnecting`: written nowhere since Prompt 02's type (`ffea3ab`), now struck from `StreamState` (`state.ts:17`) |
+      | `recordState` | `idle`, `recording` (`RecordState`, `state.ts:18`) | `recording`: `record.start` (`output.ts:14`). `idle`: initial (`state.ts:203`), `record.stop` (`output.ts:25`), `show.stop`'s acknowledgement (`show.ts:163`) |
+      | `automationHold` | `true`, `false` | initial `false` (`state.ts:197`); `automation.hold` (`commands/state.ts:70`); `recallSnapshot` (`state.ts:460`) |
+      | `fallbackActive` | `true`, `false` | `true`: `view.fallback` (`commands/view.ts:84`), and the view item's `markMissing` or `markError` (`state.ts:320`, `:326`, from the engine's item event, `server.ts:908–909`). `false`: initial (`:174`), a take (`:298`), load and unload (`:475`, `:497`) |
+      | `itemState` | the seven of `ItemState` (`state.ts:14`) | each written: `ARMED` `:271`; `READY` `:279`, `:291`, `:307`, `:343` and the default read (`automation.ts`'s `readField`); `LIVE` and `PLAYING` `:293`; `DONE` `:314`; `MISSING` `:319`; `ERROR` `:325` |
+
+    - **The exceptions, named with their owners** (the spec's three):
+      1. `held` is in `streamState`'s domain with no writer. Owner: spine B's
+         implementing prompt. Until it lands, a rule naming `held` loads and
+         cannot fire: the one such rule §13.2 admits.
+      2. `recordState` has no `held`, by the scope ruling. The tree's §5.9.5
+         hold covers both outputs, and the record belief stays `recording`
+         through it. The engine reports no record state (the spine's tree
+         correction 3, above), so nothing could detect or heal a record hold.
+         Owner of a record `held`, if one is ever ruled: work order 2. §10.1.2's
+         "Promoting `held` into `streamState` and `recordState`" is narrowed
+         (§2c there).
+      3. A condition's `equals` is not read against the domain. The ruling's
+         scope is `from` and `to`; a condition names the same fields, so an
+         `equals` outside its field's domain can never hold. Owner: the user's
+         word.
+    - **Tree findings, recorded, not changed.**
+      1. **`previewItem` carries scene ids.** `armScene` writes a scene's id
+         into an empty preview (`state.ts:414`), so the field named for items
+         holds a scene. The domain follows the tree, and both readers now take
+         the package's scene ids (`RuleRefs.scenes`, `RuleContext.scenes`).
+      2. **"Held" now has two meanings in the spec.** §13.5 says "held" for
+         `automationHold` true; row 9 makes `held` an output value. The ledger
+         records both, kept apart.
+      3. **The ruling's picture of `held` is not the tree's.** The ruling calls
+         held "intentional suspension", "an operator's hold", with "resume
+         expected". The tree's only held is §5.9.5's: a `show.stop` the engine
+         never acknowledged, the outputs held at their prior state because the
+         control plane cannot know them. Nothing in the tree lets an operator
+         hold a stream. The spec and the ledger define `held` from §5.9.5, as a
+         suspension rather than a terminal state, which both readings share.
+         If spine B also means an operator-initiated hold, that is new
+         behaviour with an entry of its own: put to the user.
+      4. **The lane's comment undersells its own rule.** `alerts.ts:171` reads
+         "The operator's explicit action supersedes the last episode", but
+         `onAccepted` hears every accepted output command, automation's
+         included (`server.ts:336`, dispatch's `onSent`). The behaviour is the
+         precedence section's fact 3, below.
+      5. **A stale local preflight.** `preflightBin()` prefers
+         `target/release/nbe-preflight`, and the one on the normative machine
+         was built 2026-10-03, before #35's preflight change landed
+         (`d7b96f7`). So the control plane's local suites ran an old preflight
+         until it was rebuilt for this PR (2026-10-16 21:02). CI builds it
+         fresh on every run (`ci.yml`, the control-plane job), so no CI
+         result is affected.
+      6. **The `telemetry.test.ts` token pin named `reconnecting` a normative
+         wire token.** No spec text did, and no handler ever wrote it. It is
+         struck with the ruling (§2c in the test's comment), and the test is
+         renamed `stream state tokens are stable: idle, live`.
+  - **The precedence section: where automation actions rank** (the user's
+    scope ruling 4: argue the proposed order from tree facts, or amend it
+    with reasons). Proposed: explicit operator action > automation action >
+    fresh engine report > stale belief.
+    - **The tree facts.**
+      1. **An automation action is a command on the one command path, run as
+         `operator`** (`server.ts:438–447`). The path's comment at `:345–347`
+         reads "same preconditions, same audit, same acknowledgement rules —
+         so it must not have a second path". The action reaches the belief
+         through the same handler as the operator's identical command
+         (`commands/output.ts:36`, `:45`), and it sends the same directive.
+      2. **Dispatch does not rank the two.** Commands apply in the order they
+         are accepted. A rule's action differs only in its audit kind
+         (`automation`) and in its exemption from the session limiter
+         (§13.3, v0.4.7 row 6).
+      3. **The lane already treats them alike.** `onAccepted` hears every
+         accepted output command through dispatch's `onSent`
+         (`server.ts:336`). An automation command therefore opens (b)'s
+         window and supersedes an episode exactly as an operator's does
+         (`alerts.ts:157–178`).
+      4. **The operator outranks automation before dispatch.** While
+         `automationHold` is true, every trigger is suppressed within a frame
+         and every pending action is cancelled (§13.5; AC-25 #2; the
+         evaluator's flow in `automation.ts`, "held? suppressed"). No rule can
+         fire to release the operator's hold: the hold is the one operator
+         action automation cannot answer. §13.1 gives automation the
+         operator's preconditions and nothing more.
+      5. **A report outranks a command only after the engine has acted on
+         it.** Spine A's witnesses hold the belief a command set until its
+         acknowledgement, whichever actor sent it: (b)'s window runs to the
+         exact acknowledgement, and (a) needs a report that is fresh and
+         postdates the anchor (PR #44's construction).
+    - **The argument.**
+      - *Automation action > fresh engine report: holds.* By facts 1, 3 and 5,
+        an accepted automation command stands against a report where an
+        operator's does. A report that predates its acknowledgement describes
+        the world before the directive; a fresh one that postdates it
+        outranks the command's belief, as it would the operator's.
+      - *Fresh engine report > stale belief: holds.* It is spine B's rule, on
+        spine A's freshness.
+      - *Explicit operator action > automation action: holds as authority,
+        not as a belief tier.* By fact 4, the operator can stop automation
+        from acting, and automation cannot stop the operator. But once an
+        automation command is accepted, the belief must follow it, whoever
+        sent the command before it, because the engine was sent that
+        directive. A belief that ranked an earlier operator command above a
+        later accepted automation command would name an output the engine was
+        told to leave: the divergence R17 exists to end. Between two accepted
+        commands, the later one sets the belief (fact 2).
+    - **The order, amended with those reasons** (put to the user):
+      - **Authority, before dispatch:** explicit operator action > automation
+        action. The hold enforces it (§13.5), and §13.1's shared
+        preconditions bound it.
+      - **Belief, after dispatch:** the latest accepted command, operator's or
+        automation's, until its acknowledgement > a fresh engine report that
+        postdates that acknowledgement > stale belief.
+      - The proposed four-tier order is this pair read as one line. The
+        amendment splits it at dispatch, because the tree enforces the first
+        comparison only there.
+    - **Guards, each falsified.**
+      - The shared fixture `automation_rules.json` grows from 32 to 52 cases.
+        It now carries `refs.scenes` and a `reason` that a refusal must
+        contain, checked by both readings: the same verdict, and the same
+        words.
+      - `nbe-core` adds 2 named tests and `nbe-preflight`'s binary suite 2
+        (6 → 8). The control plane's `automation.test.ts` adds 3 (32 → 35),
+        one of them the real load path through both readers. The CI floors
+        move with them.
+      - The enum audit is compile-time: `automation.ts` asserts each domain is
+        exactly its state type, and `streamState`'s is that type plus `held`.
+      - Run on the normative machine, 2026-10-16 21:09–21:25 PDT, under
+        `caffeinate`. On AC with the 45 W adapter and Low Power Mode on, so
+        power-limited (§2a); the power log shows no sleep, wake or battery
+        event in the window. Every run started under 2.5.
+      - **F3's first preflight run is VOID**: it ended at load 4.73, above the
+        3.0 ceiling. F3 was rerun whole, at 2.44–2.94.
+      - Each mutation was restored from its saved copy, read `cmp`-identical,
+        and was touched so that the next build rebuilt.
+
+      | # | Guard | Mutation | What failed |
+      |---|---|---|---|
+      | F1 | preflight refuses a value outside the domain | the Rust check disabled (`if false && !in_domain…`) | `nbe-core`: both named tests (`held is not a recordState value: ()`; `showState from "Running" must be refused`). The fixture: all 11 out-of-domain cases accepted, the first `case34 … streamState … "reconnecting": expected valid=false, got Ok(())`. Preflight: `{ "field": "recordState", "to": "held" } must fail preflight; errors []` |
+      | F2 | the control plane refuses the same | the TS check disabled | the fixture: the same 11 cases; `the domains are per field`: the recordState refusal expected, a parsed rule got; `every field …`: `expected 'string'`, `actual 'object'` |
+      | F3 | per field, in Rust: no borrowed vocabulary | `recordState` reads `STREAM_STATES` too | both named tests (`held is not a recordState value`; `recordState from "held" must be refused`). Fixture cases 38 and 39 (`recordState` to `held`, from `live`) accepted. Preflight passed `recordState` to `held` (`errors []`) |
+      | F4 | per field, in TS | the same borrow | fixture cases 38 and 39; both named tests |
+      | F5 | `previewItem` takes a scene id, in Rust | scene ids dropped from `in_domain` | `previewItem from "S1" must read: … is outside previewItem's domain`; fixture case 44 refused; preflight's passing test: `` `armed`: … `to` "SCN" is outside previewItem's domain `` |
+      | F6 | the same, in TS | scene ids dropped from `inDomain` | fixture case 44; `every field …`; the load test: `show.load must succeed`, `E_PREFLIGHT_FAILED` |
+      | F7 | preflight passes the package's scene ids | `scenes: Default::default()` in `nbe-preflight`'s `main.rs` | preflight's passing test only, refusing `SCN` the same way |
+      | F8 | the control plane passes the package's scene ids | `scenes: new Set<string>()` in `package.ts` | the load test only: `E_PREFLIGHT_FAILED` from the control plane's own read, `` `to` "SCN" is outside previewItem's domain ``, while preflight passed the package |
+      | F9 | `reconnecting` stays struck, in Rust | added back to `STREAM_STATES` | `streamState from "reconnecting" must be refused`; fixture case 34; preflight passed `from "reconnecting"` (`errors []`) |
+      | F10 | the same, in TS, and the enum audit | added back to `STREAM_STATES` | `tsc`: `automation.ts(65,7): error TS2322: Type 'true' is not assignable to type 'false'` (`streamAudit`); fixture case 34; `every field …` |
+      | F11 | the enum audit: a domain is exactly its type | `"PAUSED"` added to `SHOW_STATES` | `tsc`: `automation.ts(64,7): error TS2322` (`showAudit`) |
+      | F12 | both readers say the same words (`reason`) | Rust's `recordState` words reordered (`recording, idle`) | the fixture: `case38: the refusal must say "…(idle, recording)"; got "…(recording, idle)"`, and case 39; `held_is_a_stream_value_and_not_a_record_value`; preflight's needle |
   - **The witness ruling (the user's ruling of 2026-10-15, on a stop before
     the code).** Three findings from the tree:
     1. A refused or skipped output command is never acknowledged.
