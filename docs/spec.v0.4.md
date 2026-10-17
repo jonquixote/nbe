@@ -3275,14 +3275,20 @@ name their owners.
    owner's.
 3. **A condition's `equals` is not read against the domain by this row.** The
    row's scope is `from` and `to`. A condition names the same fields, so an
-   `equals` outside its field's domain can never hold; whether this section
-   refuses it too is the user's word.
+   `equals` outside its field's domain can never hold; ~~whether this section
+   refuses it too is the user's word~~. *The principle is adopted and the scope
+   deferred (the user's ruling of 2026-10-16, §2c): a named follow-up row, "the
+   `equals` domain row", refuses it in the same shape on both readers. Its
+   owner is R17 spine B's design record (`docs/prompt-map-07-13.md`, queue
+   position 5).*
 
 **Transitions are reported as they are** (the user's ruling of 2026-10-16). A
 `stateChange` carries the field's actual values, once per change: a stream
 going from `live` to `held` fires `{ from: "live", to: "held" }`, never `"idle"`,
 and no alias or second event stands in for it. A rule written `to: "idle"`
-does not match a hold, by design: idle is terminal, held is a suspension. A
+does not match a hold, by design: idle is terminal, ~~held is a suspension~~
+*held is §5.9.5's limbo, a stop commanded and the output's state unknown (the
+user's ratification of 2026-10-16, §2c)*. A
 rule meaning "the stream left the air" is written `from: "live"`, which matches
 every departure from `live`.
 

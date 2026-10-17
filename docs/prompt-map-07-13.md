@@ -4641,8 +4641,12 @@ item):
        `"idle"`.
     2. Rules written `to: "idle"` not matching a hold is the correct
        semantics, not a regression. Idle is terminal: nothing armed,
-       nothing resumes. Held is intentional suspension: resume expected.
-       "Stream down" automations must not fire on an operator's hold;
+       nothing resumes. ~~Held is intentional suspension: resume expected.~~
+       *Held is §5.9.5's limbo: a stop commanded, the output's state unknown
+       (ratified 2026-10-16; the relay's "intentional suspension" gloss is
+       struck, §2c: it described a pause feature the tree does not have).*
+       "Stream down" automations must not fire on ~~an operator's hold~~
+       *a held stop (§2c, the same gloss)*;
        "left the air" automations must not miss a real stop.
     3. The "left the air" intent is served by from-matching: `from: "live"`
        catches live→idle, live→held, and any future departure. If the
@@ -4737,8 +4741,14 @@ item):
          (§2c there).
       3. A condition's `equals` is not read against the domain. The ruling's
          scope is `from` and `to`; a condition names the same fields, so an
-         `equals` outside its field's domain can never hold. Owner: the user's
-         word.
+         `equals` outside its field's domain can never hold. Owner: ~~the
+         user's word~~ **this design record** (§2c). **The principle is
+         adopted and the scope deferred** (the user's ruling of 2026-10-16;
+         #50 does not expand). **The named follow-up row: "the `equals`
+         domain row"**: a condition's `equals` read against its field's
+         domain, refused at load in the same shape on both readers
+         (``condition `equals` <value> is outside <field>'s domain (<words>)``),
+         with the shared fixture's `reason` holding the words to one.
     - **Tree findings, recorded, not changed.**
       1. **`previewItem` carries scene ids.** `armScene` writes a scene's id
          into an empty preview (`state.ts:414`), so the field named for items
@@ -4755,7 +4765,11 @@ item):
          hold a stream. The spec and the ledger define `held` from §5.9.5, as a
          suspension rather than a terminal state, which both readings share.
          If spine B also means an operator-initiated hold, that is new
-         behaviour with an entry of its own: put to the user.
+         behaviour with an entry of its own: ~~put to the user~~. **Ruled
+         2026-10-16:** `held` is §5.9.5's limbo, a stop commanded and the
+         output's state unknown; the gloss is struck in the ruling above. An
+         operator-initiated hold is new behaviour, on the promotion path with
+         its own entry, and not this spine's (§2c).
       4. **The lane's comment undersells its own rule.** `alerts.ts:171` reads
          "The operator's explicit action supersedes the last episode", but
          `onAccepted` hears every accepted output command, automation's
@@ -4767,7 +4781,10 @@ item):
          (`d7b96f7`). So the control plane's local suites ran an old preflight
          until it was rebuilt for this PR (2026-10-16 21:02). CI builds it
          fresh on every run (`ci.yml`, the control-plane job), so no CI
-         result is affected.
+         result is affected. *Accepted (the user's word of 2026-10-16): CI's
+         freshness held. A freshness assertion (the test helper refusing a
+         preflight binary older than its sources) is recorded as a hardening
+         candidate, not acted on.*
       6. **The `telemetry.test.ts` token pin named `reconnecting` a normative
          wire token.** No spec text did, and no handler ever wrote it. It is
          struck with the ruling (§2c in the test's comment), and the test is
@@ -4821,7 +4838,12 @@ item):
         later accepted automation command would name an output the engine was
         told to leave: the divergence R17 exists to end. Between two accepted
         commands, the later one sets the belief (fact 2).
-    - **The order, amended with those reasons** (put to the user):
+    - **The order, amended with those reasons** ~~(put to the user)~~
+      **RATIFIED 2026-10-16** (the user's word, §2c). It is recorded as argued
+      from `server.ts:438` (a rule's action runs on the one command path as
+      `operator`) and `:336` (the lane hears every accepted output command):
+      the relay's linear order amended by the tree, an improvement and not
+      a reversal.
       - **Authority, before dispatch:** explicit operator action > automation
         action. The hold enforces it (§13.5), and §13.1's shared
         preconditions bound it.
@@ -4831,6 +4853,36 @@ item):
       - The proposed four-tier order is this pair read as one line. The
         amendment splits it at dispatch, because the tree enforces the first
         comparison only there.
+      - **The refused start, as ratified:** it "flows through unchanged:
+        refusal is the acknowledgement; the fresh report after it moves belief
+        to truth" (the user's word).
+        - **The tree differs, recorded and put to the user.** In the tree a
+          refusal is never acknowledged: `directive.rs`'s `apply` returns on
+          the handler's error (`on_stream_start(d)?`, `:132`) before
+          `set_last_applied` and `ack` (`:147–148`), and the channel only logs
+          `directive failed` (`channel.rs:265`). This was the spine's witness
+          finding 1, above.
+        - So, read literally, "until its acknowledgement" never ends for a
+          refused start. The case reaches the fresh report only if (b)'s
+          window ending unacknowledged (§5.9.5's 2000 ms) stands in for the
+          acknowledgement, or if the engine acknowledges its refusals, which
+          is an engine and wire change.
+        - Which of the two is the implementing prompt's to carry is the
+          user's word. The row is unaffected: its domains and the transition
+          rule do not depend on it.
+    - **The gate, at `6bf10c7`** (the PR body has it read per step).
+      - **The workspace: three windows, all VOID.** Each ended at or above
+        3.0 on the run's own load: 2.38 → 4.16, 2.35 → 3.85, and 1.95 → 3.32.
+        All three read 515/0/4 over 58 binaries.
+      - **Accepted as the evidence of record** (the user's word of
+        2026-10-16): the three agreeing voids, the clean power log, and CI's
+        per-test read at `6bf10c7` (run `39002975513`).
+      - **The structural note:** the workspace battery now self-voids at 3.0
+        on this machine; even a start under 2.0 ended at 3.32. A local-ceiling
+        ruling is owed when it next matters.
+      - **The fmt miss** (CI run `39002620888` at `e6a6e29` failed `cargo fmt
+        --check` on two of this PR's tests, committed before fmt ran): the
+        gate worked, and `6bf10c7` is the fix.
     - **Guards, each falsified.**
       - The shared fixture `automation_rules.json` grows from 32 to 52 cases.
         It now carries `refs.scenes` and a `reason` that a refusal must
