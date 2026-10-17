@@ -532,8 +532,9 @@ the runner's load at the failure, and this run's logs cannot answer it.** The
 workflow echoes no load: `.github/workflows/ci.yml` contains no `vm.loadavg` or
 `uptime` anywhere. The job API records only the runner's name and labels.
 Answering it for a future sighting needs a `sysctl -n vm.loadavg` echoed around
-the workspace test step. That capture is owed and not made here (this entry is
-records only).
+the workspace test step. ~~That capture is owed and not made here (this entry is
+records only).~~ **Landed 2026-10-16, branch `r10-ci-load-capture`** (§2c; the
+entry below, after sighting 2).
 
 **THE REFUTATION CONDITION, written before the next run rather than after it.**
 Either of these reopens R10 as a defect in the transport's drain or in the test
@@ -585,8 +586,81 @@ at or above their floors.
   no load (`ci.yml` had no `vm.loadavg` or `uptime`), so a CI sighting could
   not qualify. R10 stays open (watch): 2 sightings, both on CI, both with
   the load unrecorded.
-- **The CI load capture stays owed.** It is the only thing that lets a CI
-  sighting count.
+- ~~**The CI load capture stays owed.** It is the only thing that lets a CI
+  sighting count.~~ **Landed in the same PR** (§2c, 2026-10-16; the entry
+  below).
+
+**The CI load capture, landed 2026-10-16** (branch `r10-ci-load-capture`, the
+user's order of 2026-10-16: arm R10's reopen rule).
+- **The workflow delta** (`ci.yml`, the rust job only; 46 lines added, none
+  removed). Two steps bracket the workspace test step, which is unchanged:
+  the same command, flags and parallelism.
+  - Before it: a `[ci-load] pre` line, then a detached sampler that writes a
+    `[ci-load] sample` line every 10 s to `$RUNNER_TEMP`.
+  - After it, `if: always()`: a `[ci-load] post` line, the sampler stopped,
+    and every sample printed, so a failing run carries them.
+  - Each line carries a UTC timestamp, the 1, 5 and 15 minute load averages
+    (`sysctl vm.loadavg`), the CPU count (`hw.ncpu`) and memory in MiB
+    (`hw.memsize`; `vm_stat`'s free, inactive and speculative pages; swap
+    used). A sighting's ~5 s window is matched to the samples by the log's
+    own timestamps.
+  - **The tree differs from the order's wording.** The order named
+    `/proc/loadavg`, `nproc` and `free -m`. The runner is macOS
+    (`macos-14-arm64`), where none of the three exists, so the same readings
+    come from `sysctl` and `vm_stat`.
+  - The logging cannot fail the job: every command is guarded with
+    `|| true`, the sampler runs detached with its output in a file, and both
+    steps are continue-on-error. Locally, both scripts exited 0 under
+    `bash -e` and `bash -eo pipefail` with `RUNNER_TEMP` unset, unwritable,
+    and with the post step run without the pre step.
+- **The failure path, proved on CI** (the PR #47 pattern). Throwaway branch
+  `r10-load-falsify-ci-temp`, commit `99b8054` on `32cc054`, as draft PR #48:
+  the workspace test step exits 1 after 25 s, before cargo runs.
+  Run `38994605707`, the rust job (job `117284268391`, runner `GitHub
+  Actions 1000003178`, `macos-14-arm64` image 20260831.0302.1):
+  - The capture's first step succeeded:
+    `[ci-load] pre 2026-10-17T02:22:28Z load1=10.38 load5=11.06 load15=6.94 ncpu=3 mem_mib total=7168 free=454 inactive=2364 speculative=675 swap_used=0.00M`.
+  - The test step failed as forced: `##[error]Process completed with exit
+    code 1.` at 02:22:53.79Z.
+  - The `if: always()` step succeeded. It printed the post line and all
+    three samples, 10 s apart:
+
+        [ci-load] post 2026-10-17T02:22:53Z load1=12.53 load5=11.54 load15=7.23 ncpu=3 mem_mib total=7168 free=115 inactive=2471 speculative=609 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:28Z load1=10.38 load5=11.06 load15=6.94 ncpu=3 mem_mib total=7168 free=387 inactive=2364 speculative=676 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:38Z load1=11.61 load5=11.31 load15=7.08 ncpu=3 mem_mib total=7168 free=167 inactive=2275 speculative=769 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:48Z load1=12.41 load5=11.49 load15=7.19 ncpu=3 mem_mib total=7168 free=106 inactive=2343 speculative=710 swap_used=0.00M
+
+    The samples at :38 and :48 were written during the failing step, so
+    the sampler outlives the step that starts it.
+  - The job's conclusion is failure, from the forced step alone. The steps
+    after it skipped, as on any red test step. The control-plane and dress
+    jobs ran unchanged and succeeded.
+  - **The first CI load datum.** Straight after clippy, the 3-CPU runner
+    read a one-minute load of 10.38 rising to 12.53 across the 25 s, with
+    free memory falling from 454 to 106 MiB of 7168.
+  - PR #48 was closed unmerged (2026-10-17T02:26:31Z), and its branch was
+    deleted, locally and on `origin`.
+- **R10's reopen rule is armed.** From this PR on, a CI sighting in the
+  workspace test step carries its load: the samples on either side of the
+  failing test's window decide it. With the load recorded and under the
+  3.0 ceiling, it meets the refutation condition's first leg and reopens
+  R10 as a defect. At or above the ceiling, it is a load sighting, and the
+  watch holds.
+- **Put to the user, not decided here: the ceiling on a CI runner.** The 3.0
+  ceiling is the normative machine's (12 CPUs). The runner has 3, and its
+  first datum read 10.38–12.53 at clippy's end. Read as written, a CI
+  sighting at that load is a load sighting, so the armed rule can fire on
+  CI only if the runner falls under 3.0 during the tests. Whether the CI
+  reading should use a ceiling of its own (say, per CPU) is the user's
+  ruling. The capture logs `ncpu` on every line so either reading can be
+  made from the same samples.
+- **Not covered, recorded.** The workspace step is where both sightings
+  fell. The rust job's later step "the RTMP transport suite actually ran
+  (Prompt 10 WU5)" runs `prompt10_rtmp` again, after the post line; a
+  sighting there carries no samples. Other jobs are not covered either.
+  Extending the capture is a separate decision (the order). The soak's
+  dedicated R10 count (the register row) stays owed: this PR is
+  workflow-only.
 
 ### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41, merged as `a6fc4d8`)
 
