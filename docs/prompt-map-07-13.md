@@ -4896,11 +4896,53 @@ item):
         then stale belief. The alert's raise at the same instant is the
         announcement: the control plane admits ignorance, the lane says so,
         and belief stands down together.
-        - **The precision clause, verbatim:** "window expiry ends the belief
+        - ~~**The precision clause, verbatim:** "window expiry ends the belief
           claim and does nothing else — it is not an acknowledgement,
           Amendment 4's "the command's own ack" stays exact, and the alert
           never auto-clears at window end. No engine change, no wire change,
-          no ratified row amended."
+          no ratified row amended."~~ *Struck (§2c, the user's amendment 1 of
+          2026-10-17): as written it contradicted the pick, because the alert
+          is something expiry does.*
+        - **The precision clause, amended and signed off 2026-10-17,
+          verbatim:**
+
+          > "Window expiry ends the command's claim on belief and raises the
+          > expiry alert where §10.1.2's (b) raises one, and does nothing
+          > else. The alert announces the fallback; it does not act on the
+          > claim. Expiry is not an acknowledgement: Amendment 4's "the
+          > command's own ack" stays exact, and the alert never auto-clears
+          > at window end. No engine change, no wire change, no ratified row
+          > amended."
+
+          - **Where (b) raises one** (`alerts.ts:214–216`). At the window's
+            unacknowledged end, (b) raises unless `engine.notReporting` owns
+            the case. There the claim still expires under that alert's
+            announcement, and with no fresh report to resolve to, the stale
+            belief stands.
+          - **Outside the clause.** A command acknowledged inside its window,
+            by its own acknowledgement or by a later one proving it processed,
+            was confirmed under Amendment 4, not expired
+            (`alerts.ts:199–201`), so the clause's trigger never fires there.
+            *(The user's fix of 2026-10-17: the draft's note had listed this
+            case as one where the claim expires without a raise.)* A command
+            superseded inside its window by a newer command for the same
+            output gave its claim to the newer one at that acceptance (the
+            order's first tier), before any expiry. *(The builder's addition,
+            from the ratified order, flagged for the user.)*
+        - **The late-acknowledgement rule, signed off 2026-10-17 (amendment 2,
+          with the user's fix: "logged" scoped to the alert-clear path),
+          verbatim:**
+
+          > "An acknowledgement arriving after its window's unacknowledged
+          > expiry is inert to belief: logged where the alert-clear writes
+          > its audit row, not applied. The dead claim cannot reclaim the
+          > belief. It still clears the expiry alert by §10.1.2's ratified
+          > late-acknowledgement rule."
+
+          In the cases where (b) raised nothing (`engine.notReporting` owning
+          it), there is no alert to clear, so a late acknowledgement there is
+          not logged. The scoped wording says so, and no hardening candidate
+          is named for it (the user's default).
         - **Read together with the ratified order** (the builder's
           restatement of the two rulings, not new text of the user's): the latest
           accepted command, operator's or automation's, until its
@@ -4913,10 +4955,32 @@ item):
           engine change, and a §10.1.2 mapping-table amendment. It needs its
           own spec row, sequenced after work order 2.
         - **Carried into the implementing prompt's brief, verbatim: the pick
-          and the precision clause above.** No brief exists yet:
+          ~~and the precision clause above~~** *and the amended precision
+          clause and the late-acknowledgement rule above (§2c, 2026-10-17)*.
+          No brief exists yet:
           `agents/prompts/` holds prompts 01–15, and none is spine B's. This
           block is the carry, and it lands verbatim in the brief when the
           brief is written.
+    - **SPEC v0.4.8 row 10, drafted 2026-10-17** (branch
+      `spine-b-belief-row`, PR #51; ratified on merge, before any
+      implementing prompt): §10.1.3, belief precedence. It holds exactly the
+      three items: the belief order, the amended clause, and the
+      late-acknowledgement rule.
+      - **Verified first, not assumed** (the user's order): row 9 and the §13
+        enumeration landed whole with #50. On `main` at `9e6239c`, the v0.4.8
+        table ends at row 9. §13.2 carries the field-domain block, its three
+        exceptions (the `equals` domain row named), the transition rule and
+        the `stateChange` clause. §10.1.2's narrowing and row 9's header
+        sentence are in place. Both readers' domains, the scene ids, the
+        struck `reconnecting`, the 52-case fixture and the ledger entries are
+        on `main`. Row 9's "(merged as `9e6239c`)" is post-merge cadence, and
+        landed in this PR's `a0b5404`. The spec held no belief-precedence,
+        claim or late-acknowledgement text.
+      - **Normative ahead of its implementation.** No guard exists yet:
+        spine B's implementing prompt owns them, and its brief carries the
+        clause and the late-acknowledgement rule verbatim. Until it lands, the
+        belief follows accepted commands only, and the lane announces
+        contradictions (row 8).
     - **The gate, at `6bf10c7`** (the PR body has it read per step).
       - **The workspace: three windows, all VOID.** Each ended at or above
         3.0 on the run's own load: 2.38 → 4.16, 2.35 → 3.85, and 1.95 → 3.32.

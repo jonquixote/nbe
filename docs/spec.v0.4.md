@@ -51,7 +51,12 @@ the witness ruling of the same day, and until then it is a candidate
 (branch `spine-b-domain-row`, 2026-10-16), before any implementing prompt. It
 is ratified by the user's merge of that PR, on the user's rulings of
 2026-10-16 (the automation transition, and the row's scope), and until then it
-is a candidate (merged as `9e6239c`).
+is a candidate (merged as `9e6239c`). **Row 10** was drafted in R17 spine part
+B's belief-row PR (branch `spine-b-belief-row`, 2026-10-17), before any
+implementing prompt. It is ratified by the user's merge of that PR, on the
+user's rulings of 2026-10-16 (the precedence amendment, and the pick of (a))
+and 2026-10-17 (the amended precision clause and the late-acknowledgement
+rule, signed off), and until then it is a candidate.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
@@ -64,6 +69,7 @@ is a candidate (merged as `9e6239c`).
 | 7 | **A failed re-resync is never silent, and its class decides the session** (the user's ruling of 2026-10-14; queue position 4, adopted from PR #39's two-key pass). Rule 5 had no failure half. On `resyncRequest` the control plane sent the snapshot and ignored the result, and a throw became an unaudited error reply that the render node logs as an unparseable frame. The gate never advances `expected_seq` on a gap (§5.9.6), so every later directive was another gap: a frozen render node on a live connection, accepting commands and sending telemetry, with nothing on air changing and no signal. Now every failure is audited (`resync.requestFailed`, with its cause) and warned, and the class decides. **A snapshot that cannot be built is persistent:** the connection closes (1011, `show.resync request failed`) and holds no registration, and the render node's reconnect handshake (rule 1) retries against a clean slate, paced by its backoff. **A send that is refused is transient:** the session is kept, and the next directive's gap re-requests. What the render node sees that it did not: a 1011 close with that reason, where it got an `E_ENGINE` error response ~~or nothing~~. A refused send was silent on the wire and still is, because the session is kept; the audit and the warn are its surface *(§2c, the fresh pass on PR #45)*. Rule 1's failure half now states its order (release the registration, audit, warn, close), which the tree already followed and a guard now pins *(the fresh pass on PR #45; the user's decision of 2026-10-15)* | 5.9.4 (rule 5's failure half; rule 1's failure half gains its order) | `resync-handshake.test.ts` (~~+3~~ +5: a snapshot that cannot be built tears down and the reconnect resyncs; a refused send keeps the session and the next request unfreezes it; a re-resync that succeeds audits nothing; and the teardown's order on both the request path and the handshake path: registration released, audited and warned at the instant the close is initiated); `resync-request.e2e.ts` (3, the real engine behind a real sequence gap: snapshot, send, and a persistent failure paced by the engine's backoff). Falsifications: `docs/prompt-map-07-13.md`, queue position 4 |
 | 8 | **The operator-signal lane** (the user's design ruling of 2026-10-15; R17 spine part A; queue position 5). The control plane held beliefs about its outputs that the render node's own report could contradict: a refused stream read `live` beside `none`, a held stop `live` beside `closed`, and a stop that did not take `idle` beside `live`. Nothing announced the contradiction. The control plane's warnings reached only a console, and `lastError` was one slot that only preflight wrote. Now one alerts list rides the shared status snapshot: `stateChange`, `system.status`, `GET /status` and the tick. It carries (b) command confirmation: an output command with no exact acknowledgement within §5.9.5's window. It carries (a) standing contradictions, compared only against a fresh report that postdates the anchor. It also carries the held stop, the engine not reporting, and R18's audit-sink fallback, which is the one alert with no audit row. Every other alert is audited on its edges. The row is additive: no belief, enum, automation input, engine or wire change | 10.1 (two fields), 10.1.1 (ownership), 10.1.2 (new), 10.4 (item 7, old text struck) | `alerts.test.ts` (21: every mapping row with its negative, every clearing rule, the (b)-to-(a) handoff, edge auditing, R18); `alerts-server.test.ts` (4: every shared surface alike, the held path, a sink that really fails, the additive snapshot); `operator-signals.e2e.ts` (the real engine). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
 | 9 | **`stateChange` values have per-field domains, and `held` joins the stream's** (the user's rulings of 2026-10-16: the automation transition, and the row's scope; R17 spine part B's spec row, before any implementing prompt; queue position 5). §13.2 typed `stateChange` as `{ field, itemRef?, from?, to? }` and checked the field but never a value, so a rule naming a value its field cannot take (a misspelling, `held`, or another field's word) loaded and could never fire, against §13.2's own rule that such a rule is not accepted. Now every field a `stateChange` names has an enumerated domain, each value sourced from the tree's writers, and a `from` or `to` outside it refuses the load, by name, in preflight and in the control plane alike, in the same words. No field borrows another's vocabulary: the record's on-air value is `recording`. `streamState` gains `held` (exception 1: no writer until spine B's implementing work, its owner), and the dead `reconnecting` is struck from the control plane's type. `recordState` gains no `held` (exception 2: its owner is work order 2). `previewItem`'s domain includes scene ids, because `scene.arm` writes one into an empty preview. A transition is reported with its actual values, once: live→held fires `{ from: "live", to: "held" }`, with no idle alias. `from` has existed since v0.4.7; this row adds no key | 13.2 (the `stateChange` row, a clause added; the field-domain table, its exceptions and the transition rule, new), 10.1.2 (the additive note narrowed, §2c) | the shared fixture, now 52 cases with a `reason` checked by both readings (`every_fixture_rule_gets_its_verdict_from_the_rust_reading`; `every fixture rule gets its verdict from the control plane's reading, the same as preflight's`); `nbe-core`'s `held_is_a_stream_value_and_not_a_record_value` and `every_field_takes_its_whole_domain_and_refuses_a_value_outside_it`; `nbe-preflight`'s `a_state_change_value_outside_its_field_domain_fails_preflight_by_name` (exit 2) and `a_state_change_value_inside_its_field_domain_passes_preflight` (exit 0, a scene id included); the control plane's `the domains are per field: …`, `every field takes its whole domain …` and `a previewItem rule naming a scene loads, and fires …` (the real load path, both readers); `telemetry.test.ts`'s token pin, `reconnecting` struck. The enum audit is compile-time (`automation.ts`). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
+| 10 | **Belief precedence: a command holds the belief until its acknowledgement or its window's end, then a fresh report, then the stale belief** (the user's rulings of 2026-10-16 and 2026-10-17; R17 spine part B's belief row, before any implementing prompt; queue position 5). §10.1.2 announced a contradiction between belief and report, but nothing said which one the belief follows. Its additive note left "correcting a belief from a fresher report" to a later row. Now two orders are split at dispatch. Authority: an explicit operator action outranks automation, enforced by the hold (§13.5). Belief: the latest accepted command, the operator's or automation's alike, until its acknowledgement; then a fresh report that postdates it; then the stale belief. A command unacknowledged within §5.9.5's window loses its claim when the window ends (the pick of (a)), and expiry is not an acknowledgement (the precision clause, verbatim). A late acknowledgement is inert to belief and cannot reclaim it, while still clearing (b)'s alert by row 8's ratified rule. No engine change, no wire change, no ratified row amended. Engine refusal acknowledgements are a named hardening candidate, after work order 2 | 10.1.3 (new), 10.1.2 (the additive note, annotated) | **No guard yet: normative ahead of its implementation.** Spine B's implementing prompt owns the guards, and its brief carries the clause and the late-acknowledgement rule verbatim. Records: `docs/prompt-map-07-13.md`, queue position 5 |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.8. Row 2
 adds one field to a directive payload, `itemDurationFrames`. That is a wire
@@ -2560,7 +2566,76 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 
 It clears when the sink accepts a write. What the control plane does after a failed write is unchanged here: that is R18's queued question.
 
-**Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` ~~and `recordState`~~, and correcting a belief from a fresher report, are a later row's. *(§2c, v0.4.8 row 9: `held` joins `streamState`'s domain (§13.2), and `recordState`'s stays `idle` and `recording`, by the user's scope ruling of 2026-10-16; §13.2's exception 2 names its owner. Producing `held`, and the correction, remain spine B's implementing work.)*
+**Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` ~~and `recordState`~~, and correcting a belief from a fresher report, are a later row's. *(§2c, v0.4.8 row 9: `held` joins `streamState`'s domain (§13.2), and `recordState`'s stays `idle` and `recording`, by the user's scope ruling of 2026-10-16; §13.2's exception 2 names its owner. Producing `held`, and the correction, remain spine B's implementing work.)* *(v0.4.8 row 10: the order the correction follows is §10.1.3's, below.)*
+
+### 10.1.3 Belief precedence (normative, new in v0.4.8 row 10)
+
+The control plane's belief about an output (`streamState`, `recordState`) and
+the render node's report (`streamTransportState`) can disagree, and §10.1.2
+announces it. This section says which one the belief follows. It is ratified
+ahead of its implementation: R17 spine part B's implementing prompt owns it.
+Until that lands, the belief follows accepted commands only, as it always has,
+and the lane announces every contradiction.
+
+**Two orders, split at dispatch** (the user's ratification of 2026-10-16).
+- **Authority, before dispatch: an explicit operator action outranks an
+  automation action.** The hold enforces it. While `automationHold` is true no
+  trigger fires (§13.5), so no rule can answer the operator's hold, and an
+  automation action meets the operator's preconditions and no more (§13.1).
+- **Belief, after dispatch, in three tiers:**
+  1. the latest accepted command for the output holds the belief until its
+     acknowledgement. The operator's command and automation's are alike here:
+     an automation action runs on the operator's command path (§13.1), and its
+     directive is sent like any other;
+  2. then a fresh engine report (§10.1.1's freshness threshold) that
+     postdates that acknowledgement;
+  3. then the stale belief.
+
+  A belief that ranked an earlier operator command above a later accepted one
+  would name an output the render node was told to leave. "Acknowledgement" is
+  what §10.1.2's (b) accepts as proof that the command was processed: its own
+  acknowledgement, or a later one.
+
+**A window that ends a claim** (the user's pick (a), 2026-10-16). A refused or
+skipped directive is never acknowledged (§10.1.2's (b)). So a command that gets
+no acknowledgement within §5.9.5's window (2000 ms) loses its claim on the
+belief when the window ends, and the belief resolves by the remaining tiers: a
+fresh report, then the stale belief. The precision clause, verbatim (signed off
+2026-10-17):
+
+> Window expiry ends the command's claim on belief and raises the expiry
+> alert where §10.1.2's (b) raises one, and does nothing else. The alert
+> announces the fallback; it does not act on the claim. Expiry is not an
+> acknowledgement: Amendment 4's "the command's own ack" stays exact, and the
+> alert never auto-clears at window end. No engine change, no wire change, no
+> ratified row amended.
+
+*"Amendment 4" is PR #46's two-key amendment, recorded in
+`docs/prompt-map-07-13.md`: §10.1.2's (b) names the command's own
+acknowledgement "exact" and generalizes processing to a later one.*
+
+- **Where (b) raises one.** At the window's unacknowledged end, (b) raises
+  unless `engine.notReporting` owns the case. There the claim still expires,
+  and with no fresh report to resolve to, the stale belief stands.
+- **Outside the clause.** A command acknowledged inside its window, by its
+  own acknowledgement or by a later one, was confirmed, not expired: the
+  clause's trigger never fires. A command superseded inside its window by a
+  newer command for the same output gave its claim to the newer one at that
+  acceptance.
+
+**A late acknowledgement cannot reclaim the belief** (signed off 2026-10-17),
+verbatim:
+
+> An acknowledgement arriving after its window's unacknowledged expiry is
+> inert to belief: logged where the alert-clear writes its audit row, not
+> applied. The dead claim cannot reclaim the belief. It still clears the
+> expiry alert by §10.1.2's ratified late-acknowledgement rule.
+
+**Not in this row.** Engine refusal acknowledgements would converge the belief
+in milliseconds and give the audit lane cause attribution. They are a named
+hardening candidate, at the price of a wire change, an engine change and a
+§10.1.2 mapping-table amendment, with a row of their own sequenced after work
+order 2.
 
 ## 10.2 Dropped-frame definition
 
