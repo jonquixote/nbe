@@ -693,6 +693,11 @@ adopt and record).
   | `39002975513`, PR #50 at `6bf10c7`, green (515/0/4) | the workspace tests: the test build finished at 04:34:25.38 (`Finished` in 43.84 s); the post line at 04:35:19 | whole step 1.81–6.95 (pre, 10 samples, post). While building: 1.89, 1.81, 3.14, 5.06, 6.43. While the tests ran: 6.65, 6.95, 6.16, 6.06, 5.36, so 5.36–6.95. The R10 test passed at 04:34:57.28, between 6.16 and 6.06 |
   | `39005571035`, PR #50 at `bfd5397` (its head), green (515/0/4) | the workspace tests: the test build finished at 05:16:39.82 (`Finished` in 47.17 s); the post line at 05:17:35 | whole step 2.38–6.69 (pre, 10 samples, post). While building: 2.38, 2.59, 3.64, 5.47, 6.68. While the tests ran: 6.69, 6.18, 6.27, 5.46, 5.89, 5.16, so 5.16–6.69. The R10 test passed at 05:17:11.93, between 6.27 and 5.46 |
   | `39005941546`, main at `9e6239c` (PR #50's merge), green (515/0/4) | the workspace tests: the test build finished at 05:22:50.24 (`Finished` in 52.41 s); the post line at 05:23:38 | whole step 4.50–**9.67** (pre, 10 samples, post): the pre line read load1 29.00, straight after clippy, the highest yet. While building: 9.67, 8.33, 7.99, 7.86, 7.42, 7.03. While the tests ran: 6.19, 6.07, 5.61, 5.20, then the post line's 4.50, so 4.50–6.19. The R10 test passed at 05:23:17.58, between 6.07 and 5.61 |
+  | `39013696039`, PR #51 at `a0b5404`, green (515/0/4) | the workspace tests: the test build finished at 07:28:41.00 (`Finished` in 30.57 s); the post line at 07:29:26 | whole step 3.08–5.43 (pre, 8 samples, post). While building: 3.30, 3.08, 3.49, 4.87. While the tests ran: 4.79, 4.70, 5.06, 5.17, then the post line's 5.43, so 4.70–5.43. The R10 test passed at 07:29:05.60, between 4.70 and 5.06 |
+  | `39014021859`, PR #51 at `39db649` (its head), green (515/0/4) | the workspace tests: the test build finished at 07:34:09.36 (`Finished` in 48.54 s); the post line at 07:35:02 | whole step 3.01–5.50 (pre, 11 samples, post). While building: 3.02, 3.01, 3.47, 4.20, 5.50. While the tests ran: 5.25, 5.01, 4.67, 4.54, 4.80, then the post line's 4.17, so 4.17–5.25. The R10 test passed at 07:34:37.49, between 4.67 and 4.54 |
+  | `39025809315`, main at `c1fe348` (PR #51's merge), green (515/0/4) | the workspace tests: the test build finished at 10:42:32.22 (`Finished` in 51.53 s); the post line at 10:43:24 | whole step 2.31–6.50 (pre, 11 samples, post). While building: 2.55, 2.31, 3.11, 4.39, 5.56, 6.50. While the tests ran: 6.07, 5.32, 4.53, 3.96, 3.42, then the post line's 3.20, so 3.20–6.07. The R10 test passed at 10:43:02.79, between 4.53 and 3.96 |
+  | `39026282575`, PR #52 at `4403643`, green (515/0/4) | the workspace tests: the test build finished at 10:49:53.74 (`Finished` in 45.58 s); the post line at 10:50:42 | whole step 5.07–8.55 (pre, 10 samples, post). While building: 6.28, 5.52, 5.87, 6.83, 8.55. While the tests ran: 8.29, 7.92, 6.73, 6.01, 5.51, then the post line's 5.07, so 5.07–8.29. The R10 test passed at 10:50:20.98, between 6.73 and 6.01. **The 10th green run** |
+  | `39031255945`, PR #52 at `cfa251b`, rust green (515/0/4); the dress job failed at step 8 (queue position 5 records it; green on rerun) | the workspace tests: the test build finished at 12:08:21.93 (`Finished` in 41.30 s); the post line at 12:09:15 | whole step 1.67–4.96 (pre, 10 samples, post). While building: 1.67, 2.04, 2.80, 4.16, 4.96. While the tests ran: 4.28, 4.30, 3.84, 3.93, 3.41, then the post line's 3.19, so 3.19–4.30. The R10 test passed at 12:08:52.76, between 3.84 and 3.93. The 11th: the rust test step was green, and the ruling counts that step's green runs |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -795,6 +800,21 @@ ruling, drift is a runner-fleet or image question, not R10.
 *(Run `39002620888` at `e6a6e29` is not a row: its rust job failed at
 `cargo fmt --check` before the tests, so it is not a green instrumented
 run.)*
+
+**The ceiling at PR #51's merge** (the three rows above): **9 green runs**.
+No new maximum (the peaks were 5.43, 5.50 and 6.50), so the ceiling **holds at
+14.50 per CPU**, 1.5 × 9.67, as the user accepted on 2026-10-17. **The next
+green instrumented run is the 10th, and the margin tightens to 1.25× there**
+(the amended ruling's item 2). With the maximum still 9.67, that ceiling is
+**12.09 per CPU**, load1 36.2 on the 3-CPU runner; it is recomputed with that
+run's own samples.
+
+**The ceiling at 10 green runs: 12.09 per CPU** (recorded 2026-10-17). The
+10th run, `39026282575`, peaked at 8.55, so the maximum is still 9.67 and the
+ceiling is **1.25 × 9.67 = 12.09 per CPU** (load1 36.2). It held at the 11th
+(`39031255945`, peak 4.96). In the user's words: "Ceiling 12.09 recorded; the
+downward move is the mechanism working." The image is still `macos-14-arm64` 20260831.0302.1, and
+every run had a different runner.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5392,6 +5412,206 @@ item):
     complete; the envelope rows staged.
   - Spine part B's spec row (SPEC v0.4.8 row 9) is landed by it. Position 5
     stays open: spine B's implementing work and work order 2 remain.
+  **Merged: PR #51 is `c1fe348`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-17: a squash at 2026-10-17T10:40:38Z (parent
+  `9e6239c`), pinned to the reviewed head `39db649`. The merge tree `c5da808`
+  is identical to `39db649`'s. SPEC v0.4.8 row 10 is ratified by it, and the
+  header's row 10 sentence gains "(merged as `c1fe348`)".
+  - **Before the merge, at the head:** run `39014021859`, read per test
+    (§2b): rust 515/0/4, 30 of 30 floors; control-plane npm 179/179,
+    automation 35/35, every e2e floor held, the refused start raised at
+    2009 ms; dress 27/27 with `ok 24`, drops 1, underruns 167, watchdog
+    trips 0. The docs gate at `39db649`: `tsc` 0; `spec_budgets` 2/2, the
+    protocol mirror 24/24, `prompt03` 10/10, npm 179/179; no voids.
+  - **Main's CI at `c1fe348`, the closing record:** run `39025809315` (push),
+    attempt 1, read per test (§2b). Every job succeeded.
+    - **rust** (job `117376440774`, runner `GitHub Actions 1000003208`):
+      `TOTAL: 515 passed, 0 failed, 4 ignored`; 30 of 30 floor lines at or
+      above floor; 0 `test result: FAILED`;
+      `telemetry_tick_wires_the_live_session_counter ... ok`.
+    - **control-plane** (job `117376440574`): `npm test` 179/179; automation
+      35/35; effects 2/2. Every e2e floor held, and operator-signals' refused
+      start raised at 2018 ms.
+    - **dress rehearsal** (job `117376440731`): 27/27 with `ok 24`.
+      DRESS-COUNTS (ci, `c1fe348`): drops 0, underruns 150, fallbackTicks 0,
+      watchdogTrips 0, step4RiseMs 1986, step6RiseMs 1998, all inside the
+      backstops.
+    - **R10 did not fire.** The run extends the envelope (Finding R10's
+      table), and the ceiling holds at 14.50 per CPU.
+  - **The user's notes on #51** (2026-10-17):
+    - The pre-drafting verification was "noted with approval": row 10 rests
+      on a verified foundation.
+    - The docs-only gate (the spec-parsing suites and `tsc`, no voids) was
+      the right gate for a docs PR.
+    - The two envelope rows ride these records as owed.
+  - **The superseded case is KEPT** (the user's word of 2026-10-17). "It's
+    behavioral, not pedantic: expiry drops belief through the lower tiers
+    before the newer command; a handoff never leaves the truth ordering."
+    - **The ruling's composition, read against the tree.** The ruling says
+      "it composes with the late-ack rule — the superseded command's late ack
+      is logged, never reclaiming belief".
+    - *Never reclaiming* holds.
+    - *Logged* does not. The lane keeps only the newer command's entry per
+      output (`pending`), and an acknowledgement below that entry's version
+      is skipped (`alerts.ts:198–199`). No alert is cleared, so no audit row
+      is written. A superseded command's late acknowledgement is therefore
+      unlogged under the signed-off scoped wording ("logged where the
+      alert-clear writes its audit row"). It is the same unlogged class as
+      the `engine.notReporting` case.
+    - Recorded, not changed. Whether unlogged late acknowledgements are now
+      named a hardening candidate (beside engine refusal-acks) is put to the
+      user.
+  - Spine part B's belief row (SPEC v0.4.8 row 10) is landed by it. Position
+    5 stays open: spine B's implementing work (its brief drafted next, held
+    for review) and work order 2 remain.
+  - **Spine B's implementing brief, drafted 2026-10-17:**
+    `agents/prompts/r17-spine-b-belief.md`. It is **held for the user's
+    review before dispatch** ("nothing implements unread").
+    - It carries §10.1.3's precision clause and late-acknowledgement rule
+      verbatim, both checked byte for byte against the signed-off texts and
+      the ratified spec.
+    - It states what the tree does today, verified at `c1fe348`: the hold
+      at the prior state; belief set only by commands; every reader of the
+      belief values; the detection-transaction precedent; the tests that
+      move.
+    - It names six decisions owed to the user before dispatch: D1, the
+      report → belief mapping; D2, `held` against a fresh report; D3, `held`
+      in the preconditions and readers (`stream.stop` refuses "stream not
+      live", the held stop's own heal path); D4, how a correction lands; D5,
+      its own spec row for §5.9.5's "prior state"; D6, the dress rehearsal's
+      `stream.stop` race after a refused start.
+  - **The user's rulings on the brief and D1–D6, 2026-10-17. The brief is
+    APPROVED with these answers folded in; dispatch is the user's word.**
+    The rulings are quoted in full in the brief's §2.
+    - **D1:** the report → belief mapping, RATIFIED as proposed (`live` and
+      `reconnecting` → `live`; `none` and `closed` → `idle`). The table lands
+      in row 11.
+    - **D2:** `held` gives way to a fresh report on the precision clause's
+      schedule. The held alert persists until the real acknowledgement.
+    - **D3:** `held` is output-active. `outputsActive()` includes it,
+      `stream.stop` accepts it, `stream.start` refuses it by name, and every
+      consumer is exhaustive.
+    - **D4:** a correction lands like `itemEvent` (one bump, one
+      `belief.corrected` row, no frame). Automation fires on command-path
+      transitions only, never on corrections.
+    - **D5:** row 11 is required, its candidate drafted with the design and
+      reviewed before dispatch.
+    - **D6:** the dress waits out the correction to `idle` (bounded), then
+      asserts `stream.stop` refuses: the race becomes a falsification of D3.
+  - **Unlogged late acknowledgements are a named hardening candidate**
+    (2026-10-17), beside engine refusal-acks: "same class, terminal
+    outcomes dropped on the floor". The current behaviour is correct under
+    the ratified semantics, and the evidence gap is recorded, not patched.
+  - **Read against the tree, with the fold** (recorded, not changed):
+    - **D2a, OPEN, owed before dispatch.** D2 and D3 together can strand
+      the held alert. If `show.stop`'s acknowledgement never comes (withheld
+      after a failed quiesce, or lost), a fresh `closed` corrects
+      `held → idle`, and `stream.stop` then refuses `idle`, so no real
+      acknowledgement can arrive. Two questions are the user's: which
+      acknowledgements count, and what clears the alert when none can come.
+      Today the alert heals when the belief reads outputs inactive
+      (`alerts.ts:267`, row 8's F22). §10.1.2 states no clearing rule for
+      `outputs.held`, so row 11 states the new one.
+    - **D3's "#50's compile-time enum audit enforces exhaustiveness" is
+      narrower in the tree.** The audit pins each domain to its type; it
+      does not make the consumers exhaustive. The brief requires exhaustive
+      `switch`es with a `never` default in every consumer, so `tsc`
+      enforces both.
+    - **D4 departs from the `itemEvent` precedent on automation, by
+      design.** `itemEvent` fires automation's `stateChange`s
+      (`server.ts:924`); a correction will not. As a consequence, a refused
+      start corrected `live → idle` fires no `from: "live"` rule.
+    - **A dress-rehearsal sighting on PR #52, recorded 2026-10-17** (not
+      the change under review: `cfa251b` touched only the brief and the
+      prompt map). CI run `39031255945` attempt 1 failed the dress job:
+      `not ok 10 - [RI-1] step 8: preview.set is visible in telemetry`,
+      `preview.set must succeed; got {"code":"E_FORBIDDEN_STATE","message":"item A1 is DONE"}`.
+      - **The mechanism, read from the tree.** A1 is timed:
+        `durationFrames: 150` at 30 fps, so 5 s
+        (`tests/fixtures/dress_show/manifest.json`). Step 4 takes A1 and
+        waits for the clip bus to rise, and this run's rise took **6025 ms**
+        (`step4RiseMs`; the previous high was 4965 ms, at step 6). So A1 ran
+        to its end and went `DONE` during step 4. Step 5's take of A2
+        resets only a `LIVE` or `PLAYING` item to `READY` (`state.ts:291`),
+        so A1 stayed `DONE`, and step 8's `preview.set A1` was refused.
+      - **The class is R13's late rise**, cascading into step 8: any step-4
+        rise above A1's 5000 ms does it. Step 4's rise is inside its 10 s
+        backstop, but step 8 depends on A1 not ending, and nothing asserts
+        that.
+      - **The rerun** (only the failed job, disclosed): attempt 2's dress job `117394593348` passed, 27/27 with `ok 10`. Its `step4RiseMs` was 2979, under A1's 5000 ms, as the mechanism predicts. Its DRESS-COUNTS (ci, `cfa251b`, attempt 2): drops 0, underruns **231**. That is the first at-gate reading above R12's previous peak of 230. R12's trend rule (a) needs three consecutive bookends above the peak, so it is watched, not opened.**
+      - ~~**Put to the user:** whether to file this as a register entry (R19:
+        dress step 8 coupled to A1's duration through step 4's rise), and
+        whether the fix is the test's (say, step 8 previews an untimed item,
+        or resets A1) rather than the product's.~~ **FILED as R19** (the
+        user's word of 2026-10-17; §2c), with its row in
+        `docs/soak-protocol.md` §5. "Dress step 8 races A1's completion when
+        step-4's rise exceeds A1's duration. Test-design flaw, not a product
+        defect."
+        - **The mechanism, recorded:** both rise numbers, 6025 ms (attempt 1)
+          and 2979 ms (attempt 2); A1's `DONE` persisting through step 5's
+          take (`state.ts:291`).
+        - **No load data:** the dress job carries no load logging, since
+          R10's `[ci-load]` capture is the rust job's only. "Why slow" had no
+          instrumented answer.
+        - **The fix is its own test-only PR:** step 8 previews an untimed
+          item, with a comment naming what the step rehearses.
+          Falsification: inject a slow step-4 rise and show that the new
+          step 8 passes where the old one raced. It lands before the
+          implementing prompt's dispatch.
+        - **R12: watched, not triggered** (the user's word). The 231 came on
+          a rerun: a selected sample, not a fresh draw.
+    - **D2a, ANSWERED 2026-10-17.** The `outputs.held` clearing rule, the
+      user's text verbatim (folded into the brief's Appendix A as
+      §10.1.2's new clearing rule). The brief is now dispatch-ready;
+      dispatch is the user's word:
+
+      > D2a, amended — the outputs.held clearing rule (both recommendations adopted):
+      >
+      > Part 1 — the real ack: the command's own late acknowledgement, or the acknowledgement of a later stop at-or-above — including the operator's stream.stop or record.stop from held. The engine acks a stop only while that output is still live, so either ack witnesses an actual stop.
+      >
+      > Part 2 — when no ack can come: the next accepted show.load or show.unload clears the alert, with a clear row that names the cause. Until then, it stands. The lane is not persisted, so a control-plane restart also clears it, as it clears everything.
+      >
+      > The relay's earlier option (iii) — a fresh report clearing the alert — is WITHDRAWN. Corrections still move belief (D2 unchanged); they do not clear alerts. Two failure modes: with the engine quiesced, no report ever comes and the clear never fires; with the engine healthy, a single transient none would correct held → idle and clear the alert while the stream stays live against the operator's intent — the witness dying to a blip. Belief answers "what is true"; the alert answers "is a command outcome unresolved". This rule keeps them separate.
+      >
+      > Amended clearing set for outputs.held: (i) the command's own ack; (ii) a later stop's ack at-or-above; (iii) an accepted show.load or show.unload, cause named in the clear row; (iv) control-plane restart, as for the whole lane. It stands in every other case — persistence is the witness working.
+
+      Read against the tree (recorded, not changed):
+      - The premise holds: the engine refuses `stream.stop` and
+        `record.stop` unless that output is live (`directive.rs`).
+      - (i) needs the late `show.stop` acknowledgement tracked, since
+        `held()` drops it today (`alerts.ts:298`).
+      - (iv) writes no clear row (row 8's restart semantics). *Accepted
+        per row 8 (the user's word of 2026-10-17).*
+      - The withdrawn option (iii) was the builder's.
+      - **Path (i)'s tracking is required brief content** (the user's word
+        of 2026-10-17). `held()` drops the pending entry at `alerts.ts:298`,
+        so the late-acknowledgement test fails without the tracking. That
+        is its falsification. The anti-clear set stands as ruled.
+  - **The sequence (the user's word of 2026-10-17):**
+    1. #52 merges on the user's word.
+    2. R19's test-only fix PR follows.
+    3. The implementing prompt dispatches after R19 lands.
+      - Today's heal on outputs inactive (`alerts.ts:267`) is replaced.
+    - **D5's placement, the builder's reading.** Row 11's candidate is
+      Appendix A of the brief, reviewed before dispatch. It lands in the
+      spec with the implementing PR and is ratified on that merge, not
+      ahead of the code: unlike row 10, it amends passages the tree builds
+      today (`show.stop`'s prior-state hold, §16's preconditions).
+  - **Confirmed by the user, 2026-10-17:**
+    - the D2/D4 sequence as built;
+    - D3's two-layer enforcement;
+    - D4's divergence from `itemEvent`, as intended;
+    - row 11 reviewed as Appendix A now, landing and ratifying on the
+      implementing PR, with its text as an early commit and
+      ratification-on-merge stated in the body.
+
+    "Ceiling 12.09 recorded; the downward move is the mechanism working."
+    ~~**D2a is still open.**~~ The user's message asked to "fold the D2a
+    clearing rule into Appendix A verbatim", but no D2a rule text had been
+    given, so nothing was folded. *(§2c: answered the same day, below.)* The tree fact
+    for the answer: the engine refuses `stream.stop` unless its stream is
+    live (`directive.rs`, `on_stream_stop`), so once the engine has quiesced
+    no output command can produce the real acknowledgement.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
