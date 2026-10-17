@@ -790,12 +790,14 @@ jobs:
           if [ "$exercised" -lt 6 ]; then
             echo "FAIL prompt13_recall: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round, SPEC v0.4.8 row 1)"
+      - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round, SPEC v0.4.8 rows 1 and 9)"
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
         # a complete one passes. Hardware-free: floors equal. Were 2/2 at B1,
         # 3/3 at WU1, 4/4 at WU5, 5/5 with the fix round's missing-edge pins;
-        # 6/6 since v0.4.8 row 1's pin on the recall's two deferred edges.
+        # 6/6 since v0.4.8 row 1's pin on the recall's two deferred edges;
+        # 8/8 since v0.4.8 row 9's field domains (a value outside its field's
+        # domain fails by name; one inside, a scene id included, passes).
         run: |
           set -u
           out=$(cargo test -p nbe-preflight --test automation -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -807,12 +809,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=6)"
-          if [ "$ran" -lt 6 ]; then
-            echo "FAIL preflight automation: expected at least 6 tests to run, got $ran"; exit 1
+          echo "preflight automation: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=8 exercised>=8)"
+          if [ "$ran" -lt 8 ]; then
+            echo "FAIL preflight automation: expected at least 8 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 6 ]; then
-            echo "FAIL preflight automation: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 8 ]; then
+            echo "FAIL preflight automation: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
         # nbe-core's reading of every trigger kind, held to the fixture the
@@ -1041,7 +1043,7 @@ jobs:
         # the wire, which needs nbe-preflight: without it they SKIP, and the
         # suite-wide floor above would stay green about nothing. This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
-        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31, v0.4.8 row 2's take payload: 32).
+        # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31, v0.4.8 row 2's take payload: 32, v0.4.8 row 9's field domains: 35).
         run: |
           set -u
           out=$(node --import tsx --test src/automation.test.ts 2>&1) && rc=0 || rc=$?
@@ -1056,10 +1058,10 @@ jobs:
           skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=32 exercised>=32)"
+          echo "automation: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=35 exercised>=35)"
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
-          if [ "$ran" -lt 32 ]; then echo "FAIL automation: expected at least 32 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 32 ]; then echo "FAIL automation: expected at least 32 tests to execute rather than skip, got $exercised"; exit 1; fi
+          if [ "$ran" -lt 35 ]; then echo "FAIL automation: expected at least 35 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 35 ]; then echo "FAIL automation: expected at least 35 tests to execute rather than skip, got $exercised"; exit 1; fi
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
         # Two floors, rule 8. Reads every REGISTERED command's handler writes
         # to the fields a stateChange rule can name — directly, through state

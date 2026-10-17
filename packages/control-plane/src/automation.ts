@@ -19,7 +19,7 @@
 //! named reason. It is never accepted and left silently inert (Prompt 11 §9).
 
 import { CommandPayloadSchemas, resolveCommand, type ErrorCode } from "./protocol.js";
-import type { ControlPlaneState, ItemState, PackageInfo } from "./state.js";
+import type { ControlPlaneState, ItemState, PackageInfo, RecordState, ShowState, StreamState } from "./state.js";
 import type { AutomationRule } from "./generated/manifest-schema.js";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +38,77 @@ export const STATE_FIELDS = [
   "itemState",
 ] as const;
 export type StateField = (typeof STATE_FIELDS)[number];
+
+// The field domains (SPEC §13.2, v0.4.8 row 9): the values a `stateChange`
+// `from` or `to` may name, per field. No field borrows another's vocabulary:
+// the record's on-air value is `recording`, not `live`. The same lists, in
+// the same words, are `nbe_core::automation`'s; the shared fixture holds the
+// two readings to one verdict.
+
+/** `showState`: §16.1's show state machine. */
+export const SHOW_STATES = ["UNLOADED", "LOADED", "RUNNING", "STOPPED"] as const;
+/** `streamState`: the control plane's belief about the stream. `held` is
+ *  spine B's (a stop the engine never acknowledged, §5.9.5); the dead
+ *  `reconnecting` is struck — a redial is the transport's, not the belief's. */
+export const STREAM_STATES = ["idle", "live", "held"] as const;
+/** `recordState`: the control plane's belief about the recording. */
+export const RECORD_STATES = ["idle", "recording"] as const;
+/** `itemState`: §17's item state machine. */
+export const ITEM_STATES = ["READY", "ARMED", "LIVE", "PLAYING", "DONE", "MISSING", "ERROR"] as const;
+
+// The enum audit (Standards §1.3), at compile time: each domain is exactly
+// its state type, so a value added to either alone fails `tsc`. The stream's
+// one exception is `held`: the domain carries it before the belief can take
+// it, until spine B's implementing work adds it to `StreamState`.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const showAudit: Same<(typeof SHOW_STATES)[number], ShowState> = true;
+const streamAudit: Same<(typeof STREAM_STATES)[number], StreamState | "held"> = true;
+const recordAudit: Same<(typeof RECORD_STATES)[number], RecordState> = true;
+const itemAudit: Same<(typeof ITEM_STATES)[number], ItemState> = true;
+void [showAudit, streamAudit, recordAudit, itemAudit];
+
+/** Whether `v` lies in `field`'s domain. */
+function inDomain(field: StateField, v: unknown, ctx: RuleContext): boolean {
+  const oneOf = (set: readonly string[]): boolean => typeof v === "string" && set.includes(v);
+  switch (field) {
+    case "showState":
+      return oneOf(SHOW_STATES);
+    case "streamState":
+      return oneOf(STREAM_STATES);
+    case "recordState":
+      return oneOf(RECORD_STATES);
+    case "itemState":
+      return oneOf(ITEM_STATES);
+    case "automationHold":
+    case "fallbackActive":
+      return typeof v === "boolean";
+    case "viewItem":
+      return v === null || (typeof v === "string" && ctx.items.has(v));
+    case "previewItem":
+      return v === null || (typeof v === "string" && (ctx.items.has(v) || ctx.scenes.has(v)));
+  }
+}
+
+/** `field`'s domain in words, for a refusal. */
+function domainWords(field: StateField): string {
+  switch (field) {
+    case "showState":
+      return SHOW_STATES.join(", ");
+    case "streamState":
+      return STREAM_STATES.join(", ");
+    case "recordState":
+      return RECORD_STATES.join(", ");
+    case "itemState":
+      return ITEM_STATES.join(", ");
+    case "automationHold":
+    case "fallbackActive":
+      return "true, false";
+    case "viewItem":
+      return "null or a rundown item id";
+    case "previewItem":
+      return "null, a rundown item id or a scene id";
+  }
+}
 
 /** The metered buses (`nbe_core::automation::AUDIO_BUSES`, itself pinned to
  *  the engine's `audio::BusId`), plus `guest:<id>`. */
@@ -71,6 +142,9 @@ export interface ParsedRule {
 /** What a rule may reference, from the loaded package. */
 export interface RuleContext {
   items: ReadonlySet<string>;
+  /** Scene ids: `previewItem` names a scene when one is armed into an empty
+   *  preview (`scene.arm`), so its domain needs them (SPEC §13.2). */
+  scenes: ReadonlySet<string>;
   /** control.bindings: binding id → its trigger kind (`hotkey`, `companionKey`, …). */
   bindings: ReadonlyMap<string, string | undefined>;
 }
@@ -169,6 +243,11 @@ function parseTrigger(rule: AutomationRule, ctx: RuleContext): ParsedTrigger | s
         t.itemRef = params.itemRef;
       } else if (params.itemRef !== undefined) {
         return "itemRef applies only to field itemState";
+      }
+      for (const key of ["from", "to"] as const) {
+        if (key in params && !inDomain(field as StateField, params[key], ctx)) {
+          return `\`${key}\` ${JSON.stringify(params[key])} is outside ${field}'s domain (${domainWords(field as StateField)})`;
+        }
       }
       if ("from" in params) t.from = params.from;
       if ("to" in params) t.to = params.to;

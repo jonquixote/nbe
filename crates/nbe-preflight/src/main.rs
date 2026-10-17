@@ -554,6 +554,13 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             .flatten()
             .filter_map(|i| i.get("id").and_then(|v| v.as_str()).map(String::from))
             .collect(),
+        scenes: manifest_json
+            .get("scenes")
+            .and_then(|s| s.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect(),
         bindings: manifest_json
             .get("control")
             .and_then(|c| c.get("bindings"))

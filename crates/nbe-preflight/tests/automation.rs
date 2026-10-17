@@ -172,6 +172,72 @@ fn every_trigger_kind_is_read_and_a_rule_that_cannot_fire_fails_by_name() {
 }
 
 #[test]
+fn a_state_change_value_outside_its_field_domain_fails_preflight_by_name() {
+    // SPEC §13.2's field domains (v0.4.8 row 9): a `from` or `to` its field
+    // can never take refuses the load, by name. `held` is the stream's, not
+    // the record's; a misspelling is refused wherever it is written.
+    let dir = tempfile::tempdir().unwrap();
+    for (params, needle) in [
+        (
+            r#"{ "field": "recordState", "to": "held" }"#,
+            "rule `sc`: stateChange trigger `to` \"held\" is outside recordState's domain (idle, recording)",
+        ),
+        (
+            r#"{ "field": "streamState", "from": "reconnecting" }"#,
+            "`from` \"reconnecting\" is outside streamState's domain (idle, live, held)",
+        ),
+        (
+            r#"{ "field": "showState", "to": "Running" }"#,
+            "`to` \"Running\" is outside showState's domain",
+        ),
+        (
+            r#"{ "field": "viewItem", "to": "SCN" }"#,
+            "`to` \"SCN\" is outside viewItem's domain (null or a rundown item id)",
+        ),
+    ] {
+        let root = package(
+            dir.path(),
+            &format!(
+                r#"{{ "id": "sc", "trigger": {{ "kind": "stateChange", "params": {params} }},
+                     "action": {{ "command": "marker.add", "payload": {{ "name": "m" }} }} }}"#
+            ),
+        );
+        let (code, report) = run(&root);
+        let errs = errors(&report);
+        assert_eq!(code, 2, "{params} must fail preflight; errors {errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("automationRule") && e.contains(needle)),
+            "expected an error containing {needle:?}; got {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn a_state_change_value_inside_its_field_domain_passes_preflight() {
+    // `held` reads for the stream, and `previewItem` may name the package's
+    // scene (`scene.arm` into an empty preview), so preflight passes the
+    // scene ids through.
+    let dir = tempfile::tempdir().unwrap();
+    let root = package(
+        dir.path(),
+        r#"{ "id": "held", "trigger": { "kind": "stateChange",
+                "params": { "field": "streamState", "from": "live", "to": "held" } },
+             "action": { "command": "marker.add", "payload": { "name": "m" } } },
+           { "id": "armed", "trigger": { "kind": "stateChange",
+                "params": { "field": "previewItem", "to": "SCN" } },
+             "action": { "command": "marker.add", "payload": { "name": "m" } } }"#,
+    );
+    let (code, report) = run(&root);
+    let errs = errors(&report);
+    assert!(
+        errs.iter().all(|e| !e.contains("automationRule")),
+        "rules inside their domains are not refused; errors {errs:?}"
+    );
+    assert_eq!(code, 0, "and the package is air-ready; report {report}");
+}
+
+#[test]
 fn a_rule_cycle_fails_preflight_with_the_cycle_named() {
     // WU5: SPEC §13.4 / AC-25 #3 — preflight REFUSES rules whose actions can
     // re-trigger themselves, directly or through other rules, over §13.4.1's

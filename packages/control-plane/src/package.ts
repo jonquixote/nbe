@@ -594,7 +594,11 @@ export async function loadPackage(
 
   // Prompt 11 WU1: every rule must read. One that cannot be evaluated refuses
   // the load, by name — never accepted and left silently inert (§9).
-  const parsedRules = parseRules(manifest.automation ?? [], { items: new Set(items.keys()), bindings: pkg.bindings });
+  const parsedRules = parseRules(manifest.automation ?? [], {
+    items: new Set(items.keys()),
+    scenes: new Set(scenes.keys()),
+    bindings: pkg.bindings,
+  });
   if (parsedRules.errors.length > 0) {
     throw new CpError("E_PREFLIGHT_FAILED", `automationRule: ${parsedRules.errors.join("; ")}`, {
       automationErrors: parsedRules.errors,

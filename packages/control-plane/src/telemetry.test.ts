@@ -48,16 +48,21 @@ function engineFrame(streamBufferMs: number): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Token stability (the `path_tokens_are_stable` precedent): the three
+// Token stability (the `path_tokens_are_stable` precedent): the ~~three~~
 // `streamState` tokens on the control-plane tick are normative wire tokens —
 // a rename is a silent wire change with no guard unless pinned here.
+// *(§2c, SPEC v0.4.8 row 9: ~~`reconnecting`~~ is struck. No handler ever
+// wrote it — it dates from Prompt 02's type — and since v0.4.6 a redial is
+// `streamTransportState`'s, while `streamState` stays `live` through it
+// (§10.1). The tokens are §13.2's `streamState` domain less `held`, which the
+// belief takes once spine B's implementing work lands.)*
 // ---------------------------------------------------------------------------
 
-test("stream state tokens are stable: idle, live, reconnecting", () => {
+test("stream state tokens are stable: idle, live", () => {
   const state = new ControlPlaneState();
   assert.equal(state.streamState, "idle", "a fresh control plane commands idle");
 
-  for (const token of ["idle", "live", "reconnecting"] as const) {
+  for (const token of ["idle", "live"] as const) {
     state.streamState = token;
     const tick = buildTick(state, newWorldTelemetry(), Date.now());
     assert.equal(

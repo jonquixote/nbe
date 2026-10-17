@@ -22,6 +22,12 @@ fn every_fixture_rule_gets_its_verdict_from_the_rust_reading() {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect(),
+        scenes: fixture["refs"]["scenes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect(),
         bindings: fixture["refs"]["bindings"]
             .as_object()
             .unwrap()
@@ -57,6 +63,11 @@ fn every_fixture_rule_gets_its_verdict_from_the_rust_reading() {
                     msg.starts_with(&format!("automation rule `{id}`: ")),
                     "a refusal names the rule: {msg}"
                 );
+                if let Some(reason) = case.get("reason").and_then(|r| r.as_str()) {
+                    if !msg.contains(reason) {
+                        wrong.push(format!("{id}: the refusal must say {reason:?}; got {msg:?}"));
+                    }
+                }
             }
             _ => wrong.push(format!(
                 "{id} {}: expected valid={valid}, got {verdict:?}",

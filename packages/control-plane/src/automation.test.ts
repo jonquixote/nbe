@@ -320,11 +320,12 @@ test("every fixture rule gets its verdict from the control plane's reading, the 
   const fixture = JSON.parse(
     readFileSync(new URL("../../../crates/nbe-core/tests/fixtures/automation_rules.json", import.meta.url), "utf8"),
   ) as {
-    refs: { items: string[]; bindings: Record<string, string | null> };
-    cases: Array<{ valid: boolean; trigger: Record<string, unknown>; conditions?: Record<string, unknown>[] }>;
+    refs: { items: string[]; scenes: string[]; bindings: Record<string, string | null> };
+    cases: Array<{ valid: boolean; trigger: Record<string, unknown>; conditions?: Record<string, unknown>[]; reason?: string }>;
   };
   const ctx = {
     items: new Set(fixture.refs.items),
+    scenes: new Set(fixture.refs.scenes),
     bindings: new Map(Object.entries(fixture.refs.bindings).map(([k, v]) => [k, v ?? undefined])),
   };
   assert.ok(fixture.cases.length >= 30, `the fixture must exercise every kind; has ${fixture.cases.length}`);
@@ -342,9 +343,87 @@ test("every fixture rule gets its verdict from the control plane's reading, the 
     );
     const valid = typeof verdict !== "string";
     if (valid !== c.valid) wrong.push(`${id} ${JSON.stringify(c.trigger)}: expected valid=${c.valid}, got ${JSON.stringify(verdict)}`);
-    else if (!valid) assert.ok((verdict as string).startsWith(`automation rule \`${id}\`: `), `a refusal names the rule: ${verdict}`);
+    else if (!valid) {
+      assert.ok((verdict as string).startsWith(`automation rule \`${id}\`: `), `a refusal names the rule: ${verdict}`);
+      if (c.reason !== undefined && !(verdict as string).includes(c.reason)) {
+        wrong.push(`${id}: the refusal must say ${JSON.stringify(c.reason)}; got ${JSON.stringify(verdict)}`);
+      }
+    }
   });
   assert.deepEqual(wrong, [], "verdicts that disagree with the fixture");
+});
+
+// ---------------------------------------------------------------------------
+// SPEC §13.2's field domains (v0.4.8 row 9): a `from` or `to` its field can
+// never take refuses the load, by name. Per field: no field borrows another's
+// vocabulary. `nbe_core::automation` holds the same lists in the same words.
+// ---------------------------------------------------------------------------
+
+const stateChangeRule = (params: Record<string, unknown>) => ({
+  id: "sc",
+  trigger: { kind: "stateChange" as const, params },
+  action: { command: "marker.add", payload: { name: "m" } },
+});
+
+test("the domains are per field: held reads for streamState and is refused for recordState", async () => {
+  const { parseRule } = await import("./automation.js");
+  const ctx = { items: new Set<string>(), scenes: new Set<string>(), bindings: new Map<string, string | undefined>() };
+  assert.notEqual(typeof parseRule(stateChangeRule({ field: "streamState", to: "held" }), ctx), "string", "held is a streamState value");
+  assert.equal(
+    parseRule(stateChangeRule({ field: "recordState", to: "held" }), ctx),
+    'automation rule `sc`: stateChange trigger `to` "held" is outside recordState\'s domain (idle, recording)',
+  );
+});
+
+test("every field takes its whole domain and refuses a value outside it, misspellings included", async () => {
+  const { parseRule, STATE_FIELDS } = await import("./automation.js");
+  const ctx = { items: new Set(["A1"]), scenes: new Set(["S1"]), bindings: new Map<string, string | undefined>() };
+  const fields: Array<[string, unknown[], unknown[]]> = [
+    ["showState", ["UNLOADED", "LOADED", "RUNNING", "STOPPED"], ["Running", "PAUSED", null]],
+    ["viewItem", ["A1", null], ["S1", "A9", 1]],
+    ["previewItem", ["A1", "S1", null], ["S9", true]],
+    ["streamState", ["idle", "live", "held"], ["reconnecting", "recording", "Live"]],
+    ["recordState", ["idle", "recording"], ["held", "live", "recordng"]],
+    ["automationHold", [true, false], ["true", 1]],
+    ["fallbackActive", [true, false], ["false", 0]],
+    ["itemState", ["READY", "ARMED", "LIVE", "PLAYING", "DONE", "MISSING", "ERROR"], ["PLAYNG", "live", "held"]],
+  ];
+  assert.deepEqual(
+    fields.map(([f]) => f),
+    [...STATE_FIELDS],
+    "every field is covered",
+  );
+  for (const [field, inside, outside] of fields) {
+    const params = (key: string, v: unknown) => ({ field, [key]: v, ...(field === "itemState" ? { itemRef: "A1" } : {}) });
+    for (const key of ["from", "to"]) {
+      for (const v of inside) {
+        const r = parseRule(stateChangeRule(params(key, v)), ctx);
+        assert.notEqual(typeof r, "string", `${field} ${key} ${JSON.stringify(v)} must read: ${String(r)}`);
+      }
+      for (const v of outside) {
+        const r = parseRule(stateChangeRule(params(key, v)), ctx);
+        assert.equal(typeof r, "string", `${field} ${key} ${JSON.stringify(v)} must be refused`);
+        assert.ok(
+          (r as string).includes(`\`${key}\` ${JSON.stringify(v)} is outside ${field}'s domain (`),
+          `${field} ${key} ${JSON.stringify(v)}: ${String(r)}`,
+        );
+      }
+    }
+  }
+});
+
+test("a previewItem rule naming a scene loads, and fires when the scene is armed into an empty preview", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+  // Both readers at load: preflight's (the package's scene ids) and the
+  // control plane's own (package.ts passes them too). `scene.arm` into an
+  // empty preview writes the scene id to previewItem (state.ts, armScene).
+  const ws = await loadAndStart([markerRule("armed", { kind: "stateChange", params: { field: "previewItem", to: "SCN" } })]);
+  assert.equal((await send(ws, "scene.arm", { sceneId: "SCN" })).status, "ok");
+  await server.automation.settled();
+  const rows = automationRows().filter((r) => r.event === "automation.action" && r.outcome === "ok");
+  assert.equal(rows.length, 1, "the rule fired once");
+  assert.deepEqual(rows[0]!.detail?.["trigger"], { kind: "stateChange", field: "previewItem", from: null, to: "SCN" });
+  ws.close();
 });
 
 test("an action payload preflight cannot judge refuses the load at the control plane's own read", async (t) => {
