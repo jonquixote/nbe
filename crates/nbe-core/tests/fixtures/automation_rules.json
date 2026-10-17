@@ -1,7 +1,8 @@
 {
-  "_doc": "One verdict per rule, held by BOTH readings of the automation params contract: nbe-core::automation::validate_rule (what nbe-preflight refuses by) and packages/control-plane/src/automation.ts parseRule (what the evaluator runs by). Both suites read this file; a rule one side accepts and the other refuses fails both. Every action is a valid marker.add, so only the trigger and conditions vary.",
+  "_doc": "One verdict per rule, held by BOTH readings of the automation params contract: nbe-core::automation::validate_rule (what nbe-preflight refuses by) and packages/control-plane/src/automation.ts parseRule (what the evaluator runs by). Both suites read this file; a rule one side accepts and the other refuses fails both. Every action is a valid marker.add, so only the trigger and conditions vary. A case may carry a `reason`: a refusal must then contain it, in both readings' words. `refs.scenes` is the package's scene ids: `previewItem` names a scene when one is armed into an empty preview (SPEC v0.4.8 row 9).",
   "refs": {
     "items": ["A1", "A2", "A3"],
+    "scenes": ["S1"],
     "bindings": { "take-key": "hotkey", "cmp-1": "companionKey", "bare": null }
   },
   "cases": [
@@ -36,6 +37,26 @@
     { "valid": true,  "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "itemState", "itemRef": "A3", "equals": "ARMED" } ] },
     { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "showState" } ] },
     { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "showState", "equals": "RUNNING", "not": true } ] },
-    { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "itemState", "equals": "DONE" } ] }
+    { "valid": false, "trigger": { "kind": "mediaEnd" }, "conditions": [ { "field": "itemState", "equals": "DONE" } ] },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "streamState", "to": "held" } } },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "streamState", "from": "live", "to": "held" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "streamState", "to": "reconnecting" } }, "reason": "`to` \"reconnecting\" is outside streamState's domain (idle, live, held)" },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "streamState", "to": "Live" } }, "reason": "`to` \"Live\" is outside streamState's domain (idle, live, held)" },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "streamState", "from": "recording" } }, "reason": "`from` \"recording\" is outside streamState's domain (idle, live, held)" },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "recordState", "to": "recording" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "recordState", "to": "held" } }, "reason": "`to` \"held\" is outside recordState's domain (idle, recording)" },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "recordState", "from": "live" } }, "reason": "`from` \"live\" is outside recordState's domain (idle, recording)" },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "showState", "to": "Running" } }, "reason": "`to` \"Running\" is outside showState's domain (UNLOADED, LOADED, RUNNING, STOPPED)" },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "viewItem", "to": "A1" } } },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "viewItem", "from": null } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "viewItem", "to": "S1" } }, "reason": "`to` \"S1\" is outside viewItem's domain (null or a rundown item id)" },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "previewItem", "to": "S1" } } },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "previewItem", "to": null } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "previewItem", "to": "S9" } }, "reason": "`to` \"S9\" is outside previewItem's domain (null, a rundown item id or a scene id)" },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "automationHold", "to": true } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "automationHold", "to": "true" } }, "reason": "`to` \"true\" is outside automationHold's domain (true, false)" },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "fallbackActive", "from": 0 } }, "reason": "`from` 0 is outside fallbackActive's domain (true, false)" },
+    { "valid": true,  "trigger": { "kind": "stateChange", "params": { "field": "itemState", "itemRef": "A2", "from": "ARMED", "to": "LIVE" } } },
+    { "valid": false, "trigger": { "kind": "stateChange", "params": { "field": "itemState", "itemRef": "A2", "to": "PLAYNG" } }, "reason": "`to` \"PLAYNG\" is outside itemState's domain (READY, ARMED, LIVE, PLAYING, DONE, MISSING, ERROR)" }
   ]
 }

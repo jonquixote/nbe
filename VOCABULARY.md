@@ -47,7 +47,12 @@ The canonical, expandable vocabulary of the News Broadcasting Engine. Every term
 | View | planned | v0.3 | The main live/recorded composited output (SPEC §5.6). What the audience sees; never degraded by the ladder. | renames Program |
 | Preview | normative | v0.1 | The staging bus: what is prepared to go live, and what transitions into View (SPEC §5.6). Never on air. | |
 | Multiview | planned | v0.3 | Operator grid render target: view, preview, source thumbnails, meters, tally borders. | |
-| Fallback slate | normative | v0.1 | The resident emergency image; automatic cut-to target on failure, ≤ 1 frame late. | |
+| Fallback slate | normative | v0.1 | The resident emergency image; automatic cut-to target on failure, ≤ 1 frame late. | on air: `fallbackActive` true (SPEC §13.2's domain `true`, `false`) |
+| Output belief | normative | v0.4.8 | The control plane's own state for an output, as commanded: `streamState` (`idle`, `live`, `held`) and `recordState` (`idle`, `recording`), each with its own vocabulary (SPEC §10.1.2, §13.2). Set by the commands that drive the output, not by the render node, whose own account is its report (`streamTransportState`). | named by row 8's §10.1.2, ledgered with row 9 |
+| Idle (output) | normative | v0.4.8 | The output belief's value for an output commanded off: `streamState` and `recordState` both take it, set by `stream.stop` / `record.stop` and by `show.stop`'s acknowledgement (SPEC §13.2, row 9). Terminal: nothing armed, nothing resumes. | the values predate row 9 on the §10.1 tick; ledgered with it |
+| Live (output) | normative | v0.4.8 | `streamState`'s value for a stream commanded on air (`stream.start`; SPEC §13.2, row 9). It stays `live` through a transport redial: the redial is `streamTransportState`'s `reconnecting` (§10.1), not the belief's. | not the item state `LIVE`; ledgered with row 9 |
+| Recording (output) | normative | v0.4.8 | `recordState`'s value for a recording commanded on (`record.start`; SPEC §13.2, row 9). The record's on-air word: no field borrows another's, so it is never `live`. | ledgered with row 9 |
+| Held (output) | normative | v0.4.8 | `streamState`'s value for a stream whose stop the render node never acknowledged: the control plane cannot know the output, so it holds it (SPEC §5.9.5; §13.2, row 9). ~~A suspension~~ *§5.9.5's limbo: a stop commanded, the output's state unknown (ratified 2026-10-16; the "suspension" gloss struck, §2c)*, not terminal as `idle` is: a rule written `to: "idle"` does not match it, and `from: "live"` does. An operator-initiated hold would be new behaviour with an entry of its own. No writer until spine B's implementing work (§13.2 exception 1); `recordState` has no `held` (exception 2). | not §13.5's "held", which means `automationHold` is true |
 
 ## Processes — who runs what
 
@@ -72,10 +77,12 @@ depends on the boundary between them.
 | Preset | planned | v0.3 | A named reusable configuration: element, effect, transition, scene, or audio. | |
 | Snapshot | planned | v0.3 | A named, recallable state of the entire View. | |
 | Automation rule | planned | v0.3 | trigger + conditions → command. Runs through the command bus with the same preconditions as a human. | advanced scene switcher |
-| Automation hold | planned | v0.3 | Global automation kill switch; takes effect within 1 frame. | |
+| Automation hold | planned | v0.3 | Global automation kill switch; takes effect within 1 frame. | §13.5 calls it "held" (`automationHold` true); not Held (output) |
+| Field domain | normative | v0.4.8 | The values one `stateChange` field can take, enumerated per field, and so the only values a rule's `from` or `to` may name. A value outside it refuses the rule at load, by name, in preflight and the control plane alike (SPEC §13.2, row 9). No field borrows another's vocabulary. | `stateChange` domain |
 | Tally | planned | v0.3 | Live-source indication, operator- and talent-facing. | |
 | Marker | planned | v0.3 | A rundown bookmark; doubles as a recording chapter. | |
 | Role | normative | v0.1 | Permissions class: monitor, operator, producer, admin, render. | |
+| Item state | normative | v0.3 | The runtime state of a rundown Item (SPEC §17): `READY`, `ARMED`, `LIVE` (an untimed item on the View), `PLAYING` (a timed one), `DONE`, `MISSING`, `ERROR`. An item never written reads `READY`. `itemState`'s domain (§13.2, row 9). | `LIVE` here is not the stream's `live`; ledgered with row 9 |
 | Show state | normative | v0.3 | The **runtime** state machine of a loaded Show: `UNLOADED → LOADED → RUNNING → STOPPED` (SPEC §16.1 transitions, §17 item/scene states, §5.9.4 resync snapshot). Owned by the control plane and mirrored to the render node by `show.resync`; it is the `showState` field on the wire. Not to be confused with **Show** (a definition) or **Show package** (a folder). | `showState` |
 
 ## Media and assets

@@ -185,11 +185,14 @@ pub fn audio_level_watches(rules: &[AutomationRule]) -> (Vec<AudioLevelWatch>, V
     (watches, errors)
 }
 
-/// What a rule may reference in its package: rundown item ids, and control
-/// bindings with their trigger kinds.
+/// What a rule may reference in its package: rundown item ids, scene ids, and
+/// control bindings with their trigger kinds.
 #[derive(Debug, Default, Clone)]
 pub struct RuleRefs {
     pub items: std::collections::BTreeSet<String>,
+    /// Scene ids. `previewItem` names a scene when one is armed into an empty
+    /// preview (`scene.arm`), so its domain needs them (SPEC §13.2).
+    pub scenes: std::collections::BTreeSet<String>,
     /// binding id → its `trigger.kind` (`hotkey`, `companionKey`, …), `None`
     /// for a binding with no trigger.
     pub bindings: std::collections::BTreeMap<String, Option<String>>,
@@ -206,6 +209,56 @@ pub const STATE_FIELDS: &[&str] = &[
     "fallbackActive",
     "itemState",
 ];
+
+// The field domains (SPEC §13.2, v0.4.8 row 9): the values a `stateChange`
+// `from` or `to` may name, per field. No field borrows another's vocabulary:
+// the record's on-air value is `recording`, not `live`.
+
+/// `showState`: §16.1's show state machine.
+pub const SHOW_STATES: &[&str] = &["UNLOADED", "LOADED", "RUNNING", "STOPPED"];
+/// `streamState`: the control plane's belief about the stream. `held` is
+/// spine B's (a stop the engine never acknowledged, §5.9.5); the dead
+/// `reconnecting` is struck — a redial is the transport's, not the belief's.
+pub const STREAM_STATES: &[&str] = &["idle", "live", "held"];
+/// `recordState`: the control plane's belief about the recording.
+pub const RECORD_STATES: &[&str] = &["idle", "recording"];
+/// `itemState`: §17's item state machine.
+pub const ITEM_STATES: &[&str] = &[
+    "READY", "ARMED", "LIVE", "PLAYING", "DONE", "MISSING", "ERROR",
+];
+
+/// Whether `v` lies in `field`'s domain.
+fn in_domain(field: &str, v: &serde_json::Value, refs: &RuleRefs) -> bool {
+    let one_of = |set: &[&str]| v.as_str().is_some_and(|s| set.contains(&s));
+    match field {
+        "showState" => one_of(SHOW_STATES),
+        "streamState" => one_of(STREAM_STATES),
+        "recordState" => one_of(RECORD_STATES),
+        "itemState" => one_of(ITEM_STATES),
+        "automationHold" | "fallbackActive" => v.is_boolean(),
+        "viewItem" => v.is_null() || v.as_str().is_some_and(|s| refs.items.contains(s)),
+        "previewItem" => {
+            v.is_null()
+                || v.as_str()
+                    .is_some_and(|s| refs.items.contains(s) || refs.scenes.contains(s))
+        }
+        _ => false,
+    }
+}
+
+/// `field`'s domain in words, for a refusal.
+fn domain_words(field: &str) -> String {
+    match field {
+        "showState" => SHOW_STATES.join(", "),
+        "streamState" => STREAM_STATES.join(", "),
+        "recordState" => RECORD_STATES.join(", "),
+        "itemState" => ITEM_STATES.join(", "),
+        "automationHold" | "fallbackActive" => "true, false".into(),
+        "viewItem" => "null or a rundown item id".into(),
+        "previewItem" => "null, a rundown item id or a scene id".into(),
+        _ => String::new(),
+    }
+}
 
 type Params = std::collections::HashMap<String, serde_json::Value>;
 
@@ -328,6 +381,16 @@ fn trigger_reason(rule: &AutomationRule, refs: &RuleRefs) -> Result<(), String> 
                 }
             } else if params.contains_key("itemRef") {
                 return Err("itemRef applies only to field itemState".into());
+            }
+            for key in ["from", "to"] {
+                if let Some(v) = params.get(key) {
+                    if !in_domain(field, v, refs) {
+                        return Err(format!(
+                            "`{key}` {v} is outside {field}'s domain ({})",
+                            domain_words(field)
+                        ));
+                    }
+                }
             }
             Ok(())
         }
@@ -467,6 +530,129 @@ mod tests {
             let msg = e.to_string();
             assert!(msg.contains("rule `bad`"), "{msg}");
             assert!(msg.contains(needle), "{params}: {msg}");
+        }
+    }
+
+    fn state_change(params: serde_json::Value) -> AutomationRule {
+        serde_json::from_value(serde_json::json!({
+            "id": "sc",
+            "trigger": { "kind": "stateChange", "params": params },
+            "action": { "command": "marker.add", "payload": { "name": "m" } }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn held_is_a_stream_value_and_not_a_record_value() {
+        // SPEC §13.2's domains are per field (v0.4.8 row 9): `held` joins the
+        // stream's, and the record's stays `idle` and `recording`.
+        let refs = RuleRefs::default();
+        validate_rule(
+            &state_change(serde_json::json!({ "field": "streamState", "to": "held" })),
+            &refs,
+        )
+        .expect("held is a streamState value");
+        let e = validate_rule(
+            &state_change(serde_json::json!({ "field": "recordState", "to": "held" })),
+            &refs,
+        )
+        .expect_err("held is not a recordState value")
+        .to_string();
+        assert!(
+            e.contains(
+                "rule `sc`: stateChange trigger `to` \"held\" is outside recordState's domain (idle, recording)"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn every_field_takes_its_whole_domain_and_refuses_a_value_outside_it() {
+        use serde_json::json;
+        let refs = RuleRefs {
+            items: ["A1".to_string()].into(),
+            scenes: ["S1".to_string()].into(),
+            ..Default::default()
+        };
+        let fields: &[(&str, &[serde_json::Value], &[serde_json::Value])] = &[
+            (
+                "showState",
+                &[
+                    json!("UNLOADED"),
+                    json!("LOADED"),
+                    json!("RUNNING"),
+                    json!("STOPPED"),
+                ],
+                &[json!("Running"), json!("PAUSED"), json!(null)],
+            ),
+            (
+                "viewItem",
+                &[json!("A1"), json!(null)],
+                &[json!("S1"), json!("A9"), json!(1)],
+            ),
+            (
+                "previewItem",
+                &[json!("A1"), json!("S1"), json!(null)],
+                &[json!("S9"), json!(true)],
+            ),
+            (
+                "streamState",
+                &[json!("idle"), json!("live"), json!("held")],
+                &[json!("reconnecting"), json!("recording"), json!("Live")],
+            ),
+            (
+                "recordState",
+                &[json!("idle"), json!("recording")],
+                &[json!("held"), json!("live"), json!("recordng")],
+            ),
+            (
+                "automationHold",
+                &[json!(true), json!(false)],
+                &[json!("true"), json!(1)],
+            ),
+            (
+                "fallbackActive",
+                &[json!(true), json!(false)],
+                &[json!("false"), json!(0)],
+            ),
+            (
+                "itemState",
+                &[
+                    json!("READY"),
+                    json!("ARMED"),
+                    json!("LIVE"),
+                    json!("PLAYING"),
+                    json!("DONE"),
+                    json!("MISSING"),
+                    json!("ERROR"),
+                ],
+                &[json!("PLAYNG"), json!("live"), json!("held")],
+            ),
+        ];
+        assert_eq!(fields.len(), STATE_FIELDS.len(), "every field is covered");
+        for (field, inside, outside) in fields {
+            let params = |key: &str, v: &serde_json::Value| {
+                let mut p = json!({ "field": field, key: v });
+                if *field == "itemState" {
+                    p["itemRef"] = json!("A1");
+                }
+                p
+            };
+            for key in ["from", "to"] {
+                for v in *inside {
+                    validate_rule(&state_change(params(key, v)), &refs)
+                        .unwrap_or_else(|e| panic!("{field} {key} {v} must read: {e}"));
+                }
+                for v in *outside {
+                    let e = validate_rule(&state_change(params(key, v)), &refs)
+                        .expect_err(&format!("{field} {key} {v} must be refused"))
+                        .to_string();
+                    assert!(
+                        e.contains(&format!("`{key}` {v} is outside {field}'s domain (")),
+                        "{field} {key} {v}: {e}"
+                    );
+                }
+            }
         }
     }
 

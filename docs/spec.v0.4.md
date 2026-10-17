@@ -47,7 +47,11 @@ then it is a candidate (merged as `461a30b`). **Row 8** was drafted in R17
 spine part A's PR (branch `operator-signal-lane`, 2026-10-15). It is ratified
 by the user's merge of that PR, on the user's design ruling of 2026-10-15 and
 the witness ruling of the same day, and until then it is a candidate
-(merged as `be7a5d8`).
+(merged as `be7a5d8`). **Row 9** was drafted in R17 spine part B's spec-row PR
+(branch `spine-b-domain-row`, 2026-10-16), before any implementing prompt. It
+is ratified by the user's merge of that PR, on the user's rulings of
+2026-10-16 (the automation transition, and the row's scope), and until then it
+is a candidate.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
@@ -59,6 +63,7 @@ the witness ruling of the same day, and until then it is a candidate
 | 6 | **`show.stop` is one directive, and the engine quiesces its own outputs** (the user's ruling of 2026-10-14, (C); the defect was established by PR #42, merged as `067e709`). §5.9.5 had the control plane send `record.stop` and `stream.stop` at the stop command's version, and the dispatcher then forwarded `show.stop` at the same version: three directives at one version. The render node's stale-version gate, which no spec text named, applies at most the first directive at a version and drops the rest. A drop leaves a sequence gap, and the next directive turns it into a resync, which carries no output state. So with record and stream active, the record stopped, the stream stayed on air through the stop and through the resync, and the control plane reported both idle. Now the control plane sends `show.stop` alone, at the version the dispatcher assigned it, and §16.1 steps 1–2 are the stop: the render node quiesces its own outputs on it. The acknowledgement is `show.stop`'s own and is the quiesce outcome. The control plane waits for that exact version after the send and marks the outputs idle only on it. Without it, it logs the warning and **holds** the outputs at their prior state, because it cannot know them. The gate enters the spec as §5.9.6, the reconnect invariant it is. **§5.9.1 and §16.1 stand as written:** a directive still carries its command's version, and now no command emits more than one; §16.1's steps 1–2 were always the render node's to take | 5.9.5 (rewritten, old text struck), 5.9.6 (new) | `show-stop-version.e2e.ts` (6, the real engine behind a tap on the render channel: E1–E3 inverted, the stream off air and the take finalized with its marker sidecar; E4, the control, unchanged; a concurrent leg, a second operator's command inside the ack window; a held leg, a real finalize failure that withholds the ack); `render-channel.test.ts` (+5, 2 rewritten: the hold between send and ack, the hold on no ack, a later command's ack does not stand in, nor a resync's (a reconnect, and a same-connection request), `force`, no output); `dispatch.test.ts` (~~+1~~ +2, 1 rewritten: one directive, the wait at the dispatcher's version, the hold, and the dispatch pin: a command emits at most one directive, §5.9.6 rule 4); `automation.test.ts` (the row check's stop is acknowledged, as the engine does). Timing: `show-stop.measure.ts`. Falsifications: `docs/prompt-map-07-13.md`, the (C) fix's record |
 | 7 | **A failed re-resync is never silent, and its class decides the session** (the user's ruling of 2026-10-14; queue position 4, adopted from PR #39's two-key pass). Rule 5 had no failure half. On `resyncRequest` the control plane sent the snapshot and ignored the result, and a throw became an unaudited error reply that the render node logs as an unparseable frame. The gate never advances `expected_seq` on a gap (§5.9.6), so every later directive was another gap: a frozen render node on a live connection, accepting commands and sending telemetry, with nothing on air changing and no signal. Now every failure is audited (`resync.requestFailed`, with its cause) and warned, and the class decides. **A snapshot that cannot be built is persistent:** the connection closes (1011, `show.resync request failed`) and holds no registration, and the render node's reconnect handshake (rule 1) retries against a clean slate, paced by its backoff. **A send that is refused is transient:** the session is kept, and the next directive's gap re-requests. What the render node sees that it did not: a 1011 close with that reason, where it got an `E_ENGINE` error response ~~or nothing~~. A refused send was silent on the wire and still is, because the session is kept; the audit and the warn are its surface *(§2c, the fresh pass on PR #45)*. Rule 1's failure half now states its order (release the registration, audit, warn, close), which the tree already followed and a guard now pins *(the fresh pass on PR #45; the user's decision of 2026-10-15)* | 5.9.4 (rule 5's failure half; rule 1's failure half gains its order) | `resync-handshake.test.ts` (~~+3~~ +5: a snapshot that cannot be built tears down and the reconnect resyncs; a refused send keeps the session and the next request unfreezes it; a re-resync that succeeds audits nothing; and the teardown's order on both the request path and the handshake path: registration released, audited and warned at the instant the close is initiated); `resync-request.e2e.ts` (3, the real engine behind a real sequence gap: snapshot, send, and a persistent failure paced by the engine's backoff). Falsifications: `docs/prompt-map-07-13.md`, queue position 4 |
 | 8 | **The operator-signal lane** (the user's design ruling of 2026-10-15; R17 spine part A; queue position 5). The control plane held beliefs about its outputs that the render node's own report could contradict: a refused stream read `live` beside `none`, a held stop `live` beside `closed`, and a stop that did not take `idle` beside `live`. Nothing announced the contradiction. The control plane's warnings reached only a console, and `lastError` was one slot that only preflight wrote. Now one alerts list rides the shared status snapshot: `stateChange`, `system.status`, `GET /status` and the tick. It carries (b) command confirmation: an output command with no exact acknowledgement within §5.9.5's window. It carries (a) standing contradictions, compared only against a fresh report that postdates the anchor. It also carries the held stop, the engine not reporting, and R18's audit-sink fallback, which is the one alert with no audit row. Every other alert is audited on its edges. The row is additive: no belief, enum, automation input, engine or wire change | 10.1 (two fields), 10.1.1 (ownership), 10.1.2 (new), 10.4 (item 7, old text struck) | `alerts.test.ts` (21: every mapping row with its negative, every clearing rule, the (b)-to-(a) handoff, edge auditing, R18); `alerts-server.test.ts` (4: every shared surface alike, the held path, a sink that really fails, the additive snapshot); `operator-signals.e2e.ts` (the real engine). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
+| 9 | **`stateChange` values have per-field domains, and `held` joins the stream's** (the user's rulings of 2026-10-16: the automation transition, and the row's scope; R17 spine part B's spec row, before any implementing prompt; queue position 5). §13.2 typed `stateChange` as `{ field, itemRef?, from?, to? }` and checked the field but never a value, so a rule naming a value its field cannot take (a misspelling, `held`, or another field's word) loaded and could never fire, against §13.2's own rule that such a rule is not accepted. Now every field a `stateChange` names has an enumerated domain, each value sourced from the tree's writers, and a `from` or `to` outside it refuses the load, by name, in preflight and in the control plane alike, in the same words. No field borrows another's vocabulary: the record's on-air value is `recording`. `streamState` gains `held` (exception 1: no writer until spine B's implementing work, its owner), and the dead `reconnecting` is struck from the control plane's type. `recordState` gains no `held` (exception 2: its owner is work order 2). `previewItem`'s domain includes scene ids, because `scene.arm` writes one into an empty preview. A transition is reported with its actual values, once: live→held fires `{ from: "live", to: "held" }`, with no idle alias. `from` has existed since v0.4.7; this row adds no key | 13.2 (the `stateChange` row, a clause added; the field-domain table, its exceptions and the transition rule, new), 10.1.2 (the additive note narrowed, §2c) | the shared fixture, now 52 cases with a `reason` checked by both readings (`every_fixture_rule_gets_its_verdict_from_the_rust_reading`; `every fixture rule gets its verdict from the control plane's reading, the same as preflight's`); `nbe-core`'s `held_is_a_stream_value_and_not_a_record_value` and `every_field_takes_its_whole_domain_and_refuses_a_value_outside_it`; `nbe-preflight`'s `a_state_change_value_outside_its_field_domain_fails_preflight_by_name` (exit 2) and `a_state_change_value_inside_its_field_domain_passes_preflight` (exit 0, a scene id included); the control plane's `the domains are per field: …`, `every field takes its whole domain …` and `a previewItem rule naming a scene loads, and fires …` (the real load path, both readers); `telemetry.test.ts`'s token pin, `reconnecting` struck. The enum audit is compile-time (`automation.ts`). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.8. Row 2
 adds one field to a directive payload, `itemDurationFrames`. That is a wire
@@ -2555,7 +2560,7 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 
 It clears when the sink accepts a write. What the control plane does after a failed write is unchanged here: that is R18's queued question.
 
-**Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` and `recordState`, and correcting a belief from a fresher report, are a later row's.
+**Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` ~~and `recordState`~~, and correcting a belief from a fresher report, are a later row's. *(§2c, v0.4.8 row 9: `held` joins `streamState`'s domain (§13.2), and `recordState`'s stays `idle` and `recording`, by the user's scope ruling of 2026-10-16; §13.2's exception 2 names its owner. Producing `held`, and the correction, remain spine B's implementing work.)*
 
 ## 10.2 Dropped-frame definition
 
@@ -3229,7 +3234,63 @@ holds the same verdicts:
 | `hotkey` | `{ bindingId }` | `bindingId` is not a `control.bindings` entry, or that binding's trigger kind is not `hotkey` |
 | `rssKeyword` | — | **always**: it has no source in this build — `ticker.refreshRss` mutates nothing (§13.4.1) |
 | `streamHealth` | `{ state }` | `state` is not `live`, `reconnecting` or `closed` (a `streamTransportState` token, §10.1; `none` is a stub, not a state) |
-| `stateChange` | `{ field, itemRef?, from?, to? }` | `field` is not one of `showState`, `viewItem`, `previewItem`, `streamState`, `recordState`, `automationHold`, `fallbackActive`, `itemState`; or `field` is `itemState` without an `itemRef` naming a rundown item; or `itemRef` is given with any other field |
+| `stateChange` | `{ field, itemRef?, from?, to? }` | `field` is not one of `showState`, `viewItem`, `previewItem`, `streamState`, `recordState`, `automationHold`, `fallbackActive`, `itemState`; or `field` is `itemState` without an `itemRef` naming a rundown item; or `itemRef` is given with any other field; *or (v0.4.8 row 9) `from` or `to` is given with a value outside `field`'s domain (the table below)* |
+
+**`stateChange` field domains (normative, new in v0.4.8 row 9).** Each field a
+`stateChange` trigger names has its own domain: the values the field can take,
+and so the only values its `from` and `to` may name. A rule naming a value
+outside its field's domain could never fire, so preflight
+(`nbe_core::automation::validate_rule`) and the control plane's read at load
+refuse it, by name and in the same words:
+``automationRule: automation rule `<id>`: stateChange trigger `to` "held" is outside recordState's domain (idle, recording) (SPEC §13.2)``.
+No field borrows another's vocabulary: the record's on-air value is
+`recording`, not `live`. Each domain is the set of values the tree writes,
+with the writer named; none is pinned without one, and the exceptions below
+name their owners.
+
+| `field` | Domain | Written by |
+|---|---|---|
+| `showState` | `"UNLOADED"`, `"LOADED"`, `"RUNNING"`, `"STOPPED"` | `UNLOADED` at start, by `show.unload` and by crash recovery; `LOADED` by `show.load`; `RUNNING` by `show.start`; `STOPPED` by `show.stop` (§16.1) |
+| `viewItem` | `null`, or a rundown item id | an item id by a take (`view.take`, `view.cut`); `null` by `show.load` and `show.unload`; either, restored, by `snapshot.recall` |
+| `previewItem` | `null`, a rundown item id, or a scene id | an item id by `preview.set`; **a scene id by `scene.arm` into an empty preview** (§13.4.1); `null` by a take of the previewed item, by `show.load` and by `show.unload`; any of them, restored, by `snapshot.recall` |
+| `streamState` | `"idle"`, `"live"`, `"held"` | `live` by `stream.start`; `idle` by `stream.stop` and by `show.stop`'s acknowledgement (§5.9.5). **`held` has no writer yet**: exception 1. `"reconnecting"` is not in it: no handler ever wrote it, and a redial is `streamTransportState`'s (§10.1), while `streamState` stays `live` through one |
+| `recordState` | `"idle"`, `"recording"` | `recording` by `record.start`; `idle` by `record.stop` and by `show.stop`'s acknowledgement. No `held`: exception 2 |
+| `automationHold` | `true`, `false` | `automation.hold`, and `snapshot.recall` restoring it (§13.5) |
+| `fallbackActive` | `true`, `false` | `true` by `view.fallback`, and when the view item goes `MISSING` or `ERROR` (§17); `false` by a take, by `show.load` and by `show.unload` |
+| `itemState` | `"READY"`, `"ARMED"`, `"LIVE"`, `"PLAYING"`, `"DONE"`, `"MISSING"`, `"ERROR"` | §17's item state machine; an item never written reads `READY` |
+
+**The exceptions, each named with its owner.**
+
+1. **`held` is in `streamState`'s domain before any writer produces it.** A
+   rule naming it loads, and it cannot fire until spine B's implementing work
+   lands (R17's queue position 5, its owner): the belief takes `held` for a
+   stop the engine never acknowledged (§5.9.5's hold). It is the one rule this
+   section admits that cannot yet fire. The vocabulary ships complete, not as
+   a later alias (the user's ruling of 2026-10-16).
+2. **`recordState` has no `held`** (the user's scope ruling of 2026-10-16).
+   §5.9.5 holds both outputs on an unacknowledged `show.stop`, and meanwhile
+   the record belief stays `recording`. Nothing could detect or heal a record
+   hold: the engine reports no record state. That report is work order 2's
+   (queue position 5), and a record `held`, if one is ever ruled, is its
+   owner's.
+3. **A condition's `equals` is not read against the domain by this row.** The
+   row's scope is `from` and `to`. A condition names the same fields, so an
+   `equals` outside its field's domain can never hold; ~~whether this section
+   refuses it too is the user's word~~. *The principle is adopted and the scope
+   deferred (the user's ruling of 2026-10-16, §2c): a named follow-up row, "the
+   `equals` domain row", refuses it in the same shape on both readers. Its
+   owner is R17 spine B's design record (`docs/prompt-map-07-13.md`, queue
+   position 5).*
+
+**Transitions are reported as they are** (the user's ruling of 2026-10-16). A
+`stateChange` carries the field's actual values, once per change: a stream
+going from `live` to `held` fires `{ from: "live", to: "held" }`, never `"idle"`,
+and no alias or second event stands in for it. A rule written `to: "idle"`
+does not match a hold, by design: idle is terminal, ~~held is a suspension~~
+*held is §5.9.5's limbo, a stop commanded and the output's state unknown (the
+user's ratification of 2026-10-16, §2c)*. A
+rule meaning "the stream left the air" is written `from: "live"`, which matches
+every departure from `live`.
 
 A condition is `{ field, itemRef?, equals }`, with no other keys: `field` and
 `itemRef` read as `stateChange`'s do, and `equals` is required. A rule's

@@ -14,7 +14,7 @@ import type { Alert } from "./alerts.js";
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
 export type SceneState = "IDLE" | "ARMED" | "VIEW" | "TRANSITIONING";
 export type ShowState = "UNLOADED" | "LOADED" | "RUNNING" | "STOPPED";
-export type StreamState = "idle" | "live" | "reconnecting";
+export type StreamState = "idle" | "live";
 export type RecordState = "idle" | "recording";
 export type AudioMode = "follow" | "crossfade" | "cut" | "mute";
 
