@@ -5456,6 +5456,22 @@ item):
   - Spine part B's belief row (SPEC v0.4.8 row 10) is landed by it. Position
     5 stays open: spine B's implementing work (its brief drafted next, held
     for review) and work order 2 remain.
+  - **Spine B's implementing brief, drafted 2026-10-17:**
+    `agents/prompts/r17-spine-b-belief.md`. It is **held for the user's
+    review before dispatch** ("nothing implements unread").
+    - It carries §10.1.3's precision clause and late-acknowledgement rule
+      verbatim, both checked byte for byte against the signed-off texts and
+      the ratified spec.
+    - It states what the tree does today, verified at `c1fe348`: the hold
+      at the prior state; belief set only by commands; every reader of the
+      belief values; the detection-transaction precedent; the tests that
+      move.
+    - It names six decisions owed to the user before dispatch: D1, the
+      report → belief mapping; D2, `held` against a fresh report; D3, `held`
+      in the preconditions and readers (`stream.stop` refuses "stream not
+      live", the held stop's own heal path); D4, how a correction lands; D5,
+      its own spec row for §5.9.5's "prior state"; D6, the dress rehearsal's
+      `stream.stop` race after a refused start.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
