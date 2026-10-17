@@ -52,6 +52,44 @@ jobs:
           fi
           echo "unsafe exception confined to crates/nbe-decode/src"
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # R10's load capture (docs/prompt-map-07-13.md, Finding R10). A CI
+      # sighting of `drained reads 0 on the tick` can reopen R10 only with the
+      # machine's load recorded around the step it fails in, and its first two
+      # sightings (runs 36120910087 and 38909746941, both in the workspace
+      # test step) carried none. These two steps bracket that step, which is
+      # unchanged: one line before, a sample every 10 s during, and one line
+      # after, then every sample, printed even when the tests fail.
+      #
+      # Every line starts `[ci-load]` and carries a UTC timestamp, the 1, 5
+      # and 15 minute load averages, the CPU count and memory in MiB. The
+      # runner is macOS, so the readings come from `sysctl` and `vm_stat`:
+      # /proc/loadavg, nproc and `free -m` do not exist here.
+      #
+      # The logging must never fail the job. Every command is guarded with
+      # `|| true`, the sampler runs detached with its output in a file, and
+      # both steps are continue-on-error as a second guard.
+      - name: "R10 load capture: before the workspace tests, the sampler started"
+        continue-on-error: true
+        run: |
+          cat > "$RUNNER_TEMP/ci-load-line.sh" <<'LINE' || true
+          # One `[ci-load]` line: the phase ($1), then UTC, load, CPUs, memory.
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+          load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print "load1=" $1 " load5=" $2 " load15=" $3}')
+          ncpu=$(sysctl -n hw.ncpu 2>/dev/null)
+          total=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1 / 1048576}')
+          mem=$(vm_stat 2>/dev/null | awk '
+            /page size of/ { ps = $8 }
+            /^Pages free:/ { gsub(/\./, "", $3); f = $3 }
+            /^Pages inactive:/ { gsub(/\./, "", $3); i = $3 }
+            /^Pages speculative:/ { gsub(/\./, "", $3); s = $3 }
+            END { if (ps) printf "free=%d inactive=%d speculative=%d", f * ps / 1048576, i * ps / 1048576, s * ps / 1048576 }')
+          swap=$(sysctl -n vm.swapusage 2>/dev/null | awk '{print $6}')
+          echo "[ci-load] $1 $ts $load ncpu=$ncpu mem_mib total=$total $mem swap_used=$swap"
+          LINE
+          bash "$RUNNER_TEMP/ci-load-line.sh" pre || true
+          { nohup bash -c 'while :; do bash "$0" sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
+              > "$RUNNER_TEMP/ci-load-samples.log" 2>&1 < /dev/null & } || true
+          echo "$!" > "$RUNNER_TEMP/ci-load-sampler.pid" || true
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |
           set -o pipefail
@@ -61,6 +99,14 @@ jobs:
           grep "^test result" /tmp/rust-test.log \
             | awk '{p+=$4; f+=$6; i+=$8} END {printf "TOTAL: %d passed, %d failed, %d ignored\n", p, f, i}'
           echo "::endgroup::"
+      - name: "R10 load capture: after the workspace tests, every sample"
+        if: always()
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" post || true
+          kill "$(cat "$RUNNER_TEMP/ci-load-sampler.pid" 2>/dev/null)" 2>/dev/null || true
+          echo "[ci-load] the samples, every 10 s from the line before the tests:" || true
+          cat "$RUNNER_TEMP/ci-load-samples.log" 2>/dev/null || echo "[ci-load] no samples file" || true
       - name: GPU/render tests actually ran (Prompt 04)
         # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
         # If zero tests ran, the render gate is silently absent and CI passes

@@ -498,7 +498,7 @@ tree, and passed on CI rerun. This is R7's test, not a new entry: same name, sam
 signature, same load-sensitive family, now 3 sightings across unrelated changes.
 The redelivery-vs-extra-bump question still stands — payloads still uncaught.
 
-### Finding R10 — a stream drain missed its 5 s bound once on CI (recorded 2026-09-25, PR #33)
+### Finding R10 — a stream drain missed its 5 s bound ~~once~~ **twice** on CI (recorded 2026-09-25, PR #33; sighting 2 recorded 2026-10-16)
 
 *Numbered after R9, the highest filed; R8 appears nowhere in the tree.*
 
@@ -532,8 +532,9 @@ the runner's load at the failure, and this run's logs cannot answer it.** The
 workflow echoes no load: `.github/workflows/ci.yml` contains no `vm.loadavg` or
 `uptime` anywhere. The job API records only the runner's name and labels.
 Answering it for a future sighting needs a `sysctl -n vm.loadavg` echoed around
-the workspace test step. That capture is owed and not made here (this entry is
-records only).
+the workspace test step. ~~That capture is owed and not made here (this entry is
+records only).~~ **Landed 2026-10-16, branch `r10-ci-load-capture`** (§2c; the
+entry below, after sighting 2).
 
 **THE REFUTATION CONDITION, written before the next run rather than after it.**
 Either of these reopens R10 as a defect in the transport's drain or in the test
@@ -541,7 +542,9 @@ server, not a load flake:
 - **a second sighting with the load recorded and under the 3.0 ceiling** — a
   soak iteration qualifies, because the soak checks quiescence first and runs
   `prompt10_rtmp` whole; a CI sighting qualifies only once the load capture
-  above exists;
+  above exists; *(for a CI sighting, the ceiling is envelope-relative and per
+  CPU, by the user's ruling of 2026-10-16, recorded after sighting 2; the 3.0
+  ceiling stands for the normative machine and the soak. §2c.)*
 - **the drain approaching its bound on a quiescent run** — say, any quiescent
   run of this test above 2.5 s, against about 0.4 s today.
 
@@ -564,6 +567,147 @@ is narrower and true: **both are wall-clock bounds on another thread's
 progress** — this drain on the test server's reader, that teardown on the stream
 thread's exit. A run that trips either is a sighting to record, not a load
 excuse.
+
+**Sighting 2, recorded 2026-10-16 (§2c: the entry above stands unedited, its
+heading's "once" struck).** Attempt 1 of main's run `38909746941`, at
+`be7a5d8` (PR #46's merge), failed the `rust` job in the workspace test step
+(job `117002280437`, hosted `macos-14-arm64` image 20260831.0302.1, runner
+`GitHub Actions 1000003173`). The signature is identical:
+`prompt10_rtmp::telemetry_tick_wires_the_live_session_counter` panicked at
+`prompt10_rtmp.rs:1570:5`, `drained reads 0 on the tick`, with `test result:
+FAILED. 19 passed; 1 failed; 1 ignored`. The test ran about 5.46 s: the
+preceding test finished at 13:43:31.58Z, and this one failed at
+13:43:37.04Z, the drain poll's 5 s expiring, as in sighting 1. It was green
+on rerun: attempt 2 (job `117004945478`, runner `GitHub Actions
+1000003175`) read workspace 511/0/4, the test `ok`, and all 30 floor lines
+at or above their floors.
+- **Not the change under review.** `be7a5d8`'s tree (`f85ec76`) is identical
+  to `4bbf409`'s, PR #46's head run `38844489887` passed this job, and PR #46
+  touched no Rust.
+- **It does not meet the refutation condition.** The workflow still echoed
+  no load (`ci.yml` had no `vm.loadavg` or `uptime`), so a CI sighting could
+  not qualify. R10 stays open (watch): 2 sightings, both on CI, both with
+  the load unrecorded.
+- ~~**The CI load capture stays owed.** It is the only thing that lets a CI
+  sighting count.~~ **Landed in the same PR** (§2c, 2026-10-16; the entry
+  below).
+
+**The CI load capture, landed 2026-10-16** (branch `r10-ci-load-capture`, the
+user's order of 2026-10-16: arm R10's reopen rule).
+- **The workflow delta** (`ci.yml`, the rust job only; 46 lines added, none
+  removed). Two steps bracket the workspace test step, which is unchanged:
+  the same command, flags and parallelism.
+  - Before it: a `[ci-load] pre` line, then a detached sampler that writes a
+    `[ci-load] sample` line every 10 s to `$RUNNER_TEMP`.
+  - After it, `if: always()`: a `[ci-load] post` line, the sampler stopped,
+    and every sample printed, so a failing run carries them.
+  - Each line carries a UTC timestamp, the 1, 5 and 15 minute load averages
+    (`sysctl vm.loadavg`), the CPU count (`hw.ncpu`) and memory in MiB
+    (`hw.memsize`; `vm_stat`'s free, inactive and speculative pages; swap
+    used). A sighting's ~5 s window is matched to the samples by the log's
+    own timestamps.
+  - **The tree differs from the order's wording.** The order named
+    `/proc/loadavg`, `nproc` and `free -m`. The runner is macOS
+    (`macos-14-arm64`), where none of the three exists, so the same readings
+    come from `sysctl` and `vm_stat`. **Approved as recorded** (the user's
+    ruling of 2026-10-16, item 2; below).
+  - The logging cannot fail the job: every command is guarded with
+    `|| true`, the sampler runs detached with its output in a file, and both
+    steps are continue-on-error. Locally, both scripts exited 0 under
+    `bash -e` and `bash -eo pipefail` with `RUNNER_TEMP` unset, unwritable,
+    and with the post step run without the pre step.
+- **The failure path, proved on CI** (the PR #47 pattern). Throwaway branch
+  `r10-load-falsify-ci-temp`, commit `99b8054` on `32cc054`, as draft PR #48:
+  the workspace test step exits 1 after 25 s, before cargo runs.
+  Run `38994605707`, the rust job (job `117284268391`, runner `GitHub
+  Actions 1000003178`, `macos-14-arm64` image 20260831.0302.1):
+  - The capture's first step succeeded:
+    `[ci-load] pre 2026-10-17T02:22:28Z load1=10.38 load5=11.06 load15=6.94 ncpu=3 mem_mib total=7168 free=454 inactive=2364 speculative=675 swap_used=0.00M`.
+  - The test step failed as forced: `##[error]Process completed with exit
+    code 1.` at 02:22:53.79Z.
+  - The `if: always()` step succeeded. It printed the post line and all
+    three samples, 10 s apart:
+
+        [ci-load] post 2026-10-17T02:22:53Z load1=12.53 load5=11.54 load15=7.23 ncpu=3 mem_mib total=7168 free=115 inactive=2471 speculative=609 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:28Z load1=10.38 load5=11.06 load15=6.94 ncpu=3 mem_mib total=7168 free=387 inactive=2364 speculative=676 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:38Z load1=11.61 load5=11.31 load15=7.08 ncpu=3 mem_mib total=7168 free=167 inactive=2275 speculative=769 swap_used=0.00M
+        [ci-load] sample 2026-10-17T02:22:48Z load1=12.41 load5=11.49 load15=7.19 ncpu=3 mem_mib total=7168 free=106 inactive=2343 speculative=710 swap_used=0.00M
+
+    The samples at :38 and :48 were written during the failing step, so
+    the sampler outlives the step that starts it.
+  - The job's conclusion is failure, from the forced step alone. The steps
+    after it skipped, as on any red test step. The control-plane and dress
+    jobs ran unchanged and succeeded.
+  - **The first CI load datum.** Straight after clippy, the 3-CPU runner
+    read a one-minute load of 10.38 rising to 12.53 across the 25 s, with
+    free memory falling from 454 to 106 MiB of 7168.
+  - PR #48 was closed unmerged (2026-10-17T02:26:31Z), and its branch was
+    deleted, locally and on `origin`.
+- **R10's reopen rule is armed.** From this PR on, a CI sighting in the
+  workspace test step carries its load: the samples on either side of the
+  failing test's window decide it. ~~With the load recorded and under the
+  3.0 ceiling, it meets the refutation condition's first leg and reopens
+  R10 as a defect. At or above the ceiling, it is a load sighting, and the
+  watch holds.~~ Its load is read against the CI ceiling ruled below
+  (§2c, 2026-10-16).
+- ~~**Put to the user, not decided here: the ceiling on a CI runner.**~~
+  **The ceiling on a CI runner: ruled 2026-10-16, below** (§2c). The 3.0
+  ceiling is the normative machine's (12 CPUs). The runner has 3, and its
+  first datum read 10.38–12.53 at clippy's end. Read as written, a CI
+  sighting at that load is a load sighting, so the armed rule can fire on
+  CI only if the runner falls under 3.0 during the tests. Whether the CI
+  reading should use a ceiling of its own (say, per CPU) is the user's
+  ruling. The capture logs `ncpu` on every line so either reading can be
+  made from the same samples.
+
+**The CI ceiling, ruled 2026-10-16** (the user's ruling for Finding R10:
+adopt and record).
+- **On the normative machine the quiescence ceiling stands unchanged**: 3.0
+  on 12 CPUs.
+- **On CI the ceiling is envelope-relative and per CPU.** A CI sighting
+  counts toward reopening when load1/ncpu during the sighting's window sits
+  within the observed green envelope for the rust test step.
+  - **Interim ceiling: 5.0 per CPU** (load1 15 on the current 3-CPU
+    runner), set from the first two instrumented runs (green envelope
+    ≈2.5–4.5 per CPU).
+  - A sighting above the ceiling is attributed to environment and does not
+    count.
+  - Every instrumented run extends the envelope. Each sighting is recorded
+    with its samples and the envelope to date.
+- **Rationale, recorded with the ruling.** CI load is endogenous: the suite
+  saturates its runner by design. An absolute ceiling (3.0, or 3.0 scaled
+  per CPU to 0.75) would never be met on CI, and the rule would stay
+  disarmed on the only surface R10 has ever appeared on. What marks a
+  real-bug signal on CI is failure under typical load, not under low load.
+- **The envelope to date, read from the tree** (load1/ncpu; ncpu 3 on both):
+
+  | Run | The step | load1/ncpu |
+  |---|---|---|
+  | `38994994256`, PR #49 at `70712f3`, green (511/0/4) | the workspace tests: the test build finished at 02:29:04.41 (`Finished` in 43.92 s), the tests ran from 02:29:04.49 to the post line at 02:29:56 | whole step 1.25–4.50 (pre, 10 samples, post). While building: 1.25, 1.31, 2.50, 3.75, 4.15. While the tests ran: 4.50, 4.23, 4.40, 4.36, 3.74, so 3.74–4.50. The R10 test passed at 02:29:35.13, between 4.40 and 4.36 |
+  | `38994605707`, the failure-path proof, red by design | no tests: a forced `exit 1` after 25 s, straight after clippy | 3.46–4.18 (pre, 3 samples, post) |
+
+  The ruling's ≈2.5–4.5 is the green run from its third sample on
+  (02:28:40). The proof run ran no tests, so it is not a green test step;
+  its readings sit inside the same band. Every reading to date is under
+  the interim ceiling of 5.0.
+- **Approved with the ruling (its items 2 and 3).**
+  - **The macOS substitution is approved as recorded.** `sysctl`
+    (`vm.loadavg`, `hw.ncpu`, `hw.memsize`, `vm.swapusage`) and `vm_stat`
+    stand in place of `/proc/loadavg`, `nproc` and `free -m`: the same
+    evidentiary content, platform-correct, and disclosed here and in the PR
+    body. The order assumed Linux; that miss is the relay's.
+  - **Both recorded-not-changed items are accepted as filed.** Coverage
+    matches the sighting history. Job-scope sampling becomes a candidate
+    amendment only if a sighting ever lands in the `prompt10_rtmp` floor
+    step. The soak's R10 sighting count remains owed and rides the records.
+- **Not covered, recorded.** The workspace step is where both sightings
+  fell. The rust job's later step "the RTMP transport suite actually ran
+  (Prompt 10 WU5)" runs `prompt10_rtmp` again, after the post line; a
+  sighting there carries no samples. Other jobs are not covered either.
+  Extending the capture is a separate decision (the order). The soak's
+  dedicated R10 count (the register row) stays owed: this PR is
+  workflow-only. **Accepted as filed** (the user's ruling of 2026-10-16,
+  item 3; below).
 
 ### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41, merged as `a6fc4d8`)
 
@@ -4566,12 +4710,13 @@ item):
       F1–F9 were counted against 20 unit tests, F10–F26 against 21. Each of
       F10–F26 failed only the tests named, was restored from its copy, and
       read `cmp`-identical.
-    - **The refused-start leg's own falsification was not run.** The leg runs
+    - ~~**The refused-start leg's own falsification was not run.** The leg runs
       only where the engine refuses the encoder, which is CI; locally it
       skips. F1 removes the path it asserts through (`windowElapsed`, the
       same raise the lost-stop leg reads), and F1 failed the lost-stop leg
       and six unit tests. A run of F1 on CI would need a mutated commit
-      pushed to a branch, and was not made.
+      pushed to a branch, and was not made.~~ **Closed by the two-key pass
+      on PR #46: run on CI, run `38888813424`.** *(§2c, 2026-10-16.)*
 
     - **F3′ shows why waiting for a command after a reconnect is wrong.**
       After a restart the next command may be the operator's own stop, as in
@@ -4584,11 +4729,134 @@ item):
     - **The additive invariant.** `npm test` is 176 (151 existing, plus 25).
       No existing test file was edited, and automation and effects are
       unchanged.
+  - **The two-key pass on PR #46** (independent, three sides; relayed by the
+    user 2026-10-16). Verdict: **HOLDS on all ten required answers**, confirmed
+    without adopting the builder's reasoning. The tree was clean at `4bbf409`;
+    PR #46 was OPEN/MERGEABLE, nothing merged.
+    - **Anchor and flicker, probed: no defect.** A fresh `none` that postdates
+      the connect anchor raises `stream.divergence` inside the resync window:
+      raised at +100 ms after the connect; the resync's acknowledgement at
+      +1400 ms leaves it raised. `evaluate()` has no fire-and-clear path: the
+      post-resync guard (`alerts.ts:276`) returns early and never clears. The
+      connect anchor blocks stale pre-connect reports (F5's witness), not
+      post-connect ones. The code matches the spec; no spec delta is owed.
+    - **The R18 sink-independence probe (amendment 6).** With the sink broken, a
+      forced (b) raise still lands in the lane: the lane is computed state and
+      does not depend on the sink. Every alert writes exactly one raise row and
+      one clear row per episode. `audit.sinkFailed` has `auditEvent: null`, no
+      row is attempted for it, and its stderr line is written exactly once per
+      episode.
+    - **The refused-start leg, falsified on CI** [verified]. The throwaway
+      branch `lane-falsify-ci-temp` (commit `8403d9e`, parent `4bbf409`) had
+      two changes:
+      - `windowElapsed` returned early (`if (this.i.windowMs > 0) return;`).
+        The return was conditional so that `tsc --noEmit` stays green and the
+        job reaches the e2e step.
+      - The `npm test` step was set to `continue-on-error`, on that branch only.
+
+      Results of run `38888813424`:
+      - control-plane failed. `npm test` read 176 tests, 169 passed, 7 failed.
+      - operator-signals: `not ok 1 - [lane] refused start …`,
+        `failureType: 'testCodeFailure'`, `error: 'the alert raises'`. The leg
+        killed the mutant through its own assertion, not through
+        infrastructure. The other three legs skipped, as at the head.
+      - rust and dress rehearsal succeeded.
+      - Draft PR #47 was closed unmerged (2026-10-16T10:46:15Z), and the branch
+        was deleted (absent locally and on `origin`).
+
+      Annotation, not a dispute: this mutant kills the raise. F1 instead marks
+      the command acknowledged at send. Both remove the alert the leg asserts.
+    - **Blip and restart semantics, probed.** `reconnecting` beside `live`
+      gives `[]`. The restart leg raised a divergence with the belief still
+      `live`. The lost-stop leg shows the stream idle beside live, on air.
+      Locally the e2e read 4 ran, 3 exercised, 1 skipped: the mirror image of
+      CI's 4 ran, 1 exercised, 3 skipped, as designed.
+    - **The additive promise, verified on every surface** (the pass's item 3). No `.rs`, `Cargo` or
+      schema diff. A U6 sweep found no exact-key or `.strict()` validators on
+      the tick or the snapshot, and no handler writes `state.alerts` or
+      `state.health`. Automation 32/32 and effects 2/2 are unedited and green.
+      The superset pin is green, and F25/F26 reproduced on the real engine.
+    - **§10.1.2, clause by clause: it matches.** That covers the ids,
+      severities and events; (b) with all four clears; (a)'s
+      anchor/fresh/postdate; all 9 mapping rows including the negatives; the
+      edge-audit shape; restart semantics; the R18 carve-out; and the additive
+      clause.
+      - Amendment 4 is verified: the clear is at-or-above (`alerts.ts:199`).
+      - `spec.v0.4.md:2518`'s "exact" names the command's own ack, and
+        `:2519–2521` generalize it. F11 proves the generalization load-bearing.
+      - No spec delta is needed.
+    - **The U register: the four labels the pass's report carries, all answered.**
+      - **U1** (the pass's item 9): the harness hunk is an added export on
+        `startRtmpSink` and nothing else. "No existing test edited" holds in
+        substance, and the PR body already disclosed it.
+      - **U2** (item 7): the engine binary is built before operator-signals in
+        the same job, so `ran=4` is valid.
+      - **U3** (item 8): 151 + 25 = 176, closed from three sides: the base
+        worktree read 151/151/0, the pass's run 176/176, and CI
+        `passed=176 failed=0`.
+      - **U6** (item 3, "U6 sweep"): the additive sweep above.
+      - ~~**U8:** the gate's shape, below.~~ *(§2c, 2026-10-16. The label "U8"
+        had no source. The pass's report carries exactly four register labels:
+        U1, U2, U3 and U6. The gate-honesty answer is its item 10, labelled
+        "claim 10". The builder's record defines no U register, so it has no
+        U8 to map. The token entered through the relay, whose own point 8 was
+        the gate-honesty item. The answer stands below under its source label.)*
+      - **Whether the register is fully closed cannot be confirmed from the
+        builder's side.** Its definition lives in the pass's order, not in this
+        record, and the labels run U1, U2, U3, U6, with gaps. Every label the
+        pass's report carries is answered.
+    - **Gate honesty (claim 10): HONEST** (the pass's item 10; ~~(U8)~~ §2c,
+      above).
+      - `fdcc071` is VOID, named with its cause.
+      - The `4bbf409` rerun disclosed its mid-window sample of 3.02, and its
+        scoping is explicit.
+      - One minor looseness, no action: the PR body's "touches no source"
+        means **no production source**. A unit test was added.
+    - **The pass's own voids** (honest, non-blocking):
+      1. Its machine ran hot (1-minute load ~3.4–4.0) all session, so it did
+         not attempt the local re-measure of the window.
+      2. It did not attempt the local dress either. The evidence of record
+         stands: CI at the SHA (27/27 with `ok 24`, 511/0/4) and the builder's
+         n = 20 measure.
+      3. F3′'s e2e-leg variant remains builder-run only. Its mechanism is
+         confirmed at unit level, and the real-engine restart leg is green.
+    - **Builder's two-key record: concurs on all ten.** Two annotations, no
+      disputes: the CI mutant's shape (above), and the "no production source"
+      wording, accepted.
   - **A finding, out of scope.** The `system.status` *command* builds its
     snapshot with `statusSnapshot()` and no render-node argument, so it always
     reports `renderNode.connected: false`. The `stateChange` frame and
     `GET /status` pass the real one. The lane is unaffected: it lives on the
     state. Recorded, not changed.
+  **Merged: PR #46 is `be7a5d8`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-16: a squash at 2026-10-16T13:41:01Z (parent
+  `461a30b`), pinned to the reviewed head `4bbf409`. The merge tree `f85ec76`
+  is identical to `4bbf409`'s. Main's CI at `be7a5d8`, run `38909746941`,
+  read per test (§2b):
+  - **Attempt 1.**
+    - control-plane succeeded: `npm test` 176/176; automation 32/32;
+      effects 2/2.
+    - Every e2e floor held: slate-release 4/4, recall 2/2, take-duration
+      3/3, resync-end 3/3, package-reconcile 4/4; show-stop ran 6,
+      exercised 1, skipped 5; resync-request 3/3.
+    - operator-signals ran 4, exercised 1, skipped 3. Its refused start
+      raised at 2006 ms.
+    - dress rehearsal succeeded: 27/27 with `ok 24`. DRESS-COUNTS (ci,
+      `be7a5d8`): drops 1, underruns 212, fallbackTicks 0, watchdogTrips
+      0, step4RiseMs 2981, step6RiseMs 2976, all inside the backstops.
+    - **rust FAILED: R10, sighting 2** (Finding R10, its sighting 2 entry;
+      `docs/soak-protocol.md` §5). Not the change under review: the tree
+      is identical to `4bbf409`'s, whose head run `38844489887` passed
+      this job, and PR #46 touched no Rust.
+  - **Attempt 2** (the failed job rerun, job `117004945478`, runner
+    `GitHub Actions 1000003175`): rust succeeded.
+    - Workspace 511 passed, 0 failed, 4 ignored (58 binaries; the step
+      echoes its summary twice).
+    - `telemetry_tick_wires_the_live_session_counter ... ok`.
+    - All 30 floor lines are at or above their floors.
+    - The run's conclusion is success.
+  - Spine part A is landed by it. Position 5 stays open: spine part B and
+    work order 2 remain.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
