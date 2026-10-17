@@ -19,7 +19,7 @@
 - D3's two-layer enforcement;
 - D4's divergence from `itemEvent`, as intended;
 - row 11 reviewed as Appendix A now, landing and ratifying on the implementing PR, with its text as an early commit and ratification-on-merge stated in the PR's body.
-- One question is still open (§2, D2a). It must be answered before dispatch, because the work items depend on it.
+- ~~One question is still open (§2, D2a). It must be answered before dispatch, because the work items depend on it.~~ **D2a was answered 2026-10-17. Its clearing rule is in Appendix A, verbatim (§2c). The brief is dispatch-ready; dispatch is the user's word.**
 - Appendix A holds SPEC row 11's candidate text. It is reviewed before dispatch (D5), lands in the spec with the implementing PR, and is ratified on that merge.
 
 You are a senior engineer on `nbe`, working in TypeScript in the control plane. R17 is "the control plane reports a refused stream as live" (`docs/soak-protocol.md` §5; `docs/prompt-map-07-13.md`, queue position 5).
@@ -141,11 +141,30 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
 
     While the engine is reporting, `held` therefore lasts until that report, about one tick. It lasts longer only while no fresh report arrives (`engine.notReporting`).
   - *The tree today:* the held alert heals when the belief reads outputs inactive (`alerts.ts:267`, "when the operator's explicit stops land"; row 8's guard F22). D2 replaces that with "until the real ack". §10.1.2 states no clearing rule for `outputs.held`, so row 11 must state the new one.
-  - **D2a, OPEN, owed before dispatch: the alert can be stranded.** Suppose `show.stop`'s acknowledgement never comes, because it was withheld after a failed quiesce, or lost. A fresh `closed` report then corrects `held → idle`, and `stream.stop` refuses `idle` (D3, D6). No real acknowledgement can arrive, so the held alert has no clearing path. Two questions are the user's:
+  - **D2a: ~~OPEN, owed before dispatch~~ ANSWERED 2026-10-17** (§2c). The `outputs.held` clearing rule is in Appendix A, verbatim. The question as it was put stands below. **The alert can be stranded.** Suppose `show.stop`'s acknowledgement never comes, because it was withheld after a failed quiesce, or lost. A fresh `closed` report then corrects `held → idle`, and `stream.stop` refuses `idle` (D3, D6). No real acknowledgement can arrive, so the held alert has no clearing path. Two questions are the user's:
     - which acknowledgements count as "the real ack": `show.stop`'s own late one, or also the acknowledgement of an operator's `stream.stop`/`record.stop` that ends the hold?
     - what clears the alert when none can come?
 
-    *A tree fact for the answer (2026-10-17):* the operator's output commands cannot produce that acknowledgement once the engine has quiesced. The engine refuses `stream.stop` unless its own stream is live (`directive.rs`, `on_stream_stop`: `"stream.stop requires a live stream"`), and a refusal is never acknowledged (§10.1.2's (b)). In the strand case, `closed`, no output command's acknowledgement can come.
+    **The user's rule, verbatim (2026-10-17):**
+
+    > D2a, amended — the outputs.held clearing rule (both recommendations adopted):
+    >
+    > Part 1 — the real ack: the command's own late acknowledgement, or the acknowledgement of a later stop at-or-above — including the operator's stream.stop or record.stop from held. The engine acks a stop only while that output is still live, so either ack witnesses an actual stop.
+    >
+    > Part 2 — when no ack can come: the next accepted show.load or show.unload clears the alert, with a clear row that names the cause. Until then, it stands. The lane is not persisted, so a control-plane restart also clears it, as it clears everything.
+    >
+    > The relay's earlier option (iii) — a fresh report clearing the alert — is WITHDRAWN. Corrections still move belief (D2 unchanged); they do not clear alerts. Two failure modes: with the engine quiesced, no report ever comes and the clear never fires; with the engine healthy, a single transient none would correct held → idle and clear the alert while the stream stays live against the operator's intent — the witness dying to a blip. Belief answers "what is true"; the alert answers "is a command outcome unresolved". This rule keeps them separate.
+    >
+    > Amended clearing set for outputs.held: (i) the command's own ack; (ii) a later stop's ack at-or-above; (iii) an accepted show.load or show.unload, cause named in the clear row; (iv) control-plane restart, as for the whole lane. It stands in every other case — persistence is the witness working.
+
+    *Read against the tree (recorded, not changed):*
+    - **The premise holds.** The engine refuses `stream.stop` unless its stream is live, and `record.stop` unless it is recording (`directive.rs`, `on_stream_stop` and `on_record_stop`). A refusal is never acknowledged, so the acknowledgement of either stop witnesses an actual stop.
+    - **(i) needs tracking.** The lane today drops `show.stop`'s pending entry when it raises the held alert (`held()`, `showStopPending = null`, `alerts.ts:298`), so a late `show.stop` acknowledgement is not seen. The implementing work tracks it.
+    - **(iv) writes no clear row.** A restart empties the lane but writes no clear row: row 8's restart semantics say an episode that outlived the process keeps its raise row and gets none. That is "as for the whole lane".
+    - **Option (iii), withdrawn,** was the builder's, in the question put on 2026-10-17.
+    - **Today's heal is replaced.** The alert currently clears when the belief reads outputs inactive (`alerts.ts:267`); this rule replaces that.
+
+    *A tree fact for the answer (2026-10-17), now answered:* the operator's output commands cannot produce that acknowledgement once the engine has quiesced. The engine refuses `stream.stop` unless its own stream is live (`directive.rs`, `on_stream_stop`: `"stream.stop requires a live stream"`), and a refusal is never acknowledged (§10.1.2's (b)). In the strand case, `closed`, no output command's acknowledgement can come.
 
 - **D3, `held` is an output-active state.** "outputsActive() includes held; stream.stop accepts held — the operator's only way out of a hold; stream.start refuses held, naming the state in the error. Every other reader and precondition names held explicitly, no default fall-through; the prompt audits every belief-enum consumer, and #50's compile-time enum audit enforces exhaustiveness."
   - *The tree:* #50's audit (`automation.ts`'s `Same<…>`) pins each **domain** to its **type** exactly. That catches a value added to one but not the other. It does not make the **consumers** exhaustive.
@@ -218,7 +237,13 @@ Name every test; give each guard its own falsification. Every falsified test car
   - `engine.notReporting` owning the window end (the claim expires; with no fresh report the stale belief stands).
 - **Server (`alerts-server.test.ts` or a new suite):** a correction is one `bump()`, one audit row and no `stateChange` frame (D4); the held path writes `held` and raises the held alert (D3).
 - **D3, exhaustiveness:** each consumer's `never` default is falsified by adding a fourth `StreamState` value, which must fail `tsc` at every consumer. `stream.start` refuses `held` with the state named; `stream.stop` accepts `held` and refuses `idle`.
-- **D2:** `held` lasts until the next fresh report postdating the expiry, then corrects to D1's value; the held alert persists until the real acknowledgement (D2a as ruled).
+- **D2:** `held` lasts until the next fresh report postdating the expiry, then corrects to D1's value.
+- **D2a, the clearing set, one guard per member:**
+  - (i) `show.stop`'s own late acknowledgement clears the held alert;
+  - (ii) a later stop's acknowledgement at or above (the operator's `stream.stop` or `record.stop` from `held`) clears it;
+  - (iii) an accepted `show.load` or `show.unload` clears it, with the clear row naming the cause;
+  - (iv) after a restart, the lane is empty.
+  - **It stands in every other case.** A correction `held → idle` moves the belief and leaves the alert standing. A transient `none` does not clear it. A refused stop, never acknowledged, does not clear it.
 - **D4:** a correction fires no automation `stateChange`. A `from: "live"` rule stays silent on a refused start's correction and fires on the command path's live→held.
 - **Automation (`automation.test.ts`):**
   - `to: "idle"` silent on a hold;
@@ -237,6 +262,7 @@ Name every test; give each guard its own falsification. Every falsified test car
 - Treat window expiry as an acknowledgement. Auto-clear an alert at window end. Let a late acknowledgement move the belief.
 - Give `recordState` a `held`. Alias `held` to `idle`, or fire a transition twice.
 - Fire an automation `stateChange` on a correction (D4), or broadcast a `stateChange` frame for one.
+- Clear the held alert on a correction or a report, or on anything outside D2a's clearing set.
 - Leave a belief-enum consumer with a default branch that absorbs `held` (D3).
 - Edit an existing test's expectation without recording why, §2c-visibly, in the prompt map.
 
@@ -271,11 +297,11 @@ Name every test; give each guard its own falsification. Every falsified test car
 
 ## Appendix A — SPEC v0.4.8 row 11, candidate text (D5)
 
-This text is reviewed before dispatch. The executor lands it in the implementing PR, and it is ratified on that merge. `[D2a]` marks the one clause that waits on the open question.
+This text is reviewed before dispatch. The executor lands it as an early commit of the implementing PR, and it is ratified on that merge. ~~`[D2a]` marks the one clause that waits on the open question.~~ *D2a was answered 2026-10-17, and its rule is below, verbatim (§2c).*
 
 **The table row (v0.4.8):**
 
-> | 11 | **The belief follows the truth: `held` as §5.9.5's limbo, correction from a fresh report, the boundary for automation** (the user's rulings of 2026-10-17 on R17 spine B's brief, D1–D6; queue position 5). §10.1.3 ratified the order the belief follows (row 10) ahead of its implementation. This row builds it. An unacknowledged `show.stop` gives a `live` stream the belief `held` at its window's expiry, in place of its prior state. With no live claim, a fresh engine report that postdates the anchor corrects the stream belief by §10.1.4's mapping (`live`/`reconnecting` → `live`, `none`/`closed` → `idle`). The correction lands as a detection transaction: one version bump and one `belief.corrected` audit row, with no `stateChange` frame and no automation trigger. Automation reacts to command-path transitions only. `held` is an output-active state: `stream.stop` accepts it, `stream.start` refuses it by name, and every consumer is exhaustive. The held alert persists until a real acknowledgement [D2a] | 5.9.5 (the "prior state" hold, struck and amended), 10.1.4 (new), 13.2 (the transition rule, annotated: corrections fire no trigger), 13.4.1 (`show.stop`'s row, annotated: `held`), 16 (`stream.start` and `stream.stop`'s preconditions) | the implementing PR's guards (§6 of the brief) |
+> | 11 | **The belief follows the truth: `held` as §5.9.5's limbo, correction from a fresh report, the boundary for automation** (the user's rulings of 2026-10-17 on R17 spine B's brief, D1–D6; queue position 5). §10.1.3 ratified the order the belief follows (row 10) ahead of its implementation. This row builds it. An unacknowledged `show.stop` gives a `live` stream the belief `held` at its window's expiry, in place of its prior state. With no live claim, a fresh engine report that postdates the anchor corrects the stream belief by §10.1.4's mapping (`live`/`reconnecting` → `live`, `none`/`closed` → `idle`). The correction lands as a detection transaction: one version bump and one `belief.corrected` audit row, with no `stateChange` frame and no automation trigger. Automation reacts to command-path transitions only. `held` is an output-active state: `stream.stop` accepts it, `stream.start` refuses it by name, and every consumer is exhaustive. The held alert clears only by §10.1.2's amended clearing set for `outputs.held`: its own acknowledgement; a later stop's at or above; an accepted `show.load` or `show.unload`; a restart. A correction moves the belief and clears no alert | 5.9.5 (the "prior state" hold, struck and amended), 10.1.2 (`outputs.held`'s clearing rule, new), 10.1.4 (new), 13.2 (the transition rule, annotated: corrections fire no trigger), 13.4.1 (`show.stop`'s row, annotated: `held`), 16 (`stream.start` and `stream.stop`'s preconditions) | the implementing PR's guards (§6 of the brief) |
 
 **§5.9.5, struck and amended (§2c):** ~~"holds the outputs at their prior state"~~. The rule becomes: a `live` stream's belief becomes `held` at the window's expiry (§10.1.3's command path), and the recording stays `recording` (§13.2 exception 2). The next fresh report that postdates the expiry corrects `held` by §10.1.4.
 
@@ -292,9 +318,21 @@ This text is reviewed before dispatch. The executor lands it in the implementing
 >
 > **The landing.** A correction is a detection transaction: one `stateVersion` bump and one audit row, `belief.corrected`, whose detail is the field, `from`, `to`, the report's token and the report's age. It broadcasts no `stateChange` frame (§5.4.1: one per accepted command) and fires no automation `stateChange` trigger. Automation reacts to committed intent, through command-path transitions: acceptance, acknowledgement and window expiry. A rule meaning "the stream left the air" (`from: "live"`) therefore fires on live→held and on an accepted `stream.stop`, and never on a correction.
 >
-> **`held` gives way on the precision clause's schedule.** The stop's claim stands inside its window. At expiry the claim ends, and a fresh report rules. The belief never insists on a state the engine contradicts after the claim has expired. The `outputs.held` alert persists until a real acknowledgement, as the witness [D2a: which acknowledgements count, and what clears the alert when none can come].
+> **`held` gives way on the precision clause's schedule.** The stop's claim stands inside its window. At expiry the claim ends, and a fresh report rules. The belief never insists on a state the engine contradicts after the claim has expired. The `outputs.held` alert is not the belief: it clears only by §10.1.2's clearing set for it (below), never by a correction.
 >
 > **`held` is output-active.** `stream.stop` accepts `live` and `held`; `stream.start` refuses `held` with `E_FORBIDDEN_STATE`, naming the state. Every consumer of the belief enum handles `idle`, `live` and `held` explicitly, with no default fall-through.
+
+**§10.1.2, `outputs.held`'s clearing rule (normative, new in v0.4.8 row 11):** the user's rule of 2026-10-17, verbatim:
+
+> D2a, amended — the outputs.held clearing rule (both recommendations adopted):
+>
+> Part 1 — the real ack: the command's own late acknowledgement, or the acknowledgement of a later stop at-or-above — including the operator's stream.stop or record.stop from held. The engine acks a stop only while that output is still live, so either ack witnesses an actual stop.
+>
+> Part 2 — when no ack can come: the next accepted show.load or show.unload clears the alert, with a clear row that names the cause. Until then, it stands. The lane is not persisted, so a control-plane restart also clears it, as it clears everything.
+>
+> The relay's earlier option (iii) — a fresh report clearing the alert — is WITHDRAWN. Corrections still move belief (D2 unchanged); they do not clear alerts. Two failure modes: with the engine quiesced, no report ever comes and the clear never fires; with the engine healthy, a single transient none would correct held → idle and clear the alert while the stream stays live against the operator's intent — the witness dying to a blip. Belief answers "what is true"; the alert answers "is a command outcome unresolved". This rule keeps them separate.
+>
+> Amended clearing set for outputs.held: (i) the command's own ack; (ii) a later stop's ack at-or-above; (iii) an accepted show.load or show.unload, cause named in the clear row; (iv) control-plane restart, as for the whole lane. It stands in every other case — persistence is the witness working.
 
 **§13.2, annotated:** "Transitions are reported as they are" gains: *(v0.4.8 row 11: on the command path. A correction (§10.1.4) fires no trigger.)*
 

@@ -5543,6 +5543,29 @@ item):
         dress step 8 coupled to A1's duration through step 4's rise), and
         whether the fix is the test's (say, step 8 previews an untimed item,
         or resets A1) rather than the product's.
+    - **D2a, ANSWERED 2026-10-17.** The `outputs.held` clearing rule, the
+      user's text verbatim (folded into the brief's Appendix A as
+      §10.1.2's new clearing rule). The brief is now dispatch-ready;
+      dispatch is the user's word:
+
+      > D2a, amended — the outputs.held clearing rule (both recommendations adopted):
+      >
+      > Part 1 — the real ack: the command's own late acknowledgement, or the acknowledgement of a later stop at-or-above — including the operator's stream.stop or record.stop from held. The engine acks a stop only while that output is still live, so either ack witnesses an actual stop.
+      >
+      > Part 2 — when no ack can come: the next accepted show.load or show.unload clears the alert, with a clear row that names the cause. Until then, it stands. The lane is not persisted, so a control-plane restart also clears it, as it clears everything.
+      >
+      > The relay's earlier option (iii) — a fresh report clearing the alert — is WITHDRAWN. Corrections still move belief (D2 unchanged); they do not clear alerts. Two failure modes: with the engine quiesced, no report ever comes and the clear never fires; with the engine healthy, a single transient none would correct held → idle and clear the alert while the stream stays live against the operator's intent — the witness dying to a blip. Belief answers "what is true"; the alert answers "is a command outcome unresolved". This rule keeps them separate.
+      >
+      > Amended clearing set for outputs.held: (i) the command's own ack; (ii) a later stop's ack at-or-above; (iii) an accepted show.load or show.unload, cause named in the clear row; (iv) control-plane restart, as for the whole lane. It stands in every other case — persistence is the witness working.
+
+      Read against the tree (recorded, not changed):
+      - The premise holds: the engine refuses `stream.stop` and
+        `record.stop` unless that output is live (`directive.rs`).
+      - (i) needs the late `show.stop` acknowledgement tracked, since
+        `held()` drops it today (`alerts.ts:298`).
+      - (iv) writes no clear row (row 8's restart semantics).
+      - The withdrawn option (iii) was the builder's.
+      - Today's heal on outputs inactive (`alerts.ts:267`) is replaced.
     - **D5's placement, the builder's reading.** Row 11's candidate is
       Appendix A of the brief, reviewed before dispatch. It lands in the
       spec with the implementing PR and is ratified on that merge, not
@@ -5557,9 +5580,9 @@ item):
       ratification-on-merge stated in the body.
 
     "Ceiling 12.09 recorded; the downward move is the mechanism working."
-    **D2a is still open.** The user's message asked to "fold the D2a
-    clearing rule into Appendix A verbatim", but no D2a rule text has been
-    given, so nothing is folded and the brief marks it open. The tree fact
+    ~~**D2a is still open.**~~ The user's message asked to "fold the D2a
+    clearing rule into Appendix A verbatim", but no D2a rule text had been
+    given, so nothing was folded. *(§2c: answered the same day, below.)* The tree fact
     for the answer: the engine refuses `stream.stop` unless its stream is
     live (`directive.rs`, `on_stream_stop`), so once the engine has quiesced
     no output command can produce the real acknowledgement.
