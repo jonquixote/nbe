@@ -542,7 +542,9 @@ server, not a load flake:
 - **a second sighting with the load recorded and under the 3.0 ceiling** — a
   soak iteration qualifies, because the soak checks quiescence first and runs
   `prompt10_rtmp` whole; a CI sighting qualifies only once the load capture
-  above exists;
+  above exists; *(for a CI sighting, the ceiling is envelope-relative and per
+  CPU, by the user's ruling of 2026-10-16, recorded after sighting 2; the 3.0
+  ceiling stands for the normative machine and the soak. §2c.)*
 - **the drain approaching its bound on a quiescent run** — say, any quiescent
   run of this test above 2.5 s, against about 0.4 s today.
 
@@ -607,7 +609,8 @@ user's order of 2026-10-16: arm R10's reopen rule).
   - **The tree differs from the order's wording.** The order named
     `/proc/loadavg`, `nproc` and `free -m`. The runner is macOS
     (`macos-14-arm64`), where none of the three exists, so the same readings
-    come from `sysctl` and `vm_stat`.
+    come from `sysctl` and `vm_stat`. **Approved as recorded** (the user's
+    ruling of 2026-10-16, item 2; below).
   - The logging cannot fail the job: every command is guarded with
     `|| true`, the sampler runs detached with its output in a file, and both
     steps are continue-on-error. Locally, both scripts exited 0 under
@@ -642,11 +645,13 @@ user's order of 2026-10-16: arm R10's reopen rule).
     deleted, locally and on `origin`.
 - **R10's reopen rule is armed.** From this PR on, a CI sighting in the
   workspace test step carries its load: the samples on either side of the
-  failing test's window decide it. With the load recorded and under the
+  failing test's window decide it. ~~With the load recorded and under the
   3.0 ceiling, it meets the refutation condition's first leg and reopens
   R10 as a defect. At or above the ceiling, it is a load sighting, and the
-  watch holds.
-- **Put to the user, not decided here: the ceiling on a CI runner.** The 3.0
+  watch holds.~~ Its load is read against the CI ceiling ruled below
+  (§2c, 2026-10-16).
+- ~~**Put to the user, not decided here: the ceiling on a CI runner.**~~
+  **The ceiling on a CI runner: ruled 2026-10-16, below** (§2c). The 3.0
   ceiling is the normative machine's (12 CPUs). The runner has 3, and its
   first datum read 10.38–12.53 at clippy's end. Read as written, a CI
   sighting at that load is a load sighting, so the armed rule can fire on
@@ -654,13 +659,55 @@ user's order of 2026-10-16: arm R10's reopen rule).
   reading should use a ceiling of its own (say, per CPU) is the user's
   ruling. The capture logs `ncpu` on every line so either reading can be
   made from the same samples.
+
+**The CI ceiling, ruled 2026-10-16** (the user's ruling for Finding R10:
+adopt and record).
+- **On the normative machine the quiescence ceiling stands unchanged**: 3.0
+  on 12 CPUs.
+- **On CI the ceiling is envelope-relative and per CPU.** A CI sighting
+  counts toward reopening when load1/ncpu during the sighting's window sits
+  within the observed green envelope for the rust test step.
+  - **Interim ceiling: 5.0 per CPU** (load1 15 on the current 3-CPU
+    runner), set from the first two instrumented runs (green envelope
+    ≈2.5–4.5 per CPU).
+  - A sighting above the ceiling is attributed to environment and does not
+    count.
+  - Every instrumented run extends the envelope. Each sighting is recorded
+    with its samples and the envelope to date.
+- **Rationale, recorded with the ruling.** CI load is endogenous: the suite
+  saturates its runner by design. An absolute ceiling (3.0, or 3.0 scaled
+  per CPU to 0.75) would never be met on CI, and the rule would stay
+  disarmed on the only surface R10 has ever appeared on. What marks a
+  real-bug signal on CI is failure under typical load, not under low load.
+- **The envelope to date, read from the tree** (load1/ncpu; ncpu 3 on both):
+
+  | Run | The step | load1/ncpu |
+  |---|---|---|
+  | `38994994256`, PR #49 at `70712f3`, green (511/0/4) | the workspace tests: the test build finished at 02:29:04.41 (`Finished` in 43.92 s), the tests ran from 02:29:04.49 to the post line at 02:29:56 | whole step 1.25–4.50 (pre, 10 samples, post). While building: 1.25, 1.31, 2.50, 3.75, 4.15. While the tests ran: 4.50, 4.23, 4.40, 4.36, 3.74, so 3.74–4.50. The R10 test passed at 02:29:35.13, between 4.40 and 4.36 |
+  | `38994605707`, the failure-path proof, red by design | no tests: a forced `exit 1` after 25 s, straight after clippy | 3.46–4.18 (pre, 3 samples, post) |
+
+  The ruling's ≈2.5–4.5 is the green run from its third sample on
+  (02:28:40). The proof run ran no tests, so it is not a green test step;
+  its readings sit inside the same band. Every reading to date is under
+  the interim ceiling of 5.0.
+- **Approved with the ruling (its items 2 and 3).**
+  - **The macOS substitution is approved as recorded.** `sysctl`
+    (`vm.loadavg`, `hw.ncpu`, `hw.memsize`, `vm.swapusage`) and `vm_stat`
+    stand in place of `/proc/loadavg`, `nproc` and `free -m`: the same
+    evidentiary content, platform-correct, and disclosed here and in the PR
+    body. The order assumed Linux; that miss is the relay's.
+  - **Both recorded-not-changed items are accepted as filed.** Coverage
+    matches the sighting history. Job-scope sampling becomes a candidate
+    amendment only if a sighting ever lands in the `prompt10_rtmp` floor
+    step. The soak's R10 sighting count remains owed and rides the records.
 - **Not covered, recorded.** The workspace step is where both sightings
   fell. The rust job's later step "the RTMP transport suite actually ran
   (Prompt 10 WU5)" runs `prompt10_rtmp` again, after the post line; a
   sighting there carries no samples. Other jobs are not covered either.
   Extending the capture is a separate decision (the order). The soak's
   dedicated R10 count (the register row) stays owed: this PR is
-  workflow-only.
+  workflow-only. **Accepted as filed** (the user's ruling of 2026-10-16,
+  item 3; below).
 
 ### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41, merged as `a6fc4d8`)
 
