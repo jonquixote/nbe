@@ -702,6 +702,8 @@ adopt and record).
   | `39032691149`, PR #52 at `75e5ce7`, green (515/0/4) | the test build finished at 12:30:41.94; the post line at 12:31:39 | whole step 3.07–6.65. While the tests ran: 6.65, 6.54, 6.17, 5.32, 5.57, 4.91, then the post line's 4.71, so 4.71–6.65. The R10 test passed at 12:31:15.26, between 5.32 and 5.57. The 13th |
   | `39033038784`, PR #52 at `79d256e` (its head), rust green (515/0/4) on attempt 1; the dress failed R19 there and was green on its job-scoped rerun | the test build finished at 12:35:54.84; the post line at 12:36:47 | whole step 3.74–7.59. While the tests ran: 7.59, 7.07, 7.02, 6.33, 5.94, then the post line's 5.52, so 5.52–7.59. The R10 test passed at 12:36:25.38, between 7.02 and 6.33. The 14th |
   | `39033994454`, main at `df5530d` (PR #52's merge), green (515/0/4) | the test build finished at 12:49:55.83; the post line at 12:50:47 | whole step 2.64–4.80. While the tests ran: 4.53, 4.80, 4.19, 4.65, 4.25, then the post line's 3.87, so 3.87–4.80. The R10 test passed at 12:50:25.72, between 4.19 and 4.65. The 15th |
+  | `39034929811`, PR #53 at `18a3858`, green (515/0/4) | the test build finished at 13:04:10.71; the post line at 13:05:00 | whole step 5.78–9.52. While building: 7.45, 6.60, 6.96, 7.85, 9.52, 9.32. While the tests ran: 8.73, 7.99, 6.82, 6.17, then the post line's 5.78, so 5.78–8.73. The R10 test passed at 13:04:38.28, between 7.99 and 6.82. The 16th |
+  | `39035305838`, main at `49d29ae` (PR #53's merge), green (515/0/4) | the test build finished at 13:09:23.86; the post line at 13:10:16 | whole step 3.12–3.97. While the tests ran: 3.80, 3.35, 3.45, 3.12, 3.33, then the post line's 3.34, so 3.12–3.80. The R10 test passed at 13:09:54.25, between 3.12 and 3.33. The 17th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -823,6 +825,9 @@ downward move is the mechanism working."
 **The ceiling at PR #52's merge: holds at 12.09 per CPU** (15 green runs;
 the peaks since the 11th were 6.62, 6.65, 7.59 and 4.80, all under the 9.67
 maximum).
+
+**The ceiling at PR #53's merge: holds at 12.09 per CPU** (17 green runs;
+the peaks were 9.52, the nearest yet to the 9.67 maximum, and 3.97).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5650,6 +5655,47 @@ item):
     plus step 5's `preview.set` round trip sits inside that window, so a
     rise just under 5 s also loses. The fix PR's body answers R19's open
     question with it.
+  **Merged: PR #53 is `49d29ae`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-17 (the three orders, ORDER 2): a squash at
+  2026-10-17T13:07:58Z (parent `df5530d`), pinned to the reviewed head
+  `18a3858`. The merge tree `bf245bf` is identical to `18a3858`'s.
+  **R19 is fixed:** the dress rehearsal's step 8 stages G, untimed, not A1.
+  The fix is test-only.
+  - **The falsification** (in the PR body, the normative machine,
+    2026-10-17). An injection held step 4 until 5.5 s after its take:
+    - the old step 8 failed 26/27 with CI's exact signature;
+    - the new step 8 passed 27/27 under the same injection, and 27/27
+      without it;
+    - there were no voids, every restore was `cmp`-identical, and `tsc`
+      exited 0.
+  - **R19's open question, answered in the body.** The 5000 ms is no gate
+    but A1's fixture duration: step 4 asserts only the 10 s backstop on CI,
+    and 3000 ms on the normative machine. The race runs from A1's take to
+    step 5's take, and step 8 is the first step whose precondition reads A1.
+  - **A finding outside the fix's scope, recorded, not fixed.** Step 11
+    carries the same coupling. At `df5530d` it takes A1 (`:1377`), takes A2
+    (`:1463`) after the recording starts, a 2 s sleep and a marker, then
+    stages A1 again (`:1485`): roughly 4–5 s against A1's 5 s. It is reached
+    only where `record.start` is not refused (on CI the encoder refusal
+    skips the step first). Whether it gets the same treatment is the
+    user's word.
+  - **Before the merge, at the head:** run `39034929811`, read per test.
+    - rust 515/0/4, 30/30 floors.
+    - control-plane npm 179/179, automation 35/35, every e2e floor held.
+    - dress 27/27 with `ok 10` (G), underruns **232**. That is a fresh draw
+      above R12's peak of 230 (the 231 was a rerun sample). It is watched,
+      not triggered: R12's rule (a) wants three consecutive bookends.
+  - **Main's CI at `49d29ae`, the closing record:** run `39035305838` (push),
+    attempt 1, read per test.
+    - rust 515/0/4, 30/30 floors.
+    - control-plane npm 179/179, automation 35/35, every e2e floor held, the
+      refused start raised at 2019 ms.
+    - dress 27/27 with `ok 10` (G), drops 1, underruns 184, rises 995 and
+      960 ms.
+    - **R10 did not fire.** The ceiling holds at 12.09.
+  - **R19 leaves the register,** struck per its own exit condition ("the
+    entry leaves the list when that fix lands and is falsified"), citing
+    the falsification above.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
