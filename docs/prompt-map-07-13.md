@@ -690,6 +690,9 @@ adopt and record).
   | `38994605707`, the failure-path proof, red by design | no tests: a forced `exit 1` after 25 s, straight after clippy | 3.46–4.18 (pre, 3 samples, post) |
   | `38996601613`, PR #49 at `68a8388`, green (511/0/4) | the workspace tests: the test build finished at 02:54:00.37 (`Finished` in 48.37 s); the post line at 02:54:49 | whole step 3.21–4.90 (pre, 10 samples, post). While building: 3.54, 3.21, 3.34, 3.96, 4.77. While the tests ran: 4.66, 4.63, 4.57, 4.90, 4.28, so 4.28–4.90. The R10 test passed at 02:54:26.87, between 4.57 and 4.90 |
   | `38996990687`, main at `ac99d49` (PR #49's merge), green (511/0/4) | the workspace tests: the test build finished at 03:00:12.45 (`Finished` in 45.59 s); the post line at 03:01:00 | whole step 3.54–8.18 (pre, 10 samples, post). While building: 3.76, 3.54, 5.28, 6.67, 8.18. While the tests ran: 7.81, 7.20, 7.07, 6.38, 5.45, so 5.45–7.81. The R10 test passed at 03:00:40.48, between 7.07 and 6.38 |
+  | `39002975513`, PR #50 at `6bf10c7`, green (515/0/4) | the workspace tests: the test build finished at 04:34:25.38 (`Finished` in 43.84 s); the post line at 04:35:19 | whole step 1.81–6.95 (pre, 10 samples, post). While building: 1.89, 1.81, 3.14, 5.06, 6.43. While the tests ran: 6.65, 6.95, 6.16, 6.06, 5.36, so 5.36–6.95. The R10 test passed at 04:34:57.28, between 6.16 and 6.06 |
+  | `39005571035`, PR #50 at `bfd5397` (its head), green (515/0/4) | the workspace tests: the test build finished at 05:16:39.82 (`Finished` in 47.17 s); the post line at 05:17:35 | whole step 2.38–6.69 (pre, 10 samples, post). While building: 2.38, 2.59, 3.64, 5.47, 6.68. While the tests ran: 6.69, 6.18, 6.27, 5.46, 5.89, 5.16, so 5.16–6.69. The R10 test passed at 05:17:11.93, between 6.27 and 5.46 |
+  | `39005941546`, main at `9e6239c` (PR #50's merge), green (515/0/4) | the workspace tests: the test build finished at 05:22:50.24 (`Finished` in 52.41 s); the post line at 05:23:38 | whole step 4.50–**9.67** (pre, 10 samples, post): the pre line read load1 29.00, straight after clippy, the highest yet. While building: 9.67, 8.33, 7.99, 7.86, 7.42, 7.03. While the tests ran: 6.19, 6.07, 5.61, 5.20, then the post line's 4.50, so 4.50–6.19. The R10 test passed at 05:23:17.58, between 6.07 and 5.61 |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -758,7 +761,8 @@ user's amended ruling for Finding R10).
 5. **Each sighting is recorded with its bracketing samples, the envelope
    to date, and the ceiling that applied.**
 
-**The ceiling as it stands, derived from the tree:**
+**The ceiling as it stands, derived from the tree** *(at 3 green runs;
+superseded at 6 by PR #50's merge, below; §2c)*:
 - Green instrumented runs to date: **3**. They are `38994994256`
   (`70712f3`), `38996601613` (`68a8388`) and `38996990687` (`ac99d49`).
   The failure-path proof `38994605707` is not green and ran no tests, so
@@ -776,6 +780,21 @@ runner-fleet or image question, not R10. To date the image is constant
 (`macos-14-arm64` 20260831.0302.1, provisioner 20260828.587, on all three)
 and the runner differs on each (`GitHub Actions 1000003180`, `…3184`,
 `…3186`).
+
+**The ceiling at PR #50's merge** (the envelope rows above extend it):
+**6 green runs** (`70712f3`, `68a8388`, `ac99d49`, `6bf10c7`, `bfd5397`,
+`9e6239c`). The maximum moves to **9.67 per CPU** (load1 29.00 at
+2026-10-17T05:21:57Z, main's merge run, the step's pre line). The margin is
+still 1.5× (fewer than 10 runs). **The ceiling is 1.5 × 9.67 = 14.50 per CPU,
+load1 43.5 on the 3-CPU runner** (it was 12.27). The image is still
+`macos-14-arm64` 20260831.0302.1. **Watch line:** whole-step peaks run
+4.50 → 4.90 → 8.18 → 6.95 → 6.69 → 9.67, on one image and six different
+runners. That is not monotone, but the maximum keeps moving; per the
+ruling, drift is a runner-fleet or image question, not R10.
+
+*(Run `39002620888` at `e6a6e29` is not a row: its rust job failed at
+`cargo fmt --check` before the tests, so it is not a green instrumented
+run.)*
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -4870,6 +4889,34 @@ item):
         - Which of the two is the implementing prompt's to carry is the
           user's word. The row is unaffected: its domains and the transition
           rule do not depend on it.
+          *(Ruled 2026-10-16: (a). The block below; §2c.)*
+      - **The refused start: (a), the user's pick of 2026-10-16.** At the end
+        of the 2000 ms unacknowledged window, the command's claim on belief
+        expires, and belief resolves by the remaining tiers: a fresh report,
+        then stale belief. The alert's raise at the same instant is the
+        announcement: the control plane admits ignorance, the lane says so,
+        and belief stands down together.
+        - **The precision clause, verbatim:** "window expiry ends the belief
+          claim and does nothing else — it is not an acknowledgement,
+          Amendment 4's "the command's own ack" stays exact, and the alert
+          never auto-clears at window end. No engine change, no wire change,
+          no ratified row amended."
+        - **Read together with the ratified order** (the builder's
+          restatement of the two rulings, not new text of the user's): the latest
+          accepted command, operator's or automation's, until its
+          acknowledgement or its window's unacknowledged end, whichever comes
+          first > a fresh engine report that postdates it > stale belief. The
+          window's end is the claim's expiry, not an acknowledgement.
+        - **Option (b), recorded as a named hardening candidate: "engine
+          refusal-acks".** They would converge belief in milliseconds and give
+          the audit lane cause attribution, at the price of a wire change, an
+          engine change, and a §10.1.2 mapping-table amendment. It needs its
+          own spec row, sequenced after work order 2.
+        - **Carried into the implementing prompt's brief, verbatim: the pick
+          and the precision clause above.** No brief exists yet:
+          `agents/prompts/` holds prompts 01–15, and none is spine B's. This
+          block is the carry, and it lands verbatim in the brief when the
+          brief is written.
     - **The gate, at `6bf10c7`** (the PR body has it read per step).
       - **The workspace: three windows, all VOID.** Each ended at or above
         3.0 on the run's own load: 2.38 → 4.16, 2.35 → 3.85, and 1.95 → 3.32.
@@ -5245,6 +5292,42 @@ item):
     - The run's conclusion is success.
   - Spine part A is landed by it. Position 5 stays open: spine part B and
     work order 2 remain.
+  **Merged: PR #50 is `9e6239c`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-16: a squash at 2026-10-17T05:21:05Z (parent
+  `ac99d49`), pinned to the reviewed head `bfd5397`. The merge tree `3867fea` is
+  identical to `bfd5397`'s. SPEC v0.4.8 row 9 is ratified by it; the header's
+  row 9 sentence gains "(merged as `9e6239c`)", as rows 1–8 carry.
+
+  The CI before the merge, at the head, run `39005571035`, read per test (§2b):
+  rust 515/0/4, 30 of 30 floors; control-plane npm 179/179, automation 35/35,
+  every e2e floor held, the refused start raised at 2016 ms; dress 27/27 with
+  `ok 24`, drops 1, underruns 153, watchdog trips 0, rises 1985 and 1979 ms.
+
+  Main's CI at `9e6239c`: run `39005941546` (push), attempt 1, read per test
+  (§2b). Every job succeeded:
+  - **rust** (job `117318329879`, runner `GitHub Actions 1000003199`):
+    `TOTAL: 515 passed, 0 failed, 4 ignored`; 30 of 30 floor lines at or
+    above floor (preflight automation 8/8, `automation_rules` 1/1);
+    0 `test result: FAILED`; `telemetry_tick_wires_the_live_session_counter
+    ... ok`, in the workspace step and in the RTMP floor step.
+  - **control-plane** (job `117318329868`): `npm test` 179/179; automation
+    35/35; effects 2/2. Every e2e floor held: slate-release 4/4, recall 2/2,
+    take-duration 3/3, resync-end 3/3, package-reconcile 4/4, resync-request
+    3/3; show-stop ran 6, exercised 1, skipped 5; operator-signals ran 4,
+    exercised 1, skipped 3, and its refused start raised at 2016 ms.
+  - **dress rehearsal** (job `117318329730`): 27/27 with `ok 24`.
+    DRESS-COUNTS (ci, `9e6239c`): drops 2, underruns 177, fallbackTicks
+    1 (0 outside a watchdog episode), watchdogTrips 1, step4RiseMs 2019,
+    step6RiseMs 4965, all inside the backstops.
+  - **R10 did not fire on main.** No armed sighting is owed. The run extends
+    the envelope (Finding R10's table), and the ceiling moves to 14.50 per CPU.
+  - **State and bookend accepted** (the user's word of 2026-10-16): the ceiling
+    of 14.50 per CPU (six runs, one image; the drift is recorded as the fleet
+    watch line); the rulings landed in `bfd5397` before the merge, with CI green
+    at that head; the `equals` row named and cross-linked; the vocabulary ledger
+    complete; the envelope rows staged.
+  - Spine part B's spec row (SPEC v0.4.8 row 9) is landed by it. Position 5
+    stays open: spine B's implementing work and work order 2 remain.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under

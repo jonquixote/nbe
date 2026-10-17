@@ -51,7 +51,7 @@ the witness ruling of the same day, and until then it is a candidate
 (branch `spine-b-domain-row`, 2026-10-16), before any implementing prompt. It
 is ratified by the user's merge of that PR, on the user's rulings of
 2026-10-16 (the automation transition, and the row's scope), and until then it
-is a candidate.
+is a candidate (merged as `9e6239c`).
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
