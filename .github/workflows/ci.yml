@@ -92,6 +92,7 @@ jobs:
           echo "$!" > "$RUNNER_TEMP/ci-load-sampler.pid" || true
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |
+          echo "R10 failure-path proof: this step fails on purpose (throwaway branch, never merged)"; sleep 25; exit 1
           set -o pipefail
           cargo test --workspace 2>&1 | tee /tmp/rust-test.log
           echo "::group::Rust test summary"
