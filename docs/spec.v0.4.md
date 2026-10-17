@@ -56,7 +56,7 @@ B's belief-row PR (branch `spine-b-belief-row`, 2026-10-17), before any
 implementing prompt. It is ratified by the user's merge of that PR, on the
 user's rulings of 2026-10-16 (the precedence amendment, and the pick of (a))
 and 2026-10-17 (the amended precision clause and the late-acknowledgement
-rule, signed off), and until then it is a candidate.
+rule, signed off), and until then it is a candidate (merged as `c1fe348`).
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
