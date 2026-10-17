@@ -665,11 +665,14 @@ adopt and record).
 - **On the normative machine the quiescence ceiling stands unchanged**: 3.0
   on 12 CPUs.
 - **On CI the ceiling is envelope-relative and per CPU.** A CI sighting
-  counts toward reopening when load1/ncpu during the sighting's window sits
-  within the observed green envelope for the rust test step.
-  - **Interim ceiling: 5.0 per CPU** (load1 15 on the current 3-CPU
+  counts toward reopening when load1/ncpu during the sighting's window ~~sits
+  within the observed green envelope for the rust test step~~ *(amended
+  2026-10-16: a sighting at or below the derived ceiling counts, below the
+  envelope included; the amended ruling, below)*.
+  - ~~**Interim ceiling: 5.0 per CPU** (load1 15 on the current 3-CPU
     runner), set from the first two instrumented runs (green envelope
-    ≈2.5–4.5 per CPU).
+    ≈2.5–4.5 per CPU).~~ *Struck by the amended ruling of 2026-10-16,
+    below: the ceiling is derived (§2c).*
   - A sighting above the ceiling is attributed to environment and does not
     count.
   - Every instrumented run extends the envelope. Each sighting is recorded
@@ -685,11 +688,32 @@ adopt and record).
   |---|---|---|
   | `38994994256`, PR #49 at `70712f3`, green (511/0/4) | the workspace tests: the test build finished at 02:29:04.41 (`Finished` in 43.92 s), the tests ran from 02:29:04.49 to the post line at 02:29:56 | whole step 1.25–4.50 (pre, 10 samples, post). While building: 1.25, 1.31, 2.50, 3.75, 4.15. While the tests ran: 4.50, 4.23, 4.40, 4.36, 3.74, so 3.74–4.50. The R10 test passed at 02:29:35.13, between 4.40 and 4.36 |
   | `38994605707`, the failure-path proof, red by design | no tests: a forced `exit 1` after 25 s, straight after clippy | 3.46–4.18 (pre, 3 samples, post) |
+  | `38996601613`, PR #49 at `68a8388`, green (511/0/4) | the workspace tests: the test build finished at 02:54:00.37 (`Finished` in 48.37 s); the post line at 02:54:49 | whole step 3.21–4.90 (pre, 10 samples, post). While building: 3.54, 3.21, 3.34, 3.96, 4.77. While the tests ran: 4.66, 4.63, 4.57, 4.90, 4.28, so 4.28–4.90. The R10 test passed at 02:54:26.87, between 4.57 and 4.90 |
+  | `38996990687`, main at `ac99d49` (PR #49's merge), green (511/0/4) | the workspace tests: the test build finished at 03:00:12.45 (`Finished` in 45.59 s); the post line at 03:01:00 | whole step 3.54–8.18 (pre, 10 samples, post). While building: 3.76, 3.54, 5.28, 6.67, 8.18. While the tests ran: 7.81, 7.20, 7.07, 6.38, 5.45, so 5.45–7.81. The R10 test passed at 03:00:40.48, between 7.07 and 6.38 |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
-  its readings sit inside the same band. Every reading to date is under
-  the interim ceiling of 5.0.
+  its readings sit inside the same band. ~~Every reading to date is under
+  the interim ceiling of 5.0.~~ *(§2c, 2026-10-16: true at `68a8388`;
+  main's merge run went past it, below.)*
+
+  **The envelope to date (green runs, while the tests ran): 3.74–7.81 per
+  CPU across the three green runs (whole steps 1.25–8.18).** The PR head
+  run's peak, 4.90 per CPU (load1 14.71 at 02:54:32), sat 0.10 under the
+  interim ceiling of 5.0. Main's merge run then went past it: load1 24.53
+  (8.18 per CPU) at 03:00:07 while building, and 5.45–7.81 while the tests
+  ran, every one of those five samples above 5.0, with the R10 test green
+  inside them.
+- ~~**Put to the user, not decided here: the green envelope now crosses the
+  interim ceiling.**~~ **Ruled: the ceiling moves with the envelope** (the
+  user's amended ruling of 2026-10-16, below; §2c). The ruling counts a CI
+  sighting when load1/ncpu in its window sits within the observed green
+  envelope, and attributes a
+  sighting above the 5.0 ceiling to environment. On `ac99d49` a green
+  workspace step ran at 5.45–7.81 per CPU, and the R10 test passed at about
+  7. Read as written, a sighting at that load would be both inside the
+  green envelope and above the ceiling. Whether the interim ceiling moves
+  with the envelope is the user's ruling.
 - **Approved with the ruling (its items 2 and 3).**
   - **The macOS substitution is approved as recorded.** `sysctl`
     (`vm.loadavg`, `hw.ncpu`, `hw.memsize`, `vm.swapusage`) and `vm_stat`
@@ -707,7 +731,85 @@ adopt and record).
   Extending the capture is a separate decision (the order). The soak's
   dedicated R10 count (the register row) stays owed: this PR is
   workflow-only. **Accepted as filed** (the user's ruling of 2026-10-16,
-  item 3; below).
+  item 3; ~~below~~ above: the ruling's block was inserted ahead of this
+  bullet. §2c, 2026-10-16).
+
+**The CI ceiling, amended 2026-10-16: it moves with the envelope** (the
+user's amended ruling for Finding R10).
+1. **The fixed interim (5.0 per CPU) is struck.** It was calibrated on two
+   instrumented runs, and the third run's green envelope (5.45–7.81 per CPU,
+   peak 8.18) already exceeds it. Why: ceilings pinned to tiny baselines
+   break. The envelope is the baseline.
+2. **The ceiling is derived and recomputed at each sighting:** 1.5× the
+   maximum per-CPU load observed across instrumented green runs of the
+   rust test step. Once the envelope holds 10 or more green runs, the
+   margin tightens to 1.25×. A sighting at or below the ceiling counts
+   toward reopening; a sighting above it is attributed to environment and
+   does not count.
+3. **A sighting below the envelope counts.** The ceiling is the only
+   exclusion. Low load cannot exculpate; it strengthens the signal.
+4. **The justification datum.** Runs `38996601613` (`68a8388`) and
+   `38996990687` (`ac99d49`) executed a byte-identical tree (`67249a1`, 0
+   diff lines), yet per-CPU load while the tests ran moved from 4.28–4.90
+   to 5.45–7.81 (1.59× peak to peak, 1.82× across the two ranges). Runner
+   variance alone swings the environment nearly 2× on identical code. An
+   absolute ceiling cannot represent "typical", and an envelope-relative
+   one does by construction.
+5. **Each sighting is recorded with its bracketing samples, the envelope
+   to date, and the ceiling that applied.**
+
+**The ceiling as it stands, derived from the tree:**
+- Green instrumented runs to date: **3**. They are `38994994256`
+  (`70712f3`), `38996601613` (`68a8388`) and `38996990687` (`ac99d49`).
+  The failure-path proof `38994605707` is not green and ran no tests, so
+  it is not counted. The margin is 1.5× (fewer than 10 runs).
+- The maximum is taken over the whole test step, the reading the ruling's
+  own "peak 8.18" uses. It is **8.18 per CPU** (load1 24.53 at
+  2026-10-17T03:00:07Z, `ac99d49`).
+- **The ceiling is 1.5 × 8.18 = 12.27 per CPU: load1 36.8 on the current
+  3-CPU runner.** Had the maximum been read only while the tests ran
+  (7.81), it would be 11.72.
+
+**Watch line, recorded, no action.** Green peaks so far run 4.50 → 4.90 →
+8.18 (whole step). If the envelope keeps climbing, that drift is a
+runner-fleet or image question, not R10. To date the image is constant
+(`macos-14-arm64` 20260831.0302.1, provisioner 20260828.587, on all three)
+and the runner differs on each (`GitHub Actions 1000003180`, `…3184`,
+`…3186`).
+
+**Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
+on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
+2026-10-17T02:58:35Z (parent `be7a5d8`), pinned to the reviewed head
+`68a8388`. The merge tree `67249a1` is identical to `68a8388`'s. The CI
+before the merge, at the head, run `38996601613`, read per test (§2b): rust
+511/0/4, 30 of 30 floors; control-plane npm 176/176, every e2e floor held,
+the refused start raised at 2008 ms; dress 27/27 with `ok 24`, drops 1,
+underruns 196, watchdog trips 0. The ruling commit `68a8388` was handled per
+the docs-only precedent: 0 code lines since `70712f3`, CI read at the new
+head.
+
+Main's CI at `ac99d49`: run `38996990687` (push), attempt 1, read per test
+(§2b). Every job succeeded:
+- **rust** (job `117291616981`, runner `GitHub Actions 1000003186`):
+  `TOTAL: 511 passed, 0 failed, 4 ignored`, 30 of 30 floor lines at or
+  above floor, 0 `test result: FAILED`, and
+  `telemetry_tick_wires_the_live_session_counter ... ok`, both in the
+  workspace step and in the RTMP floor step.
+- **control-plane** (job `117291617130`): `npm test` 176/176; automation
+  32/32; effects 2/2. Every e2e floor held: slate-release 4/4, recall 2/2,
+  take-duration 3/3, resync-end 3/3, package-reconcile 4/4, resync-request
+  3/3; show-stop ran 6, exercised 1, skipped 5; operator-signals ran 4,
+  exercised 1, skipped 3, and its refused start raised at 2020 ms.
+- **dress rehearsal** (job `117291616878`): 27/27 with `ok 24`.
+  DRESS-COUNTS (ci, `ac99d49`): drops 3, underruns 202, fallbackTicks 0,
+  watchdogTrips 0, step4RiseMs 1974, step6RiseMs 3024, all inside the
+  backstops.
+- **R10 did not fire on main.** There is no armed sighting to record. The
+  run's samples extend the envelope (the table above).
+- **State and bookend accepted** (the user's word with the amended ruling):
+  #49 merged as `ac99d49`, with tree identity to the reviewed head; main is
+  green per test at run `38996990687`; R10 was silent, and no armed sighting
+  is owed.
 
 ### ~~Finding R11 — the stream thread's 500 ms teardown wait expired twice, once under the ceiling (recorded 2026-09-25, PR #33)~~ ~~RESOLVED by `bb7d4a2` (2026-09-26, Prompt 11 WU0)~~ ~~**REOPENED 2026-10-09** by post-fix sighting 5 (the user's rule of 2026-10-06)~~ **RESOLVED BY MEASUREMENT 2026-10-11** (the user's ruling (b) on PR #41, merged as `a6fc4d8`)
 
@@ -4528,7 +4630,68 @@ item):
     - B's spec row must answer the automation transition: whether
       live→held should fire `stateChange` rules, and that `to: "idle"` rules
       would stop matching. B also strikes the control plane's dead
-      `"reconnecting"` value (`state.ts:16`).
+      `"reconnecting"` value (~~`state.ts:16`~~ `state.ts:17`, one line
+      down since spine A's `Alert` import; §2c). *(The automation
+      transition is answered by the user's ruling of 2026-10-16, below.)*
+  - **The automation transition, ruled** (the user's ruling of 2026-10-16,
+    spine B; it answers the refinement above).
+    1. `stateChange` fires on the actual belief transition with the actual
+       values, exactly once: live→held fires
+       `stateChange{from: "live", to: "held"}`. It does not fire to
+       `"idle"`.
+    2. Rules written `to: "idle"` not matching a hold is the correct
+       semantics, not a regression. Idle is terminal: nothing armed,
+       nothing resumes. Held is intentional suspension: resume expected.
+       "Stream down" automations must not fire on an operator's hold;
+       "left the air" automations must not miss a real stop.
+    3. The "left the air" intent is served by from-matching: `from: "live"`
+       catches live→idle, live→held, and any future departure. If the
+       trigger schema supports only `to:` today, the design record adds
+       `from:` as part of this work: the vocabulary ships complete, not as a
+       later alias.
+    4. No compat mapping, no double-firing, no held-fires-idle alias. The
+       compat burden is zero: the automation runtime is unshipped (roadmap
+       §1), so no rule depends on a collapse that never existed.
+    5. §13 gets the belief vocabulary enumerated (idle, live, held, …) as
+       the normative matcher domain: a spec row per the promotion path,
+       before any implementing prompt.
+    - **The tree, read against the ruling** (the tree wins; recorded, not
+      changed):
+      - **Item 3 is moot** (the user's word of 2026-10-16, ordering the spec
+        row): `from:` already ships. §13.2's params table (normative since
+        v0.4.7) gives `stateChange` `{ field, itemRef?, from?, to? }`. Preflight admits the key
+        (`crates/nbe-core/src/automation.rs:313`), and the control plane
+        parses it (`automation.ts:173`) and matches it by equality on the
+        event's `from` (`:353`). So `from: "live"` already catches every
+        departure from live, today's live→idle included, and spine B adds
+        no key. Its new transitions arrive through the same matcher.
+      - **What is missing is item 5's domain.** Neither preflight
+        (`automation.rs:312–332`, keys and `field` only) nor the control
+        plane (`automation.ts:173–174`, copied as given) checks a `from` or
+        `to` value. So a rule naming `"held"` loads today and can never
+        fire, and a misspelled value loads the same way. §13.2's own
+        principle for `audioLevel` is "a rule that can never fire is not
+        accepted and left inert". The enumerated domain is what lets both
+        readers refuse such a rule.
+      - **The relay's "roadmap §1" citation, corrected** (the user's word of
+        2026-10-16): it named an off-tree document. The one roadmap document
+        in the tree, `docs/move-parity-and-virtual-set-roadmap.md`, has as
+        its §1 "The core finding", on Move-transition parity. The substance
+        was confirmed from the tree: the repository has no tag and no
+        release, so no automation rule exists outside the tree. The runtime
+        is built (`automation.ts`; `automation.test.ts` 32/32 on every CI
+        run; AC-25's measurement), but unreleased. Relay misses are recorded,
+        not smoothed.
+      - **Item 5's vocabulary, per field, in the tree today.**
+        - `StreamState` is `idle | live | reconnecting` (`state.ts:17`).
+          `reconnecting` is the dead value B strikes.
+        - `RecordState` is `idle | recording` (`state.ts:18`). The record
+          belief's on-air value is `recording`, not `live`.
+        - So the spec row enumerates each field's domain separately.
+        - §13.2's `stateChange` fields also include `showState`,
+          `viewItem`, `previewItem`, `automationHold`, `fallbackActive` and
+          `itemState`. The ruling names the belief vocabulary; whether the
+          row enumerates those too is the row's to state.
   - **The witness ruling (the user's ruling of 2026-10-15, on a stop before
     the code).** Three findings from the tree:
     1. A refused or skipped output command is never acknowledged.
