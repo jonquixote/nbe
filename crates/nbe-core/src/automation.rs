@@ -577,7 +577,12 @@ mod tests {
         let fields: &[(&str, &[serde_json::Value], &[serde_json::Value])] = &[
             (
                 "showState",
-                &[json!("UNLOADED"), json!("LOADED"), json!("RUNNING"), json!("STOPPED")],
+                &[
+                    json!("UNLOADED"),
+                    json!("LOADED"),
+                    json!("RUNNING"),
+                    json!("STOPPED"),
+                ],
                 &[json!("Running"), json!("PAUSED"), json!(null)],
             ),
             (

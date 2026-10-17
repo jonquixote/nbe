@@ -65,7 +65,9 @@ fn every_fixture_rule_gets_its_verdict_from_the_rust_reading() {
                 );
                 if let Some(reason) = case.get("reason").and_then(|r| r.as_str()) {
                     if !msg.contains(reason) {
-                        wrong.push(format!("{id}: the refusal must say {reason:?}; got {msg:?}"));
+                        wrong.push(format!(
+                            "{id}: the refusal must say {reason:?}; got {msg:?}"
+                        ));
                     }
                 }
             }
