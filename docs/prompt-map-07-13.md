@@ -698,6 +698,10 @@ adopt and record).
   | `39025809315`, main at `c1fe348` (PR #51's merge), green (515/0/4) | the workspace tests: the test build finished at 10:42:32.22 (`Finished` in 51.53 s); the post line at 10:43:24 | whole step 2.31–6.50 (pre, 11 samples, post). While building: 2.55, 2.31, 3.11, 4.39, 5.56, 6.50. While the tests ran: 6.07, 5.32, 4.53, 3.96, 3.42, then the post line's 3.20, so 3.20–6.07. The R10 test passed at 10:43:02.79, between 4.53 and 3.96 |
   | `39026282575`, PR #52 at `4403643`, green (515/0/4) | the workspace tests: the test build finished at 10:49:53.74 (`Finished` in 45.58 s); the post line at 10:50:42 | whole step 5.07–8.55 (pre, 10 samples, post). While building: 6.28, 5.52, 5.87, 6.83, 8.55. While the tests ran: 8.29, 7.92, 6.73, 6.01, 5.51, then the post line's 5.07, so 5.07–8.29. The R10 test passed at 10:50:20.98, between 6.73 and 6.01. **The 10th green run** |
   | `39031255945`, PR #52 at `cfa251b`, rust green (515/0/4); the dress job failed at step 8 (queue position 5 records it; green on rerun) | the workspace tests: the test build finished at 12:08:21.93 (`Finished` in 41.30 s); the post line at 12:09:15 | whole step 1.67–4.96 (pre, 10 samples, post). While building: 1.67, 2.04, 2.80, 4.16, 4.96. While the tests ran: 4.28, 4.30, 3.84, 3.93, 3.41, then the post line's 3.19, so 3.19–4.30. The R10 test passed at 12:08:52.76, between 3.84 and 3.93. The 11th: the rust test step was green, and the ruling counts that step's green runs |
+  | `39032353226`, PR #52 at `fb154ad`, green (515/0/4) | the test build finished at 12:25:20.84; the post line at 12:26:08 | whole step 3.10–6.62. While the tests ran: 6.62, 6.30, 5.94, 5.63, then the post line's 5.10, so 5.10–6.62. The R10 test passed at 12:25:46.90, between 6.30 and 5.94. The 12th |
+  | `39032691149`, PR #52 at `75e5ce7`, green (515/0/4) | the test build finished at 12:30:41.94; the post line at 12:31:39 | whole step 3.07–6.65. While the tests ran: 6.65, 6.54, 6.17, 5.32, 5.57, 4.91, then the post line's 4.71, so 4.71–6.65. The R10 test passed at 12:31:15.26, between 5.32 and 5.57. The 13th |
+  | `39033038784`, PR #52 at `79d256e` (its head), rust green (515/0/4) on attempt 1; the dress failed R19 there and was green on its job-scoped rerun | the test build finished at 12:35:54.84; the post line at 12:36:47 | whole step 3.74–7.59. While the tests ran: 7.59, 7.07, 7.02, 6.33, 5.94, then the post line's 5.52, so 5.52–7.59. The R10 test passed at 12:36:25.38, between 7.02 and 6.33. The 14th |
+  | `39033994454`, main at `df5530d` (PR #52's merge), green (515/0/4) | the test build finished at 12:49:55.83; the post line at 12:50:47 | whole step 2.64–4.80. While the tests ran: 4.53, 4.80, 4.19, 4.65, 4.25, then the post line's 3.87, so 3.87–4.80. The R10 test passed at 12:50:25.72, between 4.19 and 4.65. The 15th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -807,14 +811,18 @@ No new maximum (the peaks were 5.43, 5.50 and 6.50), so the ceiling **holds at
 green instrumented run is the 10th, and the margin tightens to 1.25× there**
 (the amended ruling's item 2). With the maximum still 9.67, that ceiling is
 **12.09 per CPU**, load1 36.2 on the 3-CPU runner; it is recomputed with that
-run's own samples.
+run's own samples. The image is still `macos-14-arm64` 20260831.0302.1, and
+every run had a different runner.
 
 **The ceiling at 10 green runs: 12.09 per CPU** (recorded 2026-10-17). The
 10th run, `39026282575`, peaked at 8.55, so the maximum is still 9.67 and the
 ceiling is **1.25 × 9.67 = 12.09 per CPU** (load1 36.2). It held at the 11th
 (`39031255945`, peak 4.96). In the user's words: "Ceiling 12.09 recorded; the
-downward move is the mechanism working." The image is still `macos-14-arm64` 20260831.0302.1, and
-every run had a different runner.
+downward move is the mechanism working."
+
+**The ceiling at PR #52's merge: holds at 12.09 per CPU** (15 green runs;
+the peaks since the 11th were 6.62, 6.65, 7.59 and 4.80, all under the 9.67
+maximum).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5612,6 +5620,36 @@ item):
     for the answer: the engine refuses `stream.stop` unless its stream is
     live (`directive.rs`, `on_stream_stop`), so once the engine has quiesced
     no output command can produce the real acknowledgement.
+  **Merged: PR #52 is `df5530d`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-17: a squash at 2026-10-17T12:48:28Z (parent
+  `c1fe348`), pinned to the reviewed head `79d256e`. The merge tree `32a7f0e`
+  is identical to `79d256e`'s. The brief (`agents/prompts/r17-spine-b-belief.md`)
+  is landed, approved; it dispatches after R19's fix lands (the sequence).
+  - **ORDER 1.1, the handling used: the docs-only precedent.** The head's run
+    `39033038784` failed the dress at step 8 on attempt 1 (R19's second
+    sighting, below). Since `75e5ce7`'s run `39032691149`, green per test
+    (rust 515/0/4, 30/30 floors; npm 179/179; dress 27/27), the head carried
+    0 code lines (records and the brief only). The dress job was rerun
+    job-scoped and explained, and was green on attempt 2 (27/27, `ok 10`,
+    `step4RiseMs` 992); rust 515/0/4 and npm 179/179 on attempt 1.
+  - **Main's CI at `df5530d`, the closing record:** run `39033994454` (push),
+    attempt 1, read per test (§2b). Every job succeeded.
+    - **rust:** `TOTAL: 515 passed, 0 failed, 4 ignored`; 30 of 30 floors;
+      `telemetry_tick_wires_the_live_session_counter ... ok`.
+    - **control-plane:** `npm test` 179/179; automation 35/35; effects 2/2;
+      every e2e floor held; the refused start raised at 2022 ms.
+    - **dress:** 27/27 with `ok 24`; DRESS-COUNTS (ci, `df5530d`): drops 1,
+      underruns 213, watchdog trips 0, rises 1989 and 3005 ms.
+    - **R10 did not fire.** The ceiling holds at 12.09 per CPU.
+  - **R19's second sighting**, at `79d256e` (docs only, not the change): the
+    same signature, `preview.set must succeed; got
+    {"code":"E_FORBIDDEN_STATE","message":"item A1 is DONE"}`, with
+    `step4RiseMs` **4993**, under A1's 5000 ms. The race is therefore not
+    "the rise exceeds 5 s". A1's 5 s end runs on the engine's clock from its
+    take, against step 5's take of A2. Step 4's rise (polled on 1 s ticks)
+    plus step 5's `preview.set` round trip sits inside that window, so a
+    rise just under 5 s also loses. The fix PR's body answers R19's open
+    question with it.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
