@@ -46,7 +46,8 @@ merge of that PR, on the user's ruling of 2026-10-14 (the split), and until
 then it is a candidate (merged as `461a30b`). **Row 8** was drafted in R17
 spine part A's PR (branch `operator-signal-lane`, 2026-10-15). It is ratified
 by the user's merge of that PR, on the user's design ruling of 2026-10-15 and
-the witness ruling of the same day, and until then it is a candidate.
+the witness ruling of the same day, and until then it is a candidate
+(merged as `be7a5d8`).
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
