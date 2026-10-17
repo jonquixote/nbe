@@ -630,13 +630,20 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
   assert.equal(droppedNow(), before, "taking a 12 fps source must not drop frames");
 });
 
+// Step 8 rehearses `preview.set` mid-arc: the operator stages the next item
+// while another is on air (A3, from the take before), and the staging is seen
+// on the wire. It stages G, untimed and never taken by any step, so it cannot
+// race an item's completion. It staged A1 until R19: A1 is timed (5 s), and
+// when step 4's rise and step 5's preview outlast it, A1 ends on air and stays
+// DONE (step 5's take resets only a LIVE or PLAYING item), so this step's
+// `preview.set A1` raced A1's end, not the behaviour it rehearses.
 test("[RI-1] step 8: preview.set is visible in telemetry", async () => {
-  await ok("preview.set", { itemRef: "A1" });
+  await ok("preview.set", { itemRef: "G" });
   const tick = await untilTelemetry(
     "previewItem to appear",
-    (t) => (t["data"] as Record<string, unknown>)["previewItem"] === "A1",
+    (t) => (t["data"] as Record<string, unknown>)["previewItem"] === "G",
   );
-  assert.equal((tick["data"] as Record<string, unknown>)["previewItem"], "A1");
+  assert.equal((tick["data"] as Record<string, unknown>)["previewItem"], "G");
 });
 
 // --- Stream extension (Prompt 10 repair round) -------------------------------
