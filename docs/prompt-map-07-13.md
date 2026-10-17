@@ -5539,10 +5539,27 @@ item):
         backstop, but step 8 depends on A1 not ending, and nothing asserts
         that.
       - **The rerun** (only the failed job, disclosed): attempt 2's dress job `117394593348` passed, 27/27 with `ok 10`. Its `step4RiseMs` was 2979, under A1's 5000 ms, as the mechanism predicts. Its DRESS-COUNTS (ci, `cfa251b`, attempt 2): drops 0, underruns **231**. That is the first at-gate reading above R12's previous peak of 230. R12's trend rule (a) needs three consecutive bookends above the peak, so it is watched, not opened.**
-      - **Put to the user:** whether to file this as a register entry (R19:
+      - ~~**Put to the user:** whether to file this as a register entry (R19:
         dress step 8 coupled to A1's duration through step 4's rise), and
         whether the fix is the test's (say, step 8 previews an untimed item,
-        or resets A1) rather than the product's.
+        or resets A1) rather than the product's.~~ **FILED as R19** (the
+        user's word of 2026-10-17; §2c), with its row in
+        `docs/soak-protocol.md` §5. "Dress step 8 races A1's completion when
+        step-4's rise exceeds A1's duration. Test-design flaw, not a product
+        defect."
+        - **The mechanism, recorded:** both rise numbers, 6025 ms (attempt 1)
+          and 2979 ms (attempt 2); A1's `DONE` persisting through step 5's
+          take (`state.ts:291`).
+        - **No load data:** the dress job carries no load logging, since
+          R10's `[ci-load]` capture is the rust job's only. "Why slow" had no
+          instrumented answer.
+        - **The fix is its own test-only PR:** step 8 previews an untimed
+          item, with a comment naming what the step rehearses.
+          Falsification: inject a slow step-4 rise and show that the new
+          step 8 passes where the old one raced. It lands before the
+          implementing prompt's dispatch.
+        - **R12: watched, not triggered** (the user's word). The 231 came on
+          a rerun: a selected sample, not a fresh draw.
     - **D2a, ANSWERED 2026-10-17.** The `outputs.held` clearing rule, the
       user's text verbatim (folded into the brief's Appendix A as
       §10.1.2's new clearing rule). The brief is now dispatch-ready;
@@ -5563,8 +5580,17 @@ item):
         `record.stop` unless that output is live (`directive.rs`).
       - (i) needs the late `show.stop` acknowledgement tracked, since
         `held()` drops it today (`alerts.ts:298`).
-      - (iv) writes no clear row (row 8's restart semantics).
+      - (iv) writes no clear row (row 8's restart semantics). *Accepted
+        per row 8 (the user's word of 2026-10-17).*
       - The withdrawn option (iii) was the builder's.
+      - **Path (i)'s tracking is required brief content** (the user's word
+        of 2026-10-17). `held()` drops the pending entry at `alerts.ts:298`,
+        so the late-acknowledgement test fails without the tracking. That
+        is its falsification. The anti-clear set stands as ruled.
+  - **The sequence (the user's word of 2026-10-17):**
+    1. #52 merges on the user's word.
+    2. R19's test-only fix PR follows.
+    3. The implementing prompt dispatches after R19 lands.
       - Today's heal on outputs inactive (`alerts.ts:267`) is replaced.
     - **D5's placement, the builder's reading.** Row 11's candidate is
       Appendix A of the brief, reviewed before dispatch. It lands in the

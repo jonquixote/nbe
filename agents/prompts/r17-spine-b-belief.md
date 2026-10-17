@@ -20,6 +20,7 @@
 - D4's divergence from `itemEvent`, as intended;
 - row 11 reviewed as Appendix A now, landing and ratifying on the implementing PR, with its text as an early commit and ratification-on-merge stated in the PR's body.
 - ~~One question is still open (§2, D2a). It must be answered before dispatch, because the work items depend on it.~~ **D2a was answered 2026-10-17. Its clearing rule is in Appendix A, verbatim (§2c). The brief is dispatch-ready; dispatch is the user's word.**
+- **The sequence (the user's word of 2026-10-17):** #52 merges on the user's word; R19's test-only fix PR follows (the dress's step 8 previews an untimed item); this prompt dispatches only after R19 lands.
 - Appendix A holds SPEC row 11's candidate text. It is reviewed before dispatch (D5), lands in the spec with the implementing PR, and is ratified on that merge.
 
 You are a senior engineer on `nbe`, working in TypeScript in the control plane. R17 is "the control plane reports a refused stream as live" (`docs/soak-protocol.md` §5; `docs/prompt-map-07-13.md`, queue position 5).
@@ -159,8 +160,8 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
 
     *Read against the tree (recorded, not changed):*
     - **The premise holds.** The engine refuses `stream.stop` unless its stream is live, and `record.stop` unless it is recording (`directive.rs`, `on_stream_stop` and `on_record_stop`). A refusal is never acknowledged, so the acknowledgement of either stop witnesses an actual stop.
-    - **(i) needs tracking.** The lane today drops `show.stop`'s pending entry when it raises the held alert (`held()`, `showStopPending = null`, `alerts.ts:298`), so a late `show.stop` acknowledgement is not seen. The implementing work tracks it.
-    - **(iv) writes no clear row.** A restart empties the lane but writes no clear row: row 8's restart semantics say an episode that outlived the process keeps its raise row and gets none. That is "as for the whole lane".
+    - **(i) needs tracking: required content** (the user's word of 2026-10-17). The lane today drops `show.stop`'s pending entry when it raises the held alert (`held()`, `showStopPending = null`, `alerts.ts:298`), so a late `show.stop` acknowledgement is not seen. The implementing work tracks it, and the late-acknowledgement test fails without that tracking, which is its falsification.
+    - **(iv) writes no clear row.** A restart empties the lane but writes no clear row: row 8's restart semantics say an episode that outlived the process keeps its raise row and gets none. That is "as for the whole lane". *Accepted per row 8. The anti-clear set stands as ruled (the user's word of 2026-10-17).*
     - **Option (iii), withdrawn,** was the builder's, in the question put on 2026-10-17.
     - **Today's heal is replaced.** The alert currently clears when the belief reads outputs inactive (`alerts.ts:267`); this rule replaces that.
 
@@ -220,6 +221,7 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
 3. **Claims and windows.** Model the per-output claim beside the lane's pending entry, without changing the lane's alerting (row 8 is ratified):
    - the claim ends on the acknowledgement (§10.1.2's (b) proof) or at window end;
    - it passes to a newer command at acceptance;
+   - **`show.stop`'s pending entry survives the hold.** `held()` drops it today (`alerts.ts:298`), and D2a's clearing path (i) needs it to see a late `show.stop` acknowledgement. This is required;
    - a late acknowledgement never revives it.
 4. **The correction.** With no live claim on the stream, a fresh report postdating the anchor whose token disagrees with the belief (D1) lands as D4. Belief, lane and audit move together. (a)'s `stream.divergence` clears by its own rule once the pair is consistent.
 5. **Automation.** The transition rule holds end to end: a `to: "idle"` rule is silent on a hold; a `from: "live"` rule fires once on live→held and once on a correction live→idle; nothing fires twice.
@@ -239,7 +241,7 @@ Name every test; give each guard its own falsification. Every falsified test car
 - **D3, exhaustiveness:** each consumer's `never` default is falsified by adding a fourth `StreamState` value, which must fail `tsc` at every consumer. `stream.start` refuses `held` with the state named; `stream.stop` accepts `held` and refuses `idle`.
 - **D2:** `held` lasts until the next fresh report postdating the expiry, then corrects to D1's value.
 - **D2a, the clearing set, one guard per member:**
-  - (i) `show.stop`'s own late acknowledgement clears the held alert;
+  - (i) `show.stop`'s own late acknowledgement clears the held alert. *Falsification: drop the pending entry at `held()` again (today's `alerts.ts:298`), and this test must fail;*
   - (ii) a later stop's acknowledgement at or above (the operator's `stream.stop` or `record.stop` from `held`) clears it;
   - (iii) an accepted `show.load` or `show.unload` clears it, with the clear row naming the cause;
   - (iv) after a restart, the lane is empty.
