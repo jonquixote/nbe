@@ -410,6 +410,9 @@ test("claim: window expiry ends it; only a report that postdates the expiry corr
   const r = rig({ apply: true });
   r.state.streamState = "live";
   r.signals.onAccepted("stream.start", 2);
+  // After the registration's anchor, so only the expiry's anchor stands
+  // between this report and a correction.
+  await sleep(2);
   r.report("none"); // fresh, but before the expiry
   r.signals.evaluate();
   await sleep(WINDOW + 20); // the window ends unacknowledged
@@ -434,7 +437,9 @@ test("claim: a newer command for the output takes the claim at its acceptance; t
   r.signals.onApplied(3, false);
   await after(r, "closed");
   assert.equal(r.corrections.length, 0, "consistent after the stop's acknowledgement");
-  assert.deepEqual(r.ids(), [], "the superseded start raised nothing");
+  await sleep(WINDOW + 20); // past the superseded start's own window
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "the superseded start never expires: its window passes and raises nothing");
   r.signals.close();
 });
 
@@ -472,6 +477,12 @@ test("engine.notReporting owning the window's end: the claim expires, and with n
   assert.equal(r.state.streamState, "live", "no fresh report: the stale belief stands");
   assert.equal(r.corrections.length, 0);
   assert.ok(!r.ids().includes(ALERT.streamUnacknowledged.id), "(b) does not raise: not-reporting owns it");
+  await after(r, "none"); // the engine reports again
+  assert.deepEqual(
+    r.corrections.map((c) => [c.from, c.to]),
+    [["live", "idle"]],
+    "the claim expired under not-reporting: the next fresh report rules",
+  );
   r.signals.close();
 });
 
@@ -483,6 +494,9 @@ test("held gives way on the precision clause's schedule: the next fresh report a
   r.state.recordState = "recording";
   r.signals.onApplied(1, true);
   r.signals.onAccepted("show.stop", 2);
+  // After the resync's anchor, so only the hold's anchor stands between this
+  // report and a correction.
+  await sleep(2);
   r.report("closed"); // before the expiry
   r.signals.evaluate();
   r.state.streamState = "held"; // show.stop's unacknowledged path
@@ -540,6 +554,11 @@ test("D2a (iii): an accepted show.load or show.unload clears it, the cause named
     r.signals.onAccepted(command, 7);
     assert.deepEqual(r.ids(), []);
     assert.equal(r.rows.at(-1)!.cause, `cleared by ${command} (stateVersion 7)`);
+    // The belief is still `held`, and nothing owns (a) now: `held` beside
+    // `closed` contradicts nothing, and the report corrects it.
+    await after(r, "closed");
+    assert.deepEqual(r.ids(), [], "held is no divergence");
+    assert.equal(r.state.streamState, "idle");
     r.signals.close();
   }
 });
