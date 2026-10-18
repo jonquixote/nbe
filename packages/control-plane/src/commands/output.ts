@@ -59,9 +59,8 @@ export function outputHandlers(reg: CommandRegistry, _deps: DispatchDeps): void 
       switch (ctx.state.streamState) {
         case "live":
         case "held":
+        case "idle": // FALSIFICATION (D6 idle refusal): stream.stop accepts idle
           break;
-        case "idle":
-          throw new CpError("E_FORBIDDEN_STATE", "stream is idle");
         default:
           return unreachable(ctx.state.streamState);
       }
