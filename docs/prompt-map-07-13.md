@@ -6387,6 +6387,46 @@ item):
     | M5, a miss draws black or blocks | the miss policy removed | a new miss test with the fix: a stalled worker yields the last presented frame and a counted miss, within the frame deadline |
     | M6, the end ignored | a clip past its true length keeps holding instead of dropping | a new end test with the fix: frame 60 of `counter_60.mp4` draws nothing |
     | M7, fixture blinded | `counter_60.mp4` made static or short | the fixture-integrity guard (falsified above, both clauses) |
+  - **RATIFIED with four amendments** (the user's word of 2026-10-18). The
+    design record above stands, amended as follows:
+    1. **Row 12 carries a residency clause.** A clip's resident frames (its
+       head plus its window) enter §12.11.1's package demand, and preflight
+       computes them, so spec and code agree when the row ratifies.
+    2. **An audio scope statement.** R20 is a picture defect. A clip's audio
+       is decoded whole at `show.load` (§8.4) and is unchanged. The
+       read-ahead governs picture only, and after it picture and sound
+       agree for the clip's full length.
+    3. **The rung-2 interaction is recorded, and a shrink policy is
+       deferred.** Rung 2 sheds an off-air clip's head and window as it
+       sheds an off-air loop's ring. The read-ahead stops, and a re-acquire
+       re-uploads the head and re-primes the window. The View's clip is
+       never shed. Shrinking K under pressure is deferred, not in this row.
+    4. **K is in frames, and YUV is noted as byte savings only.** K is 2 ×
+       GOP frames (60 at house format). A YUV ring would cut each frame's
+       bytes (7.91 to 2.97 MiB at 1080p) and changes nothing else. It is not
+       a dependency of this fix.
+  - **Implementation dispatches under the ruling's seven constraints:**
+    1. the falsification tests and the fix land on the fix PR, whose body
+       quotes the red-today evidence (`.git/nbe-staged/r20-pr-body-evidence.md`)
+       and then the green at its head;
+    2. the comment at `video.rs:263–265` is struck or made true per the
+       record: row 12 extends §12.8, and the comment cites the extended rule
+       or goes;
+    3. `readAheadMiss` holds the last frame, is counted on the telemetry
+       tick, never blocks and never draws black, and the clip's end comes
+       from its metadata;
+    4. M1–M7 each die to their mapped test. A hold-last-frame-as-fix mutant
+       must fail the stronger form. Restores are `cmp`-verified (and
+       rebuilt, for Rust), and CI-only legs follow #47's throwaway pattern;
+    5. the dress's clips render full length for the first time, so the named
+       floor lines are watched, and any moved floor is disclosed with its
+       cause, never silently re-baselined;
+    6. row 12 lands as an early commit, and the PR body states that it
+       ratifies on this PR's merge;
+    7. a two-key independent pass comes before any merge word: "engine work
+       gets what spine B got".
+  - **Housekeeping:** `.git/nbe-staged/after-pr56-records.md` was consumed on
+    landing (`6beb8d5`) and removed, per convention.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
