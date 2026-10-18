@@ -219,7 +219,7 @@ test("D3 and §5.9.5: show.stop unacknowledged makes a live stream held, raises 
   assert.equal((await send(admin, "show.stop", { quiesceOutputs: true })).status, "ok");
   assert.equal(state.streamState, "held");
   assert.equal(state.recordState, "recording", "§13.2's exception 2: no held for the record");
-  assert.ok(idsOf(state.alerts).includes("outputs.held"));
+  assert.ok(idsOf(state.alerts).includes("outputs.held"), "the held alert raises");
 });
 
 // --- D4: a correction is a detection transaction ------------------------------------

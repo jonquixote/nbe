@@ -471,7 +471,7 @@ test("engine.notReporting owning the window's end: the claim expires, and with n
   r.signals.onAccepted("stream.start", 2);
   r.stale();
   r.signals.evaluate();
-  assert.ok(r.ids().includes(ALERT.engineNotReporting.id));
+  assert.ok(r.ids().includes(ALERT.engineNotReporting.id), "the engine is not reporting");
   await sleep(WINDOW + 20);
   r.signals.evaluate();
   assert.equal(r.state.streamState, "live", "no fresh report: the stale belief stands");
@@ -540,7 +540,7 @@ test("D2a (ii): a later stop's own acknowledgement at or above clears it; a late
   assert.deepEqual(r.ids().filter((i) => i === ALERT.outputsHeld.id), [ALERT.outputsHeld.id], "processed is not witnessed");
   r.signals.onAccepted("stream.stop", 5);
   r.signals.onApplied(5, false); // the stop's own acknowledgement
-  assert.ok(!r.ids().includes(ALERT.outputsHeld.id));
+  assert.ok(!r.ids().includes(ALERT.outputsHeld.id), "the stop's own acknowledgement clears it");
   assert.equal(
     r.rows.filter((x) => x.id === ALERT.outputsHeld.id).at(-1)!.cause,
     "stream.stop acknowledged (stateVersion 5): the stop is witnessed",
