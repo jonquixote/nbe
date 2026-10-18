@@ -57,12 +57,15 @@ export const RECORD_STATES = ["idle", "recording"] as const;
 export const ITEM_STATES = ["READY", "ARMED", "LIVE", "PLAYING", "DONE", "MISSING", "ERROR"] as const;
 
 // The enum audit (Standards §1.3), at compile time: each domain is exactly
-// its state type, so a value added to either alone fails `tsc`. The stream's
-// one exception is `held`: the domain carries it before the belief can take
-// it, until spine B's implementing work adds it to `StreamState`.
+// its state type, so a value added to either alone fails `tsc`. ~~The
+// stream's one exception is `held`: the domain carries it before the belief
+// can take it, until spine B's implementing work adds it to `StreamState`.~~
+// (§2c, v0.4.8 row 11: `StreamState` now carries `held`, so the stream's
+// domain is its type exactly, with no exception.) This is one layer of D3's
+// enforcement; the other is every belief consumer's `never`-checked switch.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const showAudit: Same<(typeof SHOW_STATES)[number], ShowState> = true;
-const streamAudit: Same<(typeof STREAM_STATES)[number], StreamState | "held"> = true;
+const streamAudit: Same<(typeof STREAM_STATES)[number], StreamState> = true;
 const recordAudit: Same<(typeof RECORD_STATES)[number], RecordState> = true;
 const itemAudit: Same<(typeof ITEM_STATES)[number], ItemState> = true;
 void [showAudit, streamAudit, recordAudit, itemAudit];

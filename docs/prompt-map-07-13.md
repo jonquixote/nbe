@@ -702,6 +702,8 @@ adopt and record).
   | `39032691149`, PR #52 at `75e5ce7`, green (515/0/4) | the test build finished at 12:30:41.94; the post line at 12:31:39 | whole step 3.07–6.65. While the tests ran: 6.65, 6.54, 6.17, 5.32, 5.57, 4.91, then the post line's 4.71, so 4.71–6.65. The R10 test passed at 12:31:15.26, between 5.32 and 5.57. The 13th |
   | `39033038784`, PR #52 at `79d256e` (its head), rust green (515/0/4) on attempt 1; the dress failed R19 there and was green on its job-scoped rerun | the test build finished at 12:35:54.84; the post line at 12:36:47 | whole step 3.74–7.59. While the tests ran: 7.59, 7.07, 7.02, 6.33, 5.94, then the post line's 5.52, so 5.52–7.59. The R10 test passed at 12:36:25.38, between 7.02 and 6.33. The 14th |
   | `39033994454`, main at `df5530d` (PR #52's merge), green (515/0/4) | the test build finished at 12:49:55.83; the post line at 12:50:47 | whole step 2.64–4.80. While the tests ran: 4.53, 4.80, 4.19, 4.65, 4.25, then the post line's 3.87, so 3.87–4.80. The R10 test passed at 12:50:25.72, between 4.19 and 4.65. The 15th |
+  | `39034929811`, PR #53 at `18a3858`, green (515/0/4) | the test build finished at 13:04:10.71; the post line at 13:05:00 | whole step 5.78–9.52. While building: 7.45, 6.60, 6.96, 7.85, 9.52, 9.32. While the tests ran: 8.73, 7.99, 6.82, 6.17, then the post line's 5.78, so 5.78–8.73. The R10 test passed at 13:04:38.28, between 7.99 and 6.82. The 16th |
+  | `39035305838`, main at `49d29ae` (PR #53's merge), green (515/0/4) | the test build finished at 13:09:23.86; the post line at 13:10:16 | whole step 3.12–3.97. While the tests ran: 3.80, 3.35, 3.45, 3.12, 3.33, then the post line's 3.34, so 3.12–3.80. The R10 test passed at 13:09:54.25, between 3.12 and 3.33. The 17th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -823,6 +825,9 @@ downward move is the mechanism working."
 **The ceiling at PR #52's merge: holds at 12.09 per CPU** (15 green runs;
 the peaks since the 11th were 6.62, 6.65, 7.59 and 4.80, all under the 9.67
 maximum).
+
+**The ceiling at PR #53's merge: holds at 12.09 per CPU** (17 green runs;
+the peaks were 9.52, the nearest yet to the 9.67 maximum, and 3.97).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5650,6 +5655,347 @@ item):
     plus step 5's `preview.set` round trip sits inside that window, so a
     rise just under 5 s also loses. The fix PR's body answers R19's open
     question with it.
+  **Merged: PR #53 is `49d29ae`** (the bookend, the standing pattern of §2c),
+  on the user's word of 2026-10-17 (the three orders, ORDER 2): a squash at
+  2026-10-17T13:07:58Z (parent `df5530d`), pinned to the reviewed head
+  `18a3858`. The merge tree `bf245bf` is identical to `18a3858`'s.
+  **R19 is fixed:** the dress rehearsal's step 8 stages G, untimed, not A1.
+  The fix is test-only.
+  - **The falsification** (in the PR body, the normative machine,
+    2026-10-17). An injection held step 4 until 5.5 s after its take:
+    - the old step 8 failed 26/27 with CI's exact signature;
+    - the new step 8 passed 27/27 under the same injection, and 27/27
+      without it;
+    - there were no voids, every restore was `cmp`-identical, and `tsc`
+      exited 0.
+  - **R19's open question, answered in the body.** The 5000 ms is no gate
+    but A1's fixture duration: step 4 asserts only the 10 s backstop on CI,
+    and 3000 ms on the normative machine. The race runs from A1's take to
+    step 5's take, and step 8 is the first step whose precondition reads A1.
+  - **A finding outside the fix's scope, recorded, not fixed.** Step 11
+    carries the same coupling. At `df5530d` it takes A1 (`:1377`), takes A2
+    (`:1463`) after the recording starts, a 2 s sleep and a marker, then
+    stages A1 again (`:1485`): roughly 4–5 s against A1's 5 s. It is reached
+    only where `record.start` is not refused (on CI the encoder refusal
+    skips the step first). Whether it gets the same treatment is the
+    user's word.
+  - **Before the merge, at the head:** run `39034929811`, read per test.
+    - rust 515/0/4, 30/30 floors.
+    - control-plane npm 179/179, automation 35/35, every e2e floor held.
+    - dress 27/27 with `ok 10` (G), underruns **232**. That is a fresh draw
+      above R12's peak of 230 (the 231 was a rerun sample). It is watched,
+      not triggered: R12's rule (a) wants three consecutive bookends.
+  - **Main's CI at `49d29ae`, the closing record:** run `39035305838` (push),
+    attempt 1, read per test.
+    - rust 515/0/4, 30/30 floors.
+    - control-plane npm 179/179, automation 35/35, every e2e floor held, the
+      refused start raised at 2019 ms.
+    - dress 27/27 with `ok 10` (G), drops 1, underruns 184, rises 995 and
+      960 ms.
+    - **R10 did not fire.** The ceiling holds at 12.09.
+  - **R19 leaves the register,** struck per its own exit condition ("the
+    entry leaves the list when that fix lands and is falsified"), citing
+    the falsification above.
+
+  **Spine part B's implementation: the design, written first** (ORDER 3,
+  the user's word of 2026-10-17: "After ORDER 2 lands, branch the
+  implementing PR off main and begin per the brief"; branch
+  `r17-spine-b-impl`, off `49d29ae`). The brief is
+  `agents/prompts/r17-spine-b-belief.md`; ORDER 3 named it
+  `r17-spine-b-brief.md`, a name the tree does not have. Row 11's text
+  landed as an early commit (`2264e56`).
+  - **`StreamState` gains `held`** (`state.ts:17`), and #50's audit pins the
+    domain to the type with no exception (`streamAudit`). `streamActive()`
+    (`state.ts`) is the one exhaustive switch over the stream belief that
+    `outputsActive()` reads, so `held` is output-active (D3).
+  - **The consumer list (D3)**, from a full read of `streamState` in the
+    control plane's source:
+    - **Value-branching, each an exhaustive `switch` with an `unreachable`
+      default:** `streamActive()` (read by `outputsActive()`, and through it
+      by `server.ts`'s held raise and `show.stop`'s `outputsWereActive`);
+      `stream.start` (refuses `live` and, by name, `held`); `stream.stop`
+      (accepts `live` and `held`, refuses `idle` by name); `show.stop`'s
+      unacknowledged path (`live` → `held`); the lane's (a) divergence
+      (`held` contradicts nothing: the held alert announces it and a fresh
+      report corrects it).
+    - **Pass-through, not value-branching:** the status snapshot
+      (`state.ts:552`), the tick (`telemetry.ts:138`), automation's snapshot
+      (`automation.ts:350`), and two reason strings in the lane.
+  - **The claim and its expiry (§10.1.3).** A stream claim is live while the
+    lane's pending `stream.*` entry is unprocessed and unexpired, or while
+    `show.stop` is inside its window. `windowElapsed` marks `expiredAt`
+    before any other effect. For the stream, it moves the anchor to the
+    expiry, so only a report that postdates it may correct; then (b) raises
+    where it does, so the clause holds. `held()`, which runs when
+    `show.stop`'s wait ends unacknowledged, moves the anchor the same way.
+    A superseded entry and a confirmed one never reach the expiry.
+  - **The correction (§10.1.4).** `OperatorSignals.evaluate()` now runs (a)
+    as before (`divergence()`, row 8 unchanged), then `correction()`. With
+    no live claim and a fresh report postdating the anchor, a mapped token
+    that differs from the belief calls the server's `correct`.
+    - The server lands it like `itemEvent`: it writes the belief, calls
+      `state.bump()` and `persistence.onDirty()`, and writes one audit row.
+    - The row is kind `command`, `command: "engine:report"`,
+      `event: "belief.corrected"`, with `detail` `{ field, from, to, report,
+      reportAgeMs }`.
+    - There is no `stateChange` frame and no `automation.fire` (D4).
+  - **The held alert's clearing (D2a).**
+    - The old heal on outputs inactive is struck (§2c in `alerts.ts`).
+    - **(i)** `heldStopVersion` survives the hold, and its exact
+      acknowledgement clears the alert.
+    - **(ii)** A later stop's own exact acknowledgement (`stream.stop`,
+      `record.stop` or `show.stop`) at or above it clears the alert.
+    - **(iii)** An accepted `show.load` or `show.unload` clears it in
+      `onAccepted`, with the cause named. Dispatch's `onSent` fires for every
+      accepted command (`dispatch.ts:400`), with or without a render node.
+    - **(iv)** A restart empties the lane.
+    - A correction clears nothing.
+  - **Findings so far, recorded, not changed:**
+    1. **The correction pre-empts (a)'s held announcement.** A contradiction
+       with no claim live (an engine restart dropping a live stream, say)
+       still raises `stream.divergence` in the evaluation that sees it. The
+       correction then moves the belief, and the next evaluation (250 ms
+       later) clears the alert as "consistent again". So row 8's critical
+       alert becomes a one-evaluation episode, and the trail is its two
+       edge rows and `belief.corrected`. Whether a correction against the
+       last command's intent should hold an alert until the operator's next
+       command is the user's word.
+    2. **"Held" has a third meaning in the spec:** the show clock's `HELD`
+       ("operator freeze, emergency", ~~§16's~~ §11.4's clock-state table *(§2c, 2026-10-18: §11.4 is the section the tree has; the table has stood since v0.1)*), beside
+       §13.5's automation hold and the output's `held`.
+    3. **A `stream.stop` from `held` after the engine quiesced is refused
+       engine-side** (`directive.rs`, `on_stream_stop`), so (b) raises
+       "stream.stop unacknowledged" at its window's end. The belief reads
+       `idle` from the accept, and the held alert stands until the show's
+       lifecycle, as D2a rules. Consistent, and noisy.
+
+  **Spine part B's implementation: the build, and every guard falsified**
+  (ORDER 3, branch `r17-spine-b-impl`).
+  - **Commits, in the discipline's order** (green before falsify, falsify
+    before push):
+    - `3a3ddfc`: the code, the tests, and the belief suite's two CI floors
+      (ran ≥ 4, exercised ≥ 4). It went green before any mutant ran.
+    - `1e5bfe4`: five unit guards hardened. The battery found them vacuous
+      (B17, B18, B20, B21 and B22 below).
+    - `98d4ba0`: messages on three bare `assert.ok` calls. B13b found that a
+      failing bare call hangs node for 22 minutes (below).
+  - **D1–D6 as built:** as the design record above states, with no
+    departure. The correction lands through the server's `correct` (D4).
+    The held path writes `held` on `show.stop`'s own command path (D3).
+    D2a's four paths each have their own guard (B1–B5), and the anti-clear
+    set has one per member (B6–B9).
+  - **Findings 4–7, recorded, not changed:**
+    4. **The brief contradicts D4 on automation.** §5's work item 5 and
+       §6's automation bullet say a `from: "live"` rule "fires once on a
+       correction live→idle". D4 (ratified), §6's own D4 bullet ("a
+       `from: "live"` rule stays silent on a refused start's correction")
+       and §7 ("Fire an automation `stateChange` on a correction") say it
+       fires nothing. Built per D4. B29a guards it. The brief's two lines
+       are the user's to strike.
+    5. **Placement.** §6 names `automation.test.ts` for the transition
+       tests. They are in the new `belief.test.ts`, on a real server and
+       the real command path, with automation's own audit rows as the
+       witness, because the rules' `marker.add` actions are refused once
+       the show is `STOPPED`. `automation.test.ts` is unchanged, and its
+       floor (35) holds.
+    6. **Two freshness guards in series.** The correction's own freshness
+       check is shadowed by `evaluate()`'s not-reporting return, and the
+       reverse also holds. Each mutant alone survives as an equivalent
+       mutant (B13: 0 of 43 fail). Both together are killed (B13b). The
+       check stays, as defence in depth.
+    7. **A bare `assert.ok` hangs on failure.** Under B13b the
+       not-reporting test's first, bare `assert.ok` failed. Node then
+       rebuilt the expression from tsx's transformed single-line source
+       (`alerts.test.ts:5:14011`). That ran for 1 313 s at 100 % CPU, the
+       process sampled in `ErrorUtils::Construct` and `RegExpSplit`, before
+       it printed `false == true`. It reproduces in isolation: a 60 s
+       bound timed out. The run's window was voided on its own load.
+       `98d4ba0` gives each new bare call a message. Row 8's bare calls
+       are untouched (scope).
+  - **D6, falsified on CI** (the PR #47 pattern). The refused start runs
+    only where the engine refuses `stream.start`, and CI's macos-14 has no
+    hardware encoder, so CI is the honest witness. There were two throwaway
+    branches on `3a3ddfc`, as draft PRs. Only the dress job ran: the rust
+    and control-plane jobs were `if: false` on those branches only. Each
+    mutant was killed by step 9's own assertion, in the refused branch (the
+    log reads `SKIP stream step: engine refused stream.start`), with 26
+    passed and 1 failed:
+    - **#54, `cc65ac6`, run `39101919002`** (dress job `117599769553`):
+      the correction lands nothing (`correction()` returns at entry,
+      conditionally, so `tsc` stays green). Result: `not ok 11 - [P10] step
+      9` / `the belief corrects to idle within 4000 ms of the refused start
+      (§10.1.4)` / `'live' !== 'idle'` (`dress-rehearsal.test.ts:931`).
+    - **#55, `380ebf9`, run `39101921648`** (dress job `117599776044`):
+      `stream.stop` accepts `idle`. The bounded wait passed. Result:
+      `not ok 11` / `D3's precondition: from idle there is nothing to stop`,
+      actual `['ok', undefined]`, expected
+      `['error', { code: 'E_FORBIDDEN_STATE', message: 'stream is idle' }]`.
+    - Both PRs were closed unmerged (05:53:15Z and 05:53:18Z). Their
+      branches were deleted locally and on `origin`.
+  - **The local battery** (normative machine, 2026-10-17 22:52–23:54, on AC
+    under `caffeinate`). Each mutant was applied from an exact match,
+    `tsc --noEmit` was run on it (exit 0 for all but B23), the named suites
+    were run under the load rule, and the file was restored from its saved
+    copy, checked `cmp`-identical and `git`-clean. "Unit" is
+    `alerts.test.ts` + `alerts-server.test.ts` + `belief.test.ts`, 43
+    tests. The first round ran on `3a3ddfc`'s tests. The rows marked † ran
+    again on `1e5bfe4` after the hardening, and B13b on `98d4ba0`. The
+    hardening only added assertions and moved two reports past an earlier
+    anchor.
+
+    | # | Guard | Mutation | What failed |
+    |---|---|---|---|
+    | B1 | D2a (i): the held stop's own late ack clears it | path (i)'s clear never fires | unit 2/43: `D2a (i): the held stop's own acknowledgement, however late, clears it`; `held: … only a real acknowledgement clears it` |
+    | B2 | D2a (i)'s tracking (the brief's required falsification) | `held()` drops the stop's version again (`heldStopVersion = null`, today's `alerts.ts:298` behaviour) | unit 4/43: `D2a (i)`, `held: … only a real acknowledgement`, `D2a (ii)`, and server `held: …` / `a later stop's own acknowledgement clears it (path ii)` (path (ii) needs the tracked version too) |
+    | B3 | D2a (ii): a later stop's own ack at or above | path (ii)'s clear never fires | unit 2/43: `D2a (ii)`; server `held: …` (`a later stop's own acknowledgement clears it (path ii)`) |
+    | B4 | D2a (iii): an accepted `show.load`/`show.unload` | its clear removed | unit 1/43: `D2a (iii)`; e2e held leg (rerun †, the first window void): `show.unload clears it` |
+    | B5 | D2a (iv): a restart empties the lane | the lane persisted (`alerts` in the snapshot, restored) | unit 1/43: server `held, path (iv)` / `the restarted lane is empty` |
+    | B6 | anti-clear: a correction | the correction clears `outputs.held` | unit 4/43: the anti-clear test at `a correction moves the belief and clears no alert`; `held gives way …` / `the correction clears no alert`; `held: … only a real acknowledgement`; `§13.2 …` (`and clears no alert`); e2e held leg: `the held alert stands: persistence is the witness working` |
+    | B7 | anti-clear: a transient `none` | a fresh `none` clears it | unit 1/43: the anti-clear test at `a transient none does not clear it` |
+    | B8 | anti-clear: a refused stop | a stop's acceptance clears it | unit 3/43: the anti-clear test at `a refused stop, never acknowledged, does not clear it`; `D2a (ii)` (`processed is not witnessed`); server `held: …`, its clear row's cause no longer `record.stop acknowledged …: the stop is witnessed` |
+    | B9 | path (ii) needs the stop's exact ack | `entry.exact` dropped | unit 2/43: the anti-clear test at `persistence is the witness working`; `D2a (ii)` |
+    | B10 | the struck heal stays struck | the heal on outputs inactive restored | unit 2/43: `held: … only a real acknowledgement` (`the belief alone does not clear the held alert`); `§13.2 …` (`and clears no alert`) |
+    | B11 | D1's mapping row by row | `reconnecting` maps to `idle` | unit 1/43 (rerun †, the first window void): `D1: …` / `reconnecting beside a idle belief` |
+    | B12 | the anchor: a predating report never corrects | the postdate check removed | unit 3/43: `D1: a stale report … predates the anchor` (`a report that does not postdate the anchor`); `claim: window expiry …`; `held gives way …` (`a report that predates the expiry does not rule`) |
+    | B13 | freshness (one guard) | the correction reads the raw report | **survived, 0/43: an equivalent mutant** (finding 6) |
+    | B13b | freshness (both guards) | that, and `evaluate()`'s not-reporting return removed | unit 4/43 (rerun on `98d4ba0`, the first window void, finding 7): `D1: …` / `a stale report`; `engine.notReporting owning …` / `the engine is not reporting`; row 8's `(b) the engine going not-reporting clears the alert` and `the flicker guard` |
+    | B14 | claim end: its own ack | the claim survives its acknowledgement | unit 3/43: `claim: … until its own acknowledgement` (`a report after the acknowledgement rules`); `claim: a later acknowledgement …`; `§13.2 …` |
+    | B15 | claim end: a later ack (Amendment 4) | only an exact ack ends it | unit 1/43: `claim: a later acknowledgement ends it too` |
+    | B16 | claim end: window expiry | the claim survives its expiry | unit 4/43: `claim: window expiry …` (`the next report rules`); `late-ack rule …`; `D4 …`; server `an unacknowledged stream.start raises …` (`row 11: the expired claim gives way to the fresh report`) |
+    | B17 † | the expiry moves the anchor | that move removed | first round **survived** (vacuous: the report shared the registration's millisecond). Hardened: unit 1/43, `claim: window expiry …` / `a report that predates the expiry does not rule` |
+    | B18 † | claim end: supersession (the superseded never expires) | the superseded entry keeps its timer, and the guard is gone | first round **survived** (vacuous: the test ended inside the start's window). Hardened: unit 1/43, `claim: a newer command …` / `the superseded start never expires: its window passes and raises nothing` |
+    | B19 | the late-ack rule: inert to belief | a late exact ack reclaims the belief | unit 1/43: `late-ack rule …` / `the dead claim cannot reclaim the belief` |
+    | B20 † | `engine.notReporting` owning the window's end: the claim still expires | the not-reporting return moved above the expiry | first round **survived** (vacuous: reports never resumed). Hardened: unit 1/43, `engine.notReporting owning …` / `the claim expired under not-reporting: the next fresh report rules` |
+    | B21 † | the hold moves the anchor | `held()`'s anchor move removed | first round **survived** (vacuous: as B17). Hardened: unit 1/43, `held gives way …` / `a report that predates the expiry does not rule` |
+    | B22 † | (a): `held` contradicts nothing | `held` beside `closed` is divergent | first round **survived** (vacuous: the held alert owns (a) while it stands). Hardened: unit 1/43, `D2a (iii)` / `held is no divergence` |
+    | B23 | D3: every `never` default | a fourth `StreamState` value, `"paused"` | `tsc` exit 2, six errors, one per consumer: `alerts.ts(379,21)`, `commands/output.ts(46,30)` and `(66,30)`, `commands/show.ts(187,29)`, `state.ts(40,26)`: `Argument of type '"paused"' is not assignable to parameter of type 'never'`; and #50's audit, `automation.ts(68,7)`: `Type 'true' is not assignable to type 'false'` |
+    | B25 | D3: `stream.start` refuses `held` by name | `held` accepted | unit 1/43: `D3: stream.start refuses held by name …` |
+    | B26 | D3: `stream.stop` accepts `held` | `held` refused | unit 1/43: `D3 …` / `stream.stop is the operator's way out of a hold` |
+    | B27 | D3: `held` is output-active | `streamActive("held")` false | unit 2/43: `D3 …` / `held is output-active`; `§13.2 …` |
+    | B28 | §5.9.5: the hold on the command's path | an unacknowledged `show.stop` leaves `live` | unit 2/43: `D3 and §5.9.5 …`; `§13.2 …` (`live→held, once each`); e2e held leg / `§5.9.5's limbo, on the command's path`; show-stop-version held leg (rerun †, the first window void): `the held leg` |
+    | B31 | no alias of `held` to `idle` | the hold writes `idle` | unit 2/43: `D3 and §5.9.5 …`; `§13.2 …` (`live→held, once each; to:"idle" does not match a hold`); e2e held leg / `§5.9.5's limbo, on the command's path` |
+    | B29a | D4: no automation on a correction | the correction fires `stateChanges` as `itemEvent` does | unit 2/43: `D4 …` (`one bump`: a rule's `marker.add` landed); `§13.2 …` / `the correction held→idle fires nothing` |
+    | B29b | D4: no `stateChange` frame | the correction broadcasts one | unit 1/43: `D4 …` / `no stateChange frame: §5.4.1 is one per accepted command` |
+    | B30 | D4: one bump | two bumps | unit 1/43: `D4 …` / `one bump` |
+    | D6-W | the dress's bounded wait (CI) | the correction lands nothing | #54 above |
+    | D6-R | the dress's idle refusal (CI) | `stream.stop` accepts `idle` | #55 above |
+
+    (There is no B24. Its planned mutant, a dropped `case`, is the same
+    `tsc` failure as B23's at one consumer.)
+  - **Voids, each named with its cause.** The rule is a 1-min load ≥ 3.0
+    at either end of a timed window. Each void was followed by a
+    job-scoped rerun of that step alone:
+    - B4's e2e (22:57:56–22:58:22, 2.39 → 3.88). The rerun ran
+      23:40:19–23:40:45 (2.40 → 2.09) and was killed.
+    - B11's unit (23:01:36–23:01:39, 2.29 → 3.39). The rerun ran
+      23:40:49–23:40:52 (2.08 → 2.08) and was killed.
+    - B28's show-stop-version e2e (23:08:30–23:09:44, 2.32 → 3.49). The
+      rerun ran 23:41:27–23:42:39 (2.32 → 2.25) and was killed.
+    - B13b's unit (23:14:12–23:36:08, 2.39 → 3.63). The mutant's own
+      22-minute spin caused this one (finding 7). The rerun on `98d4ba0`
+      ran 23:53:25–23:53:28 (2.24 → 2.46) and was killed.
+    - The other three were ambient. The machine's top processes were
+      iTerm2, WindowServer, CleanMyMac's monitor and `opencode`.
+    - The voided runs had already failed the same way their reruns did.
+      They are not counted as evidence.
+  - **`npm test`: three voids, cause not isolated.**
+    - The voided runs, all 197/197:
+      - 23:48:13–23:48:21 (2.42 → 5.38);
+      - 23:51:16–23:51:23 (2.39 → 5.05), a job-scoped rerun of the first;
+      - the gate's, 23:56:43–23:56:50 (2.47 → 5.94).
+    - Each started under 2.5, and the 1-min load rose by about 2.6–3.5
+      within its own 7–8 s.
+    - Earlier tonight the same suite ended at 2.53 (22:45:53) and 2.65
+      (23:12:56).
+    - A diagnostic followed, declared beforehand as not evidence: it started
+      at 2.65, outside the start rule. Sampled each second, it peaked at 16
+      `node` processes, the suite's ~29 files in parallel, and the load went
+      2.65 → 2.40 with no rise.
+    - So the suite's parallelism is real, but it does not by itself make
+      the rise. I cannot attribute the rise further. The top processes were
+      iTerm2, WindowServer and `opencode`, with no job of mine besides the
+      suite.
+    - No rerun is counted. The local `npm test` evidence is the clean
+      windows of 22:45 and 23:12 (on `3a3ddfc` and `1e5bfe4`'s tests) plus
+      these voided-but-green runs, and CI's control-plane job is the
+      load-independent read.
+  - **The gate** (normative machine, 2026-10-17 23:53 – 2026-10-18 00:06, at
+    `98d4ba0`, on AC under `caffeinate`, with no sleep, wake or battery
+    event). No Rust source changed: `git diff main...HEAD -- crates
+    Cargo.toml Cargo.lock` is empty. The two builds only confirm the
+    binaries are current, and the builds and `tsc` are untimed.
+
+    | Step | Window | Load (start → end) | Result |
+    |---|---|---|---|
+    | build (release, debug); `tsc` | 23:53:46–23:54:28 | untimed | exit 0 |
+    | `npm test` | 23:56:43–23:56:50 | 2.47 → 5.94, **VOID** | 197/197 |
+    | automation | 00:01:36–00:01:39 | 2.40 → 2.40 | 35/35 |
+    | effects | 00:01:39–00:01:40 | 2.40 → 2.45 | 2/2 |
+    | belief | 00:01:40–00:01:42 | 2.45 → 2.45 | 4/4 |
+    | e2e slate-release | 00:01:42–00:01:55 | 2.45 → 2.27 | 4/4 |
+    | e2e recall | 00:01:55–00:02:08 | 2.27 → 2.45 | 2/2 |
+    | e2e take-duration | 00:02:08–00:02:13 | 2.45 → 2.42 | 3/3 |
+    | e2e resync-end | 00:02:13–00:02:27 | 2.42 → 2.25 | 3/3 |
+    | e2e package-reconcile | 00:02:27–00:02:41 | 2.25 → 2.21 | 4/4 |
+    | e2e show-stop-version | 00:02:41–00:03:55 | 2.21 → 2.86 | 6/6 |
+    | e2e resync-request | 00:04:26–00:04:52 | 2.40 → 2.07 | 3/3 |
+    | e2e operator-signals | 00:04:52–00:05:15 | 2.07 → 1.99 | 3 pass, 1 skip (the refused start: this machine has the encoder) |
+    | dress | 00:05:15–00:06:10 | 1.99 → 2.29 | 27/27, `PATH step 9: the stream exercised`; drops 0, underruns 0, rises 1028 and 968 ms |
+
+  - **Belief, lane and audit on the real engine, per mapping row** (the
+    gate's runs). The refused start's row comes from CI, the one seam
+    where the engine refuses. `reconnecting` is unit-only: no leg makes
+    the real engine redial.
+
+    | Leg | Report token | Belief | Lane | Audit |
+    |---|---|---|---|---|
+    | lost stop (`stream.stop` dropped at the socket) | `live` | `idle` → `live` | `command.unacknowledged.stream` stands, its reason "reads the stream live and the control plane believes it idle" | `belief.corrected` idle→live, report age 204 ms |
+    | restart (engine killed under a live stream) | `none` | `live` → `idle` | `stream.divergence` raised, then cleared "consistent again: believed idle, reported none" (finding 1) | `belief.corrected` live→idle, 184 ms |
+    | held (a real finalize failure) | `closed` | `held` → `idle` | `outputs.held` stands, through a refused `stream.stop` ("stream is idle"), until `show.unload` clears it ("cleared by show.unload (stateVersion 10)"). After that `command.unacknowledged.record` stands, because the engine refused `record.stop` (finding 3's record twin) | `belief.corrected` held→idle, 206 ms |
+    | show-stop-version held leg | `closed` | `held` on `show.stop`'s own frame → `idle`; the record stays `recording` until the heal | the held alert | `show.stop` at v9, the correction at v10, `view.fallback` at v11 (acked), `record.stop` at v12 (refused) |
+    | refused start (CI) | `none` | `live` → `idle` | (b) stands | *from the PR's CI run* |
+
+  - **The correction's latency** (window end → the next fresh report → the
+    belief), from the server-stamped audit: the expiry's alert row to the
+    `belief.corrected` row. It is measured, not asserted (R9).
+    - The gate's run: lost stop **583 ms**, held **560 ms**.
+    - The run before it (22:46): 960 ms and 548 ms.
+    - The engine reports every 1000 ms (`main.rs:32`), and the evaluator
+      runs every 250 ms (`server.ts:271`), so the latency is bounded by
+      about one report interval plus one evaluation.
+    - The refused start (CI) is in the PR's CI run.
+  - **The user's rulings on PR #56's six findings (2026-10-18).** The
+    numbers are the PR body's. The records' numbers are in brackets.
+    1. **[4] Both brief lines are struck.** D4 governs: corrections fire no
+       automation. The lines are §5's work item 5 ("and once on a
+       correction live→idle") and §6's automation bullet ("and once on a
+       correction"). They were struck §2c in the brief, with the reason
+       recorded in place (this commit).
+    2. **[1] One-evaluation episodes are correct.** The row pair is the
+       witness: `stream.divergence`'s raise and clear rows, beside
+       `belief.corrected`. **A standing lost-intent witness is a named
+       candidate for the next design record, not this PR.** That would be an
+       alert that holds while the belief stands corrected against the last
+       command's intent.
+    3. **[3] Consistent, and kept.** Every command's outcome is witnessed.
+       Grouping the noise belongs to the operator surface.
+    4. **[2] Held (clock) joins the ledger.** Unqualified "held" means the
+       output belief's value, and the other two meanings are always
+       qualified: Automation hold (§13.5's "held") and Held (clock) (§11.4's
+       `HELD`). A collision count of three is recorded as a known hazard.
+       In `VOCABULARY.md` (this commit):
+       - Held (clock) is added;
+       - Held (output) and Automation hold carry the qualification rule;
+       - Held (output)'s "no writer" is struck §2c for its writer, row 11;
+       - Belief correction (§10.1.4, row 11) is added under rule 5 ("when in
+         doubt, add the term").
+    5. **[5] The placement is accepted.** A pointer comment in
+       `automation.test.ts`'s field-domain section names where the
+       transition tests live (`belief.test.ts`) and what each suite tests.
+       The deviation from §6's "`automation.test.ts`" is recorded here.
+    6. **The relay miss is recorded.** ORDER 3 named
+       `r17-spine-b-brief.md`, and the tree's filename,
+       `r17-spine-b-belief.md`, governs.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under

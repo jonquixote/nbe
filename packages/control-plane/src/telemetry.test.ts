@@ -58,11 +58,13 @@ function engineFrame(streamBufferMs: number): Record<string, unknown> {
 // belief takes once spine B's implementing work lands.)*
 // ---------------------------------------------------------------------------
 
-test("stream state tokens are stable: idle, live", () => {
+// (§2c, v0.4.8 row 11: this test's name read "idle, live". `held` is now a
+// belief the control plane takes, so it is a wire token on the tick too.)
+test("stream state tokens are stable: idle, live, held", () => {
   const state = new ControlPlaneState();
   assert.equal(state.streamState, "idle", "a fresh control plane commands idle");
 
-  for (const token of ["idle", "live"] as const) {
+  for (const token of ["idle", "live", "held"] as const) {
     state.streamState = token;
     const tick = buildTick(state, newWorldTelemetry(), Date.now());
     assert.equal(

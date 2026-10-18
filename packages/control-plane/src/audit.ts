@@ -37,6 +37,10 @@ export interface AuditRecord {
    *   `command: "show.resync"` (`resync.viewItemEnd`, `resync.handshakeFailed`,
    *   `resync.requestFailed`: SPEC v0.4.8 row 7, a failed re-resync on the
    *   engine's request, with `detail.cause` `"snapshot"` or `"send"`).
+   * - a belief correction under kind `command`, with
+   *   `command: "engine:report"` (`belief.corrected`: SPEC v0.4.8 row 11,
+   *   §10.1.4, a detection transaction with `detail` `{ field, from, to,
+   *   report, reportAgeMs }`).
    *
    * An engine item event carries none: it is named in `command` instead
    * (`engine:end`). (§2c, PR #39's two-key pass: this said "for a non-command

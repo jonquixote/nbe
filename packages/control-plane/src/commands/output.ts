@@ -3,6 +3,7 @@
 
 import { CpError } from "../protocol.js";
 import type { CommandRegistry, DispatchDeps, HandlerOutput } from "../dispatch.js";
+import { unreachable } from "../state.js";
 
 export function outputHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
   reg.set("record.start", {
@@ -32,7 +33,18 @@ export function outputHandlers(reg: CommandRegistry, _deps: DispatchDeps): void 
     handler: (ctx): HandlerOutput => {
       const state = ctx.state;
       if (state.showState !== "RUNNING") throw new CpError("E_FORBIDDEN_STATE", "show is not running");
-      if (state.streamState === "live") throw new CpError("E_FORBIDDEN_STATE", "stream already live");
+      // SPEC §16, v0.4.8 row 11 (D3): a stream starts only from `idle`. A
+      // `held` stream's state is unknown, so a start is refused by name.
+      switch (state.streamState) {
+        case "idle":
+          break;
+        case "live":
+          throw new CpError("E_FORBIDDEN_STATE", "stream already live");
+        case "held":
+          throw new CpError("E_FORBIDDEN_STATE", "stream is held: its stop was not acknowledged");
+        default:
+          return unreachable(state.streamState);
+      }
       state.streamState = "live";
       return {};
     },
@@ -41,7 +53,18 @@ export function outputHandlers(reg: CommandRegistry, _deps: DispatchDeps): void 
   reg.set("stream.stop", {
     forward: true,
     handler: (ctx): HandlerOutput => {
-      if (ctx.state.streamState !== "live") throw new CpError("E_FORBIDDEN_STATE", "stream not live");
+      // SPEC §16, v0.4.8 row 11 (D3): a stream is stopped from `live` or from
+      // `held`, which is the operator's only way out of a hold. From `idle`
+      // there is nothing to stop, and the refusal names the state.
+      switch (ctx.state.streamState) {
+        case "live":
+        case "held":
+          break;
+        case "idle":
+          throw new CpError("E_FORBIDDEN_STATE", "stream is idle");
+        default:
+          return unreachable(ctx.state.streamState);
+      }
       ctx.state.streamState = "idle";
       return {};
     },
