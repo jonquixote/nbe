@@ -318,9 +318,14 @@ async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
 
 #[tokio::test]
 async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
-    // M4, the occupancy miscount. At frame 15 the window must hold [30, 90).
-    // A read-ahead that wrote past its window would have put frame 30 + 60 + k
-    // into the slot frame 30 + k needs, and frame 45 would read as frame 105.
+    // M4, the occupancy miscount. ~~At frame 15 the window must hold [30, 90).~~
+    // (Struck: the window [30, 90) is primed at load, so at frame 15 no
+    // decoder runs and nothing could overwrite it. M4 survived that form.)
+    // At frame 45 the window is [45, 105): frames 45..89 come from the prime,
+    // and a decoder runs from 90 to fill 90..104. Frame 105 belongs in frame
+    // 45's own slot, so a correct read-ahead holds 105 back until the draw
+    // passes 45 (rule 3); one that wrote past its window would put 105 there,
+    // and frame 45 would read as frame 105.
     let source = dress_media("counter_150.mp4");
     let decoded = decoded("counter_150.mp4");
     let truth = |n: u64| decoded[n as usize].centre;
@@ -328,20 +333,20 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     write_clip_package(dir.path(), &source, decoded.len() as u64);
     let mut render = on_air(dir.path()).await;
     rendered_centre(&mut render, INSIDE_THE_RING).await;
+    rendered_centre(&mut render, PAST_THE_RING).await;
     assert!(
-        render.settle_read_ahead(INSIDE_THE_RING, SETTLE),
-        "R20: at frame {INSIDE_THE_RING} the read-ahead must fill its window and hold its \
-         decoder at the window's end (occupancy, §12.8.1 rule 3); it did not settle"
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: at frame {PAST_THE_RING} the read-ahead must fill its window [45, 105) and hold \
+         its decoder at the window's end (occupancy, §12.8.1 rule 3); it did not settle"
     );
-    for n in [PAST_THE_RING, 89] {
+    for n in [PAST_THE_RING, 89, 104] {
         let got = rendered_centre(&mut render, n).await;
         assert!(
             close(got, truth(n)),
-            "R20: after the window filled, frame {n} must still be {:?}, got {got:?} \
-             (frame {} {:?}: a slot overwritten past the window)",
+            "R20: with the window full at [45, 105), frame {n} must be {:?}, got {got:?} \
+             (frame 105 {:?}: a slot overwritten past the window)",
             truth(n),
-            n + 60,
-            truth(n + 60)
+            truth(105)
         );
     }
 }
