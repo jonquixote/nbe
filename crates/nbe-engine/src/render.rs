@@ -698,9 +698,11 @@ impl RenderLoop {
     /// window is full and its decoder is held at the window's end (a frame
     /// past the window delivered and held back: occupancy, rule 3), or the
     /// decoder has finished; or `timeout` passes. A full window alone is not
-    /// settled: a decoder still free to run would overwrite it. Production
-    /// never calls this: the tick pumps once a frame, within the frame's
-    /// upload budget (SPEC §12.8.1 rule 3).
+    /// settled: a decoder still free to run would overwrite it. Settled also
+    /// waits for the GPU to consume the staged uploads, so the next frame
+    /// starts with every staging buffer free. Production never calls this: the
+    /// tick pumps once a frame, within the frame's upload budget (SPEC §12.8.1
+    /// rule 3).
     pub fn settle_read_ahead(&mut self, frame: u64, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -715,6 +717,7 @@ impl RenderLoop {
                             && (c.worker.is_none() || c.pending.is_some()))
                 });
             if settled {
+                self.uploads.reclaim_waiting(&self.gpu);
                 return true;
             }
             if Instant::now() >= deadline {
