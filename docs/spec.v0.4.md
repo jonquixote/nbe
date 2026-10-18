@@ -2430,8 +2430,9 @@ the control plane emits `0` (§10.1.1's stub). They ride the tick beside
 log (§10.7) is the control plane's, and the engine keeps none.
 
 **`readAheadMissesTotal` (normative, new in v0.4.8 row 12).** The clip
-read-ahead's misses since the engine started (§12.8.1): one per drawn frame of
-a clip layer whose source frame was not yet resident, held rather than drawn.
+read-ahead's misses since the engine started (§12.8.1): one per frame the View
+draws of a clip layer whose source frame was not yet resident, held rather than
+drawn. A Preview miss is held and not counted (§10.2).
 It is engine-owned, with §10.1.1's stub of `0` when no fresh report is held,
 and it rides the tick beside the watchdog's counters. A run with misses is a
 degraded run, and a miss is never silent.
@@ -3252,8 +3253,10 @@ plays once, and it MUST play its full length:
    clock (§12.1). The read-ahead decides only whether that frame is resident.
 4. **The miss policy, `readAheadMiss`.** If source frame `i` is not resident
    when the layer is drawn, the layer shows the highest-indexed resident frame
-   below `i`, the last frame drawn in steady play. The miss is counted
-   (`readAheadMissesTotal`, §10.1). The render thread MUST NOT block on the
+   below `i`, the last frame drawn in steady play. A miss on the View is
+   counted (`readAheadMissesTotal`, §10.1). A Preview miss holds the same way
+   and is not counted, as §10.2 counts no preview miss as a dropped frame. The
+   render thread MUST NOT block on the
    decoder, and a clip layer MUST NOT draw black before the clip's end. The
    hold is the miss policy, not playback.
 5. **The end.** A clip's length is its video track's duration times its
