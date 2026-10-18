@@ -704,6 +704,9 @@ adopt and record).
   | `39033994454`, main at `df5530d` (PR #52's merge), green (515/0/4) | the test build finished at 12:49:55.83; the post line at 12:50:47 | whole step 2.64–4.80. While the tests ran: 4.53, 4.80, 4.19, 4.65, 4.25, then the post line's 3.87, so 3.87–4.80. The R10 test passed at 12:50:25.72, between 4.19 and 4.65. The 15th |
   | `39034929811`, PR #53 at `18a3858`, green (515/0/4) | the test build finished at 13:04:10.71; the post line at 13:05:00 | whole step 5.78–9.52. While building: 7.45, 6.60, 6.96, 7.85, 9.52, 9.32. While the tests ran: 8.73, 7.99, 6.82, 6.17, then the post line's 5.78, so 5.78–8.73. The R10 test passed at 13:04:38.28, between 7.99 and 6.82. The 16th |
   | `39035305838`, main at `49d29ae` (PR #53's merge), green (515/0/4) | the test build finished at 13:09:23.86; the post line at 13:10:16 | whole step 3.12–3.97. While the tests ran: 3.80, 3.35, 3.45, 3.12, 3.33, then the post line's 3.34, so 3.12–3.80. The R10 test passed at 13:09:54.25, between 3.12 and 3.33. The 17th |
+  | `39106598820`, PR #56 at `0431441`, green (515/0/4) | the workspace tests: the test build finished at 07:10:54.59 (`Finished` in 42.62 s); the post line at 07:11:46 | whole step 2.55–4.70 (pre, 10 samples, post). While building: 2.55, 2.68, 3.30, 4.49, 4.70. While the tests ran: 4.62, 4.52, 4.43, 3.90, 4.35, then the post line's 4.35, so 3.90–4.62. The R10 test passed at 07:11:24.55, between 4.43 and 3.90. The 18th |
+  | `39108195056`, PR #56 at `f81653f` (its head), green (515/0/4) | the workspace tests: the test build finished at 07:36:35.41 (`Finished` in 50.82 s); the post line at 07:37:27 | whole step 3.46–7.18 (pre, 11 samples, post). While building: 3.51, 3.46, 4.44, 5.59, 6.25, and 7.18, sampled in the second the build finished. While the tests ran: 6.16, 5.61, 4.97, 4.53, 3.91, then the post line's 3.78, so 3.78–6.16. The R10 test passed at 07:37:05.09, in the 4.97 sample's second. The 19th |
+  | `39112885332`, main at `5043ccf` (PR #56's merge), green (515/0/4) | the workspace tests: the test build finished at 08:50:45.64 (`Finished` in 59.73 s); the post line at 08:51:44 | whole step 2.80–9.19 (pre, 12 samples, post). While building: 3.03, 2.80, 3.61, 5.29, 7.22, 8.80. While the tests ran: 9.19, sampled 0.4 s after the build finished, then 8.47, 7.35, 7.49, 7.15, 7.01, then the post line's 6.03, so 6.03–9.19. The R10 test passed at 08:51:19.78, between 7.49 and 7.15. The 20th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -828,6 +831,9 @@ maximum).
 
 **The ceiling at PR #53's merge: holds at 12.09 per CPU** (17 green runs;
 the peaks were 9.52, the nearest yet to the 9.67 maximum, and 3.97).
+
+**The ceiling at PR #56's merge: holds at 12.09 per CPU** (20 green runs;
+the peaks were 4.70, 7.18 and 9.19, all under the 9.67 maximum).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5953,7 +5959,7 @@ item):
     | restart (engine killed under a live stream) | `none` | `live` → `idle` | `stream.divergence` raised, then cleared "consistent again: believed idle, reported none" (finding 1) | `belief.corrected` live→idle, 184 ms |
     | held (a real finalize failure) | `closed` | `held` → `idle` | `outputs.held` stands, through a refused `stream.stop` ("stream is idle"), until `show.unload` clears it ("cleared by show.unload (stateVersion 10)"). After that `command.unacknowledged.record` stands, because the engine refused `record.stop` (finding 3's record twin) | `belief.corrected` held→idle, 206 ms |
     | show-stop-version held leg | `closed` | `held` on `show.stop`'s own frame → `idle`; the record stays `recording` until the heal | the held alert | `show.stop` at v9, the correction at v10, `view.fallback` at v11 (acked), `record.stop` at v12 (refused) |
-    | refused start (CI) | `none` | `live` → `idle` | (b) stands | *from the PR's CI run* |
+    | refused start (CI) | `none` | `live` → `idle` | (b) stands, raised at 2027 ms | ~~*from the PR's CI run*~~ `belief.corrected` live→idle, report age 143 ms (run `39106598820`; §2c, filled in the next PR) |
 
   - **The correction's latency** (window end → the next fresh report → the
     belief), from the server-stamped audit: the expiry's alert row to the
@@ -5963,7 +5969,9 @@ item):
     - The engine reports every 1000 ms (`main.rs:32`), and the evaluator
       runs every 250 ms (`server.ts:271`), so the latency is bounded by
       about one report interval plus one evaluation.
-    - The refused start (CI) is in the PR's CI run.
+    - ~~The refused start (CI) is in the PR's CI run.~~ The refused start on
+      CI: **279 ms** (run `39106598820` at `0431441`) and **727 ms** (run
+      `39108195056` at `f81653f`). *(§2c, filled in the next PR.)*
   - **The user's rulings on PR #56's six findings (2026-10-18).** The
     numbers are the PR body's. The records' numbers are in brackets.
     1. **[4] Both brief lines are struck.** D4 governs: corrections fire no
@@ -5996,6 +6004,122 @@ item):
     6. **The relay miss is recorded.** ORDER 3 named
        `r17-spine-b-brief.md`, and the tree's filename,
        `r17-spine-b-belief.md`, governs.
+  - **The two-key pass on PR #56** (independent; relayed by the user
+    2026-10-18). Verdict: **HOLDS on all eleven answers.** It was derived
+    independently, in a fresh clone at `f81653f`, with the pass's own probes
+    and its own mutants. Nothing merged, and the merge word was not given.
+    - **The compile-time claim, reproduced exactly.** A fourth `StreamState`
+      value gave `tsc` exit 2, with six errors at the builder's line numbers
+      (B23's: `alerts.ts(379,21)`, `commands/output.ts(46,30)` and
+      `(66,30)`, `commands/show.ts(187,29)`, `state.ts(40,26)`,
+      `automation.ts(68,7)`).
+    - **The identity measurements.** D2a is byte-identical, 1455 chars, at
+      spec `:2562` against brief `:329`. The builder re-measured it at
+      `f81653f`: 9 lines each, 1455 chars without the blockquote markers,
+      identical line for line.
+    - **Their mutant runs.** They killed B1, B2, B3, B4, B6 and B10, all red
+      on the builder's exact tests, and every restore was `cmp`-identical.
+      B2, the brief's named falsification (path (i)'s tracking), now has
+      two independent witnesses.
+    - **The legs' timestamps.** The pass measured 442 and 471 ms against the
+      builder's 560 and 583 ms (lost stop and held, the correction's
+      latency). Both lie within one report interval (1000 ms) plus one
+      evaluation (250 ms).
+    - **#54 and #55, re-verified at the head.** The D6 dress mutants'
+      throwaway runs were checked by the pass.
+    - **The A1 boundary, accepted as a scope boundary.** The pass declines to
+      re-assert A1's authority tier as its own evidence. That tier sits
+      outside this PR's diff, standing on the untouched automation suite,
+      35/35. Recorded plainly: the authority tier's evidence is
+      pre-existing, and the pass says whose it is.
+    - **Their voids, honest.** Load ran 3.0–5.4 all session, and their timing
+      re-measures were VOID. They relied on load-insensitive legs and CI's
+      reads. The builder's gate windows stand as the builder's
+      load-disciplined evidence.
+    - **Substance beyond confirmation:**
+      - the wire-coverage proof (a refusal is the absence of an ack, not a
+        token);
+      - path (iv)'s static proof (`persistence.ts` carries no `alerts`,
+        `held` or `health`, so the in-process simulation is adequate);
+      - (a)'s held branch is reachable only after a clear.
+    - **Builder's two-key record: concurs on every call.** No disputes, one
+      annotation.
+      - **The A1 boundary:** concur, as a scope boundary. The diff changes
+        `automation.ts` only in #50's compile-time audit (`streamAudit`
+        drops `| "held"`) and `automation.test.ts` only by a comment. No
+        hold path is touched. The tier is §10.1.3's "Authority, before
+        dispatch" (spec `:2599`).
+      - **Wire coverage:** concur. `directive.rs` acknowledges at one point,
+        `:147–148`, after every handler's `?`. A refusal returns `Err` first,
+        and the channel logs `directive failed` (`channel.rs:264–265`).
+      - **Path (iv)'s static proof:** concur. `PersistedSnapshot` is
+        `{ stateVersion, manifestIdentity, recoveredAt }`, and `restore()`
+        sets only `stateVersion`, `showState` and `pkg`.
+      - **The legs, the identity, the compile-time claim, their kills and
+        (a)'s held branch (B22):** concur.
+      - *Annotation, not a dispute:* the pass's voids (3.0–5.4 all session)
+        are a second witness to that night's high machine load. They are
+        consistent with the builder's three `npm test` voids, and they
+        still do not isolate the cause.
+
+  **Merged: PR #56 is `5043ccf`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-18 ("Two orders, in sequence", ORDER 2; the user ran the merge by hand after the auto-mode classifier refused the builder's): a squash at 2026-10-18T08:48:39Z (parent
+  `49d29ae`), pinned to the reviewed head `f81653f`. The merge tree
+  `1e0be79` is identical to `f81653f`'s. **SPEC v0.4.8 row 11 is
+  ratified**: for the first time, spec and code agree on what the system
+  believes. §10.1.3's order, §10.1.4's correction and §10.1.2's clearing set
+  for `outputs.held` are now what the control plane does. **R17 is fixed and
+  leaves the register**, closed by its proving
+  case (CI's dress at `0431441`, run `39106598820`). Main's CI at
+  `5043ccf`, run `39112885332`, read per test (§2b), green on attempt 1:
+  - **rust** (job `117632556116`): `TOTAL: 515 passed, 0 failed, 4 ignored`,
+    with all 30 floor lines held. `telemetry_tick_wires_the_live_session_counter
+    ... ok`, so R10 is silent. The peak was load1 27.58 on 3 CPUs, 9.19 per
+    CPU (envelope row 20). The ceiling holds at 12.09.
+  - **control-plane** (job `117632556222`): `passed=197 failed=0`,
+    automation 35/35, belief `ran=4 exercised=4`, effects 2/2, and every e2e
+    floor held (slate-release 4, recall 2, take-duration 3, resync-end 3,
+    package-reconcile 4, show-stop-version 6 ran and 1 exercised,
+    resync-request 3, operator-signals 4 ran and 1 exercised). The refused
+    start raised (b) at 2014 ms, and `belief.corrected` live→idle followed
+    1011 ms after the window, (b) standing. That is within one report
+    interval plus one evaluation (1250 ms).
+  - **dress** (job `117632555898`): 27/27, skips 9, exercised 18:
+    `PATH step 9: refused start; the belief corrected live -> idle 2358 ms
+    after stream.start (bound 4000 ms); stream.stop refused ("stream is
+    idle")`. Drops 0, underruns 164, watchdog trips 0, and rises of 4018 and
+    3994 ms, all inside the backstops.
+  - **The machine-load thread, toward the owed local-ceiling ruling** (#50's
+    gate: "A local-ceiling ruling is owed when it next matters"). Two nights
+    of evidence on the same machine, with the cause unpinned:
+    - **Night 1 (2026-10-16, #50's gate at `6bf10c7`).** The workspace
+      battery voided three times on its own load: 2.38 → 4.16, 2.35 → 3.85,
+      1.95 → 3.32. Even a start under 2.0 ended at 3.32. Those three voids
+      are the evidence of record, by the user's word.
+    - **Night 2 (2026-10-17/18, PR #56).**
+      - The builder's `npm test` voided three times, each 197/197:
+        - 2.42 → 5.38 (23:48:13–23:48:21);
+        - 2.39 → 5.05 (23:51:16–23:51:23);
+        - 2.47 → 5.94 (23:56:43–23:56:50, the gate).
+      - Each started under 2.5 and rose 2.6–3.5 inside its own 7–8 s. A
+        diagnostic declared as not evidence (it started at 2.65) peaked at
+        16 `node` processes, with no rise. The suite's parallelism is real,
+        but it does not by itself make the rise.
+      - The falsification battery's ambient voids: B4's e2e (2.39 → 3.88),
+        B11's unit (2.29 → 3.39), B28's show-stop-version e2e
+        (2.32 → 3.49).
+      - The second key's session read 3.0–5.4 throughout, and its timing
+        re-measures were VOID. It relied on load-insensitive legs and CI.
+    - **What the two nights share.** It is one machine. Start loads sit near
+      2.5, and the 1-min load rises inside short windows. The top ambient
+      processes on night 2 were iTerm2, WindowServer, CleanMyMac's monitor
+      and `opencode`. Nothing pins the cause: neither the suites' own
+      parallelism, which the diagnostic did not reproduce, nor any one
+      process.
+    - **What the ruling must settle.** It is owed, not made. Either a local
+      ceiling that this machine's suites can meet (envelope-relative, as
+      R10's CI ruling did for CI), or a pinned cause that lifts the
+      background. Until then the 3.0 rule stands, and every void is named.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
@@ -6009,6 +6133,57 @@ item):
   (`channel.rs`). It likely arrives with the queued `show.unload` routing
   (Prompt 11's WU8 record, "route `show.unload` to the engine"), which also
   clears the engine's package.
+- **Position 8: R20, a plain video clip stops drawing after its first 30
+  frames** (the user's word of 2026-10-18). Position 8 by number, first in
+  order: the queue ruling below. The register row in
+  `docs/soak-protocol.md` §5 carries the mechanism, the class, the
+  falsification and the struck refutation.
+  - **Found while verifying two outside reviews.** The first review had the
+    mechanism backwards: "whole-clip RAM decode, OOM on a 10-minute clip".
+    The second corrected it ("a clip longer than 1 second cannot play
+    today"). The relay then refuted the correction from the dress's `DONE`,
+    which is the clock's, not the picture's. The refutation is struck in
+    R20's row, with its cause named.
+  - **The class, recorded with the defect: no test looks at the picture.**
+    Belief, clocks, acks and counts are asserted; a drawn layer never is.
+    Spine B made the system's beliefs provable, but a belief about what is
+    on air is still not a picture of it.
+  - **The falsification comes before any fix** (ratified 2026-10-18, amended
+    to both forms; R20's row carries each in full):
+    - **the drop-detector, on A1 today:** frame 45 yields a drawn layer, not
+      `None`;
+    - **the stopgap-police, on a new fixture:** a 46+-frame frame-counter
+      clip in house format, where rendered frame 45 must equal the source's
+      own frame 45, decoded independently;
+    - **the fixture-integrity guard:** all of that fixture's 46+ frames are
+      distinct by hash (the stripper-test lesson).
+    The first stronger form, "differs from frame 0", is superseded. It could
+    not pass on the static A1, and it would pass under the stopgap.
+  - **The fix path.**
+    - §12.8's read-ahead, with the determinism constraint intact: decode
+      ahead with known occupancy, never wall-clock.
+    - A hold-last-frame stopgap may precede it only as harm reduction, never
+      recorded as the fix.
+    - The frozen-frame comment (`video.rs:263–265`) is made true or struck
+      in the same PR.
+    - The design record decides the order.
+  - **Then the air-readiness queue, in this order, separate PRs per
+    discipline:**
+    1. residency honesty (preflight reports the residency the engine holds,
+       until the §12.3 ladder is real; `video.rs:243–257` and spec `:3094`
+       already admit the gap);
+    2. device audio (`NullSink` is the only `AudioSink`);
+    3. disk headroom (the soak protocol's 8 GiB precondition);
+    4. AC-5, the 30-minute zero-drop soak, never yet run green.
+  - **WO2's `clockState`** (`server.ts:563` derives `renderNode.clockState`
+    from the control plane's `showState`, and the engine sends
+    `master_frame().unwrap_or(0)`, `telemetry.rs:82`) rides the same
+    engine-opening era, as position 5's work order 2, in its own PR.
+  - **The queue ruling (the user's word of 2026-10-18, since the record
+    asked): R20 goes first.** Nothing else matters if clips don't play.
+    Positions 6 and 7 keep their numbers. They may ride alongside at the
+    builder's discretion, since they are a different subsystem. But no
+    air-readiness claim precedes R20's closure.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
