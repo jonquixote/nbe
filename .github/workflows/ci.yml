@@ -677,10 +677,12 @@ jobs:
         # (the weaker form on A1, the stronger form on counter_60, the fixture
         # guard) and the fix's guards (the full length frame for frame, the
         # window never overwriting a needed frame, the miss hold, the end, the
-        # counter_150 fixture guard). They read the picture back from the real
-        # draw path, so they need a wgpu adapter and VideoToolbox, and FAIL
-        # without them, as Prompt 05's do: no SKIP path, floors equal at the
-        # full count (8, new).
+        # counter_150 fixture guard), and the refill's cost against the frame
+        # deadline (the ninth, added at the gate: R20's finding 9, where the
+        # read-ahead's uploads cost the record its frames). They read the
+        # picture back from the real draw path, so they need a wgpu adapter
+        # and VideoToolbox, and FAIL without them, as Prompt 05's do: no SKIP
+        # path, floors equal at the full count (9; 8 before finding 9).
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test r20_clip -- --nocapture --test-threads=1 2>&1) && rc=0 || rc=$?
@@ -692,12 +694,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "r20_clip: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=8 exercised>=8)"
-          if [ "$ran" -lt 8 ]; then
-            echo "FAIL r20_clip: expected at least 8 tests to run, got $ran"; exit 1
+          echo "r20_clip: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=9 exercised>=9)"
+          if [ "$ran" -lt 9 ]; then
+            echo "FAIL r20_clip: expected at least 9 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 8 ]; then
-            echo "FAIL r20_clip: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 9 ]; then
+            echo "FAIL r20_clip: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "the resync-end suite actually ran (SPEC v0.4.8 row 3)"
         # Seven tests on the directive handler alone (no GPU, no capability

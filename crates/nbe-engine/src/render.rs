@@ -225,6 +225,12 @@ pub struct FrameReport {
     pub rendered_preview: bool,
     pub view_late_by: Option<Duration>,
     pub preview_failed: bool,
+    /// The read-ahead's share of this frame (SPEC §12.8.1): its window
+    /// uploads and their submission. Outside the View's measured draw, so it
+    /// never counts as a dropped frame, but inside the record's pre-check.
+    pub read_ahead: Duration,
+    /// Window frames the read-ahead uploaded this frame.
+    pub read_ahead_uploads: usize,
 }
 
 pub struct RenderLoop {
@@ -549,8 +555,8 @@ impl RenderLoop {
     /// blocking. The View positions a clip it shows; the Preview positions a
     /// clip only the Preview shows; a clip on neither rests at its head's end,
     /// primed for the next take. `uncapped` lifts the per-frame upload budget
-    /// (the settle seam only).
-    fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) {
+    /// (the settle seam only). Returns the window frames uploaded.
+    fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) -> usize {
         let mut wanted: HashMap<String, u64> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         for bus in [Bus::View, Bus::Preview] {
@@ -596,6 +602,7 @@ impl RenderLoop {
         } else {
             READ_AHEAD_UPLOADS_PER_FRAME
         };
+        let mut uploaded = 0;
         self.uploads.reclaim(&self.gpu);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         for id in order {
@@ -667,6 +674,7 @@ impl RenderLoop {
                         }
                         clip.slot_frame[s] = Some(j);
                         budget -= 1;
+                        uploaded += 1;
                     }
                     Delivery::Pending => break,
                     Delivery::Done => {
@@ -683,6 +691,7 @@ impl RenderLoop {
             self.gpu.queue.submit([enc.finish()]);
             self.uploads.submitted();
         }
+        uploaded
     }
 
     /// Test and bench seam: pump the read-ahead, uncapped, until every clip's
@@ -788,7 +797,9 @@ impl RenderLoop {
         if rung >= Rung::LoopsShed {
             self.shed_off_air_loops(frame);
         }
-        self.pump_read_ahead(frame, false);
+        let read_ahead_started = Instant::now();
+        let read_ahead_uploads = self.pump_read_ahead(frame, false);
+        let read_ahead = read_ahead_started.elapsed();
 
         let preview_due = match rung {
             Rung::Nominal => true,
@@ -863,6 +874,8 @@ impl RenderLoop {
             rendered_preview: preview_due && !preview_failed,
             view_late_by,
             preview_failed,
+            read_ahead,
+            read_ahead_uploads,
         }
     }
 

@@ -351,6 +351,58 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     }
 }
 
+/// The frame deadline at the house rate, 30 fps (SPEC §7.13).
+const FRAME_DEADLINE: Duration = Duration::from_micros(33_333);
+/// The read-ahead's upload cap in one frame (`READ_AHEAD_UPLOADS_PER_FRAME`).
+const UPLOADS_AT_THE_CAP: u32 = 4;
+
+#[tokio::test]
+async fn r20_a_window_refill_fits_the_frame_deadline() {
+    // M8, the frame path back on `write_texture`. The refill runs in the frame
+    // path, inside the record's pre-check (a frame whose `render_frame`
+    // overran is not recorded) but outside the View's drop timer, so no drop
+    // counter sees it. At the cap, four uploads must fit one frame's deadline:
+    // each must cost under a quarter of it, 8.33 ms. `write_texture` creates a
+    // staging buffer per call and costs 10.5 ms a 1080p frame on the
+    // reference machine; four of them made 52 ms frames, and the gate's takes
+    // recorded nothing. Through the staging pool a frame costs about 1 ms.
+    //
+    // Each measured frame uploads exactly one window frame: settled at n, the
+    // window holds [n, n + 60) and the decoder holds n + 60 back; drawing
+    // n + 1 frees n's slot, and n + 60 goes into it.
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    let mut costs = Vec::new();
+    for n in PAST_THE_RING..PAST_THE_RING + 10 {
+        assert!(
+            render.settle_read_ahead(n, SETTLE),
+            "R20: the read-ahead did not settle at {n}"
+        );
+        let report = render.render_frame(n + 1, None);
+        assert_eq!(
+            report.read_ahead_uploads,
+            1,
+            "R20: settled at {n}, drawing {} uploads frame {} and nothing else",
+            n + 1,
+            n + 60
+        );
+        costs.push(report.read_ahead);
+    }
+    costs.sort();
+    let median = costs[costs.len() / 2];
+    let bound = FRAME_DEADLINE / UPLOADS_AT_THE_CAP;
+    println!("R20 REFILL: one window upload, median {median:?} of {costs:?}, bound {bound:?}");
+    assert!(
+        median < bound,
+        "R20: one window upload must cost under {bound:?}, a quarter of the frame deadline, so the \
+         read-ahead's cap fits one frame; the median of {} was {median:?} (all: {costs:?})",
+        costs.len()
+    );
+}
+
 #[tokio::test]
 async fn r20_a_miss_holds_the_last_frame_counts_it_and_never_blocks() {
     // M5. A jump from frame 15 to frame 120 outruns any decoder: 120 is not in
