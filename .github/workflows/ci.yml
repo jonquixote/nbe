@@ -7,6 +7,7 @@ on:
 
 jobs:
   rust:
+    if: false # throwaway falsification branch: only the dress job is read
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -898,6 +899,7 @@ jobs:
           grep -q 'migrationRequired' tests/fixtures/valid_show/preflight_report.json
           grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json
   control-plane:
+    if: false # throwaway falsification branch: only the dress job is read
     # macOS, not ubuntu: this job builds `nbe-preflight`, which since Prompt 05
     # depends on `nbe-decode` for the SPEC §19 decode checks — and that is
     # VideoToolbox, so it only builds on macOS. Stubbing decode on Linux would

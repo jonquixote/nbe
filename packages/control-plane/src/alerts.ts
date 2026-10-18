@@ -398,6 +398,7 @@ export class OperatorSignals {
    * belief, not the lane (§10.1.2's clearing rule for `outputs.held`).
    */
   private correction(): void {
+    if (this.i.windowMs > 0) return; // FALSIFICATION (D6 bounded wait): the correction lands nothing
     const fresh = this.freshReport();
     if (fresh === null || this.streamClaimLive() || fresh.receivedAt <= this.streamAnchor) return;
     const token = fresh.frame.streamTransportState;
