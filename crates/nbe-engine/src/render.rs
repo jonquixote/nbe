@@ -629,9 +629,12 @@ impl RenderLoop {
     }
 
     /// Test and bench seam: pump the read-ahead, uncapped, until every clip's
-    /// window is full or its decoder has finished, or `timeout` passes.
-    /// Production never calls this: the tick pumps once a frame, within the
-    /// frame's upload budget (SPEC §12.8.1 rule 3).
+    /// window is full and its decoder is held at the window's end (a frame
+    /// past the window delivered and held back: occupancy, rule 3), or the
+    /// decoder has finished; or `timeout` passes. A full window alone is not
+    /// settled: a decoder still free to run would overwrite it. Production
+    /// never calls this: the tick pumps once a frame, within the frame's
+    /// upload budget (SPEC §12.8.1 rule 3).
     pub fn settle_read_ahead(&mut self, frame: u64, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -640,7 +643,11 @@ impl RenderLoop {
                 .video_rings
                 .values()
                 .filter_map(|r| r.clip.as_ref())
-                .all(|c| c.first_missing().is_none() || c.worker.is_none());
+                .all(|c| {
+                    c.window.is_empty()
+                        || (c.first_missing().is_none()
+                            && (c.worker.is_none() || c.pending.is_some()))
+                });
             if settled {
                 return true;
             }

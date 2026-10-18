@@ -330,7 +330,8 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     rendered_centre(&mut render, INSIDE_THE_RING).await;
     assert!(
         render.settle_read_ahead(INSIDE_THE_RING, SETTLE),
-        "R20: the read-ahead did not fill its window at frame {INSIDE_THE_RING}"
+        "R20: at frame {INSIDE_THE_RING} the read-ahead must fill its window and hold its \
+         decoder at the window's end (occupancy, §12.8.1 rule 3); it did not settle"
     );
     for n in [PAST_THE_RING, 89] {
         let got = rendered_centre(&mut render, n).await;
