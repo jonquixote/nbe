@@ -73,6 +73,11 @@ struct VideoRing {
 /// one per playing clip.
 const READ_AHEAD_UPLOADS_PER_FRAME: usize = 4;
 
+/// Staging buffers the read-ahead's uploads go through (one frame's bytes
+/// each, created on first use): one frame's upload budget. A tick whose
+/// buffers are all still in flight uploads nothing more, and never waits.
+const READ_AHEAD_STAGING_BUFFERS: usize = READ_AHEAD_UPLOADS_PER_FRAME;
+
 /// A plain clip on the GPU (SPEC §12.8.1): its head is `VideoRing::textures`,
 /// resident for the load; frames past it live in a K-slot window that the
 /// read-ahead refills as the clip plays.
@@ -252,6 +257,9 @@ pub struct RenderLoop {
     /// must add zero.
     pub text_rasterizations: std::sync::atomic::AtomicU64,
     loaded_generation: u64,
+    /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
+    /// frame path, where `write_texture`'s per-call staging costs the deadline.
+    uploads: crate::gpu::UploadPool,
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
     pipeline: wgpu::RenderPipeline,
@@ -349,6 +357,7 @@ impl RenderLoop {
             text_cache: std::sync::Mutex::new(HashMap::new()),
             text_rasterizations: std::sync::atomic::AtomicU64::new(0),
             loaded_generation: u64::MAX,
+            uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
             house_rate,
             pipeline,
             pipeline_bgra,
@@ -472,13 +481,39 @@ impl RenderLoop {
                 last_presented: Cell::new(None),
                 stalled_at: None,
             };
+            // Through the staging pool, waiting for it when it is full: the
+            // load boundary may wait, and `write_texture` would cost the prime
+            // ten times as much. A pool that stays full after a wait (a lost
+            // device) falls back to `write_texture` rather than spin.
+            let mut enc = self.gpu.device.create_command_encoder(&Default::default());
             for f in std::mem::take(&mut c.prime) {
                 if f.index >= head && f.index < ring.window_end() {
                     let s = ring.slot(f.index);
-                    self.gpu
-                        .upload_rgba(&ring.window[s], f.width, f.height, &f.rgba);
+                    let tex = &ring.window[s];
+                    if !self
+                        .uploads
+                        .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
+                    {
+                        let full = std::mem::replace(
+                            &mut enc,
+                            self.gpu.device.create_command_encoder(&Default::default()),
+                        );
+                        self.gpu.queue.submit([full.finish()]);
+                        self.uploads.submitted();
+                        self.uploads.reclaim_waiting(&self.gpu);
+                        if !self
+                            .uploads
+                            .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
+                        {
+                            self.gpu.upload_rgba(tex, f.width, f.height, &f.rgba);
+                        }
+                    }
                     ring.slot_frame[s] = Some(f.index);
                 }
+            }
+            if self.uploads.has_staged() {
+                self.gpu.queue.submit([enc.finish()]);
+                self.uploads.submitted();
             }
             ring
         });
@@ -561,6 +596,8 @@ impl RenderLoop {
         } else {
             READ_AHEAD_UPLOADS_PER_FRAME
         };
+        self.uploads.reclaim(&self.gpu);
+        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         for id in order {
             let Some(ring) = self.video_rings.get_mut(&id) else {
                 continue;
@@ -612,8 +649,22 @@ impl RenderLoop {
                             break;
                         }
                         let s = clip.slot(j);
-                        self.gpu
-                            .upload_rgba(&clip.window[s], clip.width, clip.height, &f.rgba);
+                        let tex = &clip.window[s];
+                        if !self.uploads.stage(
+                            &self.gpu,
+                            &mut enc,
+                            tex,
+                            clip.width,
+                            clip.height,
+                            &f.rgba,
+                        ) {
+                            // Every staging buffer is in flight: the frame
+                            // waits for a later tick, held like one past the
+                            // window.
+                            clip.pending = Some(f);
+                            budget = 0;
+                            break;
+                        }
                         clip.slot_frame[s] = Some(j);
                         budget -= 1;
                     }
@@ -625,6 +676,12 @@ impl RenderLoop {
                     }
                 }
             }
+        }
+        // Before the frame's draw is submitted, so the draw samples the
+        // uploaded frames.
+        if self.uploads.has_staged() {
+            self.gpu.queue.submit([enc.finish()]);
+            self.uploads.submitted();
         }
     }
 
