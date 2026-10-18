@@ -180,4 +180,17 @@ ffmpeg -y -loglevel error \
   -c:a aac -b:a 128k -ar 48000 -ac 2 -frames:v 60 -shortest \
   "$dress/counter_60.mp4"
 
+# counter_150: the same recipe at 150 frames (b = 7N mod 256), longer than a
+# clip's head plus its read-ahead window (30 + 60, SPEC §12.8.1), so the engine
+# suite's R20 guards see the read-ahead stream and its window wrap.
+say "dress_show/media/counter_150.mp4 (1920x1080, 30 fps, 150 frames, a colour per frame + AAC)"
+ffmpeg -y -loglevel error \
+  -f lavfi -i "color=c=black:s=1920x1080:r=30:d=5" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=5" \
+  -vf "format=rgb24,geq=r='mod(N*37\,256)':g='mod(N*91\,256)':b='mod(N*7\,256)',format=yuv420p" \
+  -af "loudnorm=I=-16:TP=-1.5:LRA=11" \
+  -c:v libx264 -profile:v high -pix_fmt yuv420p -preset veryfast -g 30 -keyint_min 30 -sc_threshold 0 \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 -frames:v 150 -shortest \
+  "$dress/counter_150.mp4"
+
 say "done — $(ls -1 "$out" | wc -l | tr -d ' ') fixtures in $out, dress package in $dress"

@@ -128,14 +128,43 @@ async fn rendered_centre(render: &mut RenderLoop, frame: u64) -> [u8; 3] {
     centre(&render.readback_view().await, VIEW_W, VIEW_H)
 }
 
+/// One source frame, kept small: its centre pixel and a hash of all its
+/// pixels. A whole 1080p frame is 7.91 MiB, and the workspace runs these tests
+/// in parallel, so only the facts the assertions read are kept.
+struct SourceFrame {
+    index: u64,
+    centre: [u8; 3],
+    hash: u64,
+}
+
+/// Every frame of a fixture, decoded once per test process and shared: the
+/// suite reads each source's truth several times, and decoding it again each
+/// time only loads the machine.
+fn decoded(name: &str) -> &'static [SourceFrame] {
+    static COUNTER_60: std::sync::OnceLock<Vec<SourceFrame>> = std::sync::OnceLock::new();
+    static COUNTER_150: std::sync::OnceLock<Vec<SourceFrame>> = std::sync::OnceLock::new();
+    let cell = match name {
+        "counter_60.mp4" => &COUNTER_60,
+        "counter_150.mp4" => &COUNTER_150,
+        other => panic!("R20: no shared decode for {other}"),
+    };
+    cell.get_or_init(|| decode_all(&dress_media(name)))
+}
+
 /// Every frame of a source, decoded by `nbe_decode` on its own: no ring, no
-/// preload cap, no draw path.
-fn decode_all(path: &Path) -> Vec<nbe_engine::decode::DecodedFrame> {
+/// preload cap, no draw path. One frame is resident at a time.
+fn decode_all(path: &Path) -> Vec<SourceFrame> {
     let mut session =
         DecodeSession::open(path).expect("R20 needs VideoToolbox to decode the source");
     let mut frames = Vec::new();
     while let Some(f) = session.next_frame().expect("decode") {
-        frames.push(f);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        f.rgba.hash(&mut h);
+        frames.push(SourceFrame {
+            index: f.index,
+            centre: centre(&f.rgba, f.width, f.height),
+            hash: h.finish(),
+        });
     }
     frames
 }
@@ -170,11 +199,8 @@ async fn r20_weaker_form_a_clip_still_draws_past_its_first_second() {
 #[tokio::test]
 async fn r20_stronger_form_rendered_frame_45_is_the_sources_own_frame_45() {
     let source = dress_media("counter_60.mp4");
-    let decoded = decode_all(&source);
-    let truth = |n: u64| {
-        let f = &decoded[n as usize];
-        centre(&f.rgba, f.width, f.height)
-    };
+    let decoded = decoded("counter_60.mp4");
+    let truth = |n: u64| decoded[n as usize].centre;
 
     let dir = tempfile::tempdir().unwrap();
     write_clip_package(dir.path(), &source, decoded.len() as u64);
@@ -205,20 +231,182 @@ fn r20_fixture_integrity_every_counter_frame_is_distinct() {
     // The stripper-test lesson: a guard is only as good as its fixture. If
     // `counter_60.mp4` ever goes static, or shorter than frame 45, the stronger
     // form above goes blind; this fails first.
-    let frames = decode_all(&dress_media("counter_60.mp4"));
+    let frames = decoded("counter_60.mp4");
     assert!(
         frames.len() as u64 > PAST_THE_RING,
         "R20 fixture: counter_60.mp4 must outlive frame {PAST_THE_RING}, decoded {} frames",
         frames.len()
     );
     let mut seen = HashSet::new();
-    for f in &frames {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        f.rgba.hash(&mut h);
+    for f in frames {
         assert!(
-            seen.insert(h.finish()),
+            seen.insert(f.hash),
             "R20 fixture: counter_60.mp4 frame {} repeats an earlier frame; every frame must differ",
             f.index
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The fix's guards (SPEC §12.8.1, v0.4.8 row 12). They come with the fix, as
+// the design record's falsification plan maps them: M2b, M4, M5 and M6. M1,
+// M2 and M3 die to the battery above, and M7 to the integrity guards.
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+/// How long a test waits for the read-ahead to fill its window. A backstop,
+/// not a timing claim: the settle returns as soon as the window is full.
+const SETTLE: Duration = Duration::from_secs(20);
+
+fn misses(render: &RenderLoop) -> u64 {
+    render.state.read_ahead_misses_total.load(Ordering::SeqCst)
+}
+
+#[test]
+fn r20_fixture_integrity_every_counter_150_frame_is_distinct() {
+    // M7 for the streaming fixture: counter_150 must outlive the clip's head
+    // plus its window (30 + 60 = 90 frames), or the guards below cannot see
+    // the read-ahead stream at all.
+    let frames = decoded("counter_150.mp4");
+    assert!(
+        frames.len() > 90,
+        "R20 fixture: counter_150.mp4 must outlive a clip's head and window (90 frames), decoded {}",
+        frames.len()
+    );
+    let mut seen = HashSet::new();
+    for f in frames {
+        assert!(
+            seen.insert(f.hash),
+            "R20 fixture: counter_150.mp4 frame {} repeats an earlier frame; every frame must differ",
+            f.index
+        );
+    }
+}
+
+#[tokio::test]
+async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
+    // M2b, the dead worker: with the load-time prime alone a clip would play
+    // to frame 89 and hold. counter_150 runs to 149, so frames 90 and later
+    // exist only if the read-ahead streams them. Each frame is read back after
+    // the window settles at it, so nothing here races the decoder: the
+    // occupancy decides, never a clock (§12.8.1 rule 3).
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    for n in [0u64, 15, 29, 30, 45, 89, 90, 95, 120, 149] {
+        assert!(
+            render.settle_read_ahead(n, SETTLE),
+            "R20: the read-ahead did not fill its window at frame {n}"
+        );
+        let got = rendered_centre(&mut render, n).await;
+        let want = decoded[n as usize].centre;
+        assert!(
+            close(got, want),
+            "R20: rendered frame {n} must be the source's own frame {n} {want:?}, got {got:?}"
+        );
+    }
+    assert_eq!(
+        misses(&render),
+        0,
+        "a settled read-ahead draws every frame resident: no misses"
+    );
+}
+
+#[tokio::test]
+async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
+    // M4, the occupancy miscount. At frame 15 the window must hold [30, 90).
+    // A read-ahead that wrote past its window would have put frame 30 + 60 + k
+    // into the slot frame 30 + k needs, and frame 45 would read as frame 105.
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let truth = |n: u64| decoded[n as usize].centre;
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    rendered_centre(&mut render, INSIDE_THE_RING).await;
+    assert!(
+        render.settle_read_ahead(INSIDE_THE_RING, SETTLE),
+        "R20: the read-ahead did not fill its window at frame {INSIDE_THE_RING}"
+    );
+    for n in [PAST_THE_RING, 89] {
+        let got = rendered_centre(&mut render, n).await;
+        assert!(
+            close(got, truth(n)),
+            "R20: after the window filled, frame {n} must still be {:?}, got {got:?} \
+             (frame {} {:?}: a slot overwritten past the window)",
+            truth(n),
+            n + 60,
+            truth(n + 60)
+        );
+    }
+}
+
+#[tokio::test]
+async fn r20_a_miss_holds_the_last_frame_counts_it_and_never_blocks() {
+    // M5. A jump from frame 15 to frame 120 outruns any decoder: 120 is not in
+    // the window [30, 90), and the read-ahead restarts there. The View must
+    // hold the last frame it drew (15), never black and never a wait that
+    // would draw 120 late; the miss is counted on the tick's counter; and once
+    // the window settles at 120 the clip plays on.
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let truth = |n: u64| decoded[n as usize].centre;
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    rendered_centre(&mut render, INSIDE_THE_RING).await;
+    let before = misses(&render);
+    let held = rendered_centre(&mut render, 120).await;
+    assert!(
+        close(held, truth(INSIDE_THE_RING)),
+        "R20: a miss at frame 120 must hold the last frame drawn, frame {INSIDE_THE_RING} {:?}, \
+         got {held:?} (black: drawn black; frame 120 {:?}: the draw waited on the decoder)",
+        truth(INSIDE_THE_RING),
+        truth(120)
+    );
+    assert_eq!(misses(&render), before + 1, "R20: the miss is counted once");
+    assert!(
+        render.settle_read_ahead(120, SETTLE),
+        "R20: the read-ahead recovers at 120"
+    );
+    let after = rendered_centre(&mut render, 120).await;
+    assert!(
+        close(after, truth(120)),
+        "R20: once the window settles at 120 the clip plays on, got {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn r20_past_its_end_a_clip_draws_nothing() {
+    // M6. The clip's end is its metadata's length (§12.8.1 rule 5): frame 59
+    // is counter_60's last, and from frame 60 the clip has ended and its layer
+    // is not drawn. A clip that held past its end would show frame 59 there.
+    let source = dress_media("counter_60.mp4");
+    let decoded = decoded("counter_60.mp4");
+    let last = { decoded[59].centre };
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, 90);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(59, SETTLE),
+        "R20: the read-ahead did not settle at 59"
+    );
+    let at_last = rendered_centre(&mut render, 59).await;
+    assert!(
+        close(at_last, last),
+        "R20: frame 59 is the clip's last, {last:?}; got {at_last:?}"
+    );
+    for n in [60u64, 75] {
+        let got = rendered_centre(&mut render, n).await;
+        assert_eq!(
+            got,
+            [0, 0, 0],
+            "R20: at frame {n} counter_60 has ended and its layer must not be drawn \
+             (frame 59 {last:?}: held past its end), got {got:?}"
         );
     }
 }

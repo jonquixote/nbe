@@ -1018,6 +1018,26 @@ fn resource_demand(
             None if kind == "image" => {
                 vram = vram.saturating_add(w.saturating_mul(h).saturating_mul(4));
             }
+            // §12.11.1's clipDemandMiB (v0.4.8 row 12): a plain clip holds its
+            // head and its read-ahead window resident from show.load (§12.8.1),
+            // at the engine's RGBA8 cost for its own dimensions. The length is
+            // the probed one; a clip preflight could not probe charges nothing,
+            // because its decode failure is already the report's error.
+            None if kind == "video" || kind == "alphaVideo" => {
+                let length = report
+                    .assets
+                    .iter()
+                    .find(|x| x.id == id)
+                    .and_then(|x| x.duration_frames)
+                    .map(u64::from)
+                    .unwrap_or(0);
+                let resident = nbe_core::loop_cache::clip_resident_frames(
+                    length,
+                    nbe_core::loop_cache::HOUSE_GOP_FRAMES,
+                );
+                vram = vram
+                    .saturating_add(resident.saturating_mul(w.saturating_mul(h).saturating_mul(4)));
+            }
             None => {}
         }
     }

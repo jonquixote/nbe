@@ -101,6 +101,11 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         watchdog_clears_total: state
             .watchdog_clears_total
             .load(std::sync::atomic::Ordering::SeqCst),
+        // SPEC §12.8.1 rule 4, §10.1 (v0.4.8 row 12): the View's clip frames
+        // held because the read-ahead had not made them resident.
+        read_ahead_misses_total: state
+            .read_ahead_misses_total
+            .load(std::sync::atomic::Ordering::SeqCst),
         // Effective probe result from GPU init, capped by the manifest's
         // requested profile. The engine is the engine — it is authoritative.
         quality_profile: *state.quality_profile.lock().unwrap(),
