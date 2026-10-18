@@ -6446,14 +6446,19 @@ item):
     - `9b28f01`: the refill guard (M8 survived `show-stop-version`), the
       CI floor 8 → 9, and row 12's test column (M1–M8, the old text
       struck).
+    - `2497bc8`: these records, first form.
+    - `42c06d7`: the settle seam waits for the staging pool (finding 10: the
+      refill guard's precondition failed on CI).
   - **Green at the head,** the ratified battery unchanged in its assertions:
     `r20_clip` ~~8/8~~ 9/9 (§2c: the ninth is finding 9's refill guard,
     `9b28f01`). ~~The run of record is 05:40:04–05:40:36, load
     2.26 → 2.94.~~ (§2c: that was `89ff7a5`.) ~~The run of record is
     09:30:54–09:31:22, load 2.39 → 2.05; the job-scoped re-run of the void
-    in finding 9.~~ (§2c: that was `69a55d8`, 8/8.) The run of record is the
+    in finding 9.~~ (§2c: that was `69a55d8`, 8/8.) ~~The run of record is the
     gate's at `9b28f01`, 10:57:26–10:57:55, load 2.43 → 2.58 (the gate
-    below). The battery's decode helper now streams each frame's centre
+    below).~~ (§2c: superseded by `42c06d7`.) The run of record is the gate's
+    at `42c06d7`, 12:01:11–12:01:41, load 2.45 → 2.16. The battery's decode
+    helper now streams each frame's centre
     and hash and shares each fixture's decode across the suite; the
     assertions are unchanged.
   - **Findings, recorded:**
@@ -6578,11 +6583,54 @@ item):
        #53 recorded for step 11. R20 makes it about 2.2× per clip. A paced
        prime (uploaded by the pump after load) would remove it. It is a
        candidate, not done here.
+    10. **CI, read per test: the refill guard's precondition, and a step-5
+        line R20 opened.** Two runs of PR #57.
+
+        Run `39153017826`, at `2497bc8`, failed in two places:
+        - **`r20_clip`'s refill guard failed on its precondition, not its
+          bound:** "settled at 51, drawing 52 uploads frame 111 and nothing
+          else", left 0. On CI's paravirtual adapter the settle's last
+          uploads were still in flight, so all four staging buffers were
+          taken and the frame waited. That is the pool working as designed
+          and a hole in the test. **The fix (`42c06d7`):** the settle seam,
+          which is test-only, waits for the pool to drain once settled.
+        - **The dress, step 5, "a 15-frame mix drops no frames":** 2 drops,
+          asserted on every machine. The CI artifact puts a watchdog fault
+          (`misses=4`) about 180 ms into the mix. A1, a plain clip taken
+          4.0 s earlier (about frame 120), was the outgoing layer and still
+          streaming. The fault came before A1 left the View, so before the
+          re-prime burst. On main, A1 past frame 30 drew nothing, so step 5
+          had never blended two live video layers on CI; main's CI is green
+          12 of 12. A second trip came in step 11's region (`misses=12`;
+          drops 3; `readAheadMisses` 7, recorded and not gated on CI).
+
+        Run `39153908984`, at `42c06d7`, was **all green**:
+        - `r20_clip` ran 9, exercised 9, with a refill median of **1.74 ms**
+          on CI's adapter (0.86–2.45);
+        - the dress ran 29, passed 29, with 11 skips, so exercised 18;
+        - step 5 passed.
+
+        **Step 5 on CI is therefore intermittent under R20: 1 failure in 2
+        runs.** The cause is narrowed to the two-layer blend while a clip
+        streams, on the paravirtual adapter. It is not proven further:
+        `renderGpuTimeMs` is 0 there, and the tick is one second wide. It is
+        disclosed as a line R20 opened (constraint 5), not re-baselined: the
+        step stays asserted on every machine. Whether it becomes
+        normative-only, or what bounds it on CI, is the user's to rule.
+
+        **R10, both runs:** `telemetry_tick_wires_the_live_session_counter`
+        is ok in both. The maximum per-CPU load was 5.97 (`39153017826`,
+        load1 17.90 / 3 CPUs, 18:13:08Z) and 6.29 (`39153908984`, 18.88 / 3,
+        18:26:05Z). Both are inside the envelope (max 9.67), and the ceiling
+        stays 12.09. No sighting.
   - **The falsification, engine suite** (`r20_clip`, 9 tests). ~~The final
     battery on `89ff7a5`'s tests.~~ (§2c: superseded. A whole battery ran on
     `89ff7a5`, and every mutant was killed then. The code changed after it,
     with the staging pool `69a55d8` and the refill guard `9b28f01`, so the
-    battery of record is re-run whole on `9b28f01`, below.) Each mutant was
+    ~~battery of record is re-run whole on `9b28f01`, below~~ battery was
+    re-run whole on `9b28f01`, below.) (§2c, again: `42c06d7` then changed the
+    settle seam the mapped tests use, finding 10, so the battery of record is
+    the re-run on `42c06d7`, after this table.) Each mutant was
     applied from an exact match, built, run under the load rule, restored
     `cmp`-identical and `git`-clean against HEAD, and rebuilt. Voided windows
     were re-run job-scoped. M5b's anchor moved with `9b28f01` (the pump call
@@ -6611,12 +6659,29 @@ item):
     while that mutant held it. The battery was killed, the stray mutant line
     reverted by hand, `git diff` checked to hold only the intended edits, and
     the tree rebuilt. That whole battery is superseded by this one.
+
+    **The battery of record, re-run whole on `42c06d7`** (the same mutants and
+    anchors; every window valid, no void; every restore `cmp`-identical and
+    `git`-clean, every rebuild green):
+
+    | # | Mapped test, what failed | Window, load |
+    |---|---|---|
+    | M1 | weaker and stronger forms, 6 of 9; `rendered frame 30 … got [0, 0, 0]` | 11:30:49–11:31:18, 2.28 → 2.62 |
+    | M2 | **the stronger form** `got [36, 88, 199]`, the held frame; the weaker passes, by design; 6 of 9 | 11:32:25–11:34:32, 2.39 → 2.85 |
+    | M2b | the full-length test, `did not fill its window at frame 45`; 4 of 9 | 11:35:55–11:37:43, 2.40 → 2.12 |
+    | M3 | the stronger form `got [86, 152, 75]`, frame 44; 4 of 9 | 11:38:20–11:38:49, 2.35 → 2.26 |
+    | M4 | the window test, `must fill its window [45, 105) … did not settle`; 3 of 9 | 11:40:26–11:41:54, 2.30 → 2.59 |
+    | M5 | the miss test alone, `got [0, 0, 0] (black …)` | 11:42:48–11:43:17, 2.13 → 2.18 |
+    | M5b | the miss test, `got [80, 154, 67]`, drawn late; 2 of 9 | 11:43:54–11:44:25, 2.36 → 2.33 |
+    | M6 | the end test alone, frame 59 `[127, 224, 11]` held past its end | 11:45:02–11:45:32, 2.11 → 1.95 |
+    | M6b | the full-length test, `rendered frame 90 … got [0, 0, 0]`; 4 of 9 | 11:46:24–11:46:51, 2.35 |
+    | M8 | the refill test alone, median 11.12 ms against 8.33 ms | 11:48:28–11:49:00, 2.26 → 1.91 |
   - **The falsification, the dress** (each mutant built into the dev-profile
     engine the dress spawns, restored, rebuilt; only the R20 steps failed,
     and the other 28 held). ~~The runs on `89ff7a5`: M1 06:44:08–06:45:09,
     M2 06:46:49–06:47:48.~~ (§2c: superseded by the battery of record on
-    `9b28f01`. Both mutants were killed the same way then, M2 with 69
-    misses.)
+    ~~`9b28f01`~~ `42c06d7`; see below. Both mutants were killed the same way
+    then, M2 with 69 misses.)
     - **M1** (10:37:43–10:38:43, 2.27 → 2.39): 12c
       `the picture must pass the clip's head (frames 45–89 recorded)`. Its
       logged sequence is R20 itself on the recorded picture: indices 1–29,
@@ -6625,6 +6690,10 @@ item):
     - **M2** (10:47:53–10:48:52, 2.48 → 2.29; its first run 10:39:07–10:40:08,
       1.98 → 3.06, VOID, killed the same way with 83): 12b
       `the read-ahead missed 110 frame(s) of the counter clip`.
+    - **Of record, on `42c06d7`:** M1 (11:49:37–11:50:37, 2.18 → 2.65), 12c,
+      the recorded sequence 1–29, then black; M2 (11:51:16–11:52:16,
+      2.25 → 2.42), 12b, `the read-ahead missed 117 frame(s)`. Both restored
+      `cmp`-identical and `git`-clean, and rebuilt.
   - **No CI-only leg** (constraint 4). Every guard runs on the normative
     machine. The dress's 12b and 12c are normative-only, and on CI 12b logs
     its misses, recorded and not gated. The refill guard (M8) runs on CI as
@@ -6658,7 +6727,32 @@ item):
 
     No void in the gate. The gate before it, on `89ff7a5`, failed, and its
     failures are finding 9 (that gate's workspace and `npm test` windows
-    were VOID, 2.09 → 3.37 and 2.26 → 3.70).
+    were VOID, 2.09 → 3.37 and 2.26 → 3.70). (§2c: superseded as the gate of
+    record by the gate at `42c06d7`, below, after finding 10's seam change.)
+  - **The gate at `42c06d7`, of record** (scratchpad `r20/gate3/`,
+    11:55–12:11; AC, under `caffeinate`; `pmset`: no sleep, wake or battery
+    event). Untimed: release and test builds, `fmt --check`, workspace
+    `clippy -D warnings`, `tsc`, all green.
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | workspace | 525 passed, 0 failed, 4 ignored | 11:56:30–11:58:56 | 2.17 → 2.73 |
+    | `r20_clip` | 9/9 | 12:01:11–12:01:41 | 2.45 → 2.16 |
+    | `npm test` | 198/198 (job-scoped re-run of the void below) | 12:10:57–12:11:05 | 2.06 → 2.13 |
+    | automation / effects / belief | green | 12:03:34–12:03:40 | 2.28 → 2.42 |
+    | e2e slate-release | green | 12:03:40–12:03:56 | 2.42 → 2.85 |
+    | e2e recall | green | 12:04:41–12:04:54 | 2.34 → 2.29 |
+    | e2e take-duration | green | 12:04:54–12:04:59 | 2.29 → 2.91 |
+    | e2e resync-end | green | 12:05:59–12:06:14 | 2.37 → 2.22 |
+    | e2e package-reconcile | green | 12:06:14–12:06:30 | 2.22 → 2.53 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 12:07:30–12:08:49 | 2.47 → 2.24 |
+    | e2e resync-request | green | 12:08:49–12:09:16 | 2.24 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 12:09:16–12:09:43 | 2.24 → 2.40 |
+    | the dress | 29/29; 0 misses; 149 recorded counter frames in order, indices 1–148 | 12:09:43–12:10:42 | 2.40 → 2.19 |
+
+    One void: `npm test`'s first run (12:01:41–12:01:49, 2.16 → 4.28, 198/198
+    in it). Its likely cause is the suite's own eight-second parallel burst,
+    as at the first gate; it is not proven. It was re-run job-scoped.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
