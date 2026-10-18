@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 
 import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
+import { StatePersistence } from "./persistence.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { preflightBin } from "./package.js";
 import { tempDir } from "./test-tmp.js";
@@ -152,13 +153,16 @@ async function engine(
   return { ws };
 }
 
-function alertRows(): Array<Record<string, unknown>> {
+function rows(): Array<Record<string, unknown>> {
   if (!existsSync(auditPath)) return [];
   return readFileSync(auditPath, "utf8")
     .split("\n")
     .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l) as Record<string, unknown>)
-    .filter((r) => r["command"] === "alert");
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+function alertRows(): Array<Record<string, unknown>> {
+  return rows().filter((r) => r["command"] === "alert");
 }
 
 const idsOf = (alerts: unknown): string[] => ((alerts as Array<{ id: string }>) ?? []).map((a) => a.id);
@@ -228,14 +232,29 @@ test("an unacknowledged stream.start raises after the window, not before, on eve
     [["command.unacknowledged", "raised", "command.unacknowledged.stream"]],
     "one audit row, on the raise",
   );
-  assert.equal(state.streamState, "live", "part A changes no belief: the control plane still believes live");
-  // The handoff: a later acknowledgement proves the start was processed (a
-  // refusal), so (b) clears and (a), the standing contradiction, raises.
+  // ~~assert.equal(state.streamState, "live", "part A changes no belief: the
+  // control plane still believes live")~~ (§2c, v0.4.8 row 11: the start's
+  // claim expired with its window, so the next fresh report, `none`, corrects
+  // the belief to `idle` as a detection transaction, and the (b) alert stands.)
+  assert.ok(await until(() => state.streamState === "idle", 2000), "row 11: the expired claim gives way to the fresh report");
+  const corrected = rows().filter((r) => r["event"] === "belief.corrected");
+  assert.deepEqual(
+    corrected.map((r) => r["detail"]),
+    [{ field: "streamState", from: "live", to: "idle", report: "none", reportAgeMs: (corrected[0]!["detail"] as Record<string, unknown>)["reportAgeMs"] }],
+    "one belief.corrected row",
+  );
+  assert.deepEqual(idsOf(state.alerts), ["command.unacknowledged.stream"], "the expiry alert stands: a correction clears no alert");
+  // ~~The handoff: a later acknowledgement proves the start was processed (a
+  // refusal), so (b) clears and (a), the standing contradiction, raises.~~
+  // (§2c, v0.4.8 row 11: the belief already follows the report, so there is
+  // no contradiction for (a) to take over. A later acknowledgement still
+  // proves the start was processed and clears (b), and the lane is empty.
+  // The handoff itself stays guarded at unit level, in alerts.test.ts, where
+  // the lane runs without corrections.)
   refuse.delete("automation.hold");
   await send(admin, "automation.hold", { hold: false });
-  assert.ok(await until(() => idsOf(state.alerts).includes("stream.divergence")), "(a) takes the contradiction over");
-  assert.deepEqual(idsOf(state.alerts), ["stream.divergence"]);
-  assert.match(state.alerts[0]!.reason, /believes the stream live; the engine reports it none/);
+  assert.ok(await until(() => state.alerts.length === 0), "(b) clears on the later acknowledgement");
+  assert.equal(state.streamState, "idle");
 });
 
 test("held: a show.stop the engine never acknowledges raises outputs.held with its audit row; the explicit stops clear it", async (t) => {
@@ -256,7 +275,10 @@ test("held: a show.stop the engine never acknowledges raises outputs.held with i
   assert.ok(warnings.some((w) => w.startsWith("show.stop: no acknowledgement")), "the console warn stays as it is");
   await send(admin, "record.stop", {});
   await send(admin, "stream.stop", {});
-  assert.ok(await until(() => state.alerts.length === 0), "the heal clears it");
+  // ~~"the heal clears it"~~ (§2c, v0.4.8 row 11, §10.1.2's clearing rule for
+  // `outputs.held`): a real acknowledgement clears it, here the operator's
+  // `record.stop`, which the engine acknowledges only while it is recording.
+  assert.ok(await until(() => state.alerts.length === 0), "a later stop's own acknowledgement clears it (path ii)");
   const held = alertRows().filter((r) => (r["detail"] as Record<string, unknown>)["alert"] === "outputs.held");
   assert.deepEqual(
     held.map((r) => [r["event"], (r["detail"] as Record<string, unknown>)["edge"], (r["detail"] as Record<string, unknown>)["severity"]]),
@@ -265,7 +287,44 @@ test("held: a show.stop the engine never acknowledges raises outputs.held with i
       ["show.stopHeld", "cleared", "warning"],
     ],
   );
-  assert.equal((held[1]!["detail"] as Record<string, unknown>)["cause"], "the held outputs were stopped");
+  // ~~"the held outputs were stopped"~~ (§2c, v0.4.8 row 11).
+  assert.match(String((held[1]!["detail"] as Record<string, unknown>)["cause"]), /^record\.stop acknowledged \(stateVersion \d+\): the stop is witnessed$/);
+});
+
+test("held, path (iv): a control-plane restart clears the held alert, as it clears the whole lane (the lane is not persisted)", async (t) => {
+  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+  await engine(t, () => "closed", new Set(["show.stop"]));
+  const admin = conn("admin", ADMIN);
+  t.after(() => admin.close());
+  await connect(admin);
+  await send(admin, "show.load", { packagePath: pkgPath });
+  await send(admin, "show.start", {});
+  await send(admin, "record.start", {});
+  await send(admin, "stream.start", { url: "rtmp://127.0.0.1:9/live/k" });
+  await send(admin, "show.stop", {});
+  assert.ok(await until(() => idsOf(state.alerts).includes("outputs.held")), "the held alert raises");
+  // The restart, as `index.ts` runs it: a new state, restored from what the
+  // first one persisted, under a new server.
+  const stateFile = join(tempDir("nbe-lane-state-"), "control-plane-state.json");
+  const first = new StatePersistence(state, stateFile);
+  first.onDirty();
+  first.flushNow();
+  await server.close();
+  const restarted = new ControlPlaneState();
+  new StatePersistence(restarted, stateFile).restore();
+  state = restarted;
+  server = await createControlPlaneServer({
+    port: 0,
+    auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render" } },
+    audit: new AuditLog(auditPath),
+    state,
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+    showStopGraceMs: WINDOW,
+    warn: (m) => warnings.push(m),
+  });
+  await new Promise((r) => setTimeout(r, 600)); // let the evaluator run
+  assert.deepEqual(idsOf(state.alerts), [], "the restarted lane is empty");
+  assert.deepEqual(idsOf((await httpStatus()).alerts), [], "and every surface says so");
 });
 
 test("R18: a sink that really fails raises audit.sinkFailed and the health flag, prints one stderr line, and writes no row for itself", async (t) => {

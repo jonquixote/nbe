@@ -213,9 +213,11 @@ export interface Stack {
   log: string[];
   ws: WebSocket;
   ticks: Array<Record<string, unknown>>;
-  /** Every `stateChange` push frame on the operator socket, with its arrival time. */
-  stateChanges: Array<{ t: number; stateVersion: number }>;
+  /** Every `stateChange` push frame on the operator socket, with its arrival time and the stream belief it carried. */
+  stateChanges: Array<{ t: number; stateVersion: number; streamState: string | undefined }>;
   warnings: string[];
+  /** The control plane's audit file, for legs that read its rows (`belief.corrected`, alert edges). */
+  auditPath: string;
   close: () => Promise<void>;
 }
 
@@ -233,10 +235,11 @@ export async function stack(): Promise<Stack> {
   assert.ok(existsSync(ENGINE_BIN), `the engine binary must be built: ${ENGINE_BIN} (cargo build --release -p nbe-engine)`);
   const state = new ControlPlaneState();
   const warnings: string[] = [];
+  const auditPath = join(tempDir("nbe-ssv-audit-"), "audit.jsonl");
   const server = await createControlPlaneServer({
     port: 0,
     auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render" } },
-    audit: new AuditLog(join(tempDir("nbe-ssv-audit-"), "audit.jsonl")),
+    audit: new AuditLog(auditPath),
     state,
     persistence: { onDirty: () => {}, flushNow: () => {} },
     warn: (m) => warnings.push(m),
@@ -270,7 +273,10 @@ export async function stack(): Promise<Stack> {
   ws.on("message", (raw: Buffer) => {
     const f = JSON.parse(raw.toString()) as Record<string, unknown>;
     if (f["kind"] === "telemetry") ticks.push((f["data"] ?? {}) as Record<string, unknown>);
-    if (f["kind"] === "stateChange") stateChanges.push({ t: now(), stateVersion: f["stateVersion"] as number });
+    if (f["kind"] === "stateChange") {
+      const snap = (f["state"] ?? {}) as Record<string, unknown>;
+      stateChanges.push({ t: now(), stateVersion: f["stateVersion"] as number, streamState: snap["streamState"] as string | undefined });
+    }
   });
   return {
     server,
@@ -282,6 +288,7 @@ export async function stack(): Promise<Stack> {
     ticks,
     stateChanges,
     warnings,
+    auditPath,
     close: async () => {
       engine.kill("SIGKILL");
       ws.close();
@@ -379,6 +386,10 @@ export interface Observed {
   streamOnAirAfterStop: boolean | null;
   controlPlaneStreamState: string;
   controlPlaneRecordState: string;
+  /** The stream belief on `show.stop`'s own `stateChange` frame: what the
+   * command's path left (v0.4.8 row 11: `held` when unacknowledged, before any
+   * correction). Null when no frame carried it. */
+  controlPlaneStreamStateAtStop: string | null;
   /** The control plane's outputs at the moment `show.stop` crossed the wire: between the send and the ack. */
   controlPlaneAtSend: { record: string; stream: string };
   stopWarned: boolean;
@@ -491,6 +502,7 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
     const tResp = now();
     assert.equal(stopReply.status, "ok", `show.stop: ${JSON.stringify(stopReply)}`);
     const stopVersion = stopReply["stateVersion"] as number;
+    const cpStreamAtStop = s.stateChanges.find((c) => c.stateVersion === stopVersion)?.streamState ?? null;
     if (!opts.concurrent) assert.equal(stopVersion, predicted, "nothing else was dispatched before the stop");
     await acked;
     s.tap.onFrame = null;
@@ -546,11 +558,14 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
     await sleep(WATCH_MS);
 
     // A held stop heals by the operator's explicit stops; the engine, already
-    // idle, refuses them harmlessly.
+    // idle, refuses them harmlessly. (§2c, v0.4.8 row 11: a stream is stopped
+    // from `live` or `held`, named explicitly. By now a corrected stream
+    // belief reads `idle`, and there is nothing to stop.)
     let afterHeal: Observed["afterHeal"] = null;
-    if (s.state.recordState === "recording" || s.state.streamState === "live") {
+    const streamToStop = s.state.streamState === "live" || s.state.streamState === "held";
+    if (s.state.recordState === "recording" || streamToStop) {
       if (s.state.recordState === "recording") await ok(s, "record.stop", {});
-      if (s.state.streamState === "live") await ok(s, "stream.stop", {});
+      if (streamToStop) await ok(s, "stream.stop", {});
       await sleep(WATCH_MS / 4);
       afterHeal = { record: s.state.recordState, stream: s.state.streamState };
     }
@@ -580,6 +595,7 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
       streamOnAirAfterStop,
       controlPlaneStreamState: cpStream,
       controlPlaneRecordState: cpRecord,
+      controlPlaneStreamStateAtStop: cpStreamAtStop,
       controlPlaneAtSend: atSend ?? { record: "(never crossed)", stream: "(never crossed)" },
       stopWarned: s.warnings.some((w) => w.startsWith("show.stop:")),
       engineStreamTransportAfterStop: String(tickAfterStop["streamTransportState"]),

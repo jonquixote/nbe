@@ -12,6 +12,7 @@ import {
 } from "../package.js";
 import type { CommandRegistry, DispatchDeps, HandlerCtx, HandlerOutput } from "../dispatch.js";
 import { SHOW_STOP_FORCE_WARNING, SHOW_STOP_HELD_WARNING } from "../dispatch.js";
+import { unreachable } from "../state.js";
 
 export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
   reg.set("show.load", {
@@ -163,12 +164,29 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
             state.recordState = "idle";
             state.streamState = "idle";
             deps.persistence.flushNow();
+          } else {
+            // Not acknowledged (a timeout, an acknowledgement the engine
+            // withheld after a failed quiesce, or no render node): the stop's
+            // claim on the belief has expired (§10.1.3), and the control plane
+            // cannot know the outputs. ~~The outputs are HELD at their prior
+            // state~~ (§2c, v0.4.8 row 11): a `live` stream's belief becomes
+            // `held`, §5.9.5's limbo, on this command's path, so automation
+            // sees live→held. The next fresh engine report that postdates
+            // this expiry corrects it (§10.1.4). The recording stays
+            // `recording`: the engine reports no record state (§13.2's
+            // exception 2). The lane's held alert stands until a real
+            // acknowledgement (§10.1.2's clearing rule for `outputs.held`).
+            switch (state.streamState) {
+              case "live":
+                state.streamState = "held";
+                break;
+              case "idle":
+              case "held":
+                break;
+              default:
+                unreachable(state.streamState);
+            }
           }
-          // Not acknowledged (a timeout, an acknowledgement the engine
-          // withheld after a failed quiesce, or no render node): the outputs
-          // are HELD at their prior state, since the control plane cannot
-          // know them. The operator's explicit record.stop / stream.stop
-          // heals it; reconciling from the engine's report is R17's.
           return {};
         },
       };

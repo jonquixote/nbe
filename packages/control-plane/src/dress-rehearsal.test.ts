@@ -157,6 +157,8 @@ let server: ControlPlaneServer;
 /** How many `show.stop` directives R16's knob delayed (`NBE_DRESS_STOP_DELAY_MS`). */
 let stopDelayFired = 0;
 let state: ControlPlaneState;
+/** The control plane's audit file: step 9 reads its `belief.corrected` row (D6). */
+let auditFile: string;
 let engine: ChildProcess;
 let engineLog: string[] = [];
 let ws: WebSocket;
@@ -252,10 +254,11 @@ before(async () => {
 
   const tmp = tempDir("nbe-dress-");
   state = new ControlPlaneState();
+  auditFile = join(tmp, "audit.jsonl");
   server = await createControlPlaneServer({
     port: 0,
     auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render", [OPERATOR]: "operator" } },
-    audit: new AuditLog(join(tmp, "audit.jsonl")),
+    audit: new AuditLog(auditFile),
     state,
     persistence: { onDirty: () => {}, flushNow: () => {} },
     // The real §5.9.5 window: this gate measures the production number.
@@ -899,6 +902,7 @@ test("[P10] step 9: a live stream publishes beside the running show and stops in
     const startReply = await ok("stream.start", {
       url: `rtmp://127.0.0.1:${sink.port}/live/rehearsal`,
     });
+    const startAt = Date.now();
     const applied = await server.awaitApplied(
       (startReply["stateVersion"] ?? 0) as number,
       COMMAND_MS,
@@ -914,10 +918,37 @@ test("[P10] step 9: a live stream publishes beside the running show and stops in
         `stream.start produced no engine ack and no capability refusal in the engine log — pipeline wedged (last log lines: ${JSON.stringify(engineLog.slice(-3))})`,
       );
       console.log("SKIP stream step: engine refused stream.start (no hardware H.264 encoder / zero-copy chain on this machine)");
-      // The control plane recorded the command ("as commanded"); put it back.
-      await ok("stream.stop", {});
+      // ~~The control plane recorded the command ("as commanded"); put it
+      // back. `await ok("stream.stop", {})`~~ (§2c, v0.4.8 row 11, D6): the
+      // dress rehearses the new truth rather than hiding the race. The
+      // start's claim expired with its window, and the next fresh report
+      // (`none`) corrects the belief to `idle` (§10.1.4). Wait for that,
+      // bounded by §5.9.5's window plus two ticks from the start. Then there
+      // is nothing to stop, and `stream.stop` is refused by name: the race
+      // becomes a falsification of D3's precondition.
+      const bound = GRACE_MS + 2 * TICK_MS;
+      while (state.streamState !== "idle" && Date.now() - startAt < bound) await sleep(50);
+      assert.equal(state.streamState, "idle", `the belief corrects to idle within ${bound} ms of the refused start (§10.1.4)`);
+      const row = readFileSync(auditFile, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .find((r) => r["event"] === "belief.corrected");
+      assert.ok(row, "the correction wrote its belief.corrected row");
+      const correctedAfterMs = (row["ts"] as number) - startAt;
+      assert.ok(correctedAfterMs <= bound, `corrected ${correctedAfterMs} ms after the start, inside ${bound} ms`);
+      const stop = await send("stream.stop", {});
+      assert.deepEqual(
+        [stop["status"], stop["error"]],
+        ["error", { code: "E_FORBIDDEN_STATE", message: "stream is idle" }],
+        "D3's precondition: from idle there is nothing to stop",
+      );
+      console.log(
+        `PATH step 9: refused start; the belief corrected live -> idle ${correctedAfterMs} ms after stream.start (bound ${bound} ms); stream.stop refused ("stream is idle")`,
+      );
       return;
     }
+    console.log("PATH step 9: the stream exercised (the engine acknowledged stream.start)");
     await untilTelemetry("the tick reports the stream live (as commanded)", (t) =>
       (t["data"] as Record<string, unknown>)?.["streamState"] === "live",
     );

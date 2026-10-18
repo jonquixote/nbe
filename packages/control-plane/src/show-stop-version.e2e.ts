@@ -200,7 +200,12 @@ test("[queue 2] concurrent: a second operator's command inside the ack window is
   assert.equal(r.concurrent?.stateVersion, o.stopVersion + 1, "the second command takes the next version");
 });
 
-test("[queue 2] held: a quiesce that fails withholds the ack, and the control plane holds the outputs until the operator's explicit stops", async (t) => {
+// (§2c, v0.4.8 row 11: this test's name ended "and the control plane holds the
+// outputs until the operator's explicit stops". The stream's belief goes
+// `held`, §5.9.5's limbo, on the command's path, and a fresh report then
+// corrects it; the recording stays `recording`, since no engine report
+// covers it.)
+test("[queue 2] held: a quiesce that fails withholds the ack; the stream's belief goes held, then follows the engine; the recording stays recording until the operator's record.stop", async (t) => {
   const r = await leg({ record: true, stream: true, failRecordFinalize: true }, (why) => t.skip(why));
   if (!r) return;
   report(r, { record: true, stream: true, failRecordFinalize: true });
@@ -213,16 +218,22 @@ test("[queue 2] held: a quiesce that fails withholds the ack, and the control pl
     o,
     {
       ...o,
+      // (§2c, row 11) ~~["stream.stop", o.stopVersion + 3]~~: the stream's
+      // belief was corrected to idle, so there is no stream to stop.
+      // ~~view.fallback at o.stopVersion + 1, record.stop at + 2~~: the
+      // correction held→idle is a detection transaction that bumps the
+      // version once (§10.1.4, D4), and it lands between the stop and the
+      // slate, so every later directive is one version on. It is not a
+      // directive, so it takes no row here.
       directivesFromStop: [
         ["show.stop", o.stopVersion],
-        ["view.fallback", o.stopVersion + 1],
-        ["record.stop", o.stopVersion + 2],
-        ["stream.stop", o.stopVersion + 3],
+        ["view.fallback", o.stopVersion + 2],
+        ["record.stop", o.stopVersion + 3],
       ],
-      // show.stop failed (no ack); the slate applied; the heal's stops are
-      // refused by an engine already idle (no ack).
-      acksFromStop: [o.stopVersion + 1],
-      failedFromStop: ["show.stop", "record.stop", "stream.stop"],
+      // show.stop failed (no ack); the slate applied; the heal's record.stop
+      // is refused by an engine already idle (no ack).
+      acksFromStop: [o.stopVersion + 2],
+      failedFromStop: ["show.stop", "record.stop"],
       skippedFromStop: 0,
       seqGapsFromStop: 0,
       resyncsFromStop: 0,
@@ -231,10 +242,15 @@ test("[queue 2] held: a quiesce that fails withholds the ack, and the control pl
       stopWarned: true,
       // HELD: the control plane cannot know, so it does not report idle.
       controlPlaneRecordState: "recording",
-      controlPlaneStreamState: "live",
-      // What the operator sees on the tick: the control plane's live beside
-      // the engine's own transport, not live.
-      tickStreamStateAfterStop: "live",
+      // (§2c, row 11) ~~"live"~~: on show.stop's own frame the stream belief
+      // is `held`, and the next fresh report (the engine's `closed`) corrects
+      // it to `idle`.
+      controlPlaneStreamStateAtStop: "held",
+      controlPlaneStreamState: "idle",
+      // ~~What the operator sees on the tick: the control plane's live beside
+      // the engine's own transport, not live.~~ (§2c, row 11): the tick
+      // carries the corrected belief beside the engine's `closed`.
+      tickStreamStateAfterStop: "idle",
       engineStreamTransportAfterStop: "closed",
       streamOnAirAfterStop: false,
       sidecarMarkers: null,

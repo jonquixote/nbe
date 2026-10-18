@@ -526,7 +526,9 @@ test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the
   assert.deepEqual(warnings, [HELD_WARNING], "the timeout branch must be reachable in production, with the exact string");
   assert.equal(state.showState, "STOPPED");
   assert.equal(state.recordState, "recording", "not acknowledged: the control plane cannot know, so it holds");
-  assert.equal(state.streamState, "live", "not acknowledged: the control plane cannot know, so it holds");
+  // ~~"live"~~ (§2c, v0.4.8 row 11): a live stream's belief becomes `held`,
+  // §5.9.5's limbo, at the window's expiry; the recording stays `recording`.
+  assert.equal(state.streamState, "held", "not acknowledged: the control plane cannot know, so it holds");
   admin.close();
   render.close();
 });
@@ -607,7 +609,8 @@ test("show.stop: a reconnect's resync at the stop's own version does not stand i
   assert.equal(r.status, "ok");
   assert.equal(resyncVersion, r.stateVersion, "the reconnect's resync was acknowledged at the stop's own version");
   assert.deepEqual(warnings, [HELD_WARNING], "the stop itself was never acknowledged");
-  assert.equal(state.streamState, "live", "held: a resync's acknowledgement says nothing about the stop");
+  // ~~"live"~~ (§2c, v0.4.8 row 11): `held`, §5.9.5's limbo.
+  assert.equal(state.streamState, "held", "held: a resync's acknowledgement says nothing about the stop");
   admin.close();
 });
 

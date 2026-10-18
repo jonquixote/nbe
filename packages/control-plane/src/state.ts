@@ -14,8 +14,32 @@ import type { Alert } from "./alerts.js";
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
 export type SceneState = "IDLE" | "ARMED" | "VIEW" | "TRANSITIONING";
 export type ShowState = "UNLOADED" | "LOADED" | "RUNNING" | "STOPPED";
-export type StreamState = "idle" | "live";
+/**
+ * The control plane's belief about the stream (SPEC §13.2's domain).
+ * `held` is §5.9.5's limbo: a stop was commanded and the stream's state is
+ * unknown (v0.4.8 row 11). Every consumer switches over all three, with a
+ * `never` default, so a fourth value fails `tsc` where it is read.
+ */
+export type StreamState = "idle" | "live" | "held";
 export type RecordState = "idle" | "recording";
+
+/** Exhaustiveness: a `switch`'s default that `tsc` refuses unless every case is handled. */
+export function unreachable(x: never): never {
+  throw new Error(`unreachable: ${String(x)}`);
+}
+
+/** Whether the stream counts as active: `live`, or `held` (its stop's outcome unknown). */
+export function streamActive(s: StreamState): boolean {
+  switch (s) {
+    case "live":
+    case "held":
+      return true;
+    case "idle":
+      return false;
+    default:
+      return unreachable(s);
+  }
+}
 export type AudioMode = "follow" | "crossfade" | "cut" | "mute";
 
 // ---------------------------------------------------------------------------
@@ -227,8 +251,9 @@ export class ControlPlaneState {
     return out;
   }
 
+  /** An output is active while it is live, recording, or `held` (D3: held is output-active). */
   outputsActive(): boolean {
-    return this.recordState === "recording" || this.streamState === "live";
+    return this.recordState === "recording" || streamActive(this.streamState);
   }
 
   requirePackage(): PackageInfo {

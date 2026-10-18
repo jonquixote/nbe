@@ -247,6 +247,26 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     ttlMs: ENGINE_TELEMETRY_TTL_MS,
     engineReport: () => world.last,
     auditSinkOk: () => audit.sinkOk,
+    // §10.1.4 (v0.4.8 row 11, D4): a belief correction lands like the engine's
+    // `itemEvent`, as a detection transaction: one version bump and one audit
+    // row (`belief.corrected`). Unlike `itemEvent`, it broadcasts no
+    // `stateChange` frame (§5.4.1: one per accepted command) and fires no
+    // automation trigger: automation reacts to committed intent, on the
+    // command path, not to environmental reconciliation.
+    correct: (c) => {
+      const before = state.stateVersion;
+      state.streamState = c.to;
+      state.bump();
+      opts.persistence.onDirty();
+      audit.record({
+        kind: "command",
+        command: "engine:report",
+        event: "belief.corrected",
+        detail: { field: c.field, from: c.from, to: c.to, report: c.token, reportAgeMs: c.ageMs },
+        stateVersionBefore: before,
+        stateVersionAfter: state.stateVersion,
+      });
+    },
   });
   const signalTimer = setInterval(() => signals.evaluate(), 250);
   signalTimer.unref?.();

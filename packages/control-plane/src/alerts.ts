@@ -10,8 +10,16 @@
 //!
 //! Part A is additive: nothing here changes a belief field, an enum, or an
 //! automation rule's input. It only announces.
+//!
+//! Part B (SPEC §10.1.3–§10.1.4, v0.4.8 rows 10 and 11) adds the belief's
+//! side, without changing what the lane announces: a command's claim on the
+//! stream belief ends at its acknowledgement or at its window's
+//! unacknowledged end, and with no live claim a fresh report that postdates
+//! the anchor corrects the belief through `correct` (a detection transaction,
+//! the server's). The held alert's clearing follows §10.1.2's rule for
+//! `outputs.held`: a real acknowledgement, or the show's lifecycle.
 
-import type { ControlPlaneState } from "./state.js";
+import { unreachable, type ControlPlaneState, type StreamState } from "./state.js";
 import type { EngineReport } from "./telemetry.js";
 
 export type AlertSeverity = "info" | "warning" | "critical";
@@ -89,8 +97,43 @@ interface Pending {
   /** When an acknowledgement at or above `version` (never a resync's) arrived. */
   processedAt: number | null;
   exact: boolean;
+  /** When the window ended with no acknowledgement: the claim's expiry (§10.1.3). */
+  expiredAt: number | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
+
+/** A belief correction (§10.1.4): the server lands it as a detection transaction. */
+export interface BeliefCorrection {
+  field: "streamState";
+  from: StreamState;
+  to: StreamState;
+  /** The engine report's `streamTransportState`. */
+  token: string;
+  /** How old the report was when it corrected the belief, in ms. */
+  ageMs: number;
+}
+
+/**
+ * §10.1.4's mapping, from the engine's transport token to the belief (D1).
+ * `reconnecting` reads `live`: a redial is §9.5's survival shape, and the
+ * belief stays stable through a blip, as the lane does. An unknown token
+ * corrects nothing.
+ */
+export function beliefFromReport(token: string): StreamState | null {
+  switch (token) {
+    case "live":
+    case "reconnecting":
+      return "live";
+    case "none":
+    case "closed":
+      return "idle";
+    default:
+      return null;
+  }
+}
+
+/** The stops whose own acknowledgement witnesses an actual stop (§10.1.2, `outputs.held`). */
+const STOPS = new Set(["stream.stop", "record.stop", "show.stop"]);
 
 export interface SignalInputs {
   state: ControlPlaneState;
@@ -102,6 +145,8 @@ export interface SignalInputs {
   ttlMs: number;
   engineReport: () => EngineReport | null;
   auditSinkOk: () => boolean;
+  /** Lands a belief correction (§10.1.4): one bump, one audit row, no frame, no automation. */
+  correct: (c: BeliefCorrection) => void;
 }
 
 const OUTPUT_OF: Record<string, Output | undefined> = {
@@ -133,6 +178,13 @@ export class OperatorSignals {
    */
   private showStopPending: number | null = null;
   private showStopTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The unacknowledged `show.stop` whose outputs are held: its own late
+   * acknowledgement clears the held alert (§10.1.2's clearing rule for
+   * `outputs.held`, path (i)). It survives the hold: ~~`held()` drops the
+   * pending entry~~ (§2c, v0.4.8 row 11).
+   */
+  private heldStopVersion: number | null = null;
   /** The latest moment the engine is known to have caught up with the stream's commands. */
   private streamAnchor = 0;
   private lastRegisteredAt: number | null = null;
@@ -155,6 +207,13 @@ export class OperatorSignals {
 
   /** An output command (or `show.stop`) was accepted at `version`. */
   onAccepted(command: string, version: number): void {
+    // §10.1.2's clearing rule for `outputs.held`, path (iii): the show's
+    // lifecycle ends an unresolved hold, the cause named in the clear row.
+    if (command === "show.load" || command === "show.unload") {
+      this.heldStopVersion = null;
+      this.i.lane.clear(ALERT.outputsHeld.id, `cleared by ${command} (stateVersion ${version})`);
+      return;
+    }
     if (command === "show.stop") {
       this.showStopPending = version;
       if (this.showStopTimer) clearTimeout(this.showStopTimer);
@@ -172,7 +231,7 @@ export class OperatorSignals {
     const unacked = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;
     this.i.lane.clear(unacked.id, `superseded by ${command} (stateVersion ${version})`);
     if (output === "stream") this.i.lane.clear(ALERT.streamDivergence.id, `superseded by ${command} (stateVersion ${version})`);
-    const entry: Pending = { command, version, processedAt: null, exact: false, timer: null };
+    const entry: Pending = { command, version, processedAt: null, exact: false, expiredAt: null, timer: null };
     entry.timer = setTimeout(() => this.windowElapsed(output, entry), this.i.windowMs);
     entry.timer.unref?.();
     this.pending.set(output, entry);
@@ -195,10 +254,24 @@ export class OperatorSignals {
       this.showStopPending = null;
       this.streamAnchor = now;
     }
+    // Path (i): the held stop's own acknowledgement, however late. It is
+    // inert to belief (§10.1.3's late-acknowledgement rule): it clears the
+    // alert and moves nothing else.
+    if (this.heldStopVersion !== null && version === this.heldStopVersion) {
+      this.heldStopVersion = null;
+      this.i.lane.clear(ALERT.outputsHeld.id, `show.stop acknowledged late (stateVersion ${version})`);
+    }
     for (const [output, entry] of this.pending) {
       if (entry.processedAt !== null || version < entry.version) continue;
       entry.processedAt = now;
       entry.exact = version === entry.version;
+      // Path (ii): a later stop's own acknowledgement at or above the held
+      // stop's version. The engine acknowledges a stop only while that output
+      // is live, so the acknowledgement witnesses an actual stop.
+      if (entry.exact && STOPS.has(entry.command) && this.heldStopVersion !== null && entry.version >= this.heldStopVersion) {
+        this.heldStopVersion = null;
+        this.i.lane.clear(ALERT.outputsHeld.id, `${entry.command} acknowledged (stateVersion ${version}): the stop is witnessed`);
+      }
       if (entry.timer) clearTimeout(entry.timer);
       if (output === "stream") this.streamAnchor = now;
       const unacked = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;
@@ -212,7 +285,14 @@ export class OperatorSignals {
   }
 
   private windowElapsed(output: Output, entry: Pending): void {
+    // A superseded command's claim passed to the newer one at its acceptance;
+    // a confirmed one did not expire. Both are outside §10.1.3's clause.
     if (this.pending.get(output) !== entry || entry.processedAt !== null) return;
+    // The claim expires (§10.1.3): it ends the claim and raises the expiry
+    // alert where (b) raises one, and does nothing else. For the stream, only
+    // a report that postdates the expiry may correct the belief.
+    entry.expiredAt = this.i.now();
+    if (output === "stream") this.streamAnchor = Math.max(this.streamAnchor, entry.expiredAt);
     if (this.i.lane.has(ALERT.engineNotReporting.id)) return; // that alert owns it
     const spec = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;
     const report = this.freshReport();
@@ -263,12 +343,18 @@ export class OperatorSignals {
     }
     lane.clear(ALERT.engineNotReporting.id, "the engine is reporting again");
 
-    // The held stop heals when the operator's explicit stops land.
-    if (lane.has(ALERT.outputsHeld.id) && !state.outputsActive()) {
-      lane.clear(ALERT.outputsHeld.id, "the held outputs were stopped");
-    }
+    // ~~The held stop heals when the operator's explicit stops land.~~ (§2c,
+    // v0.4.8 row 11: the held alert clears only by §10.1.2's clearing rule
+    // for `outputs.held`, a real acknowledgement or the show's lifecycle,
+    // never by what the belief reads.)
 
-    // (a) The stream's standing contradiction.
+    this.divergence();
+    this.correction();
+  }
+
+  /** (a) The stream's standing contradiction (row 8, unchanged). */
+  private divergence(): void {
+    const { state, lane } = this.i;
     const fresh = this.freshReport();
     const streamEntry = this.pending.get("stream");
     const streamPending = (streamEntry !== undefined && streamEntry.processedAt === null) || this.showStopPending !== null;
@@ -276,9 +362,22 @@ export class OperatorSignals {
     if (fresh === null || streamPending || owned || fresh.receivedAt <= this.streamAnchor) return;
     const transport = fresh.frame.streamTransportState;
     const believed = state.streamState;
-    const divergent =
-      (believed === "live" && (transport === "none" || transport === "closed")) ||
-      (believed === "idle" && (transport === "live" || transport === "reconnecting"));
+    let divergent: boolean;
+    switch (believed) {
+      case "live":
+        divergent = transport === "none" || transport === "closed";
+        break;
+      case "idle":
+        divergent = transport === "live" || transport === "reconnecting";
+        break;
+      case "held":
+        // §5.9.5's limbo: the state is unknown, so nothing contradicts it.
+        // The held alert announces it, and a fresh report corrects it.
+        divergent = false;
+        break;
+      default:
+        unreachable(believed);
+    }
     if (divergent) {
       lane.raise(
         ALERT.streamDivergence,
@@ -292,10 +391,38 @@ export class OperatorSignals {
     }
   }
 
+  /**
+   * §10.1.4: with no live claim on the stream, a fresh engine report that
+   * postdates the anchor corrects the belief by the mapping. The server lands
+   * it as a detection transaction. It clears no alert: corrections move the
+   * belief, not the lane (§10.1.2's clearing rule for `outputs.held`).
+   */
+  private correction(): void {
+    const fresh = this.freshReport();
+    if (fresh === null || this.streamClaimLive() || fresh.receivedAt <= this.streamAnchor) return;
+    const token = fresh.frame.streamTransportState;
+    if (token === undefined) return;
+    const to = beliefFromReport(token);
+    const from = this.i.state.streamState;
+    if (to === null || to === from) return;
+    this.i.correct({ field: "streamState", from, to, token, ageMs: this.i.now() - fresh.receivedAt });
+  }
+
+  /** Whether a command still holds the stream belief (§10.1.3's first tier). */
+  private streamClaimLive(): boolean {
+    const e = this.pending.get("stream");
+    return (e !== undefined && e.processedAt === null && e.expiredAt === null) || this.showStopPending !== null;
+  }
+
   /** `show.stop` returned with outputs still active: it was not acknowledged (SPEC §5.9.5). */
   held(stopVersion: number): void {
     const { state } = this.i;
+    // The stop's claim expired with its window. Only a report that postdates
+    // this expiry may correct the belief, and the stop's own late
+    // acknowledgement is still awaited (path (i)).
     this.showStopPending = null;
+    this.heldStopVersion = stopVersion;
+    this.streamAnchor = Math.max(this.streamAnchor, this.i.now());
     this.i.lane.raise(
       ALERT.outputsHeld,
       "warning",

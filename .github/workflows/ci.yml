@@ -1062,6 +1062,26 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 35 ]; then echo "FAIL automation: expected at least 35 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 35 ]; then echo "FAIL automation: expected at least 35 tests to execute rather than skip, got $exercised"; exit 1; fi
+      - name: "the belief suite actually ran (R17 spine part B, SPEC v0.4.8 row 11)"
+        # Two floors, rule 8, the automation suite's shape and reason: every
+        # belief test loads a real package over the wire, which needs
+        # nbe-preflight, and without it they SKIP while `npm test` stays green.
+        # This job builds the release preflight, so exercised == ran (4).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/belief.test.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL belief.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "belief: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "FAIL belief: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to execute rather than skip, got $exercised"; exit 1; fi
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
         # Two floors, rule 8. Reads every REGISTERED command's handler writes
         # to the fields a stateChange rule can name — directly, through state

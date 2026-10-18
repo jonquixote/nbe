@@ -18,6 +18,18 @@
 //!   withholds `show.stop`'s acknowledgement; `outputs.held` raises, and the
 //!   explicit stops clear it. Needs the encoder.
 //!
+//!
+//! **Row 11 (SPEC §10.1.3–§10.1.4, R17 spine part B), §2c.** The belief now
+//! follows the truth, so each leg also reads the belief. The refused start
+//! corrects `live → idle` after its window. The lost stop corrects
+//! `idle → live`: the engine is still on air. The restart corrects
+//! `live → idle`, and (a)'s contradiction lasts one evaluation. The held
+//! leg's belief goes `held`, then is corrected; no real acknowledgement can
+//! come (the engine idled its record and closed its stream), so the held
+//! alert stands until `show.unload` clears it (§10.1.2's clearing rule for
+//! `outputs.held`, path iii). ~~"part A changes no belief"~~ is struck in each
+//! leg.
+//!
 //! Not in `npm test`: it needs the engine binary. Run locally:
 //!   node --import tsx --test src/operator-signals.e2e.ts
 
@@ -53,6 +65,31 @@ async function waitFor(check: () => boolean, ms: number): Promise<boolean> {
 }
 
 const ids = (s: Stack): string[] => s.state.alerts.map((a) => a.id);
+const auditRows = (s: Stack): Array<Record<string, unknown>> =>
+  readFileSync(s.auditPath, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+const corrections = (s: Stack): Array<Record<string, unknown>> =>
+  auditRows(s)
+    .filter((r) => r["event"] === "belief.corrected")
+    .map((r) => r["detail"] as Record<string, unknown>);
+/**
+ * The correction's latency (the brief's §3): window end → next fresh report →
+ * belief, read from the server-stamped audit as the expiry's alert row to the
+ * `belief.corrected` row. Measured, not asserted: no timing claim (R9).
+ */
+const correctionLatencyMs = (s: Stack, alert: string): number | null => {
+  const rows = auditRows(s);
+  const raised = rows.find(
+    (r) =>
+      r["command"] === "alert" &&
+      (r["detail"] as Record<string, unknown>)["alert"] === alert &&
+      (r["detail"] as Record<string, unknown>)["edge"] === "raised",
+  );
+  const corrected = rows.find((r) => r["event"] === "belief.corrected");
+  return raised && corrected ? (corrected["ts"] as number) - (raised["ts"] as number) : null;
+};
 const refusedByEngine = (s: Stack): boolean => s.log.some((l) => l.includes("E_NO_HARDWARE_ENCODER") || l.includes("E_NO_ZEROCOPY"));
 
 /** The dress package, a record directory staged beside it, loaded and on air. */
@@ -106,7 +143,16 @@ test("[lane] refused start: an engine that refuses stream.start never acknowledg
   assert.deepEqual([before, insideWindow], [[], []], "before the window: nothing");
   assert.ok(raisedAfterMs >= WINDOW, `not before the window: raised after ${raisedAfterMs} ms`);
   assert.match(alert.reason, /stream\.start \(stateVersion \d+\) was not acknowledged within 2000 ms/);
-  assert.equal(s.state.streamState, "live", "part A changes no belief");
+  // ~~assert.equal(s.state.streamState, "live", "part A changes no belief")~~
+  // (§2c, row 11): the start's claim expired with its window, and the next
+  // fresh report (`none`) corrects the belief. The (b) alert stands.
+  const raisedAt = Date.now();
+  assert.ok(await waitFor(() => s.state.streamState === "idle", 2 * 1_000 + 500), "the belief follows the report after the claim's expiry");
+  const correctedAfterMs = Date.now() - raisedAt;
+  const latencyMs = correctionLatencyMs(s, "command.unacknowledged.stream");
+  console.log(`LANE-LEG refused-correction ${JSON.stringify({ correctedAfterMs, latencyMs, corrections: corrections(s), alerts: ids(s) })}`);
+  assert.deepEqual(corrections(s).map((c) => [c["from"], c["to"], c["report"]]), [["live", "idle", "none"]]);
+  assert.deepEqual(ids(s), ["command.unacknowledged.stream"], "a correction clears no alert");
 });
 
 test("[lane] lost stop: a stream.stop that never reaches the engine raises (b); the engine still reads live while the control plane believes idle", async (t) => {
@@ -136,16 +182,22 @@ test("[lane] lost stop: a stream.stop that never reaches the engine raises (b); 
   await ok(s, "stream.stop", {});
   assert.ok(await waitFor(() => ids(s).includes("command.unacknowledged.stream"), WINDOW + 2_000), "the alert raises");
   const alert = s.state.alerts.find((a) => a.id === "command.unacknowledged.stream")!;
+  // (§2c, row 11) ~~the control plane believes idle~~: the stop's claim
+  // expired, and the engine's report (live) corrects the belief to `live`.
+  assert.ok(await waitFor(() => s.state.streamState === "live", 2 * 1_000 + 500), "the belief follows the engine: on air");
   const bytes = sink.bytes();
   await sleep(500);
-  const observed = { alerts: ids(s), believed: s.state.streamState, onAir: sink.bytes() > bytes, reason: alert.reason };
+  const latencyMs = correctionLatencyMs(s, "command.unacknowledged.stream");
+  const observed = { alerts: ids(s), believed: s.state.streamState, onAir: sink.bytes() > bytes, reason: alert.reason, corrections: corrections(s), latencyMs };
   console.log(`LANE-LEG lost-stop ${JSON.stringify(observed)}`);
-  assert.deepEqual([observed.alerts, observed.believed, observed.onAir], [["command.unacknowledged.stream"], "idle", true]);
+  assert.deepEqual([observed.alerts, observed.believed, observed.onAir], [["command.unacknowledged.stream"], "live", true]);
+  assert.deepEqual(corrections(s).map((c) => [c["from"], c["to"], c["report"]]), [["idle", "live", "live"]]);
   assert.match(alert.reason, /stream\.stop \(stateVersion \d+\) was not acknowledged within 2000 ms/);
   assert.match(alert.reason, /reads the stream live and the control plane believes it idle/, "the alert says the stream is on air");
 });
 
-test("[lane] restart: the engine restarts under a stream believed live; the resync carries no output state, and (a) raises the contradiction", async (t) => {
+// (§2c, row 11: this test's name ended "and (a) raises the contradiction".)
+test("[lane] restart: the engine restarts under a stream believed live; the resync carries no output state, and the belief follows the new engine's report", async (t) => {
   const s = await stack();
   const sink = await startRtmpSink();
   let second: ReturnType<typeof spawn> | null = null;
@@ -172,14 +224,24 @@ test("[lane] restart: the engine restarts under a stream believed live; the resy
     stdio: "ignore",
   });
   assert.ok(await waitFor(() => s.server.wsBridge.renderNodeCount() === 1, 20_000), "the restarted engine reconnects");
-  assert.ok(await waitFor(() => ids(s).includes("stream.divergence"), 30_000), "the contradiction raises");
-  const alert = s.state.alerts.find((a) => a.id === "stream.divergence")!;
-  console.log(`LANE-LEG restart ${JSON.stringify({ alerts: ids(s), believed: s.state.streamState, alert })}`);
-  assert.equal(s.state.streamState, "live", "part A changes no belief");
-  assert.match(alert.reason, /believes the stream live; the engine reports it none/);
+  // ~~(a) raises the contradiction, and the belief stays live~~ (§2c, row 11):
+  // with no claim live, the new engine's fresh report corrects the belief. (a)
+  // announces the contradiction in the evaluation that sees it, and clears it
+  // on the next as consistent again: a one-evaluation episode, its edges and
+  // `belief.corrected` in the audit.
+  assert.ok(await waitFor(() => s.state.streamState === "idle", 30_000), "the belief follows the new engine's report");
+  assert.ok(await waitFor(() => !ids(s).includes("stream.divergence"), 2_000), "and the contradiction is consistent again");
+  const divergence = auditRows(s)
+    .filter((r) => r["command"] === "alert" && (r["detail"] as Record<string, unknown>)["alert"] === "stream.divergence")
+    .map((r) => r["detail"] as Record<string, unknown>);
+  console.log(`LANE-LEG restart ${JSON.stringify({ alerts: ids(s), believed: s.state.streamState, divergence, corrections: corrections(s) })}`);
+  assert.deepEqual(corrections(s).map((c) => [c["from"], c["to"], c["report"]]), [["live", "idle", "none"]]);
+  assert.deepEqual(divergence.map((d) => d["edge"]), ["raised", "cleared"], "announced, then consistent again");
+  assert.match(String(divergence[0]!["reason"]), /believes the stream live; the engine reports it none/);
 });
 
-test("[lane] held: a real finalize failure withholds show.stop's acknowledgement; outputs.held raises, and the explicit stops clear it", async (t) => {
+// (§2c, row 11: this test's name ended "and the explicit stops clear it".)
+test("[lane] held: a real finalize failure withholds show.stop's acknowledgement; outputs.held raises, the belief goes held then follows the engine, and with no real acknowledgement possible only show.unload clears it", async (t) => {
   const s = await stack();
   const sink = await startRtmpSink();
   let rec = "";
@@ -204,10 +266,31 @@ test("[lane] held: a real finalize failure withholds show.stop's acknowledgement
   assert.ok(await waitFor(() => ids(s).includes("outputs.held"), 2_000), "the held alert raises");
   const held = s.state.alerts.find((a) => a.id === "outputs.held")!;
   const whileHeld = ids(s);
+  const beliefAtHold = s.state.streamState;
+  // The engine idled its record and closed its stream (the finalize failed),
+  // so the next fresh report corrects `held` to `idle`.
+  assert.ok(await waitFor(() => s.state.streamState === "idle", 2 * 1_000 + 500), "held gives way to the engine's report");
+  // ~~The explicit stops clear it~~ (§2c, row 11): no real acknowledgement can
+  // come. The engine refuses record.stop (it is not recording), and the
+  // control plane refuses stream.stop, since the stream belief is idle (D3's
+  // precondition, its error naming the state).
   await ok(s, "record.stop", {});
-  await ok(s, "stream.stop", {});
-  assert.ok(await waitFor(() => !ids(s).includes("outputs.held"), 2_000), "the heal clears it");
-  console.log(`LANE-LEG held ${JSON.stringify({ whileHeld, held, afterHeal: ids(s) })}`);
-  assert.deepEqual(whileHeld, ["outputs.held"], "only the held alert: live beside closed is its, not a divergence");
-  assert.match(held.reason, /show\.stop \(stateVersion \d+\) was not acknowledged within 2000 ms; outputs held: record recording, stream live/);
+  const streamStop = await send(s.ws, "stream.stop", {});
+  assert.deepEqual(streamStop["error"], { code: "E_FORBIDDEN_STATE", message: "stream is idle" });
+  await sleep(WINDOW + 500);
+  assert.ok(ids(s).includes("outputs.held"), "the held alert stands: persistence is the witness working");
+  // Path (iii): the show's lifecycle ends an unresolved hold.
+  const unload = await ok(s, "show.unload", {});
+  assert.ok(await waitFor(() => !ids(s).includes("outputs.held"), 2_000), "show.unload clears it");
+  const clear = auditRows(s)
+    .filter((r) => r["command"] === "alert" && (r["detail"] as Record<string, unknown>)["alert"] === "outputs.held")
+    .map((r) => r["detail"] as Record<string, unknown>)
+    .at(-1)!;
+  const latencyMs = correctionLatencyMs(s, "outputs.held");
+  console.log(`LANE-LEG held ${JSON.stringify({ whileHeld, held, beliefAtHold, corrections: corrections(s), latencyMs, clear, after: ids(s) })}`);
+  assert.deepEqual(whileHeld, ["outputs.held"], "only the held alert: held beside closed is its, not a divergence");
+  assert.equal(beliefAtHold, "held", "§5.9.5's limbo, on the command's path");
+  assert.match(held.reason, /show\.stop \(stateVersion \d+\) was not acknowledged within 2000 ms; outputs held: record recording, stream held/);
+  assert.deepEqual(corrections(s).map((c) => [c["from"], c["to"], c["report"]]), [["held", "idle", "closed"]]);
+  assert.deepEqual([clear["edge"], clear["cause"]], ["cleared", `cleared by show.unload (stateVersion ${unload})`]);
 });
