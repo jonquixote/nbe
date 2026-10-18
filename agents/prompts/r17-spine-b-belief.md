@@ -224,7 +224,7 @@ The proposals this brief carried before the rulings are superseded. Where a ruli
    - **`show.stop`'s pending entry survives the hold.** `held()` drops it today (`alerts.ts:298`), and D2a's clearing path (i) needs it to see a late `show.stop` acknowledgement. This is required;
    - a late acknowledgement never revives it.
 4. **The correction.** With no live claim on the stream, a fresh report postdating the anchor whose token disagrees with the belief (D1) lands as D4. Belief, lane and audit move together. (a)'s `stream.divergence` clears by its own rule once the pair is consistent.
-5. **Automation.** The transition rule holds end to end: a `to: "idle"` rule is silent on a hold; a `from: "live"` rule fires once on live→held and once on a correction live→idle; nothing fires twice.
+5. **Automation.** The transition rule holds end to end: a `to: "idle"` rule is silent on a hold; a `from: "live"` rule fires once on live→held ~~and once on a correction live→idle~~; nothing fires twice. *(§2c, struck 2026-10-18 by the user's ruling on PR #56's finding 4: it contradicted D4, which governs. A correction is a detection transaction and fires no automation; see §6's D4 bullet and §7.)*
 6. **The spec row:** land Appendix A in `docs/spec.v0.4.md`, with §2c strikes, **as an early commit**. Adjust it only by what the code proves, and record each adjustment. The PR's body states that row 11 ratifies on its merge.
 7. **The dress rehearsal** (D6).
 
@@ -249,7 +249,7 @@ Name every test; give each guard its own falsification. Every falsified test car
 - **D4:** a correction fires no automation `stateChange`. A `from: "live"` rule stays silent on a refused start's correction and fires on the command path's live→held.
 - **Automation (`automation.test.ts`):**
   - `to: "idle"` silent on a hold;
-  - `from: "live"` fires once on a hold and once on a correction;
+  - `from: "live"` fires once on a hold ~~and once on a correction~~; *(§2c, struck 2026-10-18 by the user's ruling on PR #56's finding 4: D4 governs, and corrections fire no automation.)*
   - `to: "held"` now fires (the domain admitted it before any writer).
 - **End to end, on the real engine:**
   - the refused start (CI): `live` until the window, then `idle` from a fresh report, the (b) alert standing;

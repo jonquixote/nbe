@@ -5761,7 +5761,7 @@ item):
        last command's intent should hold an alert until the operator's next
        command is the user's word.
     2. **"Held" has a third meaning in the spec:** the show clock's `HELD`
-       ("operator freeze, emergency", §16's clock-state table), beside
+       ("operator freeze, emergency", ~~§16's~~ §11.4's clock-state table *(§2c, 2026-10-18: §11.4 is the section the tree has; the table has stood since v0.1)*), beside
        §13.5's automation hold and the output's `held`.
     3. **A `stream.stop` from `held` after the engine quiesced is refused
        engine-side** (`directive.rs`, `on_stream_stop`), so (b) raises
@@ -5964,6 +5964,38 @@ item):
       runs every 250 ms (`server.ts:271`), so the latency is bounded by
       about one report interval plus one evaluation.
     - The refused start (CI) is in the PR's CI run.
+  - **The user's rulings on PR #56's six findings (2026-10-18).** The
+    numbers are the PR body's. The records' numbers are in brackets.
+    1. **[4] Both brief lines are struck.** D4 governs: corrections fire no
+       automation. The lines are §5's work item 5 ("and once on a
+       correction live→idle") and §6's automation bullet ("and once on a
+       correction"). They were struck §2c in the brief, with the reason
+       recorded in place (this commit).
+    2. **[1] One-evaluation episodes are correct.** The row pair is the
+       witness: `stream.divergence`'s raise and clear rows, beside
+       `belief.corrected`. **A standing lost-intent witness is a named
+       candidate for the next design record, not this PR.** That would be an
+       alert that holds while the belief stands corrected against the last
+       command's intent.
+    3. **[3] Consistent, and kept.** Every command's outcome is witnessed.
+       Grouping the noise belongs to the operator surface.
+    4. **[2] Held (clock) joins the ledger.** Unqualified "held" means the
+       output belief's value, and the other two meanings are always
+       qualified: Automation hold (§13.5's "held") and Held (clock) (§11.4's
+       `HELD`). A collision count of three is recorded as a known hazard.
+       In `VOCABULARY.md` (this commit):
+       - Held (clock) is added;
+       - Held (output) and Automation hold carry the qualification rule;
+       - Held (output)'s "no writer" is struck §2c for its writer, row 11;
+       - Belief correction (§10.1.4, row 11) is added under rule 5 ("when in
+         doubt, add the term").
+    5. **[5] The placement is accepted.** A pointer comment in
+       `automation.test.ts`'s field-domain section names where the
+       transition tests live (`belief.test.ts`) and what each suite tests.
+       The deviation from §6's "`automation.test.ts`" is recorded here.
+    6. **The relay miss is recorded.** ORDER 3 named
+       `r17-spine-b-brief.md`, and the tree's filename,
+       `r17-spine-b-belief.md`, governs.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under

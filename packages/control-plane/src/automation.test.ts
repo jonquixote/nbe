@@ -357,6 +357,13 @@ test("every fixture rule gets its verdict from the control plane's reading, the 
 // SPEC §13.2's field domains (v0.4.8 row 9): a `from` or `to` its field can
 // never take refuses the load, by name. Per field: no field borrows another's
 // vocabulary. `nbe_core::automation` holds the same lists in the same words.
+//
+// Where `held` fires (v0.4.8 row 11): the transition tests live in
+// `belief.test.ts`, on a real server and the command path, with automation's
+// own audit rows as the witness. There, live→held fires `from: "live"` and
+// `to: "held"` once, a `to: "idle"` rule stays silent on a hold, and a
+// correction fires nothing (D4). Placed there by the user's ruling of
+// 2026-10-18 (PR #56, finding 5); this suite tests what a rule may name.
 // ---------------------------------------------------------------------------
 
 const stateChangeRule = (params: Record<string, unknown>) => ({
