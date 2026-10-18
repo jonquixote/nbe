@@ -6184,6 +6184,209 @@ item):
     Positions 6 and 7 keep their numbers. They may ride alongside at the
     builder's discretion, since they are a different subsystem. But no
     air-readiness claim precedes R20's closure.
+  **R20's design record, written before any fix code** (the user's order of
+  2026-10-18: "falsification first, then the design record. The fix is NOT
+  in this order"; branch `r20-clip-falsify`, off `5043ccf`). It is held for
+  review, and no implementation dispatches before the user's word.
+  - **The falsification battery, red today** (`911fcdd`,
+    `crates/nbe-engine/tests/r20_clip.rs`). Each draw test asks the real draw
+    path (`RenderLoop::render_frame`, then `readback_view`), as Prompt 05's
+    pixel tests do. Each first passes a control at frame 15, inside the
+    preload, so a failure at frame 45 is R20's and not the harness's. Run at
+    03:31:29–03:31:53, load 2.10 → 2.08, on AC under `caffeinate`, after the
+    first run (03:17:30–03:17:56, 2.37 → 3.28) voided on ambient load and was
+    rerun job-scoped. Results:
+    - **The weaker form, on the dress's A1: FAILS.** `R20: A1 is 150 frames,
+      but at frame 45 the clip's layer was not drawn (centre [0, 0, 0], black
+      is the cleared View; A1 drew [23, 56, 94] at frame 15)`.
+    - **The stronger form, on `counter_60.mp4`: FAILS.** `R20: rendered frame
+      45 must be the source's own frame 45 [121, 232, 67], got [0, 0, 0]
+      (black: the layer was dropped; the source's frame 29 [44, 79, 142]: a
+      held last frame; frame 44 [86, 152, 75] or 46 [173, 96, 68]: an
+      off-by-one)`. The source frames come from `nbe_decode` alone: no ring,
+      no preload cap, no draw path.
+    - **The fixture-integrity guard: passes on the fixture and kills both
+      of its mutants.** With A1, which is static, in the fixture's place:
+      `R20 fixture: counter_60.mp4 frame 1 repeats an earlier frame; every
+      frame must differ` (03:32:07–03:32:24, 2.07 → 2.25). With `cfr_30.mp4`
+      in its place: `R20 fixture: counter_60.mp4 must outlive frame 45,
+      decoded 30 frames` (03:32:34–03:32:36, 2.21). Each time the fixture
+      was restored from its saved copy and checked `cmp`-identical.
+    - **The gate's static half:** `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` are clean. The
+      workspace grows by three tests, two of them red by design, so this
+      branch is not pushed until the fix turns them green. The new suite
+      gets its two CI floors with the fix PR (rule 8).
+  - **The fixture, as commissioned** (`counter_60.mp4`, beside the dress
+    fixtures; its recipe is in `scripts/generate-fixtures.sh`):
+    - format: house mezzanine per §6.2: 1920×1080, CFR 30/1, H.264 High,
+      `yuv420p`, keyframes at 0 and 30 (`-g 30`), AAC 48 kHz stereo at
+      −16.0 LUFS integrated, peak −15.1 dBFS; 158,308 bytes;
+    - content: 60 frames, 60 distinct by `framemd5`. Each frame is a flat
+      colour keyed by its index N (r = 37N mod 256, g = 91N mod 256,
+      b = 255 − 4N). This ffmpeg build has no `drawtext`, so the counter is a
+      colour, the shape `cfr_30`, `loop_10` and `cadence_12` already use.
+      Adjacent frames differ by at least 37 in red, so an off-by-one reads as
+      a different frame;
+    - preflight (release `nbe-preflight --house-rate 30`), on the dress
+      package plus this asset, scene and item: `preflight OK: air-ready`,
+      exit 0, `errors []`, `warnings []`. For `counter_clip`: first and last
+      frame decode, `cfr: true`, 30 fps, 1920×1080, `durationFrames: 60`;
+    - placement: it is not in the dress manifest, so the dress show is
+      unchanged. The engine suite loads it directly.
+  - **The current path, from the tree.**
+    - **What the 30-frame ring is.** `load_video_asset` decodes a clip with
+      no declared loop period to `CLIP_PRELOAD_FRAMES` = 30 (`video.rs:29`,
+      `:267`) and keeps those frames as RGBA8 in RAM (`VideoAsset.frames`).
+      `period_frames` falls back to the count decoded, 30 (`:277`).
+      `upload_ring` uploads every one as its own texture (`render.rs:347`).
+    - **Where it ends.** The draw path maps the master clock to a source
+      index (`clip_source_index`, `nbe-decode/src/lib.rs:743`), bounded by
+      `frame_count`, the ring's 30. At index 30 it returns `None`
+      (`:755`).
+    - **Who drops the layer.** The `?` in `draw_for` (`render.rs:825–833`)
+      returns `None`, and the caller skips the layer (`render.rs:709`).
+      `texture_slot`'s hold-last fallback (`.or_else(|| ring.textures.last())`,
+      `:839`) is never reached for a clip, because the index was already
+      refused.
+    - **The decode stops at load.** `next_frame` is called only in
+      `load_video_asset` (`video.rs:221`, `:271`). The session lease is kept
+      (`_session`, `video.rs:162`, `:305`) but never read again.
+    - **The audio diverges.** A clip's audio is decoded whole at load
+      (`decode_audio`, `nbe-decode/src/lib.rs:571–578`, up to 30 min), so on
+      A1 the sound runs 5 s and the picture 1 s. R20 is also an A/V
+      divergence.
+  - **§12.8's actual text against the comment.**
+    - §12.8 is titled **Long-loop streaming** and governs loops only:
+      "Long loops MUST use double-buffered read-ahead", a minimum read-ahead
+      of `max(2 * GOP length, 60 frames)`, a wrap policy, and "If wrap
+      read-ahead fails, the loop element MUST fall back to frozen frame or
+      fallback slate if live."
+    - **Nothing in §12 governs a plain clip past its preload.** The comment
+      at `video.rs:263–265` ("a plain clip preloads a small window and
+      streams the rest (SPEC §12.8's frozen-frame rule covers the gap until
+      read-ahead lands)") cites a loop rule for a clip, and it is false
+      twice: nothing streams, and nothing freezes.
+    - **Decided here:** the comment is made true by the fix, not by a
+      gloss. In the fix PR it is §2c-struck and replaced with the clip
+      read-ahead's actual contract.
+  - **The read-ahead design.**
+    - **The shape.** A clip on air (or armed, so a take is instant) keeps a
+      window of K resident frames, `[i, i + K)`, where i is the frame the
+      draw path will read next. A decode worker per playing clip (the
+      session lease it already holds) decodes sequentially, with no seek: a
+      clip plays once. It hands frames to the render thread, which uploads
+      frame j into slot `j mod K`. The load-time preload stays as the head
+      of the window, so a take still draws frame 0 at once.
+    - **Decode ahead with known occupancy, never on the wall clock.** The
+      worker is paced by occupancy alone. It may produce frame j only once
+      slot `j mod K` is free, that is once the draw path has passed `j − K`.
+      The render loop publishes the frame it has drawn (an atomic the
+      worker reads). Which frame shows remains a pure function of the master
+      clock (`clip_source_index`, §12.1). The worker decides only whether
+      that frame is resident, never which frame shows. No timer or
+      `Instant::now` enters the selection.
+    - **The named policy when decode falls behind: `readAheadMiss`.** If
+      frame i is not resident when frame i is drawn, the draw path holds the
+      last frame it presented for that layer. It never draws black for a
+      clip that has not ended, and it never blocks the render thread
+      (§12.8's wrap rule 3, extended to clips). Each miss is counted, and the
+      count rides the §10.1 tick (`readAheadMissesTotal`), so a miss is an
+      observable event, never a silent freeze. The hold is the miss policy,
+      not the fix: a run with misses is a degraded run, and the dress
+      asserts the count.
+    - **The clip's true end.** The draw path needs the clip's real length to
+      tell "ended" (drop the layer, correct) from "not yet resident" (miss,
+      hold). The length comes from the decoder's metadata at load (the frame
+      count of the track, as preflight already reports `durationFrames`),
+      not from the preload's count. `period_frames` for a clip becomes that
+      length, and the ring depth becomes K.
+    - **Residency math under rings.** A 1080p RGBA8 frame is 8,294,400
+      bytes, 7.91 MiB.
+      - Today each clip holds 30 frames, 237 MiB of VRAM plus 237 MiB of RAM,
+        outside §12.4's loop budget (the clip path ignores the budget). The
+        dress's A1 and A3 alone hold 332 MiB (237 + 95).
+      - At K = §12.8's minimum, `max(2 × GOP, 60)` = 60 for house format
+        (§6.2: GOP ≤ 30), one playing clip costs 475 MiB of VRAM. A mix
+        between two clips costs 949 MiB, past §12.4's 512 MiB total.
+      - NV12 would cost 2.97 MiB a frame, so 178 MiB at K = 60. That path is
+        not built ("RGBA path until shader-side YUV lands", `video.rs:237`).
+      - **Proposed for the spec row:** a clip's depth is `K = 2 × GOP`
+        (30 to 60 at house format), accounted per playing clip in §12.11's
+        package demand. It is not a loop's cache, so it is not charged to
+        §12.4's loop budget, but it is reported, so the queued
+        residency-honesty item measures what the engine holds.
+    - **Memory bounds on the floor device** (§0.3, `hardware-baseline.txt`:
+      Radeon Pro 555X, 4 GB dedicated VRAM; 16 GB RAM).
+      - The worst case the dress can reach is one mix of two clips at K = 60
+        RGBA8: 949 MiB of VRAM, plus the 237 MiB heads of the other clips
+        loaded. That fits 4 GB with the loop cache (512 MiB) and the View,
+        preview and record targets beside it.
+      - RAM is bounded the same way: the worker holds at most K decoded
+        frames per clip, and the load-time `frames` vector shrinks to the
+        head.
+      - The design must also refuse rather than overcommit: a take that
+        would push resident clips past the device's working set is §12.4's
+        "device working set allows allocation" check, applied to clips.
+  - **The stopgap decision: straight to read-ahead.** Reasons:
+    1. A hold-last-frame stopgap needs the clip's true length to tell an
+       ended clip from an exhausted ring. That plumbing is the read-ahead's
+       first step anyway.
+    2. The stopgap would turn the weaker form green and leave the stronger
+       form red, so the tree would carry a green drop-detector over an
+       unfixed defect. Against the dress's static fixtures, a frozen frame
+       is indistinguishable from playback, so the dress would look fixed.
+    3. Harm reduction buys little on air: a frozen picture for four seconds
+       reads as a hang, not as a clip.
+    4. The read-ahead's miss policy *is* the hold, bounded and counted, so
+       the harm the stopgap would reduce is reduced by the fix itself.
+    - **If the user rules otherwise:** the stopgap lands as its own commit,
+      recorded as harm reduction and never as the fix. The stronger form
+      stays red until the read-ahead lands, and the frozen-frame comment is
+      made true in that same PR.
+  - **The dress's impact.** After the fix, every dress clip renders its full
+    length for the first time, so every dress run's load profile changes.
+    - On A1's air time, a decode worker runs, and 7.91 MiB is uploaded each
+      house frame (237 MiB/s while it plays), on CI's 3 arm64 cores and on
+      the normative machine. A3 (12 frames) and the loop A2 are unaffected.
+    - **The floor lines to watch, against each run's own history:**
+      - drops (CI backstop 20, normative 0);
+      - underruns (R12: CI's peak 232, backstop 2000; normative 0);
+      - `step4RiseMs` and `step6RiseMs` (normative gate 3000 ms, CI
+        backstop 10000);
+      - watchdog trips (backstop 10), and fallback ticks outside a watchdog
+        episode;
+      - the decode-session peak (`MAX_DECODE_SESSIONS` 8);
+      - `readAheadMissesTotal`, new: it must read 0 on the normative
+        machine, and on CI it is recorded, not gated, until it has an
+        envelope;
+      - the rust job's test count, 515 → 518, with R10's envelope read as
+        always.
+    - The dress gains a step that looks at the picture: the counter clip on
+      air, with its frame 45 read back. The class's own remedy, in the
+      rehearsal.
+  - **The spec surface: row 12.** §12.8 extends to plain clips:
+    - clip read-ahead with depth K;
+    - occupancy pacing, never wall-clock;
+    - the `readAheadMiss` policy (hold the last presented frame, count it,
+      never block, never black before the clip's end);
+    - the clip's end taken from its metadata;
+    - the clip's residency in §12.11's demand.
+
+    Its candidate text is reviewed with this record and lands as an early
+    commit in the fix PR, ratified on that PR's merge: the row-11 pattern.
+    `VOCABULARY.md` gains the read-ahead miss.
+  - **The fix's falsification plan: the mutants its guards must die to.**
+
+    | Mutant | What it does | The test that kills it |
+    |---|---|---|
+    | M1, revert-to-30-ring | the read-ahead disabled: a clip holds its 30-frame preload again | the weaker form (A1 frame 45 black) and the stronger form |
+    | M2, hold-last-frame | the worker never advances; the draw path holds the last resident frame | the stronger form only (shows frame 29's colour); the weaker form passes by design, since A1 is static |
+    | M3, off-by-one ring | frame j uploaded to slot `(j ± 1) mod K`, or the index read one off | the stronger form (frame 44's or 46's colour) |
+    | M4, occupancy miscount | the worker may overwrite slot `j mod K` before the draw path passes `j − K` | a new form with the fix: the stronger form after the window has filled (frame 45 read back once the worker has run K ahead), which reads frame 45 + K's colour |
+    | M5, a miss draws black or blocks | the miss policy removed | a new miss test with the fix: a stalled worker yields the last presented frame and a counted miss, within the frame deadline |
+    | M6, the end ignored | a clip past its true length keeps holding instead of dropping | a new end test with the fix: frame 60 of `counter_60.mp4` draws nothing |
+    | M7, fixture blinded | `counter_60.mp4` made static or short | the fixture-integrity guard (falsified above, both clauses) |
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
