@@ -263,6 +263,8 @@ pub struct RenderLoop {
     /// must add zero.
     pub text_rasterizations: std::sync::atomic::AtomicU64,
     loaded_generation: u64,
+    /// key2 probe (throwaway): the View's gather / encode / submit split.
+    probe_split: Cell<[f64; 3]>,
     /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
     /// frame path, where `write_texture`'s per-call staging costs the deadline.
     uploads: crate::gpu::UploadPool,
@@ -363,6 +365,7 @@ impl RenderLoop {
             text_cache: std::sync::Mutex::new(HashMap::new()),
             text_rasterizations: std::sync::atomic::AtomicU64::new(0),
             loaded_generation: u64::MAX,
+            probe_split: Cell::new([0.0; 3]),
             uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
             house_rate,
             pipeline,
@@ -803,6 +806,7 @@ impl RenderLoop {
         let read_ahead_started = Instant::now();
         let read_ahead_uploads = self.pump_read_ahead(frame, false);
         let read_ahead = read_ahead_started.elapsed();
+        let probe_after_pump = Instant::now();
 
         let preview_due = match rung {
             Rung::Nominal => true,
@@ -851,6 +855,15 @@ impl RenderLoop {
             }
         }
         let elapsed = started.elapsed();
+        {
+            let pre = (started - probe_after_pump).as_secs_f64() * 1e3;
+            let [g, e, sub] = self.probe_split.get();
+            let ra = read_ahead.as_secs_f64() * 1e3;
+            let v = elapsed.as_secs_f64() * 1e3;
+            if v > 12.0 || ra > 6.0 || pre > 12.0 {
+                tracing::info!(target: "key2_probe", frame, ra_ms = ra, ups = read_ahead_uploads, pre_ms = pre, view_ms = v, gather_ms = g, encode_ms = e, submit_ms = sub, "kp");
+            }
+        }
 
         // Step 3: a View frame not submitted by its deadline is a dropped
         // frame, and the watchdog hears the measured lateness — never a
@@ -1028,6 +1041,7 @@ impl RenderLoop {
     }
 
     fn render_bus(&self, bus: Bus, frame: u64) -> anyhow::Result<()> {
+        let probe_t0 = Instant::now();
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
         }
@@ -1078,6 +1092,7 @@ impl RenderLoop {
             }
         }
 
+        let probe_gather = probe_t0.elapsed();
         let mut enc = self
             .gpu
             .device
@@ -1144,7 +1159,15 @@ impl RenderLoop {
                 pass.draw(0..6, 0..1);
             }
         }
+        let probe_encode = probe_t0.elapsed();
         self.gpu.queue.submit([enc.finish()]);
+        if bus == Bus::View {
+            self.probe_split.set([
+                probe_gather.as_secs_f64() * 1e3,
+                (probe_encode - probe_gather).as_secs_f64() * 1e3,
+                (probe_t0.elapsed() - probe_encode).as_secs_f64() * 1e3,
+            ]);
+        }
         Ok(())
     }
 

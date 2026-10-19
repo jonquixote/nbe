@@ -68,8 +68,19 @@ impl ReadAhead {
                     }
                 }
             }
+            let mut probe_acc = 0.0f64;
+            let mut probe_n = 0u32;
             while index < end {
-                match session.next_frame() {
+                let probe_d0 = std::time::Instant::now();
+                let probe_next = session.next_frame();
+                probe_acc += probe_d0.elapsed().as_secs_f64() * 1e3;
+                probe_n += 1;
+                if probe_n == 30 {
+                    tracing::info!(target: "key2_probe", asset = %asset, index, decode_avg_ms = probe_acc / 30.0, "kp decode");
+                    probe_acc = 0.0;
+                    probe_n = 0;
+                }
+                match probe_next {
                     // The render thread closed the channel: this read-ahead was
                     // dropped (re-positioned, shed, or the package unloaded).
                     Ok(Some(f)) => {
