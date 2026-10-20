@@ -7407,6 +7407,74 @@ item):
   - **PR #59's body** carries a §2c note: attempt 2 executed only the
     control-plane job.
 
+  **R25's fix: the lane's commands wait for the load to complete** (branch
+  `r25-refused-start-gate`, off `cd3f0c6`; the user's order of 2026-10-20,
+  the queue after #59's item 1; test-only).
+  - **The commits:**
+    - `00cea7a`: #59's post-merge records (above);
+    - `2ae5fd6`: the fix. `onAir()` gates on load completion: every video
+      asset the engine decoded at the load ("video asset decoded") has its
+      ring resident ("clip ring resident" / "loop ring resident"), bounded
+      at 30 s;
+    - `f1dcfc7`: the harness's engine log filter admits
+      `nbe_engine::render=info`. **The builder's slip:** the gate in
+      `2ae5fd6` waited for lines the filter dropped (`RUST_LOG=warn,
+      nbe_engine::directive=info`), and it failed its own control on the
+      stock dress ("decoded 3, resident 0", 02:55:40–02:56:15). The
+      render target logs one line per ring per load, plus rung 2's
+      re-acquires and a View recovery.
+  - **The falsification** (the test file mutated in place and restored
+    `cmp`-identical and `git`-clean after every run). The boundary was
+    inflated with N extra copies of `A1_clip` in the test's copy of the
+    dress. Only the refused-start test runs. On this machine the engine's
+    hardware encoder acknowledges `stream.start`, so a pass is that test's
+    SKIP, and a fail is the window missed.
+
+    | Variant | Runs | Result |
+    |---|---|---|
+    | the fix, the stock dress (control) | 1 (03:01:08–03:01:12, 2.42 → 2.46) | pass |
+    | **F1, the old construction** (the gate removed), N = 4 | 1 (02:56:15–02:56:27, 2.23 → 2.24) | **fail**: `no ack and no capability refusal`, the engine's last lines still `show.load`'s |
+    | F1, N = 4 and N = 5 | 6 (03:01:12–03:21:12, all valid) | pass: it usually wins the race, sending before the render tick starts the uploads |
+    | **F2, the fix**, N = 4 and N = 5 | 6 (03:01:52–03:21:59; one void at its end, 2.48 → 3.17) | pass, every run |
+    | **F3, the gate released at the first ring**, N = 4 and N = 5 | 3 (03:02:07–03:24:13, valid) | **fail, every run**: `no ack and no capability refusal`, a command sent inside the boundary |
+
+    F3 reproduces the mechanism deterministically: a command sent while the
+    rings upload waits behind them. F1 reproduces the defect as CI met it,
+    intermittently. **Runs at N = 8 are invalid, the harness's own error:**
+    11 video assets exceed the engine's decode-session cap of 8
+    (`MAX_DECODE_SESSIONS`), and one refused asset, whichever came last in
+    hash order, was `A1_clip` itself (`view.cut` refused: "item A1 is ERROR,
+    cannot arm"). Those runs are excluded, and the falsification stays at
+    N ≤ 5.
+  - **The gate at `f1dcfc7`** (AC, `caffeinate`):
+    - builds, `fmt`, `clippy` and `tsc` clean;
+    - workspace **535/0/4** (03:26:48–03:28:48, 2.29 → 2.67);
+    - `r20_clip` 9/9, `loop_residency` 3/3, `v04` 22/22;
+    - automation 35/35, effects 2/2, belief 4/4;
+    - every e2e green: show-stop-version 6/6 and operator-signals 3 pass + 1
+      skip, both under the new filter;
+    - the dress 29/29.
+
+    **`npm test` voided three times, 198/198 in each:** 2.31 → 3.49 (gate),
+    1.97 → 4.10, and 1.93 → 4.37, the last started under 2.0. Each rose more
+    than 1.5 inside its own 7–8 s. The likely cause is the suite's own
+    parallel burst, as on #56's night 2; it is not proven. That joins the
+    machine-load thread. CI's run of the suite is the next witness.
+  - **For the user:**
+    - **The same construction stands in `show-stop.harness.ts`'s `leg()`**,
+      with a 5 s window (`OUTPUT_ACK_MS`) and a wider margin. It is not
+      changed here; the gate would move there unchanged.
+    - **R24's risk, refined by reading** (for R24's own PR):
+      `fire()`'s frame limiter audits a same-frame re-fire as
+      `automation.rateLimited`, not executed, and `observedAt` for a
+      `timeOfDay` fire is its scheduled instant. In production
+      (`performance.now()`), an early fire's re-fire lands about 1 ms
+      later, almost always in the same 33 ms frame. So it leaves a spurious
+      rate-limited row, and the action runs twice only when the re-arm
+      crosses a frame boundary. `automation.test.ts` injects a frozen clock,
+      which puts the two fires in different frames, and that is why the gate
+      saw two executions.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
