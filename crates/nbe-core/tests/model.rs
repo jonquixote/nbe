@@ -125,6 +125,7 @@ fn preflight_report_shape_matches_spec_19_2() {
             vram_demand_mib: 412,
             audio_demand_mib: 22,
             declared_house_rate: Some(30),
+            residency_note: Some(nbe_core::loop_cache::LOOP_RESIDENCY_NOTE.into()),
         },
     };
     let v = serde_json::to_value(&report).expect("report must serialize");
@@ -148,6 +149,11 @@ fn preflight_report_shape_matches_spec_19_2() {
     assert_eq!(v["resources"]["vramDemandMib"], 412);
     assert_eq!(v["resources"]["audioDemandMib"], 22);
     assert_eq!(v["resources"]["declaredHouseRate"], 30);
+    // SPEC §19.2.1 (v0.4.8 row 13): the residency note's spelling.
+    assert_eq!(
+        v["resources"]["residencyNote"],
+        nbe_core::loop_cache::LOOP_RESIDENCY_NOTE
+    );
 
     let asset = &v["assets"][0];
     for key in [

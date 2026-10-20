@@ -16,8 +16,8 @@
 //! No-hardware policy, as Prompt 05: without VideoToolbox these tests FAIL,
 //! naming what was missing. They never skip.
 
-use nbe_engine::loop_cache::{CachePolicy, CacheTextureFormat};
 use nbe_engine::directive::DirectiveHandler;
+use nbe_engine::loop_cache::{CachePolicy, CacheTextureFormat};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
 use std::path::Path;
@@ -123,7 +123,11 @@ async fn a_loop_that_fits_its_budget_holds_its_whole_length_as_rgba8() {
     assert_eq!(h.format, CacheTextureFormat::Rgba8);
     assert_eq!(h.policy, CachePolicy::Vram);
     assert_eq!(h.frames, 60, "a loop that fits holds its whole length");
-    assert_eq!(h.bytes, 60 * RGBA8_1080P, "60 RGBA8 1080p frames, 474.6 MiB");
+    assert_eq!(
+        h.bytes,
+        60 * RGBA8_1080P,
+        "60 RGBA8 1080p frames, 474.6 MiB"
+    );
 }
 
 #[tokio::test]
@@ -135,8 +139,15 @@ async fn a_loop_over_its_budget_holds_its_budget_not_a_window_and_not_nothing() 
     let h = held(serde_json::json!({ "periodFrames": 60 })).await;
     assert_eq!(h.format, CacheTextureFormat::Rgba8);
     assert_eq!(h.policy, CachePolicy::Streaming);
-    assert_eq!(h.frames, 32, "a loop over its budget holds its budget's frames");
-    assert_eq!(h.bytes, 32 * RGBA8_1080P, "32 RGBA8 1080p frames, 253.1 MiB");
+    assert_eq!(
+        h.frames, 32,
+        "a loop over its budget holds its budget's frames"
+    );
+    assert_eq!(
+        h.bytes,
+        32 * RGBA8_1080P,
+        "32 RGBA8 1080p frames, 253.1 MiB"
+    );
 }
 
 #[tokio::test]
@@ -148,7 +159,11 @@ async fn a_declared_format_does_not_change_what_the_engine_holds() {
         "periodFrames": 60, "textureFormat": "bc7", "vramBudgetMib": 512
     }))
     .await;
-    assert_eq!(h.format, CacheTextureFormat::Rgba8, "the declaration is not held");
+    assert_eq!(
+        h.format,
+        CacheTextureFormat::Rgba8,
+        "the declaration is not held"
+    );
     assert_eq!(h.frames, 60);
     assert_eq!(h.bytes, 60 * RGBA8_1080P);
 }
