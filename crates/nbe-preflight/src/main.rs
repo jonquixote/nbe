@@ -114,6 +114,37 @@ fn loop_plan(
     )
 }
 
+/// R23: what the engine draws for a loop its budget cannot hold, and the ways
+/// out, in the words a refusal carries. The engine holds `held` frames and
+/// draws the last of them for the rest of every period, because it does not
+/// stream loops (§12.8 is unbuilt for loops). Raising the budget is offered
+/// only when some budget holds the loop: §12.4's total caps every declaration.
+fn loop_freeze(plan: &nbe_core::loop_cache::CachePlan, period: u64, held: u64) -> String {
+    let total = nbe_core::loop_cache::DEFAULT_TOTAL_LOOP_MIB;
+    let needed = (period as f64 * plan.frame_cost_mib).ceil() as u64;
+    let at_total = (f64::from(total) / plan.frame_cost_mib).floor() as u64;
+    let remedy = if needed <= u64::from(total) {
+        format!(
+            "Raise vramBudgetMib to {needed} or more, shorten the loop to {held} frames or \
+             fewer, or wait for SPEC §12.3's format ladder or loop streaming."
+        )
+    } else {
+        format!(
+            "No budget holds it (SPEC §12.4's {total} MiB total holds {at_total} frames of \
+             this size): shorten the loop to {held} frames or fewer at this budget \
+             ({at_total} at vramBudgetMib {total}), or wait for SPEC §12.3's format ladder or \
+             loop streaming."
+        )
+    };
+    format!(
+        "loops {period} frames, but its {} MiB budget holds {held} at RGBA8, the format \
+         this engine holds: the engine draws frame {} for the rest of every period, because \
+         it does not stream loops (R23; SPEC §12.8). {remedy}",
+        plan.effective_budget_mib,
+        held.saturating_sub(1)
+    )
+}
+
 /// The decode-derived fields of an `AssetReport` (SPEC §19.2).
 #[derive(Default)]
 struct DecodeFacts {
@@ -667,18 +698,39 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             // cannot give does not quietly stream — it does not fit, and an
             // operator needs to hear that before air rather than discover it
             // as a different picture than the one they authored.
+            //
+            // R23 (the user's ruling of 2026-10-19): "otherwise it MUST be
+            // streamed" has no implementation here, because this engine does
+            // not stream loops. A loop its budget cannot hold freezes: the
+            // engine holds its budget's frames and draws the last of them for
+            // the rest of every period. So preflight refuses it whatever its
+            // `cachePolicy`, never with a warning, and names the freeze and the
+            // remedies. A period past §12.4's cap is refused above, by name.
             let lm = asset.get("loop").expect("checked above");
+            let plan = loop_plan(asset, lm, &manifest_json, &report);
+            let held = nbe_core::loop_cache::loop_held_frames(&plan, period);
+            let freezes = period <= ABSOLUTE_LOOP_FRAME_CAP && held < period;
             if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("vram") {
-                let plan = loop_plan(asset, lm, &manifest_json, &report);
                 if plan.cache_policy_selected != nbe_core::loop_cache::CachePolicy::Vram {
                     had_errors = true;
+                    let freeze = if freezes {
+                        format!(" It {}", loop_freeze(&plan, period, held))
+                    } else {
+                        String::new()
+                    };
                     report.push_error(format!(
                         "loopBudget: asset \"{id}\" mandates cachePolicy \"vram\" but its \
                          {period} frames exceed the budget's {} at RGBA8, the format this \
-                         engine holds (SPEC §12.5; §12.3's note)",
+                         engine holds (SPEC §12.5; §12.3's note).{freeze}",
                         plan.max_frames_by_budget
                     ));
                 }
+            } else if freezes {
+                had_errors = true;
+                report.push_error(format!(
+                    "loopFreeze: asset \"{id}\" {}",
+                    loop_freeze(&plan, period, held)
+                ));
             }
         }
 
