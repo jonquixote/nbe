@@ -239,3 +239,20 @@ test("the watchdog's trips and clears reach the tick, and a stale report stubs t
   const old = buildTick(state, stale, Date.now());
   assert.deepEqual([old.watchdogTripsTotal, old.watchdogClearsTotal], [0, 0], "a stale report is not forwarded");
 });
+
+test("the clip read-ahead's misses reach the tick, absent reads 0, and a stale report stubs them to 0 (SPEC §12.8.1, v0.4.8 row 12)", () => {
+  const state = new ControlPlaneState();
+  const frame = EngineTelemetryFrameSchema.parse({ ...engineFrame(-1), readAheadMissesTotal: 7 });
+
+  const fresh = newWorldTelemetry();
+  ingestEngineFrame(fresh, frame, Date.now());
+  assert.equal(buildTick(state, fresh, Date.now()).readAheadMissesTotal, 7, "forwarded as the engine counted");
+
+  const older = newWorldTelemetry();
+  ingestEngineFrame(older, EngineTelemetryFrameSchema.parse(engineFrame(-1)), Date.now());
+  assert.equal(buildTick(state, older, Date.now()).readAheadMissesTotal, 0, "an engine without the field reads 0");
+
+  const stale = newWorldTelemetry();
+  ingestEngineFrame(stale, frame, Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000);
+  assert.equal(buildTick(state, stale, Date.now()).readAheadMissesTotal, 0, "a stale report is not forwarded");
+});

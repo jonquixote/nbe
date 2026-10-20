@@ -308,6 +308,33 @@ fn the_resource_numbers_are_right_not_merely_present() {
 }
 
 #[test]
+fn a_plain_clip_charges_its_head_and_its_read_ahead_window() {
+    // SPEC §12.11.1's clipDemandMiB (v0.4.8 row 12, R20): a plain clip holds
+    // its head (30 frames) and its read-ahead window (K = 2 x 30 = 60 frames)
+    // resident from show.load, at RGBA8 for its own dimensions. Before row 12
+    // a clip charged nothing. The dress's A1 is 150 frames at 1920x1080, so it
+    // charges 90 frames, not 150 and not 0; a 30-frame clip charges its 30.
+    let dress = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/dress_show/media/A1.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    let root = package_with_assets(
+        dir.path(),
+        r#", { "id": "C", "kind": "video", "source": "media/clip.mp4", "format": "h264" }"#,
+    );
+    std::fs::copy(&dress, root.join("media/clip.mp4")).unwrap();
+    let (_, report) = run(&root, &[]);
+    let vram = report["resources"]["vramDemandMib"].as_u64().unwrap();
+    let frame: u64 = 1920 * 1080 * 4;
+    let floor: u64 = frame * 3 + 200 * 100 * 4; // targets + slate, and the 200x100 image
+    assert_eq!(
+        vram,
+        (floor + 90 * frame) / (1024 * 1024),
+        "a 150-frame 1080p clip charges its 30-frame head and 60-frame window \
+         (90 x 7.91 MiB); got {vram} MiB"
+    );
+}
+
+#[test]
 fn an_images_cost_is_its_own_size_not_the_house_frame() {
     // The old code charged every image a full 1920x1080 RGBA8 frame because it
     // never probed image dimensions — 40 small logos read as 348 MiB instead

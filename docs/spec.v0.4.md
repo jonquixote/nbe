@@ -61,6 +61,11 @@ rule, signed off), and until then it is a candidate (merged as `c1fe348`).
 `r17-spine-b-impl`, 2026-10-17), as an early commit. Its candidate text was
 reviewed before dispatch as the brief's Appendix A, on the user's rulings of
 2026-10-17 (D1–D6 and D2a). It is ratified by the user's merge of that PR, and
+until then it is a candidate (merged as `5043ccf`). **Row 12** was drafted in
+R20's fix PR (branch `r20-clip-falsify`, 2026-10-18), as an early commit, from
+the design record the user ratified on 2026-10-18 with four amendments (the
+residency clause, the audio scope, the rung-2 interaction with a shrink policy
+deferred, and K in frames). It is ratified by the user's merge of that PR, and
 until then it is a candidate.
 
 | # | Change | Sections | Guarded by |
@@ -76,6 +81,7 @@ until then it is a candidate.
 | 9 | **`stateChange` values have per-field domains, and `held` joins the stream's** (the user's rulings of 2026-10-16: the automation transition, and the row's scope; R17 spine part B's spec row, before any implementing prompt; queue position 5). §13.2 typed `stateChange` as `{ field, itemRef?, from?, to? }` and checked the field but never a value, so a rule naming a value its field cannot take (a misspelling, `held`, or another field's word) loaded and could never fire, against §13.2's own rule that such a rule is not accepted. Now every field a `stateChange` names has an enumerated domain, each value sourced from the tree's writers, and a `from` or `to` outside it refuses the load, by name, in preflight and in the control plane alike, in the same words. No field borrows another's vocabulary: the record's on-air value is `recording`. `streamState` gains `held` (exception 1: no writer until spine B's implementing work, its owner), and the dead `reconnecting` is struck from the control plane's type. `recordState` gains no `held` (exception 2: its owner is work order 2). `previewItem`'s domain includes scene ids, because `scene.arm` writes one into an empty preview. A transition is reported with its actual values, once: live→held fires `{ from: "live", to: "held" }`, with no idle alias. `from` has existed since v0.4.7; this row adds no key | 13.2 (the `stateChange` row, a clause added; the field-domain table, its exceptions and the transition rule, new), 10.1.2 (the additive note narrowed, §2c) | the shared fixture, now 52 cases with a `reason` checked by both readings (`every_fixture_rule_gets_its_verdict_from_the_rust_reading`; `every fixture rule gets its verdict from the control plane's reading, the same as preflight's`); `nbe-core`'s `held_is_a_stream_value_and_not_a_record_value` and `every_field_takes_its_whole_domain_and_refuses_a_value_outside_it`; `nbe-preflight`'s `a_state_change_value_outside_its_field_domain_fails_preflight_by_name` (exit 2) and `a_state_change_value_inside_its_field_domain_passes_preflight` (exit 0, a scene id included); the control plane's `the domains are per field: …`, `every field takes its whole domain …` and `a previewItem rule naming a scene loads, and fires …` (the real load path, both readers); `telemetry.test.ts`'s token pin, `reconnecting` struck. The enum audit is compile-time (`automation.ts`). Falsifications: `docs/prompt-map-07-13.md`, queue position 5 |
 | 10 | **Belief precedence: a command holds the belief until its acknowledgement or its window's end, then a fresh report, then the stale belief** (the user's rulings of 2026-10-16 and 2026-10-17; R17 spine part B's belief row, before any implementing prompt; queue position 5). §10.1.2 announced a contradiction between belief and report, but nothing said which one the belief follows. Its additive note left "correcting a belief from a fresher report" to a later row. Now two orders are split at dispatch. Authority: an explicit operator action outranks automation, enforced by the hold (§13.5). Belief: the latest accepted command, the operator's or automation's alike, until its acknowledgement; then a fresh report that postdates it; then the stale belief. A command unacknowledged within §5.9.5's window loses its claim when the window ends (the pick of (a)), and expiry is not an acknowledgement (the precision clause, verbatim). A late acknowledgement is inert to belief and cannot reclaim it, while still clearing (b)'s alert by row 8's ratified rule. No engine change, no wire change, no ratified row amended. Engine refusal acknowledgements are a named hardening candidate, after work order 2 | 10.1.3 (new), 10.1.2 (the additive note, annotated) | **No guard yet: normative ahead of its implementation.** Spine B's implementing prompt owns the guards, and its brief carries the clause and the late-acknowledgement rule verbatim. Records: `docs/prompt-map-07-13.md`, queue position 5 |
 | 11 | **The belief follows the truth: `held` as §5.9.5's limbo, correction from a fresh report, the boundary for automation** (the user's rulings of 2026-10-17 on R17 spine B's brief, D1–D6; queue position 5). §10.1.3 ratified the order the belief follows (row 10) ahead of its implementation. This row builds it. An unacknowledged `show.stop` gives a `live` stream the belief `held` at its window's expiry, in place of its prior state. With no live claim, a fresh engine report that postdates the anchor corrects the stream belief by §10.1.4's mapping (`live`/`reconnecting` → `live`, `none`/`closed` → `idle`). The correction lands as a detection transaction: one version bump and one `belief.corrected` audit row, with no `stateChange` frame and no automation trigger. Automation reacts to command-path transitions only. `held` is an output-active state: `stream.stop` accepts it, `stream.start` refuses it by name, and every consumer is exhaustive. The held alert clears only by §10.1.2's amended clearing set for `outputs.held`: its own acknowledgement; a later stop's at or above; an accepted `show.load` or `show.unload`; a restart. A correction moves the belief and clears no alert | 5.9.5 (the "prior state" hold, struck and amended), 10.1.2 (`outputs.held`'s clearing rule, new), 10.1.4 (new), 13.2 (the transition rule, annotated: corrections fire no trigger), 13.4.1 (`show.stop`'s row, annotated: `held`), 16 (`stream.start` and `stream.stop`'s preconditions) | the implementing PR's guards (§6 of the brief) |
+| 12 | **A plain clip plays past its first second: clip read-ahead, the miss policy, the clip's end from its metadata, and its residency** (the user's rulings of 2026-10-18 on R20; queue position 8). A plain clip, a video asset with no declared loop, drew only the 30 frames the engine decoded at load: past them `clip_source_index` refused the index and the layer was dropped, while the clip's audio, decoded whole, played on. §12.8 governed loops only, and nothing governed a clip past its preload. This row extends §12.8 to clips. A clip keeps a head (its first 30 frames, decoded at load, never overwritten) and a read-ahead window of K = 2 × GOP frames past it, primed at load and refilled by a decoder paced by occupancy, never by the wall clock. Which frame shows is still a pure function of the master clock (§12.1). A frame not yet resident is a `readAheadMiss`: the layer holds the last resident frame below it, the miss is counted on the §10.1 tick (`readAheadMissesTotal`), the render thread never blocks, and nothing is drawn black before the clip's end. The clip's end is its track's length from the container's metadata, not the count decoded. Its resident frames enter §12.11.1's demand. Audio is unchanged, and picture and sound now agree for the clip's full length | 12.8.1 (new), 10.1 (one field, the counters note), 10.1.1 (ownership row), 10.5 (rung 2's streaming sentence, struck and amended; clips on rung 2), 12.11.1 (clip demand) | `r20_clip.rs` (the falsification battery, red before the fix, and the fix's guards against ~~M1–M7~~ M1–M8: M8, the refill's cost against the frame deadline, was added at the gate), preflight's clip-demand test, `telemetry.test.ts` (forwarded and stubbed), the mirror's telemetry fixture |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.8. Row 2
 adds one field to a directive payload, `itemDurationFrames`. That is a wire
@@ -105,7 +111,12 @@ audit trio, which covers the render node's frames, is untouched. Its audit rows
 reuse kind `command`; the audit kinds are unchanged. The
 `snapshot.recall` directive is not a new frame: the command was already
 forwarded and is in the command surface. It now carries resolved content, as
-§5.9.1 requires, instead of the snapshot's name.
+§5.9.1 requires, instead of the snapshot's name. Row 12 adds one engine
+telemetry field, `readAheadMissesTotal`, additive and defaulted
+(`watchdogTripsTotal`'s shape), with its audit trio: the mirror's telemetry
+fixture samples it, and `protocol.ts` mirrors it. The directives and the
+manifest schema are unchanged. Preflight's report gains no field:
+`vramDemandMib` now counts clips (§12.11.1).
 
 v0.4.7 — **drafted in Prompt 11's PR (2026-09-27); ratified by the user's
 merge of that PR.** The user's word in Prompt 11's execution order: B1 "lands
@@ -2392,6 +2403,7 @@ Telemetry fields:
   "degradationRung": 0,
   "watchdogTripsTotal": 0,
   "watchdogClearsTotal": 0,
+  "readAheadMissesTotal": 0,
   "automationHold": false,
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
@@ -2416,6 +2428,14 @@ slate, trips − clears is 1. Both are engine-owned; with no fresh engine report
 the control plane emits `0` (§10.1.1's stub). They ride the tick beside
 `degradationRung`, which is §10.5's reporting shape for the ladder. The audit
 log (§10.7) is the control plane's, and the engine keeps none.
+
+**`readAheadMissesTotal` (normative, new in v0.4.8 row 12).** The clip
+read-ahead's misses since the engine started (§12.8.1): one per frame the View
+draws of a clip layer whose source frame was not yet resident, held rather than
+drawn. A Preview miss is held and not counted (§10.2).
+It is engine-owned, with §10.1.1's stub of `0` when no fresh report is held,
+and it rides the tick beside the watchdog's counters. A run with misses is a
+degraded run, and a miss is never silent.
 
 **`streamBufferMs` and its NO-SESSION sentinel (normative, new in v0.4.6).**
 While a stream session exists, `streamBufferMs` is the stream transport's
@@ -2496,7 +2516,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded), `alerts` and `health` (§10.1.2, v0.4.8 row 8) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7), `readAheadMissesTotal` (new in v0.4.8) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 
@@ -2831,9 +2851,18 @@ was in force and the View kept missing deadlines. That pressure is sustained
 but not necessarily consecutive: under consecutive misses the §10.3 watchdog
 puts the fallback slate on air before rung 2 could act.
 
-Rung 2 does not stream: this build has no runtime streaming decode. A shed loop
+~~Rung 2 does not stream: this build has no runtime streaming decode.~~ Rung 2
+does not stream a loop: a loop has no runtime streaming decode. *(§2c, v0.4.8
+row 12: clips now stream, §12.8.1.)* A shed loop
 is re-uploaded from its decoded frames, which is why the domain is off-air
 loops only.
+
+**Rung 2 and clips (normative, new in v0.4.8 row 12).** An off-air clip's head
+and window are shed as an off-air loop's ring is, and its read-ahead stops. A
+take or a preroll re-acquires it: the head is re-uploaded from its decoded
+frames, and the window is re-primed by the read-ahead. The View's clip is never
+shed, by the same clause. A policy that shrinks a clip's K under pressure is
+deferred, and not part of this row.
 
 ## 10.6 Coverage additions
 
@@ -3204,6 +3233,43 @@ Wrap policy:
 3. Wrap MUST NOT block the render thread.
 4. If wrap read-ahead fails, the loop element MUST fall back to frozen frame or fallback slate if live.
 
+### 12.8.1 Clip read-ahead (normative, new in v0.4.8 row 12)
+
+§12.8 governs loops. A **plain clip**, a video asset with no declared loop,
+plays once, and it MUST play its full length:
+
+1. **The head.** The engine decodes a clip's first `H = 30` frames at
+   `show.load` and keeps them resident for the life of the load. A take draws
+   frame 0 at once, and a re-take never waits on a decoder.
+2. **The window.** Past the head, the engine keeps a read-ahead window of
+   `K = 2 × GOP` frames, in frames, where GOP is the house format's keyframe
+   bound (§6.2: at most 30 at 30 fps), so `K = 60` at house format. The window
+   is primed at `show.load` with frames `[H, H + K)` and is refilled as the clip
+   plays. A clip no longer than `H + K` frames is wholly resident and never
+   streams.
+3. **Pacing by occupancy, never by the wall clock.** The decoder may produce
+   frame `j` only once its window slot is free, that is once the draw has
+   passed `j − K`. Which frame shows remains a pure function of the master
+   clock (§12.1). The read-ahead decides only whether that frame is resident.
+4. **The miss policy, `readAheadMiss`.** If source frame `i` is not resident
+   when the layer is drawn, the layer shows the highest-indexed resident frame
+   below `i`, the last frame drawn in steady play. A miss on the View is
+   counted (`readAheadMissesTotal`, §10.1). A Preview miss holds the same way
+   and is not counted, as §10.2 counts no preview miss as a dropped frame. The
+   render thread MUST NOT block on the
+   decoder, and a clip layer MUST NOT draw black before the clip's end. The
+   hold is the miss policy, not playback.
+5. **The end.** A clip's length is its video track's duration times its
+   nominal frame rate, rounded, from the container's metadata at load. It is
+   not the count of frames decoded. At a source index at or past the length,
+   the clip has ended and its layer is not drawn.
+6. **Audio is unchanged.** A clip's audio is decoded whole at `show.load`
+   (§8.4). The read-ahead governs picture only, and with it picture and sound
+   agree for the clip's full length.
+7. **Bytes.** K is fixed in frames. A YUV window would cut each frame's bytes
+   (1080p: 7.91 MiB as RGBA8, 2.97 MiB as NV12) and change nothing else; it is
+   not part of this rule.
+
 ## 12.9 Loop metadata precedence
 
 If both `asset.loop` and `element.loop` exist:
@@ -3269,15 +3335,18 @@ Preflight MUST compute the worst-case resident demand of a package:
 
 ```text
 loopDemandMiB    = Σ over VRAM-resident loops of (periodFrames × frameCostMiB)
+clipDemandMiB    = Σ over plain clips of (min(lengthFrames, H + K) × frameCostMiB)
 imageDemandMiB   = Σ over image assets of (width × height × 4) / 1MiB
 slateDemandMiB   = fallback slate at house resolution, RGBA8
 targetsDemandMiB = view + preview render targets, RGBA8
 
-vramDemandMib    = loopDemandMiB + imageDemandMiB + slateDemandMiB + targetsDemandMiB
+vramDemandMib    = loopDemandMiB + clipDemandMiB + imageDemandMiB + slateDemandMiB + targetsDemandMiB
 
 audioDemandMib   = Σ over audio-bearing assets of
                    (durationSeconds × 48000 × 2 ch × 4 B) / 1MiB
 ```
+
+`clipDemandMiB` is new in v0.4.8 row 12: a clip's head and window (§12.8.1) are resident from `show.load`, at the engine's RGBA8 cost for the clip's own dimensions. The engine also keeps each clip's head in system memory, to re-acquire it after rung 2 (§10.5).
 
 Audio is included because §8.4 makes soundboard and clip audio RAM-resident from `show.load`: one hour of declared audio is 1.32 GiB of system memory, which is not negligible against a 16 GB machine.
 

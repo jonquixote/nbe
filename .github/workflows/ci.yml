@@ -672,6 +672,35 @@ jobs:
           if [ "$exercised" -lt 9 ]; then
             echo "FAIL take_duration: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: "the R20 clip read-ahead suite actually ran (SPEC v0.4.8 row 12)"
+        # Two floors, rule 8. The falsification battery written before the fix
+        # (the weaker form on A1, the stronger form on counter_60, the fixture
+        # guard) and the fix's guards (the full length frame for frame, the
+        # window never overwriting a needed frame, the miss hold, the end, the
+        # counter_150 fixture guard), and the refill's cost against the frame
+        # deadline (the ninth, added at the gate: R20's finding 9, where the
+        # read-ahead's uploads cost the record its frames). They read the
+        # picture back from the real draw path, so they need a wgpu adapter
+        # and VideoToolbox, and FAIL without them, as Prompt 05's do: no SKIP
+        # path, floors equal at the full count (9; 8 before finding 9).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test r20_clip -- --nocapture --test-threads=1 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL r20_clip: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "r20_clip: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=9 exercised>=9)"
+          if [ "$ran" -lt 9 ]; then
+            echo "FAIL r20_clip: expected at least 9 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 9 ]; then
+            echo "FAIL r20_clip: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: "the resync-end suite actually ran (SPEC v0.4.8 row 3)"
         # Seven tests on the directive handler alone (no GPU, no capability
         # gate, so no SKIP). A restarted engine ends the timed item at its
@@ -1487,13 +1516,19 @@ jobs:
           # claims skip on this runner with a logged reason, so they are counted
           # the rule-8 way: ran = `# tests`, exercised = ran minus the `# SKIP`
           # lines.
-          #   ran       >= 27: the file's 27 tests (16 before, minus the one RI-1
-          #                    gate test, plus its 12 replacements).
-          #   exercised >= 18: 27 minus the 9 skips this runner takes. Four are
+          #   ran       >= 29: the file's 29 tests (16 before, minus the one RI-1
+          #                    gate test, plus its 12 replacements; ~~27~~ until
+          #                    R20, SPEC v0.4.8 row 12, added steps 12b and 12c).
+          #   exercised >= 18: 29 minus the 11 skips this runner takes. Four are
           #                    capability skips (stream, record, sync, kill: no
           #                    hardware H.264 encoder) and five are normative
           #                    (zero drops, zero underruns, no slate, and the two
-          #                    3000 ms rise bounds). One more skip moves it below.
+          #                    3000 ms rise bounds). R20 adds two, one per new
+          #                    step: 12b's zero-miss gate (normative; the misses
+          #                    are logged here, not gated) and 12c's picture
+          #                    read-back (no recording here). Unchanged at 18:
+          #                    the two new tests and their two skips cancel. One
+          #                    more skip moves it below.
           ran=$(grep -E "^# tests " /tmp/dress.log | awk '{print $3}' || true)
           passed=$(grep -E "^# pass " /tmp/dress.log | awk '{print $3}' || true)
           failed=$(grep -E "^# fail " /tmp/dress.log | awk '{print $3}' || true)
@@ -1501,7 +1536,7 @@ jobs:
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$skips" in ''|*[!0-9]*) skips=0 ;; esac
           exercised=$((ran - skips))
-          echo "ran=$ran passed=${passed:-0} failed=${failed:-?} skips=$skips exercised=$exercised (floors: failed == 0, ran >= 27, exercised >= 18)"
+          echo "ran=$ran passed=${passed:-0} failed=${failed:-?} skips=$skips exercised=$exercised (floors: failed == 0, ran >= 29, exercised >= 18)"
           grep -E "^# SKIP" /tmp/dress.log || true
           # The gate's counts on one machine-readable line (Findings R12, R13).
           # It is what a bookend reads to extend the register's trend table.
@@ -1524,8 +1559,8 @@ jobs:
             grep -E "^not ok " /tmp/dress.log || true
             exit 1
           fi
-          if [ "$ran" -lt 27 ]; then
-            echo "FAIL: expected at least 27 tests to run, got $ran"; exit 1
+          if [ "$ran" -lt 29 ]; then
+            echo "FAIL: expected at least 29 tests to run, got $ran"; exit 1
           fi
           if [ "$exercised" -lt 18 ]; then
             echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1

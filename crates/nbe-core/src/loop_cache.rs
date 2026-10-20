@@ -136,6 +136,26 @@ pub struct LoopSpec {
     pub declared_format: Option<CacheTextureFormat>,
 }
 
+/// SPEC §6.2: the house format's keyframe bound, one second at the 30 fps
+/// house rate. The clip read-ahead window is sized from it (§12.8.1 rule 2).
+pub const HOUSE_GOP_FRAMES: u32 = 30;
+
+/// SPEC §12.8.1 rule 1: a plain clip's head, the frames decoded at
+/// `show.load` and resident for the life of the load.
+pub const CLIP_HEAD_FRAMES: u32 = 30;
+
+/// SPEC §12.8.1 rule 2: a plain clip's read-ahead window, in frames:
+/// `K = 2 × GOP`, 60 at house format.
+pub fn clip_window_frames(gop_frames: u32) -> u32 {
+    2 * gop_frames.max(1)
+}
+
+/// SPEC §12.8.1 and §12.11.1: the frames a plain clip of `length_frames`
+/// holds resident, its head plus its window, never more than the clip.
+pub fn clip_resident_frames(length_frames: u64, gop_frames: u32) -> u64 {
+    length_frames.min(u64::from(CLIP_HEAD_FRAMES) + u64::from(clip_window_frames(gop_frames)))
+}
+
 /// SPEC §12.4's default per-loop short-loop budget.
 pub const DEFAULT_PER_LOOP_MIB: u32 = 256;
 

@@ -704,6 +704,9 @@ adopt and record).
   | `39033994454`, main at `df5530d` (PR #52's merge), green (515/0/4) | the test build finished at 12:49:55.83; the post line at 12:50:47 | whole step 2.64–4.80. While the tests ran: 4.53, 4.80, 4.19, 4.65, 4.25, then the post line's 3.87, so 3.87–4.80. The R10 test passed at 12:50:25.72, between 4.19 and 4.65. The 15th |
   | `39034929811`, PR #53 at `18a3858`, green (515/0/4) | the test build finished at 13:04:10.71; the post line at 13:05:00 | whole step 5.78–9.52. While building: 7.45, 6.60, 6.96, 7.85, 9.52, 9.32. While the tests ran: 8.73, 7.99, 6.82, 6.17, then the post line's 5.78, so 5.78–8.73. The R10 test passed at 13:04:38.28, between 7.99 and 6.82. The 16th |
   | `39035305838`, main at `49d29ae` (PR #53's merge), green (515/0/4) | the test build finished at 13:09:23.86; the post line at 13:10:16 | whole step 3.12–3.97. While the tests ran: 3.80, 3.35, 3.45, 3.12, 3.33, then the post line's 3.34, so 3.12–3.80. The R10 test passed at 13:09:54.25, between 3.12 and 3.33. The 17th |
+  | `39106598820`, PR #56 at `0431441`, green (515/0/4) | the workspace tests: the test build finished at 07:10:54.59 (`Finished` in 42.62 s); the post line at 07:11:46 | whole step 2.55–4.70 (pre, 10 samples, post). While building: 2.55, 2.68, 3.30, 4.49, 4.70. While the tests ran: 4.62, 4.52, 4.43, 3.90, 4.35, then the post line's 4.35, so 3.90–4.62. The R10 test passed at 07:11:24.55, between 4.43 and 3.90. The 18th |
+  | `39108195056`, PR #56 at `f81653f` (its head), green (515/0/4) | the workspace tests: the test build finished at 07:36:35.41 (`Finished` in 50.82 s); the post line at 07:37:27 | whole step 3.46–7.18 (pre, 11 samples, post). While building: 3.51, 3.46, 4.44, 5.59, 6.25, and 7.18, sampled in the second the build finished. While the tests ran: 6.16, 5.61, 4.97, 4.53, 3.91, then the post line's 3.78, so 3.78–6.16. The R10 test passed at 07:37:05.09, in the 4.97 sample's second. The 19th |
+  | `39112885332`, main at `5043ccf` (PR #56's merge), green (515/0/4) | the workspace tests: the test build finished at 08:50:45.64 (`Finished` in 59.73 s); the post line at 08:51:44 | whole step 2.80–9.19 (pre, 12 samples, post). While building: 3.03, 2.80, 3.61, 5.29, 7.22, 8.80. While the tests ran: 9.19, sampled 0.4 s after the build finished, then 8.47, 7.35, 7.49, 7.15, 7.01, then the post line's 6.03, so 6.03–9.19. The R10 test passed at 08:51:19.78, between 7.49 and 7.15. The 20th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -828,6 +831,9 @@ maximum).
 
 **The ceiling at PR #53's merge: holds at 12.09 per CPU** (17 green runs;
 the peaks were 9.52, the nearest yet to the 9.67 maximum, and 3.97).
+
+**The ceiling at PR #56's merge: holds at 12.09 per CPU** (20 green runs;
+the peaks were 4.70, 7.18 and 9.19, all under the 9.67 maximum).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -5953,7 +5959,7 @@ item):
     | restart (engine killed under a live stream) | `none` | `live` → `idle` | `stream.divergence` raised, then cleared "consistent again: believed idle, reported none" (finding 1) | `belief.corrected` live→idle, 184 ms |
     | held (a real finalize failure) | `closed` | `held` → `idle` | `outputs.held` stands, through a refused `stream.stop` ("stream is idle"), until `show.unload` clears it ("cleared by show.unload (stateVersion 10)"). After that `command.unacknowledged.record` stands, because the engine refused `record.stop` (finding 3's record twin) | `belief.corrected` held→idle, 206 ms |
     | show-stop-version held leg | `closed` | `held` on `show.stop`'s own frame → `idle`; the record stays `recording` until the heal | the held alert | `show.stop` at v9, the correction at v10, `view.fallback` at v11 (acked), `record.stop` at v12 (refused) |
-    | refused start (CI) | `none` | `live` → `idle` | (b) stands | *from the PR's CI run* |
+    | refused start (CI) | `none` | `live` → `idle` | (b) stands, raised at 2027 ms | ~~*from the PR's CI run*~~ `belief.corrected` live→idle, report age 143 ms (run `39106598820`; §2c, filled in the next PR) |
 
   - **The correction's latency** (window end → the next fresh report → the
     belief), from the server-stamped audit: the expiry's alert row to the
@@ -5963,7 +5969,9 @@ item):
     - The engine reports every 1000 ms (`main.rs:32`), and the evaluator
       runs every 250 ms (`server.ts:271`), so the latency is bounded by
       about one report interval plus one evaluation.
-    - The refused start (CI) is in the PR's CI run.
+    - ~~The refused start (CI) is in the PR's CI run.~~ The refused start on
+      CI: **279 ms** (run `39106598820` at `0431441`) and **727 ms** (run
+      `39108195056` at `f81653f`). *(§2c, filled in the next PR.)*
   - **The user's rulings on PR #56's six findings (2026-10-18).** The
     numbers are the PR body's. The records' numbers are in brackets.
     1. **[4] Both brief lines are struck.** D4 governs: corrections fire no
@@ -5996,6 +6004,122 @@ item):
     6. **The relay miss is recorded.** ORDER 3 named
        `r17-spine-b-brief.md`, and the tree's filename,
        `r17-spine-b-belief.md`, governs.
+  - **The two-key pass on PR #56** (independent; relayed by the user
+    2026-10-18). Verdict: **HOLDS on all eleven answers.** It was derived
+    independently, in a fresh clone at `f81653f`, with the pass's own probes
+    and its own mutants. Nothing merged, and the merge word was not given.
+    - **The compile-time claim, reproduced exactly.** A fourth `StreamState`
+      value gave `tsc` exit 2, with six errors at the builder's line numbers
+      (B23's: `alerts.ts(379,21)`, `commands/output.ts(46,30)` and
+      `(66,30)`, `commands/show.ts(187,29)`, `state.ts(40,26)`,
+      `automation.ts(68,7)`).
+    - **The identity measurements.** D2a is byte-identical, 1455 chars, at
+      spec `:2562` against brief `:329`. The builder re-measured it at
+      `f81653f`: 9 lines each, 1455 chars without the blockquote markers,
+      identical line for line.
+    - **Their mutant runs.** They killed B1, B2, B3, B4, B6 and B10, all red
+      on the builder's exact tests, and every restore was `cmp`-identical.
+      B2, the brief's named falsification (path (i)'s tracking), now has
+      two independent witnesses.
+    - **The legs' timestamps.** The pass measured 442 and 471 ms against the
+      builder's 560 and 583 ms (lost stop and held, the correction's
+      latency). Both lie within one report interval (1000 ms) plus one
+      evaluation (250 ms).
+    - **#54 and #55, re-verified at the head.** The D6 dress mutants'
+      throwaway runs were checked by the pass.
+    - **The A1 boundary, accepted as a scope boundary.** The pass declines to
+      re-assert A1's authority tier as its own evidence. That tier sits
+      outside this PR's diff, standing on the untouched automation suite,
+      35/35. Recorded plainly: the authority tier's evidence is
+      pre-existing, and the pass says whose it is.
+    - **Their voids, honest.** Load ran 3.0–5.4 all session, and their timing
+      re-measures were VOID. They relied on load-insensitive legs and CI's
+      reads. The builder's gate windows stand as the builder's
+      load-disciplined evidence.
+    - **Substance beyond confirmation:**
+      - the wire-coverage proof (a refusal is the absence of an ack, not a
+        token);
+      - path (iv)'s static proof (`persistence.ts` carries no `alerts`,
+        `held` or `health`, so the in-process simulation is adequate);
+      - (a)'s held branch is reachable only after a clear.
+    - **Builder's two-key record: concurs on every call.** No disputes, one
+      annotation.
+      - **The A1 boundary:** concur, as a scope boundary. The diff changes
+        `automation.ts` only in #50's compile-time audit (`streamAudit`
+        drops `| "held"`) and `automation.test.ts` only by a comment. No
+        hold path is touched. The tier is §10.1.3's "Authority, before
+        dispatch" (spec `:2599`).
+      - **Wire coverage:** concur. `directive.rs` acknowledges at one point,
+        `:147–148`, after every handler's `?`. A refusal returns `Err` first,
+        and the channel logs `directive failed` (`channel.rs:264–265`).
+      - **Path (iv)'s static proof:** concur. `PersistedSnapshot` is
+        `{ stateVersion, manifestIdentity, recoveredAt }`, and `restore()`
+        sets only `stateVersion`, `showState` and `pkg`.
+      - **The legs, the identity, the compile-time claim, their kills and
+        (a)'s held branch (B22):** concur.
+      - *Annotation, not a dispute:* the pass's voids (3.0–5.4 all session)
+        are a second witness to that night's high machine load. They are
+        consistent with the builder's three `npm test` voids, and they
+        still do not isolate the cause.
+
+  **Merged: PR #56 is `5043ccf`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-18 ("Two orders, in sequence", ORDER 2; the user ran the merge by hand after the auto-mode classifier refused the builder's): a squash at 2026-10-18T08:48:39Z (parent
+  `49d29ae`), pinned to the reviewed head `f81653f`. The merge tree
+  `1e0be79` is identical to `f81653f`'s. **SPEC v0.4.8 row 11 is
+  ratified**: for the first time, spec and code agree on what the system
+  believes. §10.1.3's order, §10.1.4's correction and §10.1.2's clearing set
+  for `outputs.held` are now what the control plane does. **R17 is fixed and
+  leaves the register**, closed by its proving
+  case (CI's dress at `0431441`, run `39106598820`). Main's CI at
+  `5043ccf`, run `39112885332`, read per test (§2b), green on attempt 1:
+  - **rust** (job `117632556116`): `TOTAL: 515 passed, 0 failed, 4 ignored`,
+    with all 30 floor lines held. `telemetry_tick_wires_the_live_session_counter
+    ... ok`, so R10 is silent. The peak was load1 27.58 on 3 CPUs, 9.19 per
+    CPU (envelope row 20). The ceiling holds at 12.09.
+  - **control-plane** (job `117632556222`): `passed=197 failed=0`,
+    automation 35/35, belief `ran=4 exercised=4`, effects 2/2, and every e2e
+    floor held (slate-release 4, recall 2, take-duration 3, resync-end 3,
+    package-reconcile 4, show-stop-version 6 ran and 1 exercised,
+    resync-request 3, operator-signals 4 ran and 1 exercised). The refused
+    start raised (b) at 2014 ms, and `belief.corrected` live→idle followed
+    1011 ms after the window, (b) standing. That is within one report
+    interval plus one evaluation (1250 ms).
+  - **dress** (job `117632555898`): 27/27, skips 9, exercised 18:
+    `PATH step 9: refused start; the belief corrected live -> idle 2358 ms
+    after stream.start (bound 4000 ms); stream.stop refused ("stream is
+    idle")`. Drops 0, underruns 164, watchdog trips 0, and rises of 4018 and
+    3994 ms, all inside the backstops.
+  - **The machine-load thread, toward the owed local-ceiling ruling** (#50's
+    gate: "A local-ceiling ruling is owed when it next matters"). Two nights
+    of evidence on the same machine, with the cause unpinned:
+    - **Night 1 (2026-10-16, #50's gate at `6bf10c7`).** The workspace
+      battery voided three times on its own load: 2.38 → 4.16, 2.35 → 3.85,
+      1.95 → 3.32. Even a start under 2.0 ended at 3.32. Those three voids
+      are the evidence of record, by the user's word.
+    - **Night 2 (2026-10-17/18, PR #56).**
+      - The builder's `npm test` voided three times, each 197/197:
+        - 2.42 → 5.38 (23:48:13–23:48:21);
+        - 2.39 → 5.05 (23:51:16–23:51:23);
+        - 2.47 → 5.94 (23:56:43–23:56:50, the gate).
+      - Each started under 2.5 and rose 2.6–3.5 inside its own 7–8 s. A
+        diagnostic declared as not evidence (it started at 2.65) peaked at
+        16 `node` processes, with no rise. The suite's parallelism is real,
+        but it does not by itself make the rise.
+      - The falsification battery's ambient voids: B4's e2e (2.39 → 3.88),
+        B11's unit (2.29 → 3.39), B28's show-stop-version e2e
+        (2.32 → 3.49).
+      - The second key's session read 3.0–5.4 throughout, and its timing
+        re-measures were VOID. It relied on load-insensitive legs and CI.
+    - **What the two nights share.** It is one machine. Start loads sit near
+      2.5, and the 1-min load rises inside short windows. The top ambient
+      processes on night 2 were iTerm2, WindowServer, CleanMyMac's monitor
+      and `opencode`. Nothing pins the cause: neither the suites' own
+      parallelism, which the diagnostic did not reproduce, nor any one
+      process.
+    - **What the ruling must settle.** It is owed, not made. Either a local
+      ceiling that this machine's suites can meet (envelope-relative, as
+      R10's CI ruling did for CI), or a pinned cause that lifts the
+      background. Until then the 3.0 rule stands, and every void is named.
 - **~~Position 3~~ ~~Position 4~~ Position 6: the deferred-cell reader**, a static reader that compares each
   routed command's reachable mechanisms with its deferred §13.4.1 cells. It
   was queued by PR #35's two-key pass (section D), and its entry stands under
@@ -6009,6 +6133,626 @@ item):
   (`channel.rs`). It likely arrives with the queued `show.unload` routing
   (Prompt 11's WU8 record, "route `show.unload` to the engine"), which also
   clears the engine's package.
+- **Position 8: R20, a plain video clip stops drawing after its first 30
+  frames** (the user's word of 2026-10-18). Position 8 by number, first in
+  order: the queue ruling below. The register row in
+  `docs/soak-protocol.md` §5 carries the mechanism, the class, the
+  falsification and the struck refutation.
+  - **Found while verifying two outside reviews.** The first review had the
+    mechanism backwards: "whole-clip RAM decode, OOM on a 10-minute clip".
+    The second corrected it ("a clip longer than 1 second cannot play
+    today"). The relay then refuted the correction from the dress's `DONE`,
+    which is the clock's, not the picture's. The refutation is struck in
+    R20's row, with its cause named.
+  - **The class, recorded with the defect: no test looks at the picture.**
+    Belief, clocks, acks and counts are asserted; a drawn layer never is.
+    Spine B made the system's beliefs provable, but a belief about what is
+    on air is still not a picture of it.
+  - **The falsification comes before any fix** (ratified 2026-10-18, amended
+    to both forms; R20's row carries each in full):
+    - **the drop-detector, on A1 today:** frame 45 yields a drawn layer, not
+      `None`;
+    - **the stopgap-police, on a new fixture:** a 46+-frame frame-counter
+      clip in house format, where rendered frame 45 must equal the source's
+      own frame 45, decoded independently;
+    - **the fixture-integrity guard:** all of that fixture's 46+ frames are
+      distinct by hash (the stripper-test lesson).
+    The first stronger form, "differs from frame 0", is superseded. It could
+    not pass on the static A1, and it would pass under the stopgap.
+  - **The fix path.**
+    - §12.8's read-ahead, with the determinism constraint intact: decode
+      ahead with known occupancy, never wall-clock.
+    - A hold-last-frame stopgap may precede it only as harm reduction, never
+      recorded as the fix.
+    - The frozen-frame comment (`video.rs:263–265`) is made true or struck
+      in the same PR.
+    - The design record decides the order.
+  - **Then the air-readiness queue, in this order, separate PRs per
+    discipline:**
+    1. residency honesty (preflight reports the residency the engine holds,
+       until the §12.3 ladder is real; `video.rs:243–257` and spec `:3094`
+       already admit the gap);
+    2. device audio (`NullSink` is the only `AudioSink`);
+    3. disk headroom (the soak protocol's 8 GiB precondition);
+    4. AC-5, the 30-minute zero-drop soak, never yet run green.
+  - **WO2's `clockState`** (`server.ts:563` derives `renderNode.clockState`
+    from the control plane's `showState`, and the engine sends
+    `master_frame().unwrap_or(0)`, `telemetry.rs:82`) rides the same
+    engine-opening era, as position 5's work order 2, in its own PR.
+  - **The queue ruling (the user's word of 2026-10-18, since the record
+    asked): R20 goes first.** Nothing else matters if clips don't play.
+    Positions 6 and 7 keep their numbers. They may ride alongside at the
+    builder's discretion, since they are a different subsystem. But no
+    air-readiness claim precedes R20's closure.
+  **R20's design record, written before any fix code** (the user's order of
+  2026-10-18: "falsification first, then the design record. The fix is NOT
+  in this order"; branch `r20-clip-falsify`, off `5043ccf`). It is held for
+  review, and no implementation dispatches before the user's word.
+  - **The falsification battery, red today** (`911fcdd`,
+    `crates/nbe-engine/tests/r20_clip.rs`). Each draw test asks the real draw
+    path (`RenderLoop::render_frame`, then `readback_view`), as Prompt 05's
+    pixel tests do. Each first passes a control at frame 15, inside the
+    preload, so a failure at frame 45 is R20's and not the harness's. Run at
+    03:31:29–03:31:53, load 2.10 → 2.08, on AC under `caffeinate`, after the
+    first run (03:17:30–03:17:56, 2.37 → 3.28) voided on ambient load and was
+    rerun job-scoped. Results:
+    - **The weaker form, on the dress's A1: FAILS.** `R20: A1 is 150 frames,
+      but at frame 45 the clip's layer was not drawn (centre [0, 0, 0], black
+      is the cleared View; A1 drew [23, 56, 94] at frame 15)`.
+    - **The stronger form, on `counter_60.mp4`: FAILS.** `R20: rendered frame
+      45 must be the source's own frame 45 [121, 232, 67], got [0, 0, 0]
+      (black: the layer was dropped; the source's frame 29 [44, 79, 142]: a
+      held last frame; frame 44 [86, 152, 75] or 46 [173, 96, 68]: an
+      off-by-one)`. The source frames come from `nbe_decode` alone: no ring,
+      no preload cap, no draw path.
+    - **The fixture-integrity guard: passes on the fixture and kills both
+      of its mutants.** With A1, which is static, in the fixture's place:
+      `R20 fixture: counter_60.mp4 frame 1 repeats an earlier frame; every
+      frame must differ` (03:32:07–03:32:24, 2.07 → 2.25). With `cfr_30.mp4`
+      in its place: `R20 fixture: counter_60.mp4 must outlive frame 45,
+      decoded 30 frames` (03:32:34–03:32:36, 2.21). Each time the fixture
+      was restored from its saved copy and checked `cmp`-identical.
+    - **The gate's static half:** `cargo fmt --check` and
+      `cargo clippy --workspace --all-targets -- -D warnings` are clean. The
+      workspace grows by three tests, two of them red by design, so this
+      branch is not pushed until the fix turns them green. The new suite
+      gets its two CI floors with the fix PR (rule 8).
+  - **The fixture, as commissioned** (`counter_60.mp4`, beside the dress
+    fixtures; its recipe is in `scripts/generate-fixtures.sh`):
+    - format: house mezzanine per §6.2: 1920×1080, CFR 30/1, H.264 High,
+      `yuv420p`, keyframes at 0 and 30 (`-g 30`), AAC 48 kHz stereo at
+      −16.0 LUFS integrated, peak −15.1 dBFS; 158,308 bytes;
+    - content: 60 frames, 60 distinct by `framemd5`. Each frame is a flat
+      colour keyed by its index N (r = 37N mod 256, g = 91N mod 256,
+      b = 255 − 4N). This ffmpeg build has no `drawtext`, so the counter is a
+      colour, the shape `cfr_30`, `loop_10` and `cadence_12` already use.
+      Adjacent frames differ by at least 37 in red, so an off-by-one reads as
+      a different frame;
+    - preflight (release `nbe-preflight --house-rate 30`), on the dress
+      package plus this asset, scene and item: `preflight OK: air-ready`,
+      exit 0, `errors []`, `warnings []`. For `counter_clip`: first and last
+      frame decode, `cfr: true`, 30 fps, 1920×1080, `durationFrames: 60`;
+    - placement: it is not in the dress manifest, so the dress show is
+      unchanged. The engine suite loads it directly.
+  - **The current path, from the tree.**
+    - **What the 30-frame ring is.** `load_video_asset` decodes a clip with
+      no declared loop period to `CLIP_PRELOAD_FRAMES` = 30 (`video.rs:29`,
+      `:267`) and keeps those frames as RGBA8 in RAM (`VideoAsset.frames`).
+      `period_frames` falls back to the count decoded, 30 (`:277`).
+      `upload_ring` uploads every one as its own texture (`render.rs:347`).
+    - **Where it ends.** The draw path maps the master clock to a source
+      index (`clip_source_index`, `nbe-decode/src/lib.rs:743`), bounded by
+      `frame_count`, the ring's 30. At index 30 it returns `None`
+      (`:755`).
+    - **Who drops the layer.** The `?` in `draw_for` (`render.rs:825–833`)
+      returns `None`, and the caller skips the layer (`render.rs:709`).
+      `texture_slot`'s hold-last fallback (`.or_else(|| ring.textures.last())`,
+      `:839`) is never reached for a clip, because the index was already
+      refused.
+    - **The decode stops at load.** `next_frame` is called only in
+      `load_video_asset` (`video.rs:221`, `:271`). The session lease is kept
+      (`_session`, `video.rs:162`, `:305`) but never read again.
+    - **The audio diverges.** A clip's audio is decoded whole at load
+      (`decode_audio`, `nbe-decode/src/lib.rs:571–578`, up to 30 min), so on
+      A1 the sound runs 5 s and the picture 1 s. R20 is also an A/V
+      divergence.
+  - **§12.8's actual text against the comment.**
+    - §12.8 is titled **Long-loop streaming** and governs loops only:
+      "Long loops MUST use double-buffered read-ahead", a minimum read-ahead
+      of `max(2 * GOP length, 60 frames)`, a wrap policy, and "If wrap
+      read-ahead fails, the loop element MUST fall back to frozen frame or
+      fallback slate if live."
+    - **Nothing in §12 governs a plain clip past its preload.** The comment
+      at `video.rs:263–265` ("a plain clip preloads a small window and
+      streams the rest (SPEC §12.8's frozen-frame rule covers the gap until
+      read-ahead lands)") cites a loop rule for a clip, and it is false
+      twice: nothing streams, and nothing freezes.
+    - **Decided here:** the comment is made true by the fix, not by a
+      gloss. In the fix PR it is §2c-struck and replaced with the clip
+      read-ahead's actual contract.
+  - **The read-ahead design.**
+    - **The shape.** A clip on air (or armed, so a take is instant) keeps a
+      window of K resident frames, `[i, i + K)`, where i is the frame the
+      draw path will read next. A decode worker per playing clip (the
+      session lease it already holds) decodes sequentially, with no seek: a
+      clip plays once. It hands frames to the render thread, which uploads
+      frame j into slot `j mod K`. The load-time preload stays as the head
+      of the window, so a take still draws frame 0 at once.
+    - **Decode ahead with known occupancy, never on the wall clock.** The
+      worker is paced by occupancy alone. It may produce frame j only once
+      slot `j mod K` is free, that is once the draw path has passed `j − K`.
+      The render loop publishes the frame it has drawn (an atomic the
+      worker reads). Which frame shows remains a pure function of the master
+      clock (`clip_source_index`, §12.1). The worker decides only whether
+      that frame is resident, never which frame shows. No timer or
+      `Instant::now` enters the selection.
+    - **The named policy when decode falls behind: `readAheadMiss`.** If
+      frame i is not resident when frame i is drawn, the draw path holds the
+      last frame it presented for that layer. It never draws black for a
+      clip that has not ended, and it never blocks the render thread
+      (§12.8's wrap rule 3, extended to clips). Each miss is counted, and the
+      count rides the §10.1 tick (`readAheadMissesTotal`), so a miss is an
+      observable event, never a silent freeze. The hold is the miss policy,
+      not the fix: a run with misses is a degraded run, and the dress
+      asserts the count.
+    - **The clip's true end.** The draw path needs the clip's real length to
+      tell "ended" (drop the layer, correct) from "not yet resident" (miss,
+      hold). The length comes from the decoder's metadata at load (the frame
+      count of the track, as preflight already reports `durationFrames`),
+      not from the preload's count. `period_frames` for a clip becomes that
+      length, and the ring depth becomes K.
+    - **Residency math under rings.** A 1080p RGBA8 frame is 8,294,400
+      bytes, 7.91 MiB.
+      - Today each clip holds 30 frames, 237 MiB of VRAM plus 237 MiB of RAM,
+        outside §12.4's loop budget (the clip path ignores the budget). The
+        dress's A1 and A3 alone hold 332 MiB (237 + 95).
+      - At K = §12.8's minimum, `max(2 × GOP, 60)` = 60 for house format
+        (§6.2: GOP ≤ 30), one playing clip costs 475 MiB of VRAM. A mix
+        between two clips costs 949 MiB, past §12.4's 512 MiB total.
+      - NV12 would cost 2.97 MiB a frame, so 178 MiB at K = 60. That path is
+        not built ("RGBA path until shader-side YUV lands", `video.rs:237`).
+      - **Proposed for the spec row:** a clip's depth is `K = 2 × GOP`
+        (30 to 60 at house format), accounted per playing clip in §12.11's
+        package demand. It is not a loop's cache, so it is not charged to
+        §12.4's loop budget, but it is reported, so the queued
+        residency-honesty item measures what the engine holds.
+    - **Memory bounds on the floor device** (§0.3, `hardware-baseline.txt`:
+      Radeon Pro 555X, 4 GB dedicated VRAM; 16 GB RAM).
+      - The worst case the dress can reach is one mix of two clips at K = 60
+        RGBA8: 949 MiB of VRAM, plus the 237 MiB heads of the other clips
+        loaded. That fits 4 GB with the loop cache (512 MiB) and the View,
+        preview and record targets beside it.
+      - RAM is bounded the same way: the worker holds at most K decoded
+        frames per clip, and the load-time `frames` vector shrinks to the
+        head.
+      - The design must also refuse rather than overcommit: a take that
+        would push resident clips past the device's working set is §12.4's
+        "device working set allows allocation" check, applied to clips.
+  - **The stopgap decision: straight to read-ahead.** Reasons:
+    1. A hold-last-frame stopgap needs the clip's true length to tell an
+       ended clip from an exhausted ring. That plumbing is the read-ahead's
+       first step anyway.
+    2. The stopgap would turn the weaker form green and leave the stronger
+       form red, so the tree would carry a green drop-detector over an
+       unfixed defect. Against the dress's static fixtures, a frozen frame
+       is indistinguishable from playback, so the dress would look fixed.
+    3. Harm reduction buys little on air: a frozen picture for four seconds
+       reads as a hang, not as a clip.
+    4. The read-ahead's miss policy *is* the hold, bounded and counted, so
+       the harm the stopgap would reduce is reduced by the fix itself.
+    - **If the user rules otherwise:** the stopgap lands as its own commit,
+      recorded as harm reduction and never as the fix. The stronger form
+      stays red until the read-ahead lands, and the frozen-frame comment is
+      made true in that same PR.
+  - **The dress's impact.** After the fix, every dress clip renders its full
+    length for the first time, so every dress run's load profile changes.
+    - On A1's air time, a decode worker runs, and 7.91 MiB is uploaded each
+      house frame (237 MiB/s while it plays), on CI's 3 arm64 cores and on
+      the normative machine. A3 (12 frames) and the loop A2 are unaffected.
+    - **The floor lines to watch, against each run's own history:**
+      - drops (CI backstop 20, normative 0);
+      - underruns (R12: CI's peak 232, backstop 2000; normative 0);
+      - `step4RiseMs` and `step6RiseMs` (normative gate 3000 ms, CI
+        backstop 10000);
+      - watchdog trips (backstop 10), and fallback ticks outside a watchdog
+        episode;
+      - the decode-session peak (`MAX_DECODE_SESSIONS` 8);
+      - `readAheadMissesTotal`, new: it must read 0 on the normative
+        machine, and on CI it is recorded, not gated, until it has an
+        envelope;
+      - the rust job's test count, 515 → 518, with R10's envelope read as
+        always.
+    - The dress gains a step that looks at the picture: the counter clip on
+      air, with its frame 45 read back. The class's own remedy, in the
+      rehearsal.
+  - **The spec surface: row 12.** §12.8 extends to plain clips:
+    - clip read-ahead with depth K;
+    - occupancy pacing, never wall-clock;
+    - the `readAheadMiss` policy (hold the last presented frame, count it,
+      never block, never black before the clip's end);
+    - the clip's end taken from its metadata;
+    - the clip's residency in §12.11's demand.
+
+    Its candidate text is reviewed with this record and lands as an early
+    commit in the fix PR, ratified on that PR's merge: the row-11 pattern.
+    `VOCABULARY.md` gains the read-ahead miss.
+  - **The fix's falsification plan: the mutants its guards must die to.**
+
+    | Mutant | What it does | The test that kills it |
+    |---|---|---|
+    | M1, revert-to-30-ring | the read-ahead disabled: a clip holds its 30-frame preload again | the weaker form (A1 frame 45 black) and the stronger form |
+    | M2, hold-last-frame | the worker never advances; the draw path holds the last resident frame | the stronger form only (shows frame 29's colour); the weaker form passes by design, since A1 is static |
+    | M3, off-by-one ring | frame j uploaded to slot `(j ± 1) mod K`, or the index read one off | the stronger form (frame 44's or 46's colour) |
+    | M4, occupancy miscount | the worker may overwrite slot `j mod K` before the draw path passes `j − K` | a new form with the fix: the stronger form after the window has filled (frame 45 read back once the worker has run K ahead), which reads frame 45 + K's colour |
+    | M5, a miss draws black or blocks | the miss policy removed | a new miss test with the fix: a stalled worker yields the last presented frame and a counted miss, within the frame deadline |
+    | M6, the end ignored | a clip past its true length keeps holding instead of dropping | a new end test with the fix: frame 60 of `counter_60.mp4` draws nothing |
+    | M7, fixture blinded | `counter_60.mp4` made static or short | the fixture-integrity guard (falsified above, both clauses) |
+  - **RATIFIED with four amendments** (the user's word of 2026-10-18). The
+    design record above stands, amended as follows:
+    1. **Row 12 carries a residency clause.** A clip's resident frames (its
+       head plus its window) enter §12.11.1's package demand, and preflight
+       computes them, so spec and code agree when the row ratifies.
+    2. **An audio scope statement.** R20 is a picture defect. A clip's audio
+       is decoded whole at `show.load` (§8.4) and is unchanged. The
+       read-ahead governs picture only, and after it picture and sound
+       agree for the clip's full length.
+    3. **The rung-2 interaction is recorded, and a shrink policy is
+       deferred.** Rung 2 sheds an off-air clip's head and window as it
+       sheds an off-air loop's ring. The read-ahead stops, and a re-acquire
+       re-uploads the head and re-primes the window. The View's clip is
+       never shed. Shrinking K under pressure is deferred, not in this row.
+    4. **K is in frames, and YUV is noted as byte savings only.** K is 2 ×
+       GOP frames (60 at house format). A YUV ring would cut each frame's
+       bytes (7.91 to 2.97 MiB at 1080p) and changes nothing else. It is not
+       a dependency of this fix.
+  - **Implementation dispatches under the ruling's seven constraints:**
+    1. the falsification tests and the fix land on the fix PR, whose body
+       quotes the red-today evidence (`.git/nbe-staged/r20-pr-body-evidence.md`)
+       and then the green at its head;
+    2. the comment at `video.rs:263–265` is struck or made true per the
+       record: row 12 extends §12.8, and the comment cites the extended rule
+       or goes;
+    3. `readAheadMiss` holds the last frame, is counted on the telemetry
+       tick, never blocks and never draws black, and the clip's end comes
+       from its metadata;
+    4. M1–M7 each die to their mapped test. A hold-last-frame-as-fix mutant
+       must fail the stronger form. Restores are `cmp`-verified (and
+       rebuilt, for Rust), and CI-only legs follow #47's throwaway pattern;
+    5. the dress's clips render full length for the first time, so the named
+       floor lines are watched, and any moved floor is disclosed with its
+       cause, never silently re-baselined;
+    6. row 12 lands as an early commit, and the PR body states that it
+       ratifies on this PR's merge;
+    7. a two-key independent pass comes before any merge word: "engine work
+       gets what spine B got".
+  - **Housekeeping:** `.git/nbe-staged/after-pr56-records.md` was consumed on
+    landing (`6beb8d5`) and removed, per convention.
+  **R20's build: the fix, its guards, and every mutant killed** (branch
+  `r20-clip-falsify`, under the ratified record's seven constraints).
+  - **The commits, in order:**
+    - `6beb8d5`: PR #56's records (the cadence's first commit).
+    - `911fcdd`: the falsification battery, red before any fix.
+    - `eb52c0d`: the design record.
+    - `dae56ee`: its ratification, with the four amendments and the
+      constraints.
+    - `3f337fe`: row 12, the early commit.
+    - `2d1be82`: row 12's candidate text, made to say a miss is counted on
+      the View (a Preview miss holds, uncounted, as §10.2 counts no preview
+      miss as a dropped frame).
+    - `2bde830`: the fix.
+    - `dccabad` and `89ff7a5`: the two M4 hardenings below.
+    - `69a55d8`: the read-ahead uploads through a staging pool (finding 9:
+      the gate on `89ff7a5` failed, and this is its fix).
+    - `9b28f01`: the refill guard (M8 survived `show-stop-version`), the
+      CI floor 8 → 9, and row 12's test column (M1–M8, the old text
+      struck).
+    - `2497bc8`: these records, first form.
+    - `42c06d7`: the settle seam waits for the staging pool (finding 10: the
+      refill guard's precondition failed on CI).
+  - **Green at the head,** the ratified battery unchanged in its assertions:
+    `r20_clip` ~~8/8~~ 9/9 (§2c: the ninth is finding 9's refill guard,
+    `9b28f01`). ~~The run of record is 05:40:04–05:40:36, load
+    2.26 → 2.94.~~ (§2c: that was `89ff7a5`.) ~~The run of record is
+    09:30:54–09:31:22, load 2.39 → 2.05; the job-scoped re-run of the void
+    in finding 9.~~ (§2c: that was `69a55d8`, 8/8.) ~~The run of record is the
+    gate's at `9b28f01`, 10:57:26–10:57:55, load 2.43 → 2.58 (the gate
+    below).~~ (§2c: superseded by `42c06d7`.) The run of record is the gate's
+    at `42c06d7`, 12:01:11–12:01:41, load 2.45 → 2.16. The battery's decode
+    helper now streams each frame's centre
+    and hash and shares each fixture's decode across the suite; the
+    assertions are unchanged.
+  - **Findings, recorded:**
+    1. **The dev-profile decoder could not keep pace.** A full 1080p decode
+       cost 100.7 ms a frame unoptimized (10 fps) and 9.1 ms optimized
+       (109 fps). The timestamp-only decode cost 2.5 ms in both, so the cost
+       is the pixel copy. The dress and CI run the dev-profile engine, and
+       the dress counted **37 read-ahead misses** on the counter clip before
+       the remedy. The remedy is `Cargo.toml`'s
+       `[profile.dev.package.nbe-decode] opt-level = 3`, after which the
+       dress counted **0**. It changes no behaviour, only speed.
+    2. **The window prime costs the load boundary.** In the dev-profile
+       engine, one long clip's ring (head 30 + window 60) uploads in about
+       1.06 s on the render thread, against about 0.37 s for the 30-frame
+       head alone. My first dress design staged the counter clip into step
+       11's package, adding a second ring to that load. Step 11's `record.start`
+       then waited behind about 2.3 s of uploads, and step 11's cut back to
+       A1 landed after A1's end ("item A1 is DONE", twice). That is the
+       step-11 coupling #53 recorded and left for the user ("step 11 carries
+       the same coupling"), exposed by the heavier boundary. **Remedy, in my
+       own addition only:** step 12b stages and reloads its own
+       counter-carrying copy, so step 11's load gains only A1's own prime.
+       ~~Step 11 has passed in every dress since.~~ (§2c: false at the gate.
+       Step 11 failed again on `89ff7a5`, "item A1 is DONE". The second
+       cause is finding 9, the read-ahead's per-frame uploads, which slowed
+       every tick after the boundary as well. The account above names only
+       the boundary, and finding 9 qualifies it. Step 11 passed after
+       finding 9's fix.) **The coupling itself stands,
+       recorded and not fixed:** it is the user's to rule, and the load
+       boundary's cost is a named line to watch.
+    3. **Recorded video runs on the received-video timeline** (step 13's own
+       note), not the master clock. Step 12c's first design read each
+       recorded frame's timestamp as its source index, and failed at 31
+       frames of drift. The step now reads the frames in order: the
+       counter's recorded frames must run in order, pass 45–89 and 120, and
+       show no black between the first and the last. The drift is logged
+       only. The logged sequence shows the record ladder's shed gaps (index
+       3, then 17, one timestamp step apart).
+    4. **Step 13 looked for its kill take in step 11's record directory.**
+       Step 12b's reload pointed the package's record output elsewhere, so
+       12b's copy now shares step 11's directory. Step 13's stale comment
+       ("A1 is still the on-air item") is struck (§2c).
+    5. **CI's dress floor counts `# SKIP` lines.** Splitting the picture step
+       into 12b (the zero-miss gate) and 12c (the read-back) gives each new
+       test exactly one CI skip. So `ran` moves 27 → 29 and `exercised` stays
+       18: the two new tests and their two skips cancel. Disclosed in
+       `ci.yml`, never re-baselined silently.
+    6. **M4 survived its mapped test twice** (the battery below), and each
+       survival hardened the guard:
+       - first, the settle seam called a full-looking window settled. It now
+         requires the decoder to be held at the window's end (`dccabad`);
+       - second, the test's window at frame 15 was wholly primed, so no
+         decoder ran to overwrite it. The test now runs at frame 45, where a
+         decoder fills 90..104 and frame 105 belongs in frame 45's own slot
+         (`89ff7a5`).
+    7. **The restore trap, from memory, hit once.** The harness restored with
+       `copy2`, which preserves the old mtime, so cargo kept the mutant's
+       build. One suite run (`r20-fix-5`) tested a stale M5b and is
+       discarded. The harness now restores with a fresh mtime, the sources
+       were touched and rebuilt, and the battery was re-run whole on the
+       final tests. Each mutant's own write had always bumped its mtime, so
+       every mutant compiled its intended content.
+    8. **The suite's own load.** The first form decoded each 150-frame fixture
+       whole in every test, which voided windows on its own load (the
+       workspace at 2.01 → 4.45, the suite at 2.49 → 3.72). Streaming and
+       shared decodes cut the suite from 181 s to 30 s.
+    9. **The read-ahead's uploads cost the record its frames: R20's own
+       regression, found at the gate and fixed on this branch.** The gate on
+       `89ff7a5` failed two local legs that main passes:
+       - `show-stop-version.e2e.ts` 4/6: "E3, record only" and "concurrent"
+         ended with `E_RECORD_INPUT: no video units` (the take recorded no
+         frame);
+       - the dress 27/29: step 11 (`item A1 is DONE`) and step 12b (12
+         misses).
+
+       **A/B, the same e2e, the same tree, only the engine binary swapped**
+       (runs 07:28–07:35):
+       - branch: E1 and E3 failed, 3 × `no video units` (07:28:15–07:29:49,
+         load 2.47 → 2.41);
+       - main `5043ccf`: 6/6 (07:29:49–07:31:04, 2.41 → 2.52);
+       - branch: VOID (07:31:34–07:33:03, 2.33 → 3.78);
+       - main: 6/6 (07:33:48–07:35:02, 2.48 → 2.19).
+
+       **The cause, measured** (an instrumented scratch build, never
+       committed). `Gpu::upload_rgba` is `queue.write_texture`, whose doc
+       already said "never in the per-frame path (SPEC §7.13)". It creates a
+       staging buffer per call, and costs **10.5 ms** for one 1080p RGBA
+       frame (median of 20, 10.3–10.9). R20's pump called it per frame, up to
+       four times a tick. When a take lands during the load boundary's
+       upload, the View resumes past the primed window and the pump catches
+       up at its cap: **four uploads, 47 ms of pump, 52 ms ticks** against a
+       33 ms deadline. The record's pre-check skips any frame whose
+       `render_frame` overran, so every recorded frame was skipped. The View
+       counted no drop, because its drop timer starts after the pump: a
+       cost the dress's zero-drop gate could not see.
+
+       **The fix** (`69a55d8`): the read-ahead uploads through
+       `gpu::UploadPool`, a bounded pool of mapped staging buffers (4, one
+       frame's upload budget, 32 MiB at 1080p, created on first use). Each
+       buffer is reused once the GPU has consumed it. The copy costs **0.90
+       ms** a frame (median of 20). With every buffer in flight the tick
+       uploads nothing more and never waits. The load-time prime uses the
+       same pool and may wait, at the boundary only. Measured on the same
+       probe: catch-up ticks 4–9 ms in total (2–3 uploads), steady ticks
+       about 2 ms (1 upload), **1** record frame skipped (during the
+       boundary), and the take finalized. The guard is the refill test
+       (`9b28f01`, M8 in the battery below). Green after the fix:
+       `show-stop-version` 6/6 (09:24:29–09:25:50, load 2.37 → 1.81) and 6/6
+       (09:25:50–09:27:08, 1.81 → 1.89); the dress 29/29 with 0 misses
+       (09:27:08–09:28:09, 1.89 → 2.11). One R20 suite run was VOID
+       (09:14:25–09:14:58, 2.38 → 12.44): a macOS Contacts sync burst
+       (`contactsd`, `AddressBookManager`), external, re-run job-scoped.
+
+       **What the fix leaves, disclosed:** the load boundary. A plain clip
+       longer than 30 frames still costs about **0.45 s** more at the
+       boundary than on main (A1: 0.82 s against 0.37 s, release). The
+       window's 60 textures cost 3.4 ms to create, and the prime 433 ms: its
+       copies into fresh textures, GPU-bound (a 60-frame prime costs 130–230
+       ms through the pool in isolation). The render loop shares its thread
+       with the directive channel (`main.rs`: one `LocalSet`, `run_until`),
+       so the boundary delays directives, not the View. That is the class
+       #53 recorded for step 11. R20 makes it about 2.2× per clip. A paced
+       prime (uploaded by the pump after load) would remove it. It is a
+       candidate, not done here.
+    10. **CI, read per test: the refill guard's precondition, and a step-5
+        line R20 opened.** Two runs of PR #57.
+
+        Run `39153017826`, at `2497bc8`, failed in two places:
+        - **`r20_clip`'s refill guard failed on its precondition, not its
+          bound:** "settled at 51, drawing 52 uploads frame 111 and nothing
+          else", left 0. On CI's paravirtual adapter the settle's last
+          uploads were still in flight, so all four staging buffers were
+          taken and the frame waited. That is the pool working as designed
+          and a hole in the test. **The fix (`42c06d7`):** the settle seam,
+          which is test-only, waits for the pool to drain once settled.
+        - **The dress, step 5, "a 15-frame mix drops no frames":** 2 drops,
+          asserted on every machine. The CI artifact puts a watchdog fault
+          (`misses=4`) about 180 ms into the mix. A1, a plain clip taken
+          4.0 s earlier (about frame 120), was the outgoing layer and still
+          streaming. The fault came before A1 left the View, so before the
+          re-prime burst. On main, A1 past frame 30 drew nothing, so step 5
+          had never blended two live video layers on CI; main's CI is green
+          12 of 12. A second trip came in step 11's region (`misses=12`;
+          drops 3; `readAheadMisses` 7, recorded and not gated on CI).
+
+        Run `39153908984`, at `42c06d7`, was **all green**:
+        - `r20_clip` ran 9, exercised 9, with a refill median of **1.74 ms**
+          on CI's adapter (0.86–2.45);
+        - the dress ran 29, passed 29, with 11 skips, so exercised 18;
+        - step 5 passed.
+
+        **Step 5 on CI is therefore intermittent under R20: 1 failure in 2
+        runs.** The cause is narrowed to the two-layer blend while a clip
+        streams, on the paravirtual adapter. It is not proven further:
+        `renderGpuTimeMs` is 0 there, and the tick is one second wide. It is
+        disclosed as a line R20 opened (constraint 5), not re-baselined: the
+        step stays asserted on every machine. Whether it becomes
+        normative-only, or what bounds it on CI, is the user's to rule.
+
+        **R10, both runs:** `telemetry_tick_wires_the_live_session_counter`
+        is ok in both. The maximum per-CPU load was 5.97 (`39153017826`,
+        load1 17.90 / 3 CPUs, 18:13:08Z) and 6.29 (`39153908984`, 18.88 / 3,
+        18:26:05Z). Both are inside the envelope (max 9.67), and the ceiling
+        stays 12.09. No sighting.
+  - **The falsification, engine suite** (`r20_clip`, 9 tests). ~~The final
+    battery on `89ff7a5`'s tests.~~ (§2c: superseded. A whole battery ran on
+    `89ff7a5`, and every mutant was killed then. The code changed after it,
+    with the staging pool `69a55d8` and the refill guard `9b28f01`, so the
+    ~~battery of record is re-run whole on `9b28f01`, below~~ battery was
+    re-run whole on `9b28f01`, below.) (§2c, again: `42c06d7` then changed the
+    settle seam the mapped tests use, finding 10, so the battery of record is
+    the re-run on `42c06d7`, after this table.) Each mutant was
+    applied from an exact match, built, run under the load rule, restored
+    `cmp`-identical and `git`-clean against HEAD, and rebuilt. Voided windows
+    were re-run job-scoped. M5b's anchor moved with `9b28f01` (the pump call
+    now binds its upload count), and its mutant was re-anchored with the same
+    meaning: the frame path settles the window before it draws.
+
+    | # | Mutant | The mapped test | What failed (window, load) |
+    |---|---|---|---|
+    | M1 | revert-to-30-ring: the clip arm disabled | the weaker and the stronger forms | 6 of 9; full length `rendered frame 30 … got [0, 0, 0]`, miss `got [0, 0, 0] (black …)` (10:26:43–10:27:12, 2.34 → 2.18) |
+    | M2 | hold-last-frame-as-fix: no window counts as resident | **the stronger form** (the stopgap-police) | 6 of 9; stronger `got [36, 88, 199]`, the held frame; **the weaker passes, by design** (10:27:48–10:29:56, 2.35 → 2.13) |
+    | M2b | the read-ahead decodes nothing | the full-length test | 4 of 9; `the read-ahead did not fill its window at frame 45` (10:30:18–10:32:06, 2.16 → 1.95) |
+    | M3 | the prime uploads frame j into j+1's slot | the stronger form | 4 of 9; stronger `got [86, 152, 75]`, frame 44's colour, an off-by-one (10:32:27–10:32:56, 2.06 → 2.12) |
+    | M4 | occupancy miscount: a frame past the window uploaded anyway | the window test | 3 of 9; `at frame 45 the read-ahead must fill its window [45, 105) and hold its decoder at the window's end … it did not settle` (10:33:17–10:34:45, 1.93 → 2.69) |
+    | M5 | a miss draws black | the miss test | 1 of 9; `got [0, 0, 0] (black: drawn black …)` (10:35:21–10:35:52, 2.49 → 2.26) |
+    | M5b | a miss blocks on the decoder | the miss test | 2 of 9; `got [80, 154, 67]`, frame 120, drawn late: `the draw waited on the decoder` (10:42:58–10:43:29, 2.47 → 2.32) |
+    | M6 | the end ignored (length unbounded) | the end test | 1 of 9; `at frame 60 counter_60 has ended … got [127, 224, 11]`, frame 59 held past its end (10:43:51–10:44:21, 2.31 → 2.34) |
+    | M6b | the end from the decoded count, not the metadata | the full-length test | 4 of 9; `rendered frame 90 … got [0, 0, 0]` (10:44:57–10:45:25, 2.14 → 2.79) |
+    | M7 | a guard fixture blinded | the integrity guards | counter_60 static (A1): `frame 1 repeats an earlier frame`; short (cfr_30): `must outlive frame 45` (`911fcdd`'s runs). counter_150 static: `frame 1 repeats`, short: `must outlive … 90 frames` (the fix's runs). The fixtures and guards are unchanged since |
+    | **M8** | the frame path uploads through `write_texture` (finding 9) | the refill test | 1 of 9, that test only; `the median of 10 was 11.62 ms` against 8.33 ms (10:47:01–10:47:32, 2.49 → 2.30). **It survived `show-stop-version`** (6/6, 09:59:56–10:01:18, 2.27 → 2.99): that e2e fails only when a take lands during the load boundary, so the refill test was written for it (`9b28f01`) |
+
+    Voids this battery: dress M2's first run (10:39:07–10:40:08, 1.98 →
+    3.06), re-run below. The aborted battery before it (on `69a55d8`) had
+    M1 (09:32:21–09:32:48, 2.24 → 3.05) and M2b (09:37:33–09:38:58, 2.41 →
+    3.14) VOID, causes not identified after the fact. Its dress M1 was
+    aborted unrun at 10:03 because of my own error: I edited `render.rs`
+    while that mutant held it. The battery was killed, the stray mutant line
+    reverted by hand, `git diff` checked to hold only the intended edits, and
+    the tree rebuilt. That whole battery is superseded by this one.
+
+    **The battery of record, re-run whole on `42c06d7`** (the same mutants and
+    anchors; every window valid, no void; every restore `cmp`-identical and
+    `git`-clean, every rebuild green):
+
+    | # | Mapped test, what failed | Window, load |
+    |---|---|---|
+    | M1 | weaker and stronger forms, 6 of 9; `rendered frame 30 … got [0, 0, 0]` | 11:30:49–11:31:18, 2.28 → 2.62 |
+    | M2 | **the stronger form** `got [36, 88, 199]`, the held frame; the weaker passes, by design; 6 of 9 | 11:32:25–11:34:32, 2.39 → 2.85 |
+    | M2b | the full-length test, `did not fill its window at frame 45`; 4 of 9 | 11:35:55–11:37:43, 2.40 → 2.12 |
+    | M3 | the stronger form `got [86, 152, 75]`, frame 44; 4 of 9 | 11:38:20–11:38:49, 2.35 → 2.26 |
+    | M4 | the window test, `must fill its window [45, 105) … did not settle`; 3 of 9 | 11:40:26–11:41:54, 2.30 → 2.59 |
+    | M5 | the miss test alone, `got [0, 0, 0] (black …)` | 11:42:48–11:43:17, 2.13 → 2.18 |
+    | M5b | the miss test, `got [80, 154, 67]`, drawn late; 2 of 9 | 11:43:54–11:44:25, 2.36 → 2.33 |
+    | M6 | the end test alone, frame 59 `[127, 224, 11]` held past its end | 11:45:02–11:45:32, 2.11 → 1.95 |
+    | M6b | the full-length test, `rendered frame 90 … got [0, 0, 0]`; 4 of 9 | 11:46:24–11:46:51, 2.35 |
+    | M8 | the refill test alone, median 11.12 ms against 8.33 ms | 11:48:28–11:49:00, 2.26 → 1.91 |
+  - **The falsification, the dress** (each mutant built into the dev-profile
+    engine the dress spawns, restored, rebuilt; only the R20 steps failed,
+    and the other 28 held). ~~The runs on `89ff7a5`: M1 06:44:08–06:45:09,
+    M2 06:46:49–06:47:48.~~ (§2c: superseded by the battery of record on
+    ~~`9b28f01`~~ `42c06d7`; see below. Both mutants were killed the same way
+    then, M2 with 69 misses.)
+    - **M1** (10:37:43–10:38:43, 2.27 → 2.39): 12c
+      `the picture must pass the clip's head (frames 45–89 recorded)`. Its
+      logged sequence is R20 itself on the recorded picture: indices 1–29,
+      then black to the take's end. 12b passed (the old path counts no
+      misses).
+    - **M2** (10:47:53–10:48:52, 2.48 → 2.29; its first run 10:39:07–10:40:08,
+      1.98 → 3.06, VOID, killed the same way with 83): 12b
+      `the read-ahead missed 110 frame(s) of the counter clip`.
+    - **Of record, on `42c06d7`:** M1 (11:49:37–11:50:37, 2.18 → 2.65), 12c,
+      the recorded sequence 1–29, then black; M2 (11:51:16–11:52:16,
+      2.25 → 2.42), 12b, `the read-ahead missed 117 frame(s)`. Both restored
+      `cmp`-identical and `git`-clean, and rebuilt.
+  - **No CI-only leg** (constraint 4). Every guard runs on the normative
+    machine. The dress's 12b and 12c are normative-only, and on CI 12b logs
+    its misses, recorded and not gated. The refill guard (M8) runs on CI as
+    well, against the same deadline: if CI's adapter cannot upload a 1080p
+    frame within a quarter of a frame, CI fails, and that is the truth about
+    that machine, not a flake. `show-stop-version`, which first showed
+    finding 9, is local-only for its record legs (CI has no hardware
+    encoder).
+  - **The gate at `9b28f01`** (scratchpad `r20/gate2/`, 10:49–11:08; AC,
+    under `caffeinate`; `pmset`: no sleep, wake or battery event since
+    06:40). Untimed: release and test builds, `fmt --check`, workspace
+    `clippy -D warnings`, `tsc`, all green.
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | workspace | 525 passed, 0 failed, 4 ignored | 10:54:30–10:56:56 | 2.40 → 2.75 |
+    | `r20_clip` | 9/9 | 10:57:26–10:57:55 | 2.43 → 2.58 |
+    | `npm test` | 198/198 | 10:58:40–10:58:48 | 2.26 → 2.87 |
+    | automation | green | 10:59:33–10:59:36 | 2.38 → 2.59 |
+    | effects | green | 11:00:21–11:00:22 | 2.45 |
+    | belief | green | 11:00:22–11:00:24 | 2.45 → 2.42 |
+    | e2e slate-release | green | 11:00:24–11:00:37 | 2.42 → 2.71 |
+    | e2e recall | green | 11:01:07–11:01:21 | 2.21 → 2.66 |
+    | e2e take-duration | green | 11:03:51–11:03:56 | 2.05 |
+    | e2e resync-end | green | 11:03:56–11:04:11 | 2.05 → 2.22 |
+    | e2e package-reconcile | green | 11:04:11–11:04:26 | 2.22 → 2.17 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 11:04:26–11:05:48 | 2.17 → 2.21 |
+    | e2e resync-request | green | 11:05:48–11:06:15 | 2.21 → 2.57 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam, unchanged) | 11:06:45–11:07:11 | 2.36 → 2.45 |
+    | the dress | 29/29; 0 read-ahead misses; the picture holds counter frames 1–149, in order | 11:07:11–11:08:14 | 2.45 → 2.66 |
+
+    No void in the gate. The gate before it, on `89ff7a5`, failed, and its
+    failures are finding 9 (that gate's workspace and `npm test` windows
+    were VOID, 2.09 → 3.37 and 2.26 → 3.70). (§2c: superseded as the gate of
+    record by the gate at `42c06d7`, below, after finding 10's seam change.)
+  - **The gate at `42c06d7`, of record** (scratchpad `r20/gate3/`,
+    11:55–12:11; AC, under `caffeinate`; `pmset`: no sleep, wake or battery
+    event). Untimed: release and test builds, `fmt --check`, workspace
+    `clippy -D warnings`, `tsc`, all green.
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | workspace | 525 passed, 0 failed, 4 ignored | 11:56:30–11:58:56 | 2.17 → 2.73 |
+    | `r20_clip` | 9/9 | 12:01:11–12:01:41 | 2.45 → 2.16 |
+    | `npm test` | 198/198 (job-scoped re-run of the void below) | 12:10:57–12:11:05 | 2.06 → 2.13 |
+    | automation / effects / belief | green | 12:03:34–12:03:40 | 2.28 → 2.42 |
+    | e2e slate-release | green | 12:03:40–12:03:56 | 2.42 → 2.85 |
+    | e2e recall | green | 12:04:41–12:04:54 | 2.34 → 2.29 |
+    | e2e take-duration | green | 12:04:54–12:04:59 | 2.29 → 2.91 |
+    | e2e resync-end | green | 12:05:59–12:06:14 | 2.37 → 2.22 |
+    | e2e package-reconcile | green | 12:06:14–12:06:30 | 2.22 → 2.53 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 12:07:30–12:08:49 | 2.47 → 2.24 |
+    | e2e resync-request | green | 12:08:49–12:09:16 | 2.24 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 12:09:16–12:09:43 | 2.24 → 2.40 |
+    | the dress | 29/29; 0 misses; 149 recorded counter frames in order, indices 1–148 | 12:09:43–12:10:42 | 2.40 → 2.19 |
+
+    One void: `npm test`'s first run (12:01:41–12:01:49, 2.16 → 4.28, 198/198
+    in it). Its likely cause is the suite's own eight-second parallel burst,
+    as at the first gate; it is not proven. It was re-run job-scoped.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
