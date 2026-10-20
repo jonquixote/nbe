@@ -6960,6 +6960,174 @@ item):
     those runs are void as timing evidence, and their passes are a
     robustness witness. The local-ceiling ruling stays owed.
 
+  **The residency honesty build: preflight stops certifying what the engine
+  cannot air** (branch `loop-residency-honesty`, off `88c8316`; the user's
+  order of 2026-10-19, after #57's bookend; SPEC v0.4.8 row 13, its early
+  commit `a1ac9dc`). Held for the two-key pass, then the merge word.
+  - **The defect, as ordered.** §12.3's ladder is unbuilt, so the engine
+    holds every loop as RGBA8, but preflight planned the declared format, and
+    an undeclared loop took the NV12 rung. Spec `:3123` (`:3094` in the
+    order; row 12's text moved it) and the code's comments said so, and no
+    guard failed. §19's "preflight is the proof a package is air-ready" was
+    false for the default case.
+  - **The order's premise, corrected by measurement.** The order expected the
+    spec's example, a 60-frame 1080p loop declaring nothing, to report 474 MiB
+    engine-actual. A throwaway engine probe (not committed; 20:54:07–20:54:17,
+    2.26 → 2.29, on AC under `caffeinate`) loaded `counter_60.mp4` as a
+    60-frame `videoLoop` through `show.load` and read the picture back:
+    - at `vramBudgetMib: 512` the engine holds **60 frames, 474.6 MiB**, and
+      draws every frame;
+    - at §12.4's default 256 MiB it holds **32 frames, 253.1 MiB**, plans the
+      loop as streamed, and draws source frame 31 for master frames 32–59 of
+      every period (the finding below);
+    - a declared `bc7` changes nothing: 60 frames at 512, as RGBA8.
+    So 474 MiB is engine-actual only at a budget of 475 MiB or more. Both
+    figures are proven, by `loop_residency.rs` on the engine's side, and both
+    are what preflight now reports. The probe's first run (20:42:10–20:44:40)
+    used the element kind `clip`, which plays an asset once, so its frames past
+    60 drew black: the builder's harness error, not the engine's. Its held
+    frames (32, 60, 60) agreed with the valid rerun.
+  - **Scope beyond the order, and why: frames, not only the format.**
+    Preflight charged a loop over its budget nothing, as if streamed (§12.11.1
+    read "Σ over VRAM-resident loops"). The engine does not stream loops; it
+    holds its budget's frames. Planned at RGBA8 alone, the spec's example at
+    the default budget would have moved from 178 MiB to **nothing**, a worse
+    lie. So every loop is charged the frames the engine holds
+    (`loop_held_frames`), and row 13 amends §12.11.1 with it. This is the
+    builder's reading of "engine-actual", put to the user.
+  - **The commits, in order:**
+    - `c78caf1`: #57's records (the first commit, per the cadence);
+    - `a1ac9dc`: row 13, early (§12.3's note, §12.11.1, §19.2.1);
+    - `120e135`: the proving case, red before the fix (`v04` +5 and three
+      earlier assertions struck §2c; `loop_residency.rs`, 3, new; its CI floor
+      of 3/3);
+    - `6931c24`: the fix (`HELD_LOOP_FORMAT`, `loop_frame_cap`,
+      `loop_held_frames`, `LOOP_RESIDENCY_NOTE`; preflight's plan, charge and
+      note; the engine's plan and cap through the shared names, no behaviour
+      change; the clip log line split; `model.rs`'s spelling; and
+      `loop_residency.rs` rustfmt'd, whitespace and import order only, because
+      `120e135` committed it unformatted);
+    - this commit: the records.
+  - **Red before the fix (`120e135`):** `v04` 7 failed, 14 passed
+    (21:22:08–21:22:17, 2.38 → 2.77, clean): the five new tests and the two
+    with struck assertions. `loop_residency` 3 of 3, green, because it
+    measures what the engine already holds. The run's raw output is in the
+    PR body's quote of the staged evidence. The unfixed binary's figures: 201,
+    201, 142, 201 with no `loopBudget` error, and 23 MiB; every one exit 0,
+    and none with a note.
+  - **Green after (`6931c24`):** 498, 276, 498, exit 2 with
+    `loopBudget … the budget's 32 at RGBA8`, and 276; every one with the note.
+    The first green run (21:28:03–21:28:15, 2.32 → 3.11) was VOID on load at
+    its end, likely `v04`'s own parallel decoding, not proven; the gate below
+    is of record.
+  - **The battery** (each mutant applied in place, its mapped suites run,
+    restored from a saved copy, `cmp`-identical and `git`-clean, and
+    rebuilt green; every window valid, both ends under 3.0):
+
+    | # | Mutation (class) | Killed by | Window, load |
+    |---|---|---|---|
+    | M1 | **The lie returns, undeclared:** an undeclared loop planned at the NV12 rung (`yuv_sampling: !has_alpha`, `declared_format: None`) | `v04`, 7 of 21: the spec's example (`got 201`), the verdict, the stream loop, the declared format, the auto test, the arithmetic test, and the 4K test (its plan moves to NV12's 21 frames) | 21:30:09–21:30:12, 2.40 → 2.60 |
+    | M1b | **The lie returns, declared:** a declared format planned as declared | `a_declared_format_the_engine_does_not_hold_is_planned_at_rgba8` (`got 142 MiB`), and the arithmetic test's `bc7` case (`got 419`) | 21:30:48–21:30:51, 2.40 → 2.40 |
+    | M2 | **Undercounting frames:** a loop the plan streams is charged nothing | `v04`, 4 of 21: the spec's example at the default budget (`got 23 MiB`), the stream loop, the auto test, the arithmetic test | 21:30:56–21:30:59, 2.36 → 2.33 |
+    | M2b | **Undercounting frames:** a loop declaring `stream` is charged nothing | `a_loop_over_its_budget_is_charged_the_frames_the_engine_holds` (`got 23 MiB`), and the arithmetic test | 21:31:04–21:31:08, 2.23 → 2.61 |
+    | M2c | **Undercounting frames:** the shared cap holds one frame short | all three sides: the unit test (`a loop over its budget holds its budget`); the engine's `a_loop_over_its_budget_holds_its_budget_not_a_window_and_not_nothing`; `v04`, 4 of 21 (`got 269 MiB`) | unit 21:32:31–21:32:32, 2.45; engine 21:33:33–21:33:38, 2.14 → 2.85; `v04` 21:34:45–21:34:49, 2.49 → 2.45 |
+    | M3 | **The honesty note dropped** from the report | `the_report_says_in_words_that_loops_are_planned_at_rgba8_until_the_ladder` (`"residencyNote":null`) | 21:35:20–21:35:23, 2.49 → 2.37 |
+    | M3b | **The note loses its expiry** (no §12.3, no ladder) | the same test (`the note names the assumption (RGBA8) and its expiry`) | 21:35:32–21:35:36, 2.32 → 2.61 |
+    | M4 | **The verdict planned at NV12** while the charge stays honest | `the_budget_verdict_follows_the_format_the_engine_holds` (exit 0 where 2 is owed), and the 4K test | 21:36:15–21:36:18, 2.37 → 2.26 |
+    | M5 | **The reference side:** the engine's ring ignores the budget | `loop_residency`'s over-budget test, 1 of 3 (`a loop over its budget holds its budget's frames`) | 21:36:36–21:36:41, 2.15 → 2.05 |
+
+  - **The gate at `6931c24`, of record** (scratchpad `rh/gate/`; AC,
+    `caffeinate`):
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | builds, `fmt`, `clippy -D warnings`, `tsc` | clean | 21:37:09–21:44:03 | untimed |
+    | workspace (of record: the second job-scoped rerun) | **534/0/4** | 22:11:47–22:13:41 | 2.36 → 2.23 |
+    | `r20_clip` | 9/9 | 21:52:08–21:52:38 | 2.36 → 2.78 |
+    | `loop_residency` | 3/3 | 21:53:08–21:53:11 | 2.25 → 2.31 |
+    | `v04` | 21/21 | 21:53:11–21:53:14 | 2.31 → 2.31 |
+    | `npm test` (of record: its job-scoped rerun) | 198/198 | 22:06:47–22:06:55 | 2.29 → 2.58 |
+    | automation / effects / belief | 35/35, 2/2, 4/4 | 21:56:22–21:56:28 | 2.06 → 1.97 |
+    | e2e slate-release | 4/4 | 21:56:28–21:56:42 | 1.97 → 2.82 |
+    | e2e recall | 2/2 | 21:56:57–21:57:10 | 2.20 → 2.09 |
+    | e2e take-duration | 3/3 | 21:57:10–21:57:15 | 2.09 → 2.00 |
+    | e2e resync-end | 3/3 | 21:57:15–21:57:30 | 2.00 → 2.22 |
+    | e2e package-reconcile | 4/4 | 21:57:30–21:57:45 | 2.22 → 2.23 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 21:57:45–21:59:05 | 2.23 → 2.28 |
+    | e2e resync-request | 3/3 | 21:59:05–21:59:32 | 2.28 → 2.50 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 22:01:17–22:01:43 | 2.24 → 2.99 |
+    | the dress | 29/29; drops 0, underruns 0; R20: 0 misses, 149 recorded counter frames, indices 1–149 | 22:02:43–22:03:45 | 2.31 → 2.50 |
+
+    Two mid-run samples touched 3.0 inside valid windows (slate-release 3.07,
+    operator-signals 3.08); both ends were under 3.0, and both steps passed.
+    **Three voids, each named:**
+    - **The workspace's first run** (21:47:49–21:50:23, 2.49 → 4.32): 534/0/4
+      in it. The likely cause is the suite's own parallel load; not proven.
+    - **`npm test`'s first run** (21:53:14–21:53:22, 2.31 → 4.17): 198/198 in
+      it, the suite's eight-second parallel burst as at #57's gates; not
+      proven.
+    - **The workspace's first rerun** (22:04:12–22:05:47, 2.33 → 3.16, a peak
+      of 4.0 at 22:04:32): **red**, `r20_clip`'s refill guard,
+      `r20_a_window_refill_fits_the_frame_deadline`, median **9.93 ms**
+      against its 8.33 ms bound (406 passed before cargo stopped). Not this
+      PR's code (it touches no refill path), and characterized below as a
+      finding; the second rerun, of record, is green.
+
+  - **Counts.** Workspace 525 → 534 (`v04` +5; `loop_residency` +3;
+    `loop_cache`'s unit +1; one test renamed, net 0:
+    `an_auto_loop_the_budget_cannot_hold_is_streamed_not_charged` →
+    `…_is_charged_its_budget_not_its_period`). `npm test` 198, unchanged (the
+    dress's comment only). The rust job's floor lines 31 → 32
+    (`loop_residency` 3/3, new). The dress 29, exercised 18 on CI, unchanged.
+  - **Findings, recorded:**
+    1. **A loop over its budget freezes on its last held frame** (a register
+       candidate; the user's to file and to rule). At the default budget the
+       spec's example draws source frame 31 for master frames 32–59, 28 of
+       every 60, and preflight, now honest about the memory, still certifies
+       the `auto` loop air-ready (exit 0). §12.8 requires long-loop
+       read-ahead, and its rule 4 allows a frozen frame only when read-ahead
+       *fails*; this engine has none for loops. Whether preflight warns or
+       refuses on a loop the budget cannot hold is a verdict this PR does not
+       take.
+    2. **§12.10's per-loop report is not emitted.** Preflight writes no
+       `loops[]` entries at all (`LoopReport` exists in the model and is never
+       populated), so a plan's `reason` surfaces nowhere. That text says
+       "streaming with N frames read-ahead", which this engine does not do;
+       it is latent today and must not ship as it reads when the per-loop
+       report is built. Pre-existing; recorded, not fixed.
+    3. **An unprobed loop is charged on its declared period** (the worst
+       case), while an unprobed clip charges nothing (row 12). Both stand
+       beside the decode error the report already carries; the asymmetry is
+       recorded.
+    4. **The engine side was not changed in behaviour.** `HELD_LOOP_FORMAT` in
+       the engine's plan and `loop_frame_cap` for its ring compute what they
+       computed before (`yuv_sampling: false` already selected RGBA8, and the
+       cap was `max_frames_by_budget.max(1)`). M5 and `loop_residency.rs` pin
+       it.
+    5. **The log line is unguarded.** The split "clip ring resident" / "loop
+       ring resident" lines are corrected text with no test reading logs.
+    6. **R20's refill guard is marginal under the workspace step's
+       parallelism** (pre-existing; not this PR's code, which touches no
+       refill path). The gate's first workspace rerun failed it, median
+       9.93 ms against its 8.33 ms bound, at a load peak of 4.0 (void).
+       Characterized in valid windows (scratchpad `rh/gate/`): `r20_clip` at
+       the default thread count, the workspace step's, gives 7.26–7.91 ms; at
+       `--test-threads=1`, CI's dedicated step, 2.11–2.40 ms. An interleaved
+       A/B of two kept binaries, head's against one built from `88c8316`'s
+       engine sources (distinct by `cmp`; the tree restored `cmp`-identical
+       and `git`-clean before the runs), valid runs only: head 7.45, 6.47,
+       7.05 ms; main 4.90, 7.39, 7.90 ms. Two runs were void (main's second,
+       2.38 → 3.00; head's fourth, 2.49 → 3.26). The distributions overlap,
+       and an earlier sequential batch (head 7.26–7.91 at 22:07–22:10, main
+       5.20–6.45 at 22:15–22:18) was drift the interleave dissolved. So the
+       margin is main's: in the workspace step the guard runs beside eight
+       other GPU tests, and its bound sits 0.4–1.1 ms above their contention.
+       Isolating it (its own binary, or the suite serialized in the workspace
+       step) is the user's to rule; nothing here changes it.
+    7. **The builder's slips, recorded:** `120e135` committed
+       `loop_residency.rs` unformatted (formatted in `6931c24`); and the probe
+       harness's `clip` element (above).
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
