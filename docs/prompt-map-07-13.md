@@ -7086,19 +7086,25 @@ item):
        every 60, and preflight, now honest about the memory, still certifies
        the `auto` loop air-ready (exit 0). §12.8 requires long-loop
        read-ahead, and its rule 4 allows a frozen frame only when read-ahead
-       *fails*; this engine has none for loops. Whether preflight warns or
+       *fails*; this engine has none for loops. ~~Whether preflight warns or
        refuses on a loop the budget cannot hold is a verdict this PR does not
-       take.
+       take.~~ (§2c: the user ruled, below. Filed as R23; preflight refuses it,
+       landed in this PR.)
     2. **§12.10's per-loop report is not emitted.** Preflight writes no
        `loops[]` entries at all (`LoopReport` exists in the model and is never
        populated), so a plan's `reason` surfaces nowhere. That text says
        "streaming with N frames read-ahead", which this engine does not do;
        it is latent today and must not ship as it reads when the per-loop
-       report is built. Pre-existing; recorded, not fixed.
-    3. **An unprobed loop is charged on its declared period** (the worst
-       case), while an unprobed clip charges nothing (row 12). Both stand
+       report is built. Pre-existing; recorded, not fixed. *(Ruled: the
+       unbuilt-MUST register's U1.)*
+    3. **An unprobed loop is charged on its declared period** ~~(the worst
+       case)~~ (§2c, the user's ruling 5: not the worst case but an optimistic
+       one; the engine can hold up to its budget's cap, whatever the declared
+       period), while an unprobed clip charges nothing (row 12). Both stand
        beside the decode error the report already carries; the asymmetry is
-       recorded.
+       recorded. *(Ruled, below: an unprobeable loop fails preflight, and is
+       never charged optimistically on its declared period; owner, the
+       residency era.)*
     4. **The engine side was not changed in behaviour.** `HELD_LOOP_FORMAT` in
        the engine's plan and `loop_frame_cap` for its ring compute what they
        computed before (`yuv_sampling: false` already selected RGBA8, and the
@@ -7122,11 +7128,127 @@ item):
        5.20–6.45 at 22:15–22:18) was drift the interleave dissolved. So the
        margin is main's: in the workspace step the guard runs beside eight
        other GPU tests, and its bound sits 0.4–1.1 ms above their contention.
-       Isolating it (its own binary, or the suite serialized in the workspace
-       step) is the user's to rule; nothing here changes it.
+       ~~Isolating it (its own binary, or the suite serialized in the workspace
+       step) is the user's to rule; nothing here changes it.~~ (§2c: ruled,
+       below; the guard now runs alone in `r20_clip`'s lane, `e0f9fca`.)
     7. **The builder's slips, recorded:** `120e135` committed
        `loop_residency.rs` unformatted (formatted in `6931c24`); and the probe
        harness's `clip` element (above).
+  - **The user's rulings on #59's five decisions (2026-10-19), and where
+    each landed.**
+    1. **The proving case carries both budgets: accepted.** 474.6 MiB at
+       `vramBudgetMib: 512`; 253.1 MiB at the default budget. The relay's 474
+       figure was budget-unconditional; corrected.
+    2. **Frame-charging: ratified.** Frames × format is the engine-actual
+       figure; format alone would have produced the 0 MiB lie. Row 13's
+       §12.11.1 amendment stands.
+    3. **R23 filed:** a loop over its budget freezes (the engine holds N of M
+       frames and draws the last resident one for the rest of every period).
+       Preflight refuses it, never warns, with the reason naming the freeze and
+       the remedies (raise the budget, shorten the loop, await the ladder or
+       streaming). To land in #59 if it rides the existing §12.5 verdict path
+       cleanly, the builder's judgment from the tree; otherwise a fast-follow.
+       **Landed in #59.** The judgment, from the tree: the refusal is the §12.5
+       block's own (the same loop, the same plan, the same place); no fixture
+       outside `v04` declares a loop the budget cannot hold (the dress's
+       `A2_loop` is 10 frames and fits; `valid_show`'s `logo_loop.mov` is not a
+       decodable file and fails already); and inside `v04` the only assertion
+       it falsifies is the auto test's "streaming is lawful", struck §2c.
+       - `d1dc16b`: the proving case, red (v04 3 failed, 19 passed;
+         00:16:23–00:16:28, 2.49 → 2.37). The first attempt at this run was
+         killed mid-wait when the machine rebooted (below); its rerun is of
+         record.
+       - `7913bc7`: the fix. Every loop is planned in the §12.5 block; a loop
+         whose held frames fall short of its period (within §12.4's cap, which
+         has its own refusal) freezes. A mandatory `vram` loop keeps
+         `loopBudget`, which now names the freeze; any other is refused as
+         `loopFreeze`, `stream` included. Raising the budget is offered only
+         when some budget holds the loop (within §12.4's 512 MiB total).
+         Spec: §12.5's implementation note (R23), row 13's text and cells,
+         and §12.3's note. Green after: v04 22/22 (00:18:02–00:18:06,
+         2.47 → 2.75).
+       - Its battery (each mutant restored `cmp`-identical and `git`-clean,
+         rebuilt green; every window valid):
+
+         | # | Mutation | Killed by | Window, load |
+         |---|---|---|---|
+         | M6 | the refusal removed | the R23 test (exit 0 where 2 is owed) and the auto test | 00:27:17–00:27:20, 2.43 → 2.72 |
+         | M6b | the refusal downgraded to a warning | the same two | 00:28:10–00:28:13, 2.31 |
+         | M6c | a `stream` loop exempted | the R23 test's `stream` half | 00:28:34–00:28:37, 2.15 → 2.22 |
+         | M6d | the remedies dropped | three: the R23 test (`vramBudgetMib to 475`), the auto test, the verdict test | 00:28:57–00:29:00, 2.15 → 2.22 |
+         | M6e | raising the budget offered when no budget holds the loop | the auto test | 00:31:05–00:31:09, 2.37 → 2.34 |
+         | M6f | the mandatory refusal no longer names the freeze | the verdict test | 00:31:29–00:31:33, 2.33 → 2.95 |
+    4. **The refill guard isolated:** a serial lane or its own step, the
+       8.33 ms bound kept, load discipline inherited; the A/B clearing #59 is
+       recorded (finding 6). **Landed in #59 as a lane** (`e0f9fca`): a static
+       tokio `RwLock` in `r20_clip.rs`, the guard taking it for writing and
+       every other test for reading, so the guard never runs beside a sibling
+       in any step. The bound, the suite's count and its CI floors (9/9) are
+       unchanged. Measured at the default thread count, the workspace step's
+       mode: **2.32 and 2.31 ms** (00:25:07–00:25:23 and 00:25:38–00:25:57,
+       valid; a first, 2.68 ms, was void on load at its end, 2.43 → 3.21),
+       against 7.26–7.91 ms before the lane. Two probes of the lane:
+       - **L1, the isolation removed** (the guard reads the lane like its
+         siblings): **7.81 ms**, 00:32:40–00:32:54, 2.41 → 2.77, and no test
+         fails. The isolation is measured, not guarded by a test.
+       - **M8 under the lane** (the frame path back on `write_texture`):
+         killed, median 11.36 ms against 8.33 ms, 00:33:43–00:34:02,
+         2.20 → 2.59.
+    5. **`loops[]` unwritten: to the unbuilt-MUST register** (opened by this
+       ruling, under "Cross-cutting", below; entry U1). **An unprobeable loop:
+       preflight fails, never an optimistic charge on the declared period;
+       recorded, owner the residency era.** Not built in #59. Preflight already
+       fails such a package (its decode error), but the estimator still charges
+       the loop on its declared period, and the ruling retires that charge.
+       **The slips are accepted as recorded.**
+  - **The machine rebooted mid-session (2026-10-20, about 23:00).** It killed
+    R23's first red run mid-wait (exit 137, no output) and cleared
+    `/private/tmp`, the session's scratch. The raw logs of the gate and the
+    battery at `6931c24` went with it. Their figures stand as recorded in
+    `4b555c8` and PR #59's body; the staged evidence lived in
+    `.git/nbe-staged/` and survived. Every run since is new and named above.
+  - **The gate at `e0f9fca`, of record** (scratchpad `rh/out/gate2/`; AC,
+    `caffeinate`):
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | builds, `fmt`, `clippy -D warnings`, `tsc` | clean | 00:34:33–00:36:02 | untimed |
+    | workspace | **535/0/4** (+1, the R23 test), first run | 00:39:02–00:41:36 | 2.18 → 2.31 |
+    | `r20_clip` (`--test-threads=1`) | 9/9 | 00:41:36–00:42:05 | 2.31 → 2.18 |
+    | `loop_residency` | 3/3 | 00:42:05–00:42:09 | 2.18 → 2.40 |
+    | `v04` | 22/22 | 00:42:09–00:42:12 | 2.40 → 2.29 |
+    | `npm test` | **197/198, red**: the `timeOfDay` test's rule fired twice (finding 8, below) | 00:42:12–00:42:21 | 2.29 → 2.19 |
+    | `npm test`, its job-scoped rerun | 198/198 | 00:49:07–00:49:14 | 1.68 → 1.89 |
+    | automation / effects / belief | 35/35, 2/2, 4/4 | 00:42:21–00:42:27 | 2.19 → 2.25 |
+    | e2e slate-release | 4/4 | 00:42:27–00:42:40 | 2.25 → 2.20 |
+    | e2e recall | 2/2 | 00:42:40–00:42:54 | 2.20 → 2.08 |
+    | e2e take-duration | 3/3 | 00:42:54–00:42:59 | 2.08 → 2.16 |
+    | e2e resync-end | 3/3 | 00:42:59–00:43:13 | 2.16 → 2.11 |
+    | e2e package-reconcile | 4/4 | 00:43:13–00:43:28 | 2.11 → 2.16 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 00:43:28–00:44:48 | 2.16 → 2.31 |
+    | e2e resync-request | 3/3 | 00:44:48–00:45:15 | 2.31 → 1.85 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 00:45:15–00:45:43 | 1.85 → 1.97 |
+    | the dress | 29/29; drops 0, underruns 0; R20: 0 misses, 150 recorded counter frames, indices 1–149 | 00:45:43–00:46:45 | 1.97 → 2.36 |
+
+    No void: every window started and ended under 3.0.
+  - **Finding 8: a `timeOfDay` rule can fire twice** (pre-existing; a
+    register candidate for the user to file and rule; not this PR's code,
+    whose only control-plane change is the dress's comment). The gate's
+    `npm test` failed in a valid window: the rule fired twice at its instant
+    (`[{ kind: 'timeOfDay', ruleId: 'tod' }, { kind: 'timeOfDay', ruleId:
+    'tod' }]`, at 00:42:18), and the automation step three seconds later
+    passed 35/35. **The mechanism, by reading** (`automation.ts:747–760`):
+    `scheduleTimeOfDay` arms a monotonic `setTimeout` for a whole-second wall
+    instant and, when it fires, re-arms from `wallNow()`. If the timer fires
+    while the wall clock still reads before the instant, `next.setHours(h, m,
+    s, 0)` is still ahead, so the rule re-arms for the same instant and fires
+    again about a millisecond later: its action would run twice. **Measured**
+    (a throwaway Node probe, not committed; 00:48:43–00:48:53, 1.55):
+    **61 of 2000** `setTimeout`s armed for a wall instant fired while `Date`
+    read 1 ms before it (3.05%), never more than 1 ms. The test alone, 20
+    runs (00:47:43–00:48:23, 1.91 → 1.77): 0 failed, consistent with a few
+    per cent per firing. The fix (not built here) re-arms from the instant
+    just fired, not from the wall clock read at fire time.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -7695,6 +7817,17 @@ fresh two-key pass).**
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
 | ~~**The dress-rehearsal CI job is `continue-on-error`**~~ **DISCHARGED 2026-09-17 by the gate split** — superseded, original text standing per §2c | `.github/workflows/ci.yml:322` (the citation read `:248` until 2026-09-11; that line is now `echo "::endgroup::"` — the number rotted under edits in the very commit that wrote it, which is the argument for citing by name as well as line). Note there are **two** `continue-on-error: true` in the file and only one is this row's: `:178` belongs to the control-plane job's preflight-timing diagnostic step and stays deliberately non-failing. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Work order DRESS closed R5, R4 and R2 (12/12 three times on the normative machine, each falsified) and attempted the promotion — which failed on CI and was reverted.** The row stays open because the reason changed rather than vanished: the gate asserts zero dropped frames and zero audio underruns, which are reference-hardware claims, and the macos-14 runner measured 83 then 120 underruns on 3 arm64 cores. Promotion now needs the gate split so composition claims run everywhere and threshold claims run where they mean something. See the DRESS entry under 07. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. **[DISCHARGED 2026-09-12 by PR #12 — streaming probe landed (163x less memory, bound re-derived); original text left standing per §2c.]** |
+
+### The unbuilt-MUST register (opened 2026-10-19, the user's ruling 5 on PR #59)
+
+A MUST the spec states and the tree does not build. Each entry names the MUST,
+where the tree stops, what stands in for it, and its owner. An entry leaves
+when the MUST is built and falsified, or when the spec is amended. The
+register was opened with one entry; the spec has not been swept for others.
+
+| # | The MUST | Where the tree stops | Owner |
+|---|---|---|---|
+| U1 | §12.10: "Preflight MUST report per loop" (`assetId`, `periodFrames`, `selectedTextureFormat`, `frameCostMib`, `effectiveBudgetMib`, `maxFramesByBudget`, `cachePolicySelected`, `vramResident`, `reason`) | `LoopReport` exists in `nbe-core`'s model and is never populated: preflight writes no `loops[]` entries (found on PR #59). A plan's `reason` therefore surfaces nowhere. For a streamed loop it reads "streaming with N frames read-ahead", which this engine does not do (R23), so it must not ship as it reads when the report is built | unassigned |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 
