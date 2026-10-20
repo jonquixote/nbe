@@ -456,19 +456,31 @@ fn an_auto_loop_the_budget_cannot_hold_is_charged_its_budget_not_its_period() {
          streams the loop; ~~and it is not charged as resident~~ the engine \
          holds its budget's 32 frames, and that is the charge"
     );
-    // Streaming an oversized `auto` loop is lawful, not a failure: §12.5 fails
-    // only a MANDATORY `vram` loop that cannot fit (tested next). The fixture's
-    // "h264" source is a PNG, so `code` carries an unrelated decode error —
-    // assert on the rule, not on the exit status.
+    // ~~Streaming an oversized `auto` loop is lawful, not a failure: §12.5 fails
+    // only a MANDATORY `vram` loop that cannot fit (tested next).~~ (§2c, R23,
+    // the user's ruling of 2026-10-19: this engine does not stream loops. It
+    // holds its budget's frames and draws the last of them for the rest of
+    // every period, so a loop its budget cannot hold is refused, never warned,
+    // whatever its `cachePolicy`.) The fixture's "h264" source is a PNG, so
+    // `code` carries an unrelated decode error — assert on the rule, not on
+    // the exit status.
     let _ = code;
+    let errors = report["errors"].as_array().expect("errors array");
+    let freeze = errors
+        .iter()
+        .filter_map(|e| e.as_str())
+        .find(|e| e.contains("loopFreeze"))
+        .unwrap_or_else(|| {
+            panic!("an `auto` loop over its budget is refused (R23); got {errors:?}")
+        });
+    // 300 RGBA8 1080p frames need 2373 MiB, past §12.4's 512 MiB total, so no
+    // budget holds them and raising one is not offered as a remedy.
     assert!(
-        !report["errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e.as_str().unwrap_or("").contains("loopBudget")),
-        "an `auto` loop that streams is not a budget failure; got {:?}",
-        report["errors"]
+        freeze.contains("No budget holds it")
+            && freeze.contains("64 frames")
+            && !freeze.contains("Raise vramBudgetMib"),
+        "past §12.4's total the remedy is to shorten the loop, not to raise its budget; \
+         got {freeze:?}"
     );
 }
 
@@ -760,6 +772,18 @@ fn the_budget_verdict_follows_the_format_the_engine_holds() {
         "the refusal must name the rule and the 32 RGBA8 frames the budget holds; \
          got {errors:?}"
     );
+    // R23: the refusal names the freeze the operator would see, and the way out.
+    assert!(
+        errors.iter().any(|e| {
+            let e = e.as_str().unwrap_or("");
+            e.contains("loopBudget")
+                && e.contains("frame 31")
+                && e.contains("R23")
+                && e.contains("vramBudgetMib to 475")
+        }),
+        "the refusal names the freeze (frame 31 held) and the remedy (475 MiB); \
+         got {errors:?}"
+    );
 }
 
 #[test]
@@ -814,5 +838,86 @@ fn the_report_says_in_words_that_loops_are_planned_at_rgba8_until_the_ladder() {
     assert!(
         r.get("residencyNote").is_some_and(|n| n.is_null()),
         "a package with no loop carries the field, null; got {r}"
+    );
+}
+
+#[test]
+fn a_loop_its_budget_cannot_hold_is_refused_naming_the_freeze_and_the_remedies() {
+    // R23 (the user's ruling of 2026-10-19): a loop over its budget freezes.
+    // The engine holds its budget's frames and draws the last of them for the
+    // rest of every period, because it does not stream loops (§12.8 is
+    // unbuilt for loops), so preflight refuses it, never warns, and says what
+    // the operator would see and what to do: raise the budget, shorten the
+    // loop, or wait for §12.3's ladder or loop streaming.
+    let dir = tempfile::tempdir().unwrap();
+
+    // The spec's example at the default budget: 32 of its 60 frames held,
+    // frame 31 drawn for master frames 32-59 of every period (the probe).
+    let root = counter_loop_package(dir.path(), "frozen", r#"{ "periodFrames": 60 }"#);
+    let (code, report) = run(&root, &[]);
+    assert_eq!(code, 2, "a loop that would freeze on air is not air-ready");
+    let errors = report["errors"].as_array().expect("errors array");
+    let freeze = errors
+        .iter()
+        .filter_map(|e| e.as_str())
+        .find(|e| e.contains("loopFreeze"))
+        .unwrap_or_else(|| panic!("the freeze is refused by name; got {errors:?}"));
+    for needle in [
+        "\"L\"",
+        "loops 60 frames",
+        "holds 32",
+        "frame 31",
+        "R23",
+        "vramBudgetMib to 475",
+        "32 frames or fewer",
+        "ladder",
+    ] {
+        assert!(
+            freeze.contains(needle),
+            "the refusal must say {needle:?}; got {freeze:?}"
+        );
+    }
+    assert!(
+        !report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("loopFreeze")),
+        "a freeze is refused, never warned; got {:?}",
+        report["warnings"]
+    );
+
+    // `cachePolicy: "stream"` asks for what this engine cannot do: still refused.
+    let root = counter_loop_package(
+        dir.path(),
+        "frozen-stream",
+        r#"{ "periodFrames": 60, "cachePolicy": "stream" }"#,
+    );
+    let (code, report) = run(&root, &[]);
+    assert_eq!(
+        code, 2,
+        "a `stream` loop over its budget freezes the same way"
+    );
+    assert!(
+        report["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("loopFreeze")),
+        "a `stream` loop is not exempt; got {:?}",
+        report["errors"]
+    );
+
+    // The control: the same loop at a budget that holds it is air-ready.
+    let root = counter_loop_package(
+        dir.path(),
+        "held",
+        r#"{ "periodFrames": 60, "vramBudgetMib": 512 }"#,
+    );
+    let (code, report) = run(&root, &[]);
+    assert_eq!(
+        code, 0,
+        "a loop its budget holds plays every frame; got {:?}",
+        report["errors"]
     );
 }
