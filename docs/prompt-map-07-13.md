@@ -707,6 +707,9 @@ adopt and record).
   | `39106598820`, PR #56 at `0431441`, green (515/0/4) | the workspace tests: the test build finished at 07:10:54.59 (`Finished` in 42.62 s); the post line at 07:11:46 | whole step 2.55–4.70 (pre, 10 samples, post). While building: 2.55, 2.68, 3.30, 4.49, 4.70. While the tests ran: 4.62, 4.52, 4.43, 3.90, 4.35, then the post line's 4.35, so 3.90–4.62. The R10 test passed at 07:11:24.55, between 4.43 and 3.90. The 18th |
   | `39108195056`, PR #56 at `f81653f` (its head), green (515/0/4) | the workspace tests: the test build finished at 07:36:35.41 (`Finished` in 50.82 s); the post line at 07:37:27 | whole step 3.46–7.18 (pre, 11 samples, post). While building: 3.51, 3.46, 4.44, 5.59, 6.25, and 7.18, sampled in the second the build finished. While the tests ran: 6.16, 5.61, 4.97, 4.53, 3.91, then the post line's 3.78, so 3.78–6.16. The R10 test passed at 07:37:05.09, in the 4.97 sample's second. The 19th |
   | `39112885332`, main at `5043ccf` (PR #56's merge), green (515/0/4) | the workspace tests: the test build finished at 08:50:45.64 (`Finished` in 59.73 s); the post line at 08:51:44 | whole step 2.80–9.19 (pre, 12 samples, post). While building: 3.03, 2.80, 3.61, 5.29, 7.22, 8.80. While the tests ran: 9.19, sampled 0.4 s after the build finished, then 8.47, 7.35, 7.49, 7.15, 7.01, then the post line's 6.03, so 6.03–9.19. The R10 test passed at 08:51:19.78, between 7.49 and 7.15. The 20th |
+  | `39153908984`, PR #57 at `42c06d7`, green (525/0/4) | the workspace tests: the test build finished at 18:24:54.04 (`Finished` in 50.81 s); the post line at 18:26:10 | whole step 3.05–6.29 (pre, 13 samples, post). While building: 3.28, 3.08, 3.05, 4.14, 5.48, 5.73. While the tests ran: 6.25, 5.49, 5.77, 5.82, 6.21, 5.83, 6.29, then the post line's 5.82, so 5.49–6.29. The R10 test passed at 18:25:25.60, between 5.77 and 5.82. The 21st. (`39153017826`, PR #57 at `2497bc8`, is not counted: its rust step failed, finding 10) |
+  | `39157683882`, PR #57 at `85f84e1` (its head), green (525/0/4) | the workspace tests: the test build finished at 19:13:41.84 (`Finished` in 41.18 s); the post line at 19:14:48 | whole step 0.95–4.50 (pre, 11 samples, post). While building: 0.95, 0.98, 1.64, 3.47, and 4.50, sampled in the second the build finished. While the tests ran: 3.96, 3.66, 3.47, 3.04, 2.76, 2.64, then the post line's 2.23, so 2.23–3.96. The R10 test passed at 19:14:10.53, between 3.66 and 3.47. The 22nd |
+  | `39364285184`, main at `88c8316` (PR #57's merge), green (525/0/4) | the workspace tests: the test build finished at 03:28:23.42 (`Finished` in 1m 02s); the post line at 03:29:41 | whole step 2.54–7.51 (pre, 14 samples, post). While building: 2.82, 2.54, 3.30, 4.23, 6.08, 7.14, 7.51. While the tests ran: 6.93, 6.41, 6.03, 5.43, 4.80, 4.83, 4.54, then the post line's 4.23, so 4.23–6.93. The R10 test passed at 03:28:57.19, between 6.03 and 5.43. The 23rd |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -834,6 +837,9 @@ the peaks were 9.52, the nearest yet to the 9.67 maximum, and 3.97).
 
 **The ceiling at PR #56's merge: holds at 12.09 per CPU** (20 green runs;
 the peaks were 4.70, 7.18 and 9.19, all under the 9.67 maximum).
+
+**The ceiling at PR #57's merge: holds at 12.09 per CPU** (23 green runs;
+the peaks were 6.29, 4.50 and 7.51, all under the 9.67 maximum).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -6133,8 +6139,9 @@ item):
   (`channel.rs`). It likely arrives with the queued `show.unload` routing
   (Prompt 11's WU8 record, "route `show.unload` to the engine"), which also
   clears the engine's package.
-- **Position 8: R20, a plain video clip stops drawing after its first 30
-  frames** (the user's word of 2026-10-18). Position 8 by number, first in
+- **~~Position 8: R20, a plain video clip stops drawing after its first 30
+  frames~~** **FIXED** by `88c8316` (PR #57; SPEC v0.4.8 row 12; struck in
+  the next PR, the standing pattern of §2c). (the user's word of 2026-10-18). Position 8 by number, first in
   order: the queue ruling below. The register row in
   `docs/soak-protocol.md` §5 carries the mechanism, the class, the
   falsification and the struck refutation.
@@ -6164,14 +6171,16 @@ item):
       ahead with known occupancy, never wall-clock.
     - A hold-last-frame stopgap may precede it only as harm reduction, never
       recorded as the fix.
-    - The frozen-frame comment (`video.rs:263–265`) is made true or struck
+    - The frozen-frame comment (~~`video.rs:263–265`~~ `video.rs:262–264`; §2c, item 4: the lines on main at `5043ccf`) is made true or struck
       in the same PR.
     - The design record decides the order.
   - **Then the air-readiness queue, in this order, separate PRs per
     discipline:**
     1. residency honesty (preflight reports the residency the engine holds,
        until the §12.3 ladder is real; `video.rs:243–257` and spec `:3094`
-       already admit the gap);
+       already admit the gap). **Dispatched** by the user's order of
+       2026-10-19, after #57's bookend: branch `loop-residency-honesty`, off
+       `88c8316`, its record below;
     2. device audio (`NullSink` is the only `AudioSink`);
     3. disk headroom (the soak protocol's 8 GiB precondition);
     4. AC-5, the 30-minute zero-drop soak, never yet run green.
@@ -6263,7 +6272,7 @@ item):
       read-ahead fails, the loop element MUST fall back to frozen frame or
       fallback slate if live."
     - **Nothing in §12 governs a plain clip past its preload.** The comment
-      at `video.rs:263–265` ("a plain clip preloads a small window and
+      at ~~`video.rs:263–265`~~ `video.rs:262–264` (§2c, item 4: the lines on main at `5043ccf`) ("a plain clip preloads a small window and
       streams the rest (SPEC §12.8's frozen-frame rule covers the gap until
       read-ahead lands)") cites a loop rule for a clip, and it is false
       twice: nothing streams, and nothing freezes.
@@ -6307,8 +6316,16 @@ item):
         outside §12.4's loop budget (the clip path ignores the budget). The
         dress's A1 and A3 alone hold 332 MiB (237 + 95).
       - At K = §12.8's minimum, `max(2 × GOP, 60)` = 60 for house format
-        (§6.2: GOP ≤ 30), one playing clip costs 475 MiB of VRAM. A mix
-        between two clips costs 949 MiB, past §12.4's 512 MiB total.
+        (§6.2: GOP ≤ 30), ~~one playing clip costs 475 MiB of VRAM. A mix
+        between two clips costs 949 MiB~~, past §12.4's 512 MiB total.
+        *(§2c, R20's two-key pass, item 1, 711.91 MiB confirmed exact: as
+        built and as §12.11.1 says, every loaded plain clip of 90 or more
+        frames holds its head plus its window, 711.9 MiB, from load, playing
+        or not. Two clips mixing hold 1,423.8 MiB, and the dress's worst case
+        is about 1.6 GB. The 30 frames the engine logs per clip, the "video
+        ring resident" line's `period` (`render.rs:526–534`), are a vestigial
+        log artifact, not normative text. The residency honesty PR corrects
+        the line.)*
       - NV12 would cost 2.97 MiB a frame, so 178 MiB at K = 60. That path is
         not built ("RGBA path until shader-side YUV lands", `video.rs:237`).
       - **Proposed for the spec row:** a clip's depth is `K = 2 × GOP`
@@ -6319,8 +6336,9 @@ item):
     - **Memory bounds on the floor device** (§0.3, `hardware-baseline.txt`:
       Radeon Pro 555X, 4 GB dedicated VRAM; 16 GB RAM).
       - The worst case the dress can reach is one mix of two clips at K = 60
-        RGBA8: 949 MiB of VRAM, plus the 237 MiB heads of the other clips
-        loaded. That fits 4 GB with the loop cache (512 MiB) and the View,
+        RGBA8: ~~949 MiB of VRAM, plus the 237 MiB heads of the other clips
+        loaded~~ about 1.6 GB, every loaded plain clip holding its head and
+        window from load *(§2c, item 1, above)*. That fits 4 GB with the loop cache (512 MiB) and the View,
         preview and record targets beside it.
       - RAM is bounded the same way: the worker holds at most K decoded
         frames per clip, and the load-time `frames` vector shrinks to the
@@ -6409,7 +6427,7 @@ item):
     1. the falsification tests and the fix land on the fix PR, whose body
        quotes the red-today evidence (`.git/nbe-staged/r20-pr-body-evidence.md`)
        and then the green at its head;
-    2. the comment at `video.rs:263–265` is struck or made true per the
+    2. the comment at ~~`video.rs:263–265`~~ `video.rs:262–264` (§2c, item 4: the lines on main at `5043ccf`) is struck or made true per the
        record: row 12 extends §12.8, and the comment cites the extended rule
        or goes;
     3. `readAheadMiss` holds the last frame, is counted on the telemetry
@@ -6610,8 +6628,18 @@ item):
         - the dress ran 29, passed 29, with 11 skips, so exercised 18;
         - step 5 passed.
 
-        **Step 5 on CI is therefore intermittent under R20: 1 failure in 2
-        runs.** The cause is narrowed to the two-layer blend while a clip
+        **Step 5 on CI is therefore intermittent under R20: ~~1 failure in 2
+        runs~~ 1 of 3 on PR #57's CI** *(§2c, R20's two-key pass, item 5:
+        `39153017826` failed; `39153908984` and `39157683882` were green. The
+        six attempts of #58's throwaway run `39209726459` (head `0fc45cb`)
+        went 6 of 6 green with step 5 clean. They are excluded because they
+        ran an instrumented throwaway binary, not because they were local:
+        all nine ran on GitHub's runners. The cross-check's stall figures
+        from #58 are struck as unverifiable, because each rerun replaced the
+        run's artifact: ~~531 ms~~, mandatory by the user's ruling,
+        ~~attempts 1–5's 57–133 ms~~ and ~~"50–530 ms"~~. Only attempt 6's
+        artifact survives, and its figure stands: a View maximum of 1.02 ms.
+        Filed as R21)*. The cause is narrowed to the two-layer blend while a clip
         streams, on the paravirtual adapter. It is not proven further:
         `renderGpuTimeMs` is 0 there, and the tick is one second wide. It is
         disclosed as a line R20 opened (constraint 5), not re-baselined: the
@@ -6748,11 +6776,479 @@ item):
     | e2e show-stop-version | 6/6, 0 × `no video units` | 12:07:30–12:08:49 | 2.47 → 2.24 |
     | e2e resync-request | green | 12:08:49–12:09:16 | 2.24 |
     | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 12:09:16–12:09:43 | 2.24 → 2.40 |
-    | the dress | 29/29; 0 misses; 149 recorded counter frames in order, indices 1–148 | 12:09:43–12:10:42 | 2.40 → 2.19 |
+    | the dress | 29/29; 0 misses; 149 recorded counter frames in order, indices 1–148 *(§2c, R20's two-key pass, item 2: `counter_150`'s frame 0 is (0, 0, 0) by its recipe and classifies as `black`, so an ordered recording starts at 1. This recording also had 12 duplicated and 11 missing indices, all on the record side; the View counted 0 misses)* | 12:09:43–12:10:42 | 2.40 → 2.19 |
 
     One void: `npm test`'s first run (12:01:41–12:01:49, 2.16 → 4.28, 198/198
     in it). Its likely cause is the suite's own eight-second parallel burst,
     as at the first gate; it is not proven. It was re-run job-scoped.
+
+  - **The two-key pass on PR #57** (independent; run in opencode and relayed
+    by the user on 2026-10-19). Verdict: **HOLDS on answers 1–11.** The key
+    declared no build involvement. It worked from a fresh clone from GitHub
+    at `85f84e1`, with its own probes and its own mutants. Nothing merged,
+    and the merge word was not given.
+    - **The pass-record summary** (the independent key's sixth item, staged
+      verbatim, §2c item 6):
+
+      > Second-key pass: verdict holds on 1–11; claims 12, 14 (refined), 15
+      > (with the 531 ms unverified), 16, 17 confirmed; 13 disputed as a
+      > general claim (counter60 yes; counter150 7/8 own-index, 2/8 ≥2×,
+      > frame 149 → 39); the colour mismatch (up to L1 56 centre) is a
+      > register candidate, pre-existing.
+
+    - **The builder's cross-check, declared as such.** The builder ran the
+      same eleven answers at `85f84e1` on 2026-10-19, from its own fresh
+      clone and probes: answers 1–10 held and answer 11 was partly
+      supported. It is not independent. The builder wrote the PR and said
+      so before starting. The opencode key is the second key of record.
+    - **Claims 12–17, resolved by the user's relay:**
+      - **12, confirmed:** 711.91 MiB per loaded plain clip, exact.
+        *Clarification:* the "30-frame cache plan" is a vestigial log
+        artifact, not normative text. It is `render.rs:526–534`'s "video
+        ring resident" line. That line logs `period` (the head's 30) and the
+        asset's `plan`, and `asset.plan` is read nowhere else.
+      - **13, disputed as stated.** The claim was that ffmpeg's
+        nearest-frame identity holds with the runner-up at least 2× as far.
+        That is true of `counter_60`'s sample and false as a general claim.
+        On `counter_150`, 7 of 8 sampled frames are nearest their own
+        index, and 2 of 8 have a ≥ 2× margin. Frame 149 ties at L1 40 and
+        classifies as 39. There are two causes: the colour shift (R22), and
+        the palette near-collision (frames k and k + 76 differ by L1 28).
+      - **14, confirmed, with the magnitude refined:** up to L1 56 at frame
+        42's centre, while A1 before R20 shows L1 7. It is filed as R22:
+        pre-existing, and not this PR's defect.
+      - **15, confirmed except two figures:**
+        - the 531 ms stall is UNVERIFIED and is struck, because the
+          register does not carry unverifiable numbers;
+        - "1 in 9" is restated as 1 in 3 on CI alone. The relay labelled
+          the 9 as local plus CI; the builder disputes that label below.
+      - **16 and 17, confirmed exactly.**
+    - **The user's rulings of 2026-10-19:**
+      - §2c items 1–6 are accepted as written, with the 531 ms strike
+        mandatory.
+      - **Step 5's ruling stands as amended.** CI gets a backstop in R12's
+        style, and zero stays the rule on the normative machine.
+      - **R21** carries verified figures only. Whether the step-5 failure is
+        runner capacity or code is recorded as unresolved.
+      - **The machine-load thread gains a named cause:** three concurrent
+        sessions (load 6.9–15.2, all passing).
+    - **The builder's two-key record: it concurs on every ruling and
+      disputes one label.**
+      - **12:** concur. `asset.plan` is read only at `render.rs:532`. The
+        ring's depth comes from `CLIP_PRELOAD_FRAMES` (`video.rs:294`) and
+        §12.8.1's window.
+      - **13, the dispute of the builder's own claim:** concur.
+        - The claim named no clip, but its evidence was `counter_60` alone:
+          frames 0, 15, 29, 30, 44, 45, 46 and 59, with margins from 2.00×
+          to 8.7×. The two smallest were at 45 (L1 39 against 78) and at 59
+          (40 against 82). `counter_150` was never sampled.
+        - **An ffmpeg-side check (2026-10-19, 19:57:29):**
+          - ffmpeg's decode of `counter_150` sits within L1 8 of the recipe
+            on every frame (the maximum is at frame 122);
+          - ffmpeg's frames 149 and 39 differ by L1 55;
+          - the shift the builder measured on `counter_60`'s frame 59 was
+            (−7, −25, −8). Applied to ffmpeg's frame 149, it lands L1 40
+            from 149 and L1 41 from 39. That is the tie the key's probe
+            found.
+        - The engine side was not re-probed by the builder.
+      - **14:** concur, and the R22 filing too.
+        - The builder's "up to L1 40" was the maximum of its eight-frame
+          sample. Frame 42 was not in that sample.
+        - It is pre-existing. R20's diff (`5043ccf..85f84e1`) touches no
+          colour-conversion code, and ffmpeg's decode of `counter_150` sits
+          within L1 8 of the recipe. So the shift arises in the engine's
+          decode path, not in the fixture's encode.
+        - The builder's own A1 read at the head is L1 7 (rendered
+          [23, 56, 94] against ffmpeg's [27, 58, 93]). That matches the
+          key's pre-R20 figure.
+      - **The 531 ms strike:** concur.
+        - **Where the figure came from:** a tracing line from an
+          instrumented throwaway binary. It was in the
+          `dress-rehearsal-artifacts` of attempt 1 of run `39209726459`
+          (draft #58), at frame 70: `view_ms` 530.97, of which `encode_ms`
+          was 529.89. It survives only in the builder's scratch.
+        - **Why no one else can check it:** a rerun replaces the run's
+          artifact of the same name. The one artifact left is
+          `12167916060`, created 06:41:33Z, which is attempt 6's. It is
+          byte-identical to the builder's copy (`cmp`, 5 of 5 files).
+          Attempt 1's artifact cannot be retrieved, and the job logs carry
+          no probe lines.
+        - *Annotation:* the same holds for attempts 1–5's other stall
+          figures (57–133 ms) and for the report's "50–530 ms" range. They
+          are struck with it. The one attempt whose figures survive
+          (attempt 6) logged a View maximum of 1.02 ms.
+        - **The user's ruling (2026-10-19): the added strikes are accepted,
+          with emphasis.** Attempts 1–5's stall figures and the
+          "50–530 ms" range cannot be verified for the same reason, the
+          artifacts' replacement. The surviving attempt 6 figure (a View
+          maximum of 1.02 ms) stands. The builder applied the rule to its
+          own numbers without being asked, and the record notes it.
+      - **"1 in 9" against 1 in 3:** concur that 1 in 3 is the figure of
+        record. **Dispute the label "local plus CI"** (*the dispute stands*,
+        by the user's ruling of 2026-10-19, and the label is corrected):
+        - All nine runs were on GitHub's runners. Three were PR #57's
+          (`39153017826` failed at `2497bc8`; `39153908984` and
+          `39157683882` were green). Six were the attempts of #58's
+          throwaway run `39209726459` (head `0fc45cb`), all green. No local
+          run was counted.
+        - The six drop out because they ran an instrumented throwaway
+          binary, not R20's code as it merges, not because they were local.
+        - **As ruled, the record states:** step 5 failed 1 of 3 on PR #57's
+          CI (`39153017826` failed; `39153908984` and `39157683882` were
+          green). The six #58 attempts are excluded because they ran an
+          instrumented throwaway binary, not because they were local. All
+          nine ran on GitHub's runners. ~~"local plus CI"~~ (§2c: the
+          label is corrected.)
+      - **R21:** concur, and with recording the split as unresolved. These
+        figures can be checked by anyone:
+        - step 5 failed 1 of 3 on PR #57's CI;
+        - main's own CI dress trips the View watchdog in 5 of 5 runs, with
+          misses 5–26 (`39005941546`, `39025809315`, `39033994454`,
+          `39035305838` and `39112885332`; each artifact is present, all
+          from attempt 1);
+        - #58 went 6 of 6 green with step 5 clean (its job logs).
+        - *The user's ruling (2026-10-19):* R21's figures stand as stated.
+          They are 1 of 3 on #57's CI, main's watchdog trips in 5 of 5 runs
+          with their artifacts retrievable, and #58's 6 of 6.
+      - **16 and 17:** concur.
+      - **The machine-load cause:** noted. Every window of the builder's
+        was under 3.0 at both ends, so its data neither confirms nor
+        contradicts the cause. *Annotation:* by the register's rule, runs at
+        load 6.9–15.2 are void as timing evidence. Their passes stand as a
+        robustness witness.
+
+  **Merged: PR #57 is `88c8316`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-19 ("Ready to merge when you are"; the
+  user ran the merge by hand, because the auto-mode classifier refuses the
+  builder's): a squash at 2026-10-20T03:26:15Z (parent `5043ccf`), pinned to
+  the reviewed head `85f84e1`. Its subject follows the convention, and its
+  body equals the staged `r20-merge-body.txt` byte for byte. The merge tree
+  `441aa2a` is identical to `85f84e1`'s. **SPEC v0.4.8 row 12 is ratified**:
+  a plain clip plays its full length, §12.8.1's read-ahead is what the engine
+  does, and §12.11.1 charges each clip's head and window. **R20 is fixed and
+  leaves the register**, closed by its proving case (the battery red at
+  `911fcdd` and green at the merge). Main's CI at `88c8316`, run
+  `39364285184`, read per test (§2b), green on attempt 1:
+  - **rust** (job `118437382891`): `TOTAL: 525 passed, 0 failed, 4 ignored`,
+    with all 31 floor lines held, `r20_clip` 9 of 9 (the refill median
+    0.93 ms on CI's adapter). `telemetry_tick_wires_the_live_session_counter
+    ... ok`, so R10 is silent. The peak was load1 22.53 on 3 CPUs, 7.51 per
+    CPU (envelope row 23). The ceiling holds at 12.09.
+  - **control-plane** (job `118437382934`): `passed=198 failed=0`,
+    automation 35/35, belief `ran=4 exercised=4`, effects 2/2, and every e2e
+    floor held (slate-release 4, recall 2, take-duration 3, resync-end 3,
+    package-reconcile 4, show-stop-version 6 ran and 1 exercised,
+    resync-request 3, operator-signals 4 ran and 1 exercised).
+  - **dress** (job `118437382772`): 29/29, skips 11, exercised 18. Step 5
+    `ok` (R21: a fourth run of R20's code on CI, green). Drops 0, underruns
+    195, watchdog trips 0 at the gate, rises of 2010 and 1995 ms, all inside
+    the backstops. Step 12b: `R20 READ-AHEAD: 0 miss(es) over the 150-frame
+    clip`; 12c's picture is normative-only (no recording on CI).
+  - **The evidence file is retired.** `.git/nbe-staged/r20-pr-body-evidence.md`
+    (sha256 `0a23b073…be93`) was removed after the bookend. *The builder
+    removed it before its verbatim check passed:* the check compared the file
+    with the merged body without stripping the body's blockquote markers, and
+    read false. Rebuilt from the merged body with the markers stripped, its
+    39 lines hash to the same sha256, so the merged body quotes it verbatim.
+    The order was the builder's slip, recorded.
+  - **PR #57's body** carries §2c items 2 and 5 as an appended note, so the
+    reviewed text stays as reviewed.
+  - **The machine-load thread gains a named cause** (the user's ruling of
+    2026-10-19, on #57's two-key pass; the thread is #56's bookend, above):
+    three concurrent sessions on this machine (load 6.9–15.2, all passing).
+    The builder's annotation stands in its two-key record: by the 3.0 rule
+    those runs are void as timing evidence, and their passes are a
+    robustness witness. The local-ceiling ruling stays owed.
+
+  **The residency honesty build: preflight stops certifying what the engine
+  cannot air** (branch `loop-residency-honesty`, off `88c8316`; the user's
+  order of 2026-10-19, after #57's bookend; SPEC v0.4.8 row 13, its early
+  commit `a1ac9dc`). Held for the two-key pass, then the merge word.
+  - **The defect, as ordered.** §12.3's ladder is unbuilt, so the engine
+    holds every loop as RGBA8, but preflight planned the declared format, and
+    an undeclared loop took the NV12 rung. Spec `:3123` (`:3094` in the
+    order; row 12's text moved it) and the code's comments said so, and no
+    guard failed. §19's "preflight is the proof a package is air-ready" was
+    false for the default case.
+  - **The order's premise, corrected by measurement.** The order expected the
+    spec's example, a 60-frame 1080p loop declaring nothing, to report 474 MiB
+    engine-actual. A throwaway engine probe (not committed; 20:54:07–20:54:17,
+    2.26 → 2.29, on AC under `caffeinate`) loaded `counter_60.mp4` as a
+    60-frame `videoLoop` through `show.load` and read the picture back:
+    - at `vramBudgetMib: 512` the engine holds **60 frames, 474.6 MiB**, and
+      draws every frame;
+    - at §12.4's default 256 MiB it holds **32 frames, 253.1 MiB**, plans the
+      loop as streamed, and draws source frame 31 for master frames 32–59 of
+      every period (the finding below);
+    - a declared `bc7` changes nothing: 60 frames at 512, as RGBA8.
+    So 474 MiB is engine-actual only at a budget of 475 MiB or more. Both
+    figures are proven, by `loop_residency.rs` on the engine's side, and both
+    are what preflight now reports. The probe's first run (20:42:10–20:44:40)
+    used the element kind `clip`, which plays an asset once, so its frames past
+    60 drew black: the builder's harness error, not the engine's. Its held
+    frames (32, 60, 60) agreed with the valid rerun.
+  - **Scope beyond the order, and why: frames, not only the format.**
+    Preflight charged a loop over its budget nothing, as if streamed (§12.11.1
+    read "Σ over VRAM-resident loops"). The engine does not stream loops; it
+    holds its budget's frames. Planned at RGBA8 alone, the spec's example at
+    the default budget would have moved from 178 MiB to **nothing**, a worse
+    lie. So every loop is charged the frames the engine holds
+    (`loop_held_frames`), and row 13 amends §12.11.1 with it. This is the
+    builder's reading of "engine-actual", put to the user.
+  - **The commits, in order:**
+    - `c78caf1`: #57's records (the first commit, per the cadence);
+    - `a1ac9dc`: row 13, early (§12.3's note, §12.11.1, §19.2.1);
+    - `120e135`: the proving case, red before the fix (`v04` +5 and three
+      earlier assertions struck §2c; `loop_residency.rs`, 3, new; its CI floor
+      of 3/3);
+    - `6931c24`: the fix (`HELD_LOOP_FORMAT`, `loop_frame_cap`,
+      `loop_held_frames`, `LOOP_RESIDENCY_NOTE`; preflight's plan, charge and
+      note; the engine's plan and cap through the shared names, no behaviour
+      change; the clip log line split; `model.rs`'s spelling; and
+      `loop_residency.rs` rustfmt'd, whitespace and import order only, because
+      `120e135` committed it unformatted);
+    - this commit: the records.
+  - **Red before the fix (`120e135`):** `v04` 7 failed, 14 passed
+    (21:22:08–21:22:17, 2.38 → 2.77, clean): the five new tests and the two
+    with struck assertions. `loop_residency` 3 of 3, green, because it
+    measures what the engine already holds. The run's raw output is in the
+    PR body's quote of the staged evidence. The unfixed binary's figures: 201,
+    201, 142, 201 with no `loopBudget` error, and 23 MiB; every one exit 0,
+    and none with a note.
+  - **Green after (`6931c24`):** 498, 276, 498, exit 2 with
+    `loopBudget … the budget's 32 at RGBA8`, and 276; every one with the note.
+    The first green run (21:28:03–21:28:15, 2.32 → 3.11) was VOID on load at
+    its end, likely `v04`'s own parallel decoding, not proven; the gate below
+    is of record.
+  - **The battery** (each mutant applied in place, its mapped suites run,
+    restored from a saved copy, `cmp`-identical and `git`-clean, and
+    rebuilt green; every window valid, both ends under 3.0):
+
+    | # | Mutation (class) | Killed by | Window, load |
+    |---|---|---|---|
+    | M1 | **The lie returns, undeclared:** an undeclared loop planned at the NV12 rung (`yuv_sampling: !has_alpha`, `declared_format: None`) | `v04`, 7 of 21: the spec's example (`got 201`), the verdict, the stream loop, the declared format, the auto test, the arithmetic test, and the 4K test (its plan moves to NV12's 21 frames) | 21:30:09–21:30:12, 2.40 → 2.60 |
+    | M1b | **The lie returns, declared:** a declared format planned as declared | `a_declared_format_the_engine_does_not_hold_is_planned_at_rgba8` (`got 142 MiB`), and the arithmetic test's `bc7` case (`got 419`) | 21:30:48–21:30:51, 2.40 → 2.40 |
+    | M2 | **Undercounting frames:** a loop the plan streams is charged nothing | `v04`, 4 of 21: the spec's example at the default budget (`got 23 MiB`), the stream loop, the auto test, the arithmetic test | 21:30:56–21:30:59, 2.36 → 2.33 |
+    | M2b | **Undercounting frames:** a loop declaring `stream` is charged nothing | `a_loop_over_its_budget_is_charged_the_frames_the_engine_holds` (`got 23 MiB`), and the arithmetic test | 21:31:04–21:31:08, 2.23 → 2.61 |
+    | M2c | **Undercounting frames:** the shared cap holds one frame short | all three sides: the unit test (`a loop over its budget holds its budget`); the engine's `a_loop_over_its_budget_holds_its_budget_not_a_window_and_not_nothing`; `v04`, 4 of 21 (`got 269 MiB`) | unit 21:32:31–21:32:32, 2.45; engine 21:33:33–21:33:38, 2.14 → 2.85; `v04` 21:34:45–21:34:49, 2.49 → 2.45 |
+    | M3 | **The honesty note dropped** from the report | `the_report_says_in_words_that_loops_are_planned_at_rgba8_until_the_ladder` (`"residencyNote":null`) | 21:35:20–21:35:23, 2.49 → 2.37 |
+    | M3b | **The note loses its expiry** (no §12.3, no ladder) | the same test (`the note names the assumption (RGBA8) and its expiry`) | 21:35:32–21:35:36, 2.32 → 2.61 |
+    | M4 | **The verdict planned at NV12** while the charge stays honest | `the_budget_verdict_follows_the_format_the_engine_holds` (exit 0 where 2 is owed), and the 4K test | 21:36:15–21:36:18, 2.37 → 2.26 |
+    | M5 | **The reference side:** the engine's ring ignores the budget | `loop_residency`'s over-budget test, 1 of 3 (`a loop over its budget holds its budget's frames`) | 21:36:36–21:36:41, 2.15 → 2.05 |
+
+  - **The gate at `6931c24`, of record** (scratchpad `rh/gate/`; AC,
+    `caffeinate`):
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | builds, `fmt`, `clippy -D warnings`, `tsc` | clean | 21:37:09–21:44:03 | untimed |
+    | workspace (of record: the second job-scoped rerun) | **534/0/4** | 22:11:47–22:13:41 | 2.36 → 2.23 |
+    | `r20_clip` | 9/9 | 21:52:08–21:52:38 | 2.36 → 2.78 |
+    | `loop_residency` | 3/3 | 21:53:08–21:53:11 | 2.25 → 2.31 |
+    | `v04` | 21/21 | 21:53:11–21:53:14 | 2.31 → 2.31 |
+    | `npm test` (of record: its job-scoped rerun) | 198/198 | 22:06:47–22:06:55 | 2.29 → 2.58 |
+    | automation / effects / belief | 35/35, 2/2, 4/4 | 21:56:22–21:56:28 | 2.06 → 1.97 |
+    | e2e slate-release | 4/4 | 21:56:28–21:56:42 | 1.97 → 2.82 |
+    | e2e recall | 2/2 | 21:56:57–21:57:10 | 2.20 → 2.09 |
+    | e2e take-duration | 3/3 | 21:57:10–21:57:15 | 2.09 → 2.00 |
+    | e2e resync-end | 3/3 | 21:57:15–21:57:30 | 2.00 → 2.22 |
+    | e2e package-reconcile | 4/4 | 21:57:30–21:57:45 | 2.22 → 2.23 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 21:57:45–21:59:05 | 2.23 → 2.28 |
+    | e2e resync-request | 3/3 | 21:59:05–21:59:32 | 2.28 → 2.50 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 22:01:17–22:01:43 | 2.24 → 2.99 |
+    | the dress | 29/29; drops 0, underruns 0; R20: 0 misses, 149 recorded counter frames, indices 1–149 | 22:02:43–22:03:45 | 2.31 → 2.50 |
+
+    Two mid-run samples touched 3.0 inside valid windows (slate-release 3.07,
+    operator-signals 3.08); both ends were under 3.0, and both steps passed.
+    **Three voids, each named:**
+    - **The workspace's first run** (21:47:49–21:50:23, 2.49 → 4.32): 534/0/4
+      in it. The likely cause is the suite's own parallel load; not proven.
+    - **`npm test`'s first run** (21:53:14–21:53:22, 2.31 → 4.17): 198/198 in
+      it, the suite's eight-second parallel burst as at #57's gates; not
+      proven.
+    - **The workspace's first rerun** (22:04:12–22:05:47, 2.33 → 3.16, a peak
+      of 4.0 at 22:04:32): **red**, `r20_clip`'s refill guard,
+      `r20_a_window_refill_fits_the_frame_deadline`, median **9.93 ms**
+      against its 8.33 ms bound (406 passed before cargo stopped). Not this
+      PR's code (it touches no refill path), and characterized below as a
+      finding; the second rerun, of record, is green.
+
+  - **Counts.** Workspace 525 → 534 (`v04` +5; `loop_residency` +3;
+    `loop_cache`'s unit +1; one test renamed, net 0:
+    `an_auto_loop_the_budget_cannot_hold_is_streamed_not_charged` →
+    `…_is_charged_its_budget_not_its_period`). `npm test` 198, unchanged (the
+    dress's comment only). The rust job's floor lines 31 → 32
+    (`loop_residency` 3/3, new). The dress 29, exercised 18 on CI, unchanged.
+  - **Findings, recorded:**
+    1. **A loop over its budget freezes on its last held frame** (a register
+       candidate; the user's to file and to rule). At the default budget the
+       spec's example draws source frame 31 for master frames 32–59, 28 of
+       every 60, and preflight, now honest about the memory, still certifies
+       the `auto` loop air-ready (exit 0). §12.8 requires long-loop
+       read-ahead, and its rule 4 allows a frozen frame only when read-ahead
+       *fails*; this engine has none for loops. ~~Whether preflight warns or
+       refuses on a loop the budget cannot hold is a verdict this PR does not
+       take.~~ (§2c: the user ruled, below. Filed as R23; preflight refuses it,
+       landed in this PR.)
+    2. **§12.10's per-loop report is not emitted.** Preflight writes no
+       `loops[]` entries at all (`LoopReport` exists in the model and is never
+       populated), so a plan's `reason` surfaces nowhere. That text says
+       "streaming with N frames read-ahead", which this engine does not do;
+       it is latent today and must not ship as it reads when the per-loop
+       report is built. Pre-existing; recorded, not fixed. *(Ruled: the
+       unbuilt-MUST register's U1.)*
+    3. **An unprobed loop is charged on its declared period** ~~(the worst
+       case)~~ (§2c, the user's ruling 5: not the worst case but an optimistic
+       one; the engine can hold up to its budget's cap, whatever the declared
+       period), while an unprobed clip charges nothing (row 12). Both stand
+       beside the decode error the report already carries; the asymmetry is
+       recorded. *(Ruled, below: an unprobeable loop fails preflight, and is
+       never charged optimistically on its declared period; owner, the
+       residency era.)*
+    4. **The engine side was not changed in behaviour.** `HELD_LOOP_FORMAT` in
+       the engine's plan and `loop_frame_cap` for its ring compute what they
+       computed before (`yuv_sampling: false` already selected RGBA8, and the
+       cap was `max_frames_by_budget.max(1)`). M5 and `loop_residency.rs` pin
+       it.
+    5. **The log line is unguarded.** The split "clip ring resident" / "loop
+       ring resident" lines are corrected text with no test reading logs.
+    6. **R20's refill guard is marginal under the workspace step's
+       parallelism** (pre-existing; not this PR's code, which touches no
+       refill path). The gate's first workspace rerun failed it, median
+       9.93 ms against its 8.33 ms bound, at a load peak of 4.0 (void).
+       Characterized in valid windows (scratchpad `rh/gate/`): `r20_clip` at
+       the default thread count, the workspace step's, gives 7.26–7.91 ms; at
+       `--test-threads=1`, CI's dedicated step, 2.11–2.40 ms. An interleaved
+       A/B of two kept binaries, head's against one built from `88c8316`'s
+       engine sources (distinct by `cmp`; the tree restored `cmp`-identical
+       and `git`-clean before the runs), valid runs only: head 7.45, 6.47,
+       7.05 ms; main 4.90, 7.39, 7.90 ms. Two runs were void (main's second,
+       2.38 → 3.00; head's fourth, 2.49 → 3.26). The distributions overlap,
+       and an earlier sequential batch (head 7.26–7.91 at 22:07–22:10, main
+       5.20–6.45 at 22:15–22:18) was drift the interleave dissolved. So the
+       margin is main's: in the workspace step the guard runs beside eight
+       other GPU tests, and its bound sits 0.4–1.1 ms above their contention.
+       ~~Isolating it (its own binary, or the suite serialized in the workspace
+       step) is the user's to rule; nothing here changes it.~~ (§2c: ruled,
+       below; the guard now runs alone in `r20_clip`'s lane, `e0f9fca`.)
+    7. **The builder's slips, recorded:** `120e135` committed
+       `loop_residency.rs` unformatted (formatted in `6931c24`); and the probe
+       harness's `clip` element (above).
+  - **The user's rulings on #59's five decisions (2026-10-19), and where
+    each landed.**
+    1. **The proving case carries both budgets: accepted.** 474.6 MiB at
+       `vramBudgetMib: 512`; 253.1 MiB at the default budget. The relay's 474
+       figure was budget-unconditional; corrected.
+    2. **Frame-charging: ratified.** Frames × format is the engine-actual
+       figure; format alone would have produced the 0 MiB lie. Row 13's
+       §12.11.1 amendment stands.
+    3. **R23 filed:** a loop over its budget freezes (the engine holds N of M
+       frames and draws the last resident one for the rest of every period).
+       Preflight refuses it, never warns, with the reason naming the freeze and
+       the remedies (raise the budget, shorten the loop, await the ladder or
+       streaming). To land in #59 if it rides the existing §12.5 verdict path
+       cleanly, the builder's judgment from the tree; otherwise a fast-follow.
+       **Landed in #59.** The judgment, from the tree: the refusal is the §12.5
+       block's own (the same loop, the same plan, the same place); no fixture
+       outside `v04` declares a loop the budget cannot hold (the dress's
+       `A2_loop` is 10 frames and fits; `valid_show`'s `logo_loop.mov` is not a
+       decodable file and fails already); and inside `v04` the only assertion
+       it falsifies is the auto test's "streaming is lawful", struck §2c.
+       - `d1dc16b`: the proving case, red (v04 3 failed, 19 passed;
+         00:16:23–00:16:28, 2.49 → 2.37). The first attempt at this run was
+         killed mid-wait when the machine rebooted (below); its rerun is of
+         record.
+       - `7913bc7`: the fix. Every loop is planned in the §12.5 block; a loop
+         whose held frames fall short of its period (within §12.4's cap, which
+         has its own refusal) freezes. A mandatory `vram` loop keeps
+         `loopBudget`, which now names the freeze; any other is refused as
+         `loopFreeze`, `stream` included. Raising the budget is offered only
+         when some budget holds the loop (within §12.4's 512 MiB total).
+         Spec: §12.5's implementation note (R23), row 13's text and cells,
+         and §12.3's note. Green after: v04 22/22 (00:18:02–00:18:06,
+         2.47 → 2.75).
+       - Its battery (each mutant restored `cmp`-identical and `git`-clean,
+         rebuilt green; every window valid):
+
+         | # | Mutation | Killed by | Window, load |
+         |---|---|---|---|
+         | M6 | the refusal removed | the R23 test (exit 0 where 2 is owed) and the auto test | 00:27:17–00:27:20, 2.43 → 2.72 |
+         | M6b | the refusal downgraded to a warning | the same two | 00:28:10–00:28:13, 2.31 |
+         | M6c | a `stream` loop exempted | the R23 test's `stream` half | 00:28:34–00:28:37, 2.15 → 2.22 |
+         | M6d | the remedies dropped | three: the R23 test (`vramBudgetMib to 475`), the auto test, the verdict test | 00:28:57–00:29:00, 2.15 → 2.22 |
+         | M6e | raising the budget offered when no budget holds the loop | the auto test | 00:31:05–00:31:09, 2.37 → 2.34 |
+         | M6f | the mandatory refusal no longer names the freeze | the verdict test | 00:31:29–00:31:33, 2.33 → 2.95 |
+    4. **The refill guard isolated:** a serial lane or its own step, the
+       8.33 ms bound kept, load discipline inherited; the A/B clearing #59 is
+       recorded (finding 6). **Landed in #59 as a lane** (`e0f9fca`): a static
+       tokio `RwLock` in `r20_clip.rs`, the guard taking it for writing and
+       every other test for reading, so the guard never runs beside a sibling
+       in any step. The bound, the suite's count and its CI floors (9/9) are
+       unchanged. Measured at the default thread count, the workspace step's
+       mode: **2.32 and 2.31 ms** (00:25:07–00:25:23 and 00:25:38–00:25:57,
+       valid; a first, 2.68 ms, was void on load at its end, 2.43 → 3.21),
+       against 7.26–7.91 ms before the lane. Two probes of the lane:
+       - **L1, the isolation removed** (the guard reads the lane like its
+         siblings): **7.81 ms**, 00:32:40–00:32:54, 2.41 → 2.77, and no test
+         fails. The isolation is measured, not guarded by a test.
+       - **M8 under the lane** (the frame path back on `write_texture`):
+         killed, median 11.36 ms against 8.33 ms, 00:33:43–00:34:02,
+         2.20 → 2.59.
+    5. **`loops[]` unwritten: to the unbuilt-MUST register** (opened by this
+       ruling, under "Cross-cutting", below; entry U1). **An unprobeable loop:
+       preflight fails, never an optimistic charge on the declared period;
+       recorded, owner the residency era.** Not built in #59. Preflight already
+       fails such a package (its decode error), but the estimator still charges
+       the loop on its declared period, and the ruling retires that charge.
+       **The slips are accepted as recorded.**
+  - **The machine rebooted mid-session (2026-10-20, about 23:00).** It killed
+    R23's first red run mid-wait (exit 137, no output) and cleared
+    `/private/tmp`, the session's scratch. The raw logs of the gate and the
+    battery at `6931c24` went with it. Their figures stand as recorded in
+    `4b555c8` and PR #59's body; the staged evidence lived in
+    `.git/nbe-staged/` and survived. Every run since is new and named above.
+  - **The gate at `e0f9fca`, of record** (scratchpad `rh/out/gate2/`; AC,
+    `caffeinate`):
+
+    | Step | Result | Window | Load |
+    |---|---|---|---|
+    | builds, `fmt`, `clippy -D warnings`, `tsc` | clean | 00:34:33–00:36:02 | untimed |
+    | workspace | **535/0/4** (+1, the R23 test), first run | 00:39:02–00:41:36 | 2.18 → 2.31 |
+    | `r20_clip` (`--test-threads=1`) | 9/9 | 00:41:36–00:42:05 | 2.31 → 2.18 |
+    | `loop_residency` | 3/3 | 00:42:05–00:42:09 | 2.18 → 2.40 |
+    | `v04` | 22/22 | 00:42:09–00:42:12 | 2.40 → 2.29 |
+    | `npm test` | **197/198, red**: the `timeOfDay` test's rule fired twice (finding 8, below) | 00:42:12–00:42:21 | 2.29 → 2.19 |
+    | `npm test`, its job-scoped rerun | 198/198 | 00:49:07–00:49:14 | 1.68 → 1.89 |
+    | automation / effects / belief | 35/35, 2/2, 4/4 | 00:42:21–00:42:27 | 2.19 → 2.25 |
+    | e2e slate-release | 4/4 | 00:42:27–00:42:40 | 2.25 → 2.20 |
+    | e2e recall | 2/2 | 00:42:40–00:42:54 | 2.20 → 2.08 |
+    | e2e take-duration | 3/3 | 00:42:54–00:42:59 | 2.08 → 2.16 |
+    | e2e resync-end | 3/3 | 00:42:59–00:43:13 | 2.16 → 2.11 |
+    | e2e package-reconcile | 4/4 | 00:43:13–00:43:28 | 2.11 → 2.16 |
+    | e2e show-stop-version | 6/6, 0 × `no video units` | 00:43:28–00:44:48 | 2.16 → 2.31 |
+    | e2e resync-request | 3/3 | 00:44:48–00:45:15 | 2.31 → 1.85 |
+    | e2e operator-signals | 3 pass + 1 skip (its CI seam) | 00:45:15–00:45:43 | 1.85 → 1.97 |
+    | the dress | 29/29; drops 0, underruns 0; R20: 0 misses, 150 recorded counter frames, indices 1–149 | 00:45:43–00:46:45 | 1.97 → 2.36 |
+
+    No void: every window started and ended under 3.0.
+  - **Finding 8: a `timeOfDay` rule can fire twice** (pre-existing; a
+    register candidate for the user to file and rule; not this PR's code,
+    whose only control-plane change is the dress's comment). The gate's
+    `npm test` failed in a valid window: the rule fired twice at its instant
+    (`[{ kind: 'timeOfDay', ruleId: 'tod' }, { kind: 'timeOfDay', ruleId:
+    'tod' }]`, at 00:42:18), and the automation step three seconds later
+    passed 35/35. **The mechanism, by reading** (`automation.ts:747–760`):
+    `scheduleTimeOfDay` arms a monotonic `setTimeout` for a whole-second wall
+    instant and, when it fires, re-arms from `wallNow()`. If the timer fires
+    while the wall clock still reads before the instant, `next.setHours(h, m,
+    s, 0)` is still ahead, so the rule re-arms for the same instant and fires
+    again about a millisecond later: its action would run twice. **Measured**
+    (a throwaway Node probe, not committed; 00:48:43–00:48:53, 1.55):
+    **61 of 2000** `setTimeout`s armed for a wall instant fired while `Date`
+    read 1 ms before it (3.05%), never more than 1 ms. The test alone, 20
+    runs (00:47:43–00:48:23, 1.91 → 1.77): 0 failed, consistent with a few
+    per cent per firing. The fix (not built here) re-arms from the instant
+    just fired, not from the wall clock read at fire time.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -7321,6 +7817,17 @@ fresh two-key pass).**
 | §12.6 clamp wiring | Re-deferred; trigger is the first Apple Silicon machine or the first >1 GiB loop budget |
 | ~~**The dress-rehearsal CI job is `continue-on-error`**~~ **DISCHARGED 2026-09-17 by the gate split** — superseded, original text standing per §2c | `.github/workflows/ci.yml:322` (the citation read `:248` until 2026-09-11; that line is now `echo "::endgroup::"` — the number rotted under edits in the very commit that wrote it, which is the argument for citing by name as well as line). Note there are **two** `continue-on-error: true` in the file and only one is this row's: `:178` belongs to the control-plane job's preflight-timing diagnostic step and stays deliberately non-failing. The job reports **pass regardless of step failures**, so its green is not evidence — on any PR, including the two that cited it. Three of its twelve steps fail today by design (R4, R5, R2), which is why the flag is there. **Either it gates or it is marked observational**; a check that always reports green teaches reviewers to read it as a result. Raised by the PR #11 two-key pass, 2026-09-10. **Work order DRESS closed R5, R4 and R2 (12/12 three times on the normative machine, each falsified) and attempted the promotion — which failed on CI and was reverted.** The row stays open because the reason changed rather than vanished: the gate asserts zero dropped frames and zero audio underruns, which are reference-hardware claims, and the macos-14 runner measured 83 then 120 underruns on 3 arm64 cores. Promotion now needs the gate split so composition claims run everywhere and threshold claims run where they mean something. See the DRESS entry under 07. |
 | **Preflight bound vs measured decode cost [HIGH]** | **Recommended before Prompt 08.** Not 07b's scope; does not gate the 07 merge — the defect predates this branch and `main` carries it today. See the step-5c backlog entry under 07 for the evidence. **[DISCHARGED 2026-09-12 by PR #12 — streaming probe landed (163x less memory, bound re-derived); original text left standing per §2c.]** |
+
+### The unbuilt-MUST register (opened 2026-10-19, the user's ruling 5 on PR #59)
+
+A MUST the spec states and the tree does not build. Each entry names the MUST,
+where the tree stops, what stands in for it, and its owner. An entry leaves
+when the MUST is built and falsified, or when the spec is amended. The
+register was opened with one entry; the spec has not been swept for others.
+
+| # | The MUST | Where the tree stops | Owner |
+|---|---|---|---|
+| U1 | §12.10: "Preflight MUST report per loop" (`assetId`, `periodFrames`, `selectedTextureFormat`, `frameCostMib`, `effectiveBudgetMib`, `maxFramesByBudget`, `cachePolicySelected`, `vramResident`, `reason`) | `LoopReport` exists in `nbe-core`'s model and is never populated: preflight writes no `loops[]` entries (found on PR #59). A plan's `reason` therefore surfaces nowhere. For a streamed loop it reads "streaming with N frames read-ahead", which this engine does not do (R23), so it must not ship as it reads when the report is built | unassigned |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 

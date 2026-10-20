@@ -523,15 +523,27 @@ impl RenderLoop {
             }
             ring
         });
-        tracing::info!(
-            asset = %asset_id,
-            frames = textures.len(),
-            window = clip.as_ref().map(|c| c.window.len()).unwrap_or(0),
-            length = clip.as_ref().map(|c| c.length),
-            period = asset.period_frames,
-            policy = ?asset.plan.cache_policy_selected,
-            "video ring resident"
-        );
+        // A clip's residency is its head and window (§12.8.1), a loop's its
+        // plan (§12.5). One line logged both, so a clip's read as a 30-frame
+        // streamed loop: `period` was its head, and `policy` came from a plan
+        // that sizes nothing (§2c, R20's two-key pass, claim 12: a vestigial
+        // log artifact, corrected in v0.4.8 row 13's PR).
+        match clip.as_ref() {
+            Some(c) => tracing::info!(
+                asset = %asset_id,
+                head = textures.len(),
+                window = c.window.len(),
+                length = c.length,
+                "clip ring resident"
+            ),
+            None => tracing::info!(
+                asset = %asset_id,
+                frames = textures.len(),
+                period = asset.period_frames,
+                policy = ?asset.plan.cache_policy_selected,
+                "loop ring resident"
+            ),
+        }
         let source_frame_rate = asset.source_frame_rate.round().max(1.0) as u32;
         let period_frames = asset.period_frames;
         drop(library);

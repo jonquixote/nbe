@@ -50,6 +50,12 @@ pub struct ResourceReport {
     /// only if the field is always there.
     #[serde(default)]
     pub declared_house_rate: Option<u32>,
+    /// The assumption `vram_demand_mib` rests on, in words, with its expiry
+    /// (§19.2.1, v0.4.8 row 13): loops are planned at RGBA8 until §12.3's
+    /// ladder lands. Present when the package declares a loop, and serialized
+    /// as null otherwise, for the same reason as `declared_house_rate`.
+    #[serde(default)]
+    pub residency_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

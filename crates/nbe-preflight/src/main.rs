@@ -81,12 +81,8 @@ fn loop_plan(
 ) -> nbe_core::loop_cache::CachePlan {
     let id = asset.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let (width, height) = asset_dimensions(id, manifest, report);
-    use nbe_core::loop_cache::{CacheBudget, CacheTextureFormat, LoopSpec};
+    use nbe_core::loop_cache::{CacheBudget, LoopSpec, HELD_LOOP_FORMAT};
     let kind = asset.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    let declared_format = lm
-        .get("textureFormat")
-        .and_then(|v| v.as_str())
-        .and_then(CacheTextureFormat::from_declared);
     let has_alpha = kind == "alphaVideo";
     nbe_core::loop_cache::plan(
         LoopSpec {
@@ -98,11 +94,15 @@ fn loop_plan(
                 .unwrap_or(0)
                 .min(u32::MAX as u64) as u32,
             has_alpha,
-            // Absent a declaration, §12.3's ladder: an opaque source takes the
-            // NV12 rung, alpha content takes RGBA8.
-            yuv_sampling: !has_alpha,
+            // ~~Absent a declaration, §12.3's ladder: an opaque source takes the
+            // NV12 rung, alpha content takes RGBA8.~~ (§2c, v0.4.8 row 13: that,
+            // and planning a declared format, planned a residency the engine
+            // does not hold.) Until §12.3's ladder lands, every loop is planned
+            // at the format the engine holds it in, whatever it declares, so
+            // §12.5's verdict and the estimator's charge describe this engine.
+            yuv_sampling: false,
             gop_frames: 0,
-            declared_format,
+            declared_format: Some(HELD_LOOP_FORMAT),
         },
         // §12.4's table, with the manifest's ceiling where it declares one.
         // Built by the same constructor the engine uses.
@@ -111,6 +111,37 @@ fn loop_plan(
                 .and_then(|v| v.as_u64())
                 .map(|v| v.min(u32::MAX as u64) as u32),
         ),
+    )
+}
+
+/// R23: what the engine draws for a loop its budget cannot hold, and the ways
+/// out, in the words a refusal carries. The engine holds `held` frames and
+/// draws the last of them for the rest of every period, because it does not
+/// stream loops (§12.8 is unbuilt for loops). Raising the budget is offered
+/// only when some budget holds the loop: §12.4's total caps every declaration.
+fn loop_freeze(plan: &nbe_core::loop_cache::CachePlan, period: u64, held: u64) -> String {
+    let total = nbe_core::loop_cache::DEFAULT_TOTAL_LOOP_MIB;
+    let needed = (period as f64 * plan.frame_cost_mib).ceil() as u64;
+    let at_total = (f64::from(total) / plan.frame_cost_mib).floor() as u64;
+    let remedy = if needed <= u64::from(total) {
+        format!(
+            "Raise vramBudgetMib to {needed} or more, shorten the loop to {held} frames or \
+             fewer, or wait for SPEC §12.3's format ladder or loop streaming."
+        )
+    } else {
+        format!(
+            "No budget holds it (SPEC §12.4's {total} MiB total holds {at_total} frames of \
+             this size): shorten the loop to {held} frames or fewer at this budget \
+             ({at_total} at vramBudgetMib {total}), or wait for SPEC §12.3's format ladder or \
+             loop streaming."
+        )
+    };
+    format!(
+        "loops {period} frames, but its {} MiB budget holds {held} at RGBA8, the format \
+         this engine holds: the engine draws frame {} for the rest of every period, because \
+         it does not stream loops (R23; SPEC §12.8). {remedy}",
+        plan.effective_budget_mib,
+        held.saturating_sub(1)
     )
 }
 
@@ -667,17 +698,39 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             // cannot give does not quietly stream — it does not fit, and an
             // operator needs to hear that before air rather than discover it
             // as a different picture than the one they authored.
+            //
+            // R23 (the user's ruling of 2026-10-19): "otherwise it MUST be
+            // streamed" has no implementation here, because this engine does
+            // not stream loops. A loop its budget cannot hold freezes: the
+            // engine holds its budget's frames and draws the last of them for
+            // the rest of every period. So preflight refuses it whatever its
+            // `cachePolicy`, never with a warning, and names the freeze and the
+            // remedies. A period past §12.4's cap is refused above, by name.
             let lm = asset.get("loop").expect("checked above");
+            let plan = loop_plan(asset, lm, &manifest_json, &report);
+            let held = nbe_core::loop_cache::loop_held_frames(&plan, period);
+            let freezes = period <= ABSOLUTE_LOOP_FRAME_CAP && held < period;
             if lm.get("cachePolicy").and_then(|v| v.as_str()) == Some("vram") {
-                let plan = loop_plan(asset, lm, &manifest_json, &report);
                 if plan.cache_policy_selected != nbe_core::loop_cache::CachePolicy::Vram {
                     had_errors = true;
+                    let freeze = if freezes {
+                        format!(" It {}", loop_freeze(&plan, period, held))
+                    } else {
+                        String::new()
+                    };
                     report.push_error(format!(
                         "loopBudget: asset \"{id}\" mandates cachePolicy \"vram\" but its \
-                         {period} frames exceed the budget's {} (SPEC §12.5)",
+                         {period} frames exceed the budget's {} at RGBA8, the format this \
+                         engine holds (SPEC §12.5; §12.3's note).{freeze}",
                         plan.max_frames_by_budget
                     ));
                 }
+            } else if freezes {
+                had_errors = true;
+                report.push_error(format!(
+                    "loopFreeze: asset \"{id}\" {}",
+                    loop_freeze(&plan, period, held)
+                ));
             }
         }
 
@@ -963,6 +1016,8 @@ fn resource_demand(
         .saturating_mul(house_h)
         .saturating_mul(4)
         .saturating_mul(3);
+    // Whether the package declares a loop: the residency note rides on it.
+    let mut any_loop = false;
 
     for asset in manifest
         .get("assets")
@@ -990,15 +1045,27 @@ fn resource_demand(
                 // The decision lives in `nbe_core::loop_cache::plan`, the same
                 // function the engine uses to size its ring. One rule, one
                 // implementation, across crates.
-                let declared = lm
-                    .get("cachePolicy")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("auto");
+                //
+                // ~~A loop the plan streams, or one declaring `cachePolicy:
+                // "stream"`, is charged nothing.~~ (§2c, v0.4.8 row 13: this
+                // engine does not stream loops. It decodes a loop's frames up to
+                // its budget at load and holds them, whatever `cachePolicy` says,
+                // so charging a loop over its budget nothing reported a residency
+                // the engine does not hold.) A loop is charged the frames the
+                // engine holds: its length if it fits its budget, else its
+                // budget's frames. The length is the probed one; a loop preflight
+                // could not probe is charged on its declared period, the worst
+                // case, beside its decode error.
+                any_loop = true;
                 let plan = loop_plan(asset, lm, manifest, report);
-                let fits = plan.cache_policy_selected == nbe_core::loop_cache::CachePolicy::Vram;
-                if declared == "stream" || !fits {
-                    continue;
-                }
+                let length = report
+                    .assets
+                    .iter()
+                    .find(|x| x.id == id)
+                    .and_then(|x| x.duration_frames)
+                    .map(u64::from)
+                    .unwrap_or(period);
+                let held = nbe_core::loop_cache::loop_held_frames(&plan, length);
 
                 // The charge is read off the plan — format AND resolution —
                 // rather than re-derived here. A second copy of the ladder is a
@@ -1012,7 +1079,7 @@ fn resource_demand(
                 // debug and wrapped in release — and a panic means no report
                 // is written at all, which breaks P1's locked
                 // report-on-every-run behaviour.
-                vram = vram.saturating_add(period.saturating_mul(per_frame));
+                vram = vram.saturating_add(held.saturating_mul(per_frame));
             }
             // §12.7: images upload whole, at their OWN size.
             None if kind == "image" => {
@@ -1084,6 +1151,9 @@ fn resource_demand(
         vram_demand_mib: vram / MIB,
         audio_demand_mib: audio_bytes / MIB,
         declared_house_rate,
+        // §19.2.1 (v0.4.8 row 13): the number above rests on an assumption
+        // about loops, so a package with a loop carries it in words.
+        residency_note: any_loop.then(|| nbe_core::loop_cache::LOOP_RESIDENCY_NOTE.to_string()),
     }
 }
 
