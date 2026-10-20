@@ -41,6 +41,15 @@ const INSIDE_THE_RING: u64 = 15;
 /// frames of `counter_60.mp4` differ by at least 37 in red.
 const TOLERANCE: i32 = 10;
 
+/// The suite's lane (the user's ruling of 2026-10-19 on PR #59's gate). The
+/// refill guard measures one frame's cost against a bound, so it runs alone:
+/// it takes the lane for writing, and every other test here takes it for
+/// reading. Under the workspace step's default thread count the guard then
+/// never shares the GPU or the decoder with a sibling. Run beside its eight
+/// siblings it measured 5–8 ms, and once 9.93 ms, past its bound, at a load of
+/// 4.0; run alone, 2.1–2.4 ms. The bound (8.33 ms) is unchanged.
+static LANE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 fn dress_media(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/dress_show/media")
@@ -177,6 +186,7 @@ fn close(a: [u8; 3], b: [u8; 3]) -> bool {
 
 #[tokio::test]
 async fn r20_weaker_form_a_clip_still_draws_past_its_first_second() {
+    let _lane = LANE.read().await;
     // A1 is 150 frames (5 s), one repeated dark blue picture; the View clears
     // to black, so a dropped layer reads black.
     let dir = tempfile::tempdir().unwrap();
@@ -198,6 +208,7 @@ async fn r20_weaker_form_a_clip_still_draws_past_its_first_second() {
 
 #[tokio::test]
 async fn r20_stronger_form_rendered_frame_45_is_the_sources_own_frame_45() {
+    let _lane = LANE.read().await;
     let source = dress_media("counter_60.mp4");
     let decoded = decoded("counter_60.mp4");
     let truth = |n: u64| decoded[n as usize].centre;
@@ -228,6 +239,7 @@ async fn r20_stronger_form_rendered_frame_45_is_the_sources_own_frame_45() {
 
 #[test]
 fn r20_fixture_integrity_every_counter_frame_is_distinct() {
+    let _lane = LANE.blocking_read();
     // The stripper-test lesson: a guard is only as good as its fixture. If
     // `counter_60.mp4` ever goes static, or shorter than frame 45, the stronger
     // form above goes blind; this fails first.
@@ -266,6 +278,7 @@ fn misses(render: &RenderLoop) -> u64 {
 
 #[test]
 fn r20_fixture_integrity_every_counter_150_frame_is_distinct() {
+    let _lane = LANE.blocking_read();
     // M7 for the streaming fixture: counter_150 must outlive the clip's head
     // plus its window (30 + 60 = 90 frames), or the guards below cannot see
     // the read-ahead stream at all.
@@ -287,6 +300,7 @@ fn r20_fixture_integrity_every_counter_150_frame_is_distinct() {
 
 #[tokio::test]
 async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
+    let _lane = LANE.read().await;
     // M2b, the dead worker: with the load-time prime alone a clip would play
     // to frame 89 and hold. counter_150 runs to 149, so frames 90 and later
     // exist only if the read-ahead streams them. Each frame is read back after
@@ -318,6 +332,7 @@ async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
 
 #[tokio::test]
 async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
+    let _lane = LANE.read().await;
     // M4, the occupancy miscount. ~~At frame 15 the window must hold [30, 90).~~
     // (Struck: the window [30, 90) is primed at load, so at frame 15 no
     // decoder runs and nothing could overwrite it. M4 survived that form.)
@@ -358,6 +373,7 @@ const UPLOADS_AT_THE_CAP: u32 = 4;
 
 #[tokio::test]
 async fn r20_a_window_refill_fits_the_frame_deadline() {
+    let _lane = LANE.write().await;
     // M8, the frame path back on `write_texture`. The refill runs in the frame
     // path, inside the record's pre-check (a frame whose `render_frame`
     // overran is not recorded) but outside the View's drop timer, so no drop
@@ -405,6 +421,7 @@ async fn r20_a_window_refill_fits_the_frame_deadline() {
 
 #[tokio::test]
 async fn r20_a_miss_holds_the_last_frame_counts_it_and_never_blocks() {
+    let _lane = LANE.read().await;
     // M5. A jump from frame 15 to frame 120 outruns any decoder: 120 is not in
     // the window [30, 90), and the read-ahead restarts there. The View must
     // hold the last frame it drew (15), never black and never a wait that
@@ -440,6 +457,7 @@ async fn r20_a_miss_holds_the_last_frame_counts_it_and_never_blocks() {
 
 #[tokio::test]
 async fn r20_past_its_end_a_clip_draws_nothing() {
+    let _lane = LANE.read().await;
     // M6. The clip's end is its metadata's length (§12.8.1 rule 5): frame 59
     // is counter_60's last, and from frame 60 the clip has ended and its layer
     // is not drawn. A clip that held past its end would show frame 59 there.
