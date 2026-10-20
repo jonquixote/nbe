@@ -197,6 +197,26 @@ green" from its job conclusion while 1 and 2 of its 16 tests had failed
 *Provenance, as v0.4.2 row 2 set the precedent: this rule is the user's word of
 2026-10-03, and it arrived inside PR #35's ride-along rather than on its own.*
 
+**Reading a rerun's attempts** (the user's ruling of 2026-10-20, from PR
+#59's second-key pass; the third trap added at #59's bookend). Three traps:
+
+- **`gh run view <run> --log --job <id>` serves the run's latest attempt**,
+  whichever attempt the job id belongs to: attempt 1's job id returned
+  attempt 2's log, identical by md5.
+- **`gh api …/actions/jobs/<id>/logs` refuses without
+  `--allow-escape-sequences`.** It prints a one-line refusal, not the log.
+- **`gh run rerun --failed` executes only the failed jobs.** The passed jobs
+  appear in the new attempt as carried copies: new job ids, the original
+  `started_at` and logs. Read a job's `started_at` before counting it as a
+  run.
+
+A specific attempt's log comes from `gh api --allow-escape-sequences
+repos/<owner>/<repo>/actions/jobs/<job-id>/logs` (job-exact) or `gh run view
+<run> --attempt <n> --log` (attempt-exact, the whole run). Every reading of a
+rerun names its retrieval route. A rerun also replaces the run's same-named
+artifact, so an earlier attempt's artifact figures are retrievable only if
+they were read before the rerun.
+
 ## 2c. Records and mandated text
 
 Text mandated verbatim by a prompt stays verbatim until the mandating authority

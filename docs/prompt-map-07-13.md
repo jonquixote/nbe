@@ -710,6 +710,9 @@ adopt and record).
   | `39153908984`, PR #57 at `42c06d7`, green (525/0/4) | the workspace tests: the test build finished at 18:24:54.04 (`Finished` in 50.81 s); the post line at 18:26:10 | whole step 3.05–6.29 (pre, 13 samples, post). While building: 3.28, 3.08, 3.05, 4.14, 5.48, 5.73. While the tests ran: 6.25, 5.49, 5.77, 5.82, 6.21, 5.83, 6.29, then the post line's 5.82, so 5.49–6.29. The R10 test passed at 18:25:25.60, between 5.77 and 5.82. The 21st. (`39153017826`, PR #57 at `2497bc8`, is not counted: its rust step failed, finding 10) |
   | `39157683882`, PR #57 at `85f84e1` (its head), green (525/0/4) | the workspace tests: the test build finished at 19:13:41.84 (`Finished` in 41.18 s); the post line at 19:14:48 | whole step 0.95–4.50 (pre, 11 samples, post). While building: 0.95, 0.98, 1.64, 3.47, and 4.50, sampled in the second the build finished. While the tests ran: 3.96, 3.66, 3.47, 3.04, 2.76, 2.64, then the post line's 2.23, so 2.23–3.96. The R10 test passed at 19:14:10.53, between 3.66 and 3.47. The 22nd |
   | `39364285184`, main at `88c8316` (PR #57's merge), green (525/0/4) | the workspace tests: the test build finished at 03:28:23.42 (`Finished` in 1m 02s); the post line at 03:29:41 | whole step 2.54–7.51 (pre, 14 samples, post). While building: 2.82, 2.54, 3.30, 4.23, 6.08, 7.14, 7.51. While the tests ran: 6.93, 6.41, 6.03, 5.43, 4.80, 4.83, 4.54, then the post line's 4.23, so 4.23–6.93. The R10 test passed at 03:28:57.19, between 6.03 and 5.43. The 23rd |
+  | `39374921947`, PR #59 at `4b555c8`, green (534/0/4) | the workspace tests: the test build finished at 05:28:23.35 (`Finished` in 48.84 s); the post line at 05:29:38 | whole step 3.48–6.55 (pre, 13 samples, post). While building: 3.84, 3.48, 4.23, 5.00, 5.60. While the tests ran: 6.43, 6.55, 5.84, 5.37, 5.46, 5.46, 5.54, 4.87, then the post line's 4.87, so 4.87–6.55. The R10 test passed at 05:28:53.00, between 5.84 and 5.37. The 24th |
+  | `39389183605` attempt 1, PR #59 at `65115ed` (its head), green (535/0/4) | the test build finished at 07:51:32.47 (`Finished` in 30.90 s); the post line at 07:52:33 | whole step 2.18–4.61 (pre, 10 samples, post). While building: 2.18, 2.55, 4.44, and 4.61, sampled in the second before the build finished. While the tests ran: 4.10, 3.89, 3.42, 4.13, 3.54, 3.92, then the post line's 3.92, so 3.42–4.13. The R10 test passed at 07:51:59.21, between 3.89 and 3.42. The 25th. (Its attempt 2's rust job is a carried copy of this one, not a run: §2b's rerun note) |
+  | `39401905763` attempt 2, main at `cd3f0c6` (PR #59's merge), green (535/0/4); attempt 1's rust failed R15's sighting 2 and is not counted | the rust job executed alone in attempt 2 (from 09:45:14); the test build finished at 09:46:39.98 (`Finished` in 42.49 s); the post line at 09:47:46 | whole step 4.19–**10.06** (pre, 11 samples, post): the pre line read load1 30.19, the highest yet. While building: 10.06, 8.80, 8.01, 7.44, 7.05. While the tests ran: 6.24, 5.85, 6.02, 5.72, 5.02, 4.79, then the post line's 4.19, so 4.19–6.24. The R10 test passed at 09:47:06.81, between 5.85 and 6.02. The 26th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -840,6 +843,12 @@ the peaks were 4.70, 7.18 and 9.19, all under the 9.67 maximum).
 
 **The ceiling at PR #57's merge: holds at 12.09 per CPU** (23 green runs;
 the peaks were 6.29, 4.50 and 7.51, all under the 9.67 maximum).
+
+**The ceiling at PR #59's merge: moves to 12.58 per CPU** (26 green runs;
+the peaks were 6.55, 4.61 and **10.06**). The maximum moves from 9.67 to
+10.06 per CPU (load1 30.19 on 3 CPUs at 2026-10-20T09:45:57Z, the pre line
+of main's merge run `39401905763`, attempt 2), and the ceiling is derived
+as 1.25 × 10.06 = 12.58. R10 was silent in all three.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -6176,7 +6185,9 @@ item):
     - The design record decides the order.
   - **Then the air-readiness queue, in this order, separate PRs per
     discipline:**
-    1. residency honesty (preflight reports the residency the engine holds,
+    1. ~~residency honesty~~ **FIXED** by `cd3f0c6` (PR #59; SPEC v0.4.8 row
+       13; struck in the next PR, the standing pattern of §2c). Residency
+       honesty (preflight reports the residency the engine holds,
        until the §12.3 ladder is real; `video.rs:243–257` and spec `:3094`
        already admit the gap). **Dispatched** by the user's order of
        2026-10-19, after #57's bookend: branch `loop-residency-honesty`, off
@@ -6184,6 +6195,33 @@ item):
     2. device audio (`NullSink` is the only `AudioSink`);
     3. disk headroom (the soak protocol's 8 GiB precondition);
     4. AC-5, the 30-minute zero-drop soak, never yet run green.
+    **The queue after #59 (the user's order of 2026-10-20, with #59's bookend),
+    in this order:**
+    1. **R25's fix (test-only):** operator-signals' refused-start gates on
+       load completion, not the 1.5 s wall clock (R19's class). Its first
+       commit lands #59's post-merge records, §12.11.1's floor wording, and
+       row 13's ratification mark.
+    2. **R24's fix:** `scheduleTimeOfDay` re-arms from the instant just fired,
+       not from `wallNow()`. Falsification per its row. A small control-plane
+       PR.
+    3. **Device audio, via a design record first,** put to the user before
+       any code:
+       - the backend (cpal or coreaudio-rs, proven with a tone probe: file in,
+         tone out the port, before any integration; R20's lesson);
+       - the clock (A/V sync, with the measured skew bound named and a proving
+         case that measures it);
+       - resampling (the clip's rate to the house rate);
+       - mixing and per-item gain (what the show schema says and what §12/§19
+         must say);
+       - the meter and monitor;
+       - the ALSA story under the compile-time profile;
+       - the CI surface (likely normative-machine-only evidence, the dress
+         precedent).
+    4. **Disk headroom** (small, preflight-side), **then AC-5**, derived from
+       real failures only.
+
+    The unprobeable-loop charge rides any preflight-touching PR above, at the
+    builder's discretion. The merge word stays the user's throughout.
   - **WO2's `clockState`** (`server.ts:563` derives `renderNode.clockState`
     from the control plane's `showState`, and the engine sends
     `master_frame().unwrap_or(0)`, `telemetry.rs:82`) rides the same
@@ -7017,6 +7055,8 @@ item):
     and none with a note.
   - **Green after (`6931c24`):** 498, 276, 498, exit 2 with
     `loopBudget … the budget's 32 at RGBA8`, and 276; every one with the note.
+    *(The second key's ruling 5: at `7913bc7` the default-budget and stream
+    rows exit 2, `loopFreeze`, R23; the figures stand.)*
     The first green run (21:28:03–21:28:15, 2.32 → 3.11) was VOID on load at
     its end, likely `v04`'s own parallel decoding, not proven; the gate below
     is of record.
@@ -7152,8 +7192,13 @@ item):
        block's own (the same loop, the same plan, the same place); no fixture
        outside `v04` declares a loop the budget cannot hold (the dress's
        `A2_loop` is 10 frames and fits; `valid_show`'s `logo_loop.mov` is not a
-       decodable file and fails already); and inside `v04` the only assertion
-       it falsifies is the auto test's "streaming is lawful", struck §2c.
+       decodable file and fails already); ~~and inside `v04` the only assertion
+       it falsifies is the auto test's "streaming is lawful", struck §2c~~
+       (§2c, the second key's ruling 1: imprecise. #59 carries four §2c-struck
+       assertion changes in `v04`. Three are in `120e135` and correct
+       expectations that certified the old lie: the stream case, the `bc7`
+       case, and the auto test's "not charged". The fourth is R23's
+       lawfulness line, the only one R23 falsifies).
        - `d1dc16b`: the proving case, red (v04 3 failed, 19 passed;
          00:16:23–00:16:28, 2.49 → 2.37). The first attempt at this run was
          killed mid-wait when the machine rebooted (below); its rerun is of
@@ -7249,6 +7294,118 @@ item):
     runs (00:47:43–00:48:23, 1.91 → 1.77): 0 failed, consistent with a few
     per cent per firing. The fix (not built here) re-arms from the instant
     just fired, not from the wall clock read at fire time.
+  - **The two-key pass on PR #59** (independent; relayed by the user on
+    2026-10-20). Verdict: **HOLDS on 1–11.** It was derived independently:
+    its own packages, its own preflight build, its own mutants. M1 and M6 were
+    re-killed at the settled head, `65115ed`, with `cmp` restores. Nothing
+    merged, and the merge word was not given. It raised five disputes, all
+    ruled and recorded (B–G below).
+    - **The builder's two-key record: it concurs on all five rulings, with
+      three refinements, measured.**
+      - **The assertion count:** concur. `v04.rs` carries four struck
+        passages: `:293–294` (the stream case), `:314–315` (the `bc7` case),
+        `:456` (the auto test's "not charged as resident"), and `:459–460`
+        (R23's lawfulness line). Three of them correct expectations that
+        certified the old lie. *Annotation:* the record's sentence ("the only
+        assertion it falsifies") was scoped to R23's ripple, where it is
+        exact. Read in the record, though, it understates #59's four, and the
+        correction stands.
+      - **The floor:** concur. The code's charge is `min(length,
+        max(maxFramesByBudget, 1))`: `loop_frame_cap`, and
+        `loop_cache`'s unit test (a 16384×16384 frame, held 1). The spec's
+        formula and row 13's prose dropped the floor; "never nothing" said it
+        only in words.
+      - **R24:** concur. The second key's 65 of 2000 independently confirms
+        the builder's 61 of 2000. *Annotation:* `scheduleTimeOfDay` spans
+        `automation.ts:747–760`. `:759` closes the timer's callback and `:760`
+        the function, so either range cites it.
+      - **Finding 9's row:** concur. The 1.5 s window is the owned defect, the
+        class R19 was: a test gating on the wall clock instead of the event
+        it waits for. The load boundary stays the paced-prime candidate.
+      - **The protocol note:** concur, with two refinements, measured at
+        02:28:55 on run `39389183605` (attempt 1's control-plane job
+        `118516289915`, attempt 2's `118518591887`):
+        - **The trap, confirmed.** `gh run view <run> --log --job
+          <attempt-1 id>` served attempt 2. Its md5 was `dcc04cd8…`, identical
+          to attempt 2's, at 2124 lines with no failure string.
+        - **The job-exact route works, with a flag.** `gh api
+          …/actions/jobs/<attempt-1 id>/logs` prints a one-line refusal
+          ("the response contains terminal escape sequences") unless given
+          `--allow-escape-sequences`. With it, the log is attempt 1's: 2162
+          lines, with the failure string.
+        - **A second attempt-exact route.** `gh run view <run> --attempt 1
+          --log` served attempt 1 (2162 lines in the control-plane job, with
+          the failure string; md5 `d6543b3c…`). It is the route the builder
+          used for #59's attempt-2 read. The attempt-1 read was taken before
+          the rerun, when attempt 1 was the latest, so both reads stand.
+      - **The proving table:** concur. The `cachePolicy: "vram"` row already
+        read exit 2. The default-budget and stream rows now join it.
+  - **#59's CI at `65115ed`, read per test (§2b), each read naming its
+    route.** Run `39389183605`.
+    - **Attempt 1,** read by `gh run view 39389183605 --log` before the
+      rerun, when it was the latest attempt; re-verified after it by
+      `--attempt 1 --log` and by the job-exact API route.
+      - **rust** (job `118516290204`): `TOTAL: 535 passed, 0 failed, 4
+        ignored`, 32 of 32 floor lines held, `r20_clip` 9/9 (refill median
+        0.75 ms), `loop_residency` 3/3. R10 was silent; the peak was load1
+        13.82 on 3 CPUs, 4.61 per CPU (envelope row 25).
+      - **dress** (job `118516290258`): 29/29, skips 11, exercised 18, step 5
+        `ok` (R21).
+      - **control-plane** (job `118516289915`): **red**. `npm test` 198/198
+        and every floor through resync-request held, then operator-signals
+        failed its one exercised test (R25).
+    - **Attempt 2** (the failed job rerun job-scoped), read by `gh run view
+      39389183605 --attempt 2 --log`. ~~GitHub reran all three jobs~~
+      (§2c, at #59's bookend: only the failed job executed). The control-plane
+      job ran (from 07:56:42): `passed=198`, every floor held, operator-signals
+      ran 4 and exercised 1. The rust and dress jobs in attempt 2 are carried
+      copies of attempt 1's, with new job ids but the same `started_at`
+      (07:50:28) and the same logs; their figures are attempt 1's. The PR body
+      and #59's squash message called attempt 2 "green per test" with those
+      figures. The message on main cannot be edited, so it is recorded here.
+
+  **Merged: PR #59 is `cd3f0c6`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-20 ("#59 is law"): a squash at
+  2026-10-20T09:36:21Z (parent `88c8316`), pinned to the reviewed head
+  `65115ed`. Its message equals the staged `rh-merge-body.txt`. The merge
+  tree `47e2068` is identical to `65115ed`'s. **SPEC v0.4.8 row 13 is
+  ratified**: preflight reports the residency the engine holds, and it refuses
+  a loop the engine would freeze. Main's CI at `cd3f0c6`, run `39401905763`,
+  read per test (§2b), each read naming its route:
+  - **Attempt 1** (`gh run view 39401905763 --attempt 1 --log`; each job
+    re-read job-exact):
+    - **rust** (job `118558393155`): **red.** The workspace step stopped at
+      `prompt04`: `three_frames_each_late_by_under_one_budget_trip_the_watchdog`,
+      `frame 2 is late by at most one frame: 544.556708ms` (R15's sighting 2,
+      with its message; the register row carries it). It printed no TOTAL.
+    - **control-plane** (job `118558393218`): `passed=198 failed=0`,
+      automation 35/35, belief 4/4, effects 2/2, and every e2e floor held
+      (slate-release 4, recall 2, take-duration 3, resync-end 3,
+      package-reconcile 4, show-stop-version 6 ran and 1 exercised,
+      resync-request 3, operator-signals 4 ran and 1 exercised).
+    - **dress** (job `118558392717`): 29/29, skips 11, exercised 18. Step 5
+      `ok` (R21). Drops 0, underruns 192, watchdog trips 0 at the gate, rises
+      of 1031 and 1940 ms.
+  - **Attempt 2** (the failed rust job rerun job-scoped; read job-exact,
+    job `118561952287`, which executed from 09:45:14): **rust** `TOTAL: 535
+    passed, 0 failed, 4 ignored`, 32 of 32 floor lines held, `prompt04`
+    17/17 in both steps, `r20_clip` 9/9, `loop_residency` 3/3.
+    `telemetry_tick_wires_the_live_session_counter ... ok`, so R10 is silent.
+    The pre line read load1 30.19 on 3 CPUs, 10.06 per CPU, the highest yet
+    (envelope row 26), and the ceiling moves to 12.58. Attempt 2's
+    control-plane and dress jobs are carried copies of attempt 1's (the same
+    `started_at`), not runs.
+  - **The evidence file is retired.** `.git/nbe-staged/rh-pr-body-evidence.md`
+    (sha256 `a309cd86e6a7…`) was checked against the merged PR body with the
+    blockquote markers stripped (identical), then removed. This time the check
+    preceded the removal.
+  - **The staged records** (`.git/nbe-staged/after-pr59-records.md`, A–I)
+    land here: the two-key entry (above); B, G and H (above); C (§12.11.1's
+    floor and row 13's wording, in the spec); D and E (R24 and R25, in the
+    register); F (§2b's rerun note, now with the third trap); I (this
+    bookend).
+  - **PR #59's body** carries a §2c note: attempt 2 executed only the
+    control-plane job.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
