@@ -100,8 +100,9 @@ const refusedByEngine = (s: Stack): boolean => s.log.some((l) => l.includes("E_N
  * then waits behind the uploads, and a 1.5 s acknowledgement window read that
  * wait as a wedged engine. The engine logs each video asset it decodes at the
  * load ("video asset decoded") and each ring as it lands ("clip ring resident"
- * or "loop ring resident"): the load is complete when every decoded asset's
- * ring is resident.
+ * or "loop ring resident", the render target's lines, which the harness's log
+ * filter admits): the load is complete when every decoded asset's ring is
+ * resident.
  */
 async function awaitResident(s: Stack, from: number): Promise<void> {
   const since = (needle: string): number => s.log.slice(from).filter((l) => l.includes(needle)).length;

@@ -252,7 +252,10 @@ export async function stack(): Promise<Stack> {
       NBE_CP_URL: `ws://127.0.0.1:${tap.port}/nbe/v0.3`,
       NBE_RENDER_TOKEN: RENDER,
       NBE_HOUSE_RATE: "30",
-      RUST_LOG: "warn,nbe_engine::directive=info",
+      // The render target's info lines carry the load boundary's completion
+      // (each video ring as it lands; R25's gate reads them), and they are few:
+      // one per ring per load, plus rung 2's re-acquires and a View recovery.
+      RUST_LOG: "warn,nbe_engine::directive=info,nbe_engine::render=info",
       NO_COLOR: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
