@@ -66,7 +66,7 @@ R20's fix PR (branch `r20-clip-falsify`, 2026-10-18), as an early commit, from
 the design record the user ratified on 2026-10-18 with four amendments (the
 residency clause, the audio scope, the rung-2 interaction with a shrink policy
 deferred, and K in frames). It is ratified by the user's merge of that PR, and
-until then it is a candidate.
+until then it is a candidate (merged as `88c8316`).
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
