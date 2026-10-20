@@ -92,6 +92,27 @@ const correctionLatencyMs = (s: Stack, alert: string): number | null => {
 };
 const refusedByEngine = (s: Stack): boolean => s.log.some((l) => l.includes("E_NO_HARDWARE_ENCODER") || l.includes("E_NO_ZEROCOPY"));
 
+/**
+ * R25 (R19's class): the lane's commands wait for the load to complete, not for
+ * a wall-clock window. `show.load`'s acknowledgement precedes the render
+ * thread's load boundary, where every decoded video asset's ring is uploaded on
+ * the thread the directives share (R20's disclosed cost), so a command sent
+ * then waits behind the uploads, and a 1.5 s acknowledgement window read that
+ * wait as a wedged engine. The engine logs each video asset it decodes at the
+ * load ("video asset decoded") and each ring as it lands ("clip ring resident"
+ * or "loop ring resident"): the load is complete when every decoded asset's
+ * ring is resident.
+ */
+async function awaitResident(s: Stack, from: number): Promise<void> {
+  const since = (needle: string): number => s.log.slice(from).filter((l) => l.includes(needle)).length;
+  const complete = (): boolean => since("video asset decoded") > 0 && since("ring resident") >= since("video asset decoded");
+  assert.ok(
+    await waitFor(complete, 30_000),
+    `the load completes: every decoded asset's ring resident (decoded ${since("video asset decoded")}, ` +
+      `resident ${since("ring resident")}; last log: ${JSON.stringify(s.log.slice(-3))})`,
+  );
+}
+
 /** The dress package, a record directory staged beside it, loaded and on air. */
 async function onAir(s: Stack): Promise<{ rec: string }> {
   const tmp = tempDir("nbe-lane-e2e-");
@@ -102,9 +123,11 @@ async function onAir(s: Stack): Promise<{ rec: string }> {
   const m = JSON.parse(readFileSync(join(pkg, "manifest.json"), "utf8")) as Record<string, Record<string, unknown>>;
   m["show"]!["outputs"] = { record: { directory: rec } };
   writeFileSync(join(pkg, "manifest.json"), JSON.stringify(m));
+  const mark = s.log.length;
   assert.ok(await s.server.awaitApplied(await ok(s, "show.load", { packagePath: pkg }), 20_000), "show.load applied");
   assert.ok(await s.server.awaitApplied(await ok(s, "show.start", { startClock: true }), 20_000), "show.start applied");
   await ok(s, "view.cut", { itemRef: "A1" });
+  await awaitResident(s, mark);
   return { rec };
 }
 
