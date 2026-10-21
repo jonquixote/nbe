@@ -45,15 +45,3 @@ all = { level = "warn", priority = -1 }
 [profile.dev]
 incremental = false
 debug = "line-tables-only"
-
-# R20 (SPEC §12.8.1, v0.4.8 row 12): a clip streams through its read-ahead, so
-# the decoder must keep pace with the house rate in every build that plays a
-# clip, and the dress rehearsal and CI play them on the dev-profile engine.
-# Measured 2026-10-18 on the normative machine, counter_150 at 1920x1080: the
-# full decode cost 100.7 ms a frame unoptimized (10 fps) and 9.1 ms optimized
-# (109 fps); the timestamp-only decode cost 2.5 ms in both, so the cost is the
-# pixel copy. Unoptimized, the read-ahead could never keep a 30 fps clip
-# resident (the dress counted 37 misses). Optimizing this one crate in dev
-# changes no behaviour, only its speed.
-[profile.dev.package.nbe-decode]
-opt-level = 3

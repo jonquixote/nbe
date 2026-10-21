@@ -1363,16 +1363,11 @@ function ffprobeJson(ffprobe: string, file: string, extra: string[]): Record<str
  * `show.outputs.record.directory` (absolute) into a fresh record out dir.
  * Returns the staged package dir and the record out dir.
  */
-function stageRecordPackage(
-  withCounter = false,
-  sharedRecordDir?: string,
-): { pkgDir: string; recordDir: string } {
+function stageRecordPackage(): { pkgDir: string; recordDir: string } {
   const tmp = tempDir("nbe-dress-record-");
   const pkgDir = join(tmp, "dress_show");
   mkdirSync(pkgDir, { recursive: true });
-  // Step 12b's copy records into step 11's directory, where step 13 looks for
-  // its kill take.
-  const recordDir = sharedRecordDir ?? join(tmp, "record-out");
+  const recordDir = join(tmp, "record-out");
   mkdirSync(recordDir, { recursive: true });
   // Copy the whole fixture (136 K: manifest + media + preflight sidecar).
   cpSync(PKG, pkgDir, { recursive: true });
@@ -1383,63 +1378,8 @@ function stageRecordPackage(
   >;
   const show = manifest["show"] as Record<string, unknown>;
   show["outputs"] = { record: { directory: recordDir } };
-  // R20 (SPEC §12.8.1, v0.4.8 row 12): step 12b's copy also carries
-  // counter_150, the picture step's clip. Only that copy carries it: the
-  // dress fixture's own manifest, and step 11's copy, are unchanged, so no
-  // earlier load pays for the counter's ring.
-  if (withCounter) {
-    (manifest["assets"] as unknown[]).push({
-      id: "R20_counter",
-      kind: "video",
-      source: "media/counter_150.mp4",
-      format: "h264",
-    });
-    (manifest["scenes"] as unknown[]).push({
-      id: "SCN_R20",
-      elements: [{ id: "main", kind: "clip", z: 1, assetId: "R20_counter" }],
-    });
-    ((manifest["rundown"] as Record<string, unknown>)["items"] as unknown[]).push({
-      id: R20_ITEM,
-      kind: "sceneRef",
-      sceneRef: "SCN_R20",
-      durationFrames: R20_FRAMES,
-    });
-  }
   writeFileSync(manifestPath, JSON.stringify(manifest));
   return { pkgDir, recordDir };
-}
-
-/** R20's picture step: the counter clip's item and its length in frames. */
-const R20_ITEM = "R20C";
-const R20_FRAMES = 150;
-
-/** counter_150's frame `n` is one flat colour (scripts/generate-fixtures.sh). */
-function r20Colour(n: number): [number, number, number] {
-  return [(37 * n) % 256, (91 * n) % 256, (7 * n) % 256];
-}
-
-/**
- * Which counter frame a recorded pixel shows: its index, `"black"` for a
- * cleared View (a dropped layer), or `"other"` for anything else (the item on
- * air before the take). ~~Adjacent counter frames differ by 37 in red, so the
- * nearest colour is the frame.~~ (§2c, R20's two-key pass: adjacency is not
- * the margin. Frames k and k + 76 differ by L1 28, under the threshold of 36,
- * and the engine's decode shifts colour by up to L1 56 (R22), so a recorded
- * pixel can sit nearer another frame's colour.)
- */
-function r20Classify(px: [number, number, number]): number | "black" | "other" {
-  if (px.every((c) => c < 16)) return "black";
-  let best = -1;
-  let bestD = Infinity;
-  for (let n = 0; n < R20_FRAMES; n++) {
-    const c = r20Colour(n);
-    const d = Math.abs(c[0] - px[0]) + Math.abs(c[1] - px[1]) + Math.abs(c[2] - px[2]);
-    if (d < bestD) {
-      bestD = d;
-      best = n;
-    }
-  }
-  return bestD <= 36 ? best : "other";
 }
 
 /** The single `*.mp4` in `dir`, or fail listing what was there. */
@@ -1741,155 +1681,6 @@ test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async (
   );
 });
 
-// --- R20 (SPEC §12.8.1, v0.4.8 row 12): the picture, read back ------------------
-//
-// R20's class was that no test looked at the picture: belief, clocks, acks and
-// counts were asserted, and a drawn layer never was. A clip drew its first 30
-// frames and then nothing, and this rehearsal stayed green because A1 reaches
-// DONE on the clock and is one repeated picture anyway. This step takes
-// counter_150 (150 frames, each a flat colour keyed by its index) on air. Where
-// the machine records, it reads the recording back: every recorded frame of
-// the clip must show the source frame its timestamp implies, past the clip's
-// head (30), through the window's refills (past 90), and never black before
-// the clip's end. Recordings are sparse by design (step 11's size note), and
-// their video runs on the received-video timeline (step 13's note), not the
-// master clock, so a recorded frame's timestamp does not name its source
-// frame: the check reads the frames in order instead. The read-ahead's misses are
-// gated at zero on the normative machine. Where record.start is refused (CI),
-// the take still plays, and its misses are recorded, not gated, until they
-// have an envelope (the design record).
-/** Step 12b's recording of the counter clip, read back by step 12c. */
-let r20PictureFile: string | null = null;
-
-test("[R20] step 12b: the counter clip plays on air, and its read-ahead misses nothing", async () => {
-  const missesNow = (): number =>
-    ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["readAheadMissesTotal"] ?? 0) as number;
-  const ffprobe = resolveFfprobe();
-  const ffmpeg = ffprobe === null ? null : ffprobe.replace(/ffprobe$/, "ffmpeg");
-  // Its own record-enabled copy, carrying the counter, loaded after a stop:
-  // step 11's load stays as it was (the show is RUNNING from step 11, and a
-  // package loads only while the View is not live).
-  const { pkgDir, recordDir } = stageRecordPackage(
-    true,
-    recordFile === null ? undefined : dirname(recordFile),
-  );
-  const stopReply = await ok("show.stop", { quiesceOutputs: true });
-  await server.awaitApplied((stopReply["stateVersion"] ?? 0) as number, COMMAND_MS);
-  const loadReply = await ok("show.load", { packagePath: pkgDir, mode: "reload" }, LOAD_MS);
-  assert.ok(
-    await server.awaitApplied((loadReply["stateVersion"] ?? 0) as number, LOAD_MS),
-    "the engine must apply the counter package's load",
-  );
-  const startReply = await ok("show.start", { startClock: true });
-  assert.ok(
-    await server.awaitApplied((startReply["stateVersion"] ?? 0) as number, LOAD_MS),
-    "the engine must apply show.start before the picture take",
-  );
-  await ok("preview.set", { itemRef: R20_ITEM });
-  let pictureFile: string | null = null;
-  let recordWall = 0;
-  let canRecord = false;
-  if (ffmpeg !== null) {
-    // The capability gate step 11 uses: a refusal is the engine's own token in
-    // its log; no ack and no refusal is a wedged pipeline, and fails.
-    const rec = await ok("record.start", { outputId: "r20picture" });
-    canRecord = await server.awaitApplied((rec["stateVersion"] ?? 0) as number, COMMAND_MS);
-    if (!canRecord) {
-      assert.ok(
-        engineLog.some((line) => line.includes("E_NO_HARDWARE_ENCODER")),
-        `record.start produced no engine ack and no encoder refusal (last log lines: ${JSON.stringify(engineLog.slice(-3))})`,
-      );
-    }
-    recordWall = Date.now();
-  }
-  const missesBefore = missesNow();
-  await ok("view.take", { transition: "cut", audio: { transition: "follow" } });
-  await untilTelemetry(
-    "the counter clip on air",
-    (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === R20_ITEM,
-  );
-  // The whole clip, plus a second past its end.
-  await sleep(((R20_FRAMES / HOUSE_RATE) + 1) * 1000);
-  await untilTelemetry("a tick after the clip's end", () => true);
-  const misses = missesNow() - missesBefore;
-  if (canRecord) {
-    const stop = await ok("record.stop", {}, RECORD_STOP_MS);
-    await server.awaitApplied((stop["stateVersion"] ?? 0) as number, RECORD_STOP_MS);
-    const name = readdirSync(recordDir).find((f) => f.includes("r20picture") && f.endsWith(".mp4"));
-    assert.ok(name !== undefined, `the picture take must leave a recording in ${recordDir}`);
-    pictureFile = join(recordDir, name);
-  }
-  console.log(
-    `R20 READ-AHEAD: ${misses} miss(es) over the ${R20_FRAMES}-frame clip (${canRecord ? "recorded" : "not recorded: no recording on this machine"})`,
-  );
-  normativeOnly("the read-ahead misses nothing on the normative machine", () => {
-    assert.equal(misses, 0, `R20: the read-ahead missed ${misses} frame(s) of the counter clip`);
-  });
-  r20PictureFile = pictureFile;
-  if (pictureFile !== null) {
-    console.log(`R20 picture take: ${pictureFile} (recorded ${((Date.now() - recordWall) / 1000).toFixed(1)} s)`);
-  }
-});
-
-test("[R20] step 12c: a clip plays past its first second, read back from the picture", () => {
-  const ffprobe = resolveFfprobe();
-  const ffmpeg = ffprobe === null ? null : ffprobe.replace(/ffprobe$/, "ffmpeg");
-  const pictureFile = r20PictureFile;
-  if (pictureFile === null || ffprobe === null || ffmpeg === null) {
-    console.log("SKIP R20 picture: no recording on this machine (record.start refused, or no ffmpeg)");
-    return;
-  }
-
-  // Each recorded frame's centre pixel and timestamp, in presentation order.
-  const px = spawnSync(
-    ffmpeg,
-    ["-v", "error", "-i", pictureFile, "-map", "0:v", "-fps_mode", "passthrough",
-     "-vf", "crop=8:8:(iw-8)/2:(ih-8)/2,scale=1:1:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-    { maxBuffer: 64 * 1024 * 1024 },
-  );
-  assert.equal(px.status, 0, `ffmpeg must decode the picture take: ${px.stderr?.toString()}`);
-  const pts = (
-    ffprobeJson(ffprobe, pictureFile, ["-select_streams", "v", "-show_entries", "frame=pts_time"])[
-      "frames"
-    ] as Array<Record<string, unknown>>
-  ).map((f) => parseFloat(f["pts_time"] as string));
-  const bytes = px.stdout as Buffer;
-  assert.equal(bytes.length, pts.length * 3, "one centre pixel per recorded frame");
-  const frames = pts.map((t, i) => ({
-    t,
-    k: r20Classify([bytes[3 * i] as number, bytes[3 * i + 1] as number, bytes[3 * i + 2] as number]),
-  }));
-  const counter = frames.filter((f): f is { t: number; k: number } => typeof f.k === "number");
-  assert.ok(counter.length >= 10, `R20: the recording must hold the counter clip, saw ${counter.length} of its frames`);
-  const shown = counter.map((f) => f.k);
-  // Diagnostic: the whole classified sequence, and how far each recorded
-  // frame sits from a straight index-against-timestamp line. Logged, never
-  // asserted: the timestamps are the received-video timeline's.
-  const offsets = counter.map((f) => f.k - f.t * HOUSE_RATE).sort((a, b) => a - b);
-  const offset = offsets[Math.floor(offsets.length / 2)] as number;
-  const drift = Math.max(...counter.map((f) => Math.abs(f.k - (f.t * HOUSE_RATE + offset))));
-  console.log(
-    `R20 PICTURE: ${counter.length} recorded frames of the counter, indices ${Math.min(...shown)}–${Math.max(...shown)}; timestamp drift ${drift.toFixed(1)} frames (received-video timeline, logged only)`,
-  );
-  console.log(`R20 PICTURE SEQUENCE: ${frames.map((f) => `${f.t.toFixed(2)}:${f.k}`).join(" ")}`);
-  const backwards = counter.filter((f, i) => i > 0 && f.k < (counter[i - 1] as { k: number }).k);
-  assert.equal(
-    backwards.length,
-    0,
-    `R20: the counter's recorded frames must run in order; ${backwards.length} went backwards, first at ${JSON.stringify(backwards[0])}`,
-  );
-  assert.ok(shown.some((k) => k >= 45 && k < 90), "R20: the picture must pass the clip's head (frames 45–89 recorded)");
-  assert.ok(shown.some((k) => k >= 120), "R20: the picture must pass the primed window (a frame at 120 or later recorded)");
-  const firstT = (counter[0] as { t: number }).t;
-  const lastT = (counter.at(-1) as { t: number }).t;
-  const blackOnAir = frames.filter((f) => f.k === "black" && f.t > firstT && f.t < lastT);
-  assert.equal(
-    blackOnAir.length,
-    0,
-    `R20: no black frame between the counter's first and last recorded frames; saw ${blackOnAir.length} at ${JSON.stringify(blackOnAir.slice(0, 5).map((f) => f.t))}`,
-  );
-});
-
 test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable", async () => {
   const ffprobe = ffprobeOrSkip();
   if (ffprobe === null) return;
@@ -1897,14 +1688,11 @@ test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable"
     console.log("SKIP kill step: step 11 skipped (no recording — capability gate)");
     return;
   }
-  // ~~The show is still RUNNING from step 11 (no show.stop since): open a
+  // The show is still RUNNING from step 11 (no show.stop since): open a
   // second take under a distinct episode name so its file is unambiguous.
   // No re-take first: A1 is still the on-air item (an exhausted clip holds
-  // its last viewItem rather than clearing it),~~ (§2c, R20: since step 12b
-  // the show is RUNNING from 12b's reload, and the counter clip is the on-air
-  // item, ended and holding its viewItem.) Open a second take under a
-  // distinct episode name so its file is unambiguous. This step asserts
-  // parseability only, so any rendered picture — even a cleared one — plus
+  // its last viewItem rather than clearing it), and this step asserts
+  // parseability only, so any rendered picture — even a held frame — plus
   // the live master mix is the content it needs.
   const recReply = await ok("record.start", { outputId: "killtake" });
   assert.ok(

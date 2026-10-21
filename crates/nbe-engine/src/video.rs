@@ -11,7 +11,7 @@
 use crate::decode::{DecodeError, DecodeSession, DecodedFrame};
 use crate::loop_cache::{self, CacheBudget, CachePlan, LoopSpec};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -19,17 +19,14 @@ use std::sync::Arc;
 /// conservative ceiling well under the platform limit.
 pub const MAX_DECODE_SESSIONS: u32 = 8;
 
-/// Frames preloaded for a plain clip at load time: its head (SPEC §12.8.1
-/// rule 1).
+/// Frames preloaded for a plain clip at load time.
 ///
-/// A clip is not a loop: it plays once and does not need to be resident in
-/// full. Arm time owes the render loop a first frame (Prompt 05 Step 4), not
-/// the whole asset — preloading a 30-second 1080p clip in full costs seconds
-/// of load time and hundreds of MiB for frames that will be shown once, if
-/// ever. Loops, which are re-shown every period, are cached to the budget
-/// instead. Past the head a clip streams through its read-ahead window
-/// (`ClipStream`, `crate::read_ahead`).
-pub const CLIP_PRELOAD_FRAMES: usize = loop_cache::CLIP_HEAD_FRAMES as usize;
+/// A clip is not a loop: it plays once and does not need to be resident. Arm
+/// time owes the render loop a first frame (Prompt 05 Step 4), not the whole
+/// asset — preloading a 30-second 1080p clip in full costs seconds of load
+/// time and hundreds of MiB for frames that will be shown once, if ever.
+/// Loops, which are re-shown every period, are cached to the budget instead.
+pub const CLIP_PRELOAD_FRAMES: usize = 30;
 
 /// Tracks how many decode sessions are open, so `decodeSessions` telemetry is
 /// a measurement rather than a guess.
@@ -155,16 +152,9 @@ pub struct VideoAsset {
     pub height: u32,
     /// The source's own frame rate, for cadence handling (SPEC §18).
     pub source_frame_rate: f32,
-    /// The loop period. For a non-looping clip this is the count of frames
-    /// decoded at load (its head); the clip's own length is `clip`'s.
+    /// The loop period. For a non-looping clip this is the frame count.
     pub period_frames: u32,
-    /// A loop's residency plan (§12.5). A plain clip's is vestigial: its
-    /// residency is §12.8.1's head and window, and nothing reads its plan.
     pub plan: CachePlan,
-    /// The file this asset decodes from: a clip's read-ahead reopens it.
-    pub source_path: PathBuf,
-    /// A plain clip's streaming facts (SPEC §12.8.1). `None` for a loop.
-    pub clip: Option<ClipStream>,
     /// The decode session this asset holds for the show's duration ([RI-8]).
     /// Ownership IS the effect: the lease keeps `active` above zero while the
     /// asset is resident, and dropping the asset (load replacement, stop
@@ -183,21 +173,6 @@ impl VideoAsset {
         let slot = loop_cache::texture_slot(source_index, self.period_frames)?;
         self.frames.get(slot).or_else(|| self.frames.last())
     }
-}
-
-/// A plain clip's streaming facts (SPEC §12.8.1): its length from the
-/// container's metadata, its read-ahead window, and the window's first fill.
-#[derive(Debug)]
-pub struct ClipStream {
-    /// The clip's end (rule 5): the track's duration times its nominal rate,
-    /// from the metadata, not the count of frames decoded.
-    pub length_frames: u64,
-    /// The read-ahead window, in frames (rule 2: `K = 2 × GOP`).
-    pub window_frames: u32,
-    /// Frames `[head, head + K)`, decoded at load (rule 2's priming). The
-    /// renderer takes them on its first upload. A re-acquire after rung 2
-    /// finds this empty, and the read-ahead re-primes the window (§10.5).
-    pub prime: Vec<DecodedFrame>,
 }
 
 /// Every video asset the loaded package needs.
@@ -266,7 +241,7 @@ pub fn load_video_asset(
             // passing a declared format here would make the plan describe a
             // residency the engine does not hold.
             //
-            // ~~The other half of that, which a reader needs to hear: preflight
+            // The other half of that, which a reader needs to hear: preflight
             // plans the format the MANIFEST asked for (§12.11.1 reports
             // declared demand), so for ANY loop whose planned format is not
             // RGBA8 its number is an UNDER-estimate of what this engine holds,
@@ -278,25 +253,17 @@ pub fn load_video_asset(
             // The undeclared case is the default case. Measured also for a
             // 200-frame `bc7` loop at `vramBudgetMib: 512`: 396 MiB reported,
             // streamed here. The smaller number is not the safe one until the
-            // §12.3 ladder is real.~~ (§2c, v0.4.8 row 13: preflight now plans
-            // at the same `HELD_LOOP_FORMAT` and charges the frames this path
-            // holds, `loop_held_frames`. The 474 MiB held only at a budget the
-            // loop fits; at §12.4's default this path holds 32 of its 60
-            // frames, 253.1 MiB, and `loop_residency.rs` measures both.)
-            declared_format: Some(loop_cache::HELD_LOOP_FORMAT),
+            // §12.3 ladder is real.
+            declared_format: None,
         },
         budget,
     );
 
-    // ~~A declared loop is cached to the budget; a plain clip preloads a small
+    // A declared loop is cached to the budget; a plain clip preloads a small
     // window and streams the rest (SPEC §12.8's frozen-frame rule covers the
-    // gap until read-ahead lands).~~ (§2c, R20: nothing streamed and nothing
-    // froze; past these frames the layer was dropped.) A declared loop is
-    // cached to the budget. A plain clip decodes its head here and primes its
-    // read-ahead window below, and the renderer streams the rest (SPEC
-    // §12.8.1, v0.4.8 row 12).
+    // gap until read-ahead lands).
     let cap = match declared_period {
-        Some(_) => loop_cache::loop_frame_cap(&plan) as usize,
+        Some(_) => plan.max_frames_by_budget.max(1) as usize,
         None => CLIP_PRELOAD_FRAMES,
     };
     let mut frames = vec![first];
@@ -306,46 +273,6 @@ pub fn load_video_asset(
             None => break,
         }
     }
-
-    // SPEC §12.8.1: a plain clip's end comes from the container's metadata.
-    // When the container gives none, the decode is the only witness: an
-    // exhausted head or prime is the clip's length, and an inexhaustible one
-    // is unbounded (the item's own duration ends it).
-    let clip = match declared_period {
-        Some(_) => None,
-        None => {
-            let window_frames = loop_cache::clip_window_frames(gop_frames);
-            let head = frames.len() as u64;
-            let metadata = session.length_frames();
-            let resident =
-                loop_cache::clip_resident_frames(metadata.unwrap_or(u64::MAX), gop_frames);
-            let mut prime = Vec::new();
-            let mut exhausted = head < CLIP_PRELOAD_FRAMES as u64;
-            while !exhausted && head + (prime.len() as u64) < resident {
-                match session.next_frame()? {
-                    Some(f) => prime.push(f),
-                    None => exhausted = true,
-                }
-            }
-            let decoded = head + prime.len() as u64;
-            let length_frames = match metadata {
-                Some(n) => n,
-                None if exhausted => decoded,
-                None => {
-                    tracing::warn!(
-                        asset = %asset_id,
-                        "clip has no duration in its metadata; its end is the item's"
-                    );
-                    u64::MAX
-                }
-            };
-            Some(ClipStream {
-                length_frames,
-                window_frames,
-                prime,
-            })
-        }
-    };
 
     let period_frames = declared_period.unwrap_or(frames.len() as u32);
     // Re-plan now that the true period is known.
@@ -375,8 +302,6 @@ pub fn load_video_asset(
         source_frame_rate,
         period_frames,
         plan,
-        source_path: path.to_path_buf(),
-        clip,
         _session: lease,
     })
 }

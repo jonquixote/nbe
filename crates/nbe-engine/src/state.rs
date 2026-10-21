@@ -47,10 +47,6 @@ pub struct EngineState {
     /// (WU8). On the tick as `watchdogClearsTotal`; trips − clears is 1 while
     /// the watchdog holds the slate.
     pub watchdog_clears_total: AtomicU64,
-    /// SPEC §12.8.1 rule 4 (v0.4.8 row 12): clip frames the View drew held,
-    /// because the read-ahead had not made them resident. On the tick as
-    /// `readAheadMissesTotal`. A run with misses is a degraded run.
-    pub read_ahead_misses_total: AtomicU64,
     /// engine start time (telemetry)
     pub started_at: Instant,
     /// The effective quality profile: probe capped by request. Written only
@@ -249,7 +245,6 @@ impl EngineState {
             fallback_sources: AtomicU8::new(0),
             watchdog_trips_total: AtomicU64::new(0),
             watchdog_clears_total: AtomicU64::new(0),
-            read_ahead_misses_total: AtomicU64::new(0),
             started_at: Instant::now(),
             quality_profile: std::sync::Mutex::new(None),
             probed_quality: std::sync::Mutex::new(None),

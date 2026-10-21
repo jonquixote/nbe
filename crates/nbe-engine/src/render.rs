@@ -6,15 +6,11 @@
 //! master-clock frames. Nothing here touches disk, network, or the control
 //! plane channel (SPEC §7.13) — decode and upload happen at `show.load`.
 
-use crate::decode::DecodedFrame;
 use crate::gpu::Gpu;
-use crate::read_ahead::{Delivery, ReadAhead};
 use crate::scene::{Layer, LayerSource, ResolvedScene, TransitionKind};
 use crate::state::EngineState;
 use crate::watchdog::Watchdog;
-use std::cell::Cell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,98 +60,6 @@ struct VideoRing {
     /// onto source time (SPEC §18, AC-4); without it a non-house-rate asset
     /// plays at the wrong speed.
     source_frame_rate: u32,
-    /// A plain clip's streaming state (SPEC §12.8.1). `None` for a loop.
-    clip: Option<ClipRing>,
-}
-
-/// Window uploads the read-ahead may spend in one frame, across every clip:
-/// a priming burst must not cost the View its deadline. Steady play spends
-/// one per playing clip.
-const READ_AHEAD_UPLOADS_PER_FRAME: usize = 4;
-
-/// Staging buffers the read-ahead's uploads go through (one frame's bytes
-/// each, created on first use): one frame's upload budget. A tick whose
-/// buffers are all still in flight uploads nothing more, and never waits.
-const READ_AHEAD_STAGING_BUFFERS: usize = READ_AHEAD_UPLOADS_PER_FRAME;
-
-/// A plain clip on the GPU (SPEC §12.8.1): its head is `VideoRing::textures`,
-/// resident for the load; frames past it live in a K-slot window that the
-/// read-ahead refills as the clip plays.
-struct ClipRing {
-    /// The clip's end, from the container's metadata (rule 5).
-    length: u64,
-    /// Head frames resident in `VideoRing::textures`.
-    head: u64,
-    /// The window: frame `j >= head` lives in slot `(j - head) mod W`.
-    window: Vec<wgpu::Texture>,
-    /// The source index each window slot holds.
-    slot_frame: Vec<Option<u64>>,
-    /// The lowest source index the window must hold: the frame the draw path
-    /// reads now, or the head's end when the clip is not on a bus.
-    base: u64,
-    width: u32,
-    height: u32,
-    path: PathBuf,
-    worker: Option<ReadAhead>,
-    /// A delivered frame past the window, held back until its slot frees
-    /// (rule 3: occupancy, never the wall clock).
-    pending: Option<DecodedFrame>,
-    /// The last source index the View drew: the miss policy's hold (rule 4).
-    last_presented: Cell<Option<u64>>,
-    /// The missing frame a finished decoder left behind (a failed open or a
-    /// short file): not respawned for until the window moves, so a broken
-    /// clip holds and counts misses instead of spawning a thread a frame.
-    stalled_at: Option<u64>,
-}
-
-impl ClipRing {
-    fn slot(&self, j: u64) -> usize {
-        ((j - self.head) % self.window.len() as u64) as usize
-    }
-
-    fn resident(&self, j: u64) -> bool {
-        if j < self.head {
-            return true;
-        }
-        !self.window.is_empty() && self.slot_frame[self.slot(j)] == Some(j)
-    }
-
-    /// One past the last frame the window must hold.
-    fn window_end(&self) -> u64 {
-        (self.base + self.window.len() as u64).min(self.length)
-    }
-
-    /// The first frame the window must hold and does not.
-    fn first_missing(&self) -> Option<u64> {
-        (self.base..self.window_end()).find(|j| !self.resident(*j))
-    }
-
-    /// Rule 4's hold for source frame `i`, which is not resident: the last
-    /// frame the View drew, while it is resident and below `i`; otherwise the
-    /// highest resident frame below `i`. The head is always resident, so there
-    /// is always one.
-    fn hold_for(&self, i: u64) -> u64 {
-        if let Some(l) = self.last_presented.get() {
-            if l < i && self.resident(l) {
-                return l;
-            }
-        }
-        self.slot_frame
-            .iter()
-            .flatten()
-            .copied()
-            .filter(|j| *j < i)
-            .max()
-            .unwrap_or_else(|| self.head.saturating_sub(1))
-    }
-
-    fn texture<'a>(&'a self, head: &'a [wgpu::Texture], j: u64) -> Option<&'a wgpu::Texture> {
-        if j < self.head {
-            head.get(j as usize)
-        } else {
-            self.window.get(self.slot(j))
-        }
-    }
 }
 
 pub struct RenderTargets {
@@ -225,12 +129,6 @@ pub struct FrameReport {
     pub rendered_preview: bool,
     pub view_late_by: Option<Duration>,
     pub preview_failed: bool,
-    /// The read-ahead's share of this frame (SPEC §12.8.1): its window
-    /// uploads and their submission. Outside the View's measured draw, so it
-    /// never counts as a dropped frame, but inside the record's pre-check.
-    pub read_ahead: Duration,
-    /// Window frames the read-ahead uploaded this frame.
-    pub read_ahead_uploads: usize,
 }
 
 pub struct RenderLoop {
@@ -263,9 +161,6 @@ pub struct RenderLoop {
     /// must add zero.
     pub text_rasterizations: std::sync::atomic::AtomicU64,
     loaded_generation: u64,
-    /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
-    /// frame path, where `write_texture`'s per-call staging costs the deadline.
-    uploads: crate::gpu::UploadPool,
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
     pipeline: wgpu::RenderPipeline,
@@ -363,7 +258,6 @@ impl RenderLoop {
             text_cache: std::sync::Mutex::new(HashMap::new()),
             text_rasterizations: std::sync::atomic::AtomicU64::new(0),
             loaded_generation: u64::MAX,
-            uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
             house_rate,
             pipeline,
             pipeline_bgra,
@@ -451,8 +345,8 @@ impl RenderLoop {
     /// At load for every asset; again when ladder rung 2 shed it and a take
     /// or a preroll needs it back. `false` if the asset is not in the library.
     fn upload_ring(&mut self, asset_id: &str) -> bool {
-        let mut library = self.state.video.lock().unwrap();
-        let Some(asset) = library.assets.get_mut(asset_id) else {
+        let library = self.state.video.lock().unwrap();
+        let Some(asset) = library.assets.get(asset_id) else {
             return false;
         };
         let mut textures = Vec::with_capacity(asset.frames.len());
@@ -461,282 +355,25 @@ impl RenderLoop {
             self.gpu.upload_rgba(&tex, f.width, f.height, &f.rgba);
             textures.push(tex);
         }
-        // SPEC §12.8.1: a plain clip's window past its head, primed with the
-        // frames decoded at load. The prime is taken, not copied: a re-acquire
-        // after rung 2 finds it empty, and the read-ahead re-primes (§10.5).
-        let clip = asset.clip.as_mut().map(|c| {
-            let head = textures.len() as u64;
-            let slots = c
-                .length_frames
-                .saturating_sub(head)
-                .min(u64::from(c.window_frames)) as usize;
-            let window: Vec<wgpu::Texture> = (0..slots)
-                .map(|_| self.gpu.make_texture(asset.width, asset.height, asset_id))
-                .collect();
-            let mut ring = ClipRing {
-                length: c.length_frames,
-                head,
-                window,
-                slot_frame: vec![None; slots],
-                base: head,
-                width: asset.width,
-                height: asset.height,
-                path: asset.source_path.clone(),
-                worker: None,
-                pending: None,
-                last_presented: Cell::new(None),
-                stalled_at: None,
-            };
-            // Through the staging pool, waiting for it when it is full: the
-            // load boundary may wait, and `write_texture` would cost the prime
-            // ten times as much. A pool that stays full after a wait (a lost
-            // device) falls back to `write_texture` rather than spin.
-            let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-            for f in std::mem::take(&mut c.prime) {
-                if f.index >= head && f.index < ring.window_end() {
-                    let s = ring.slot(f.index);
-                    let tex = &ring.window[s];
-                    if !self
-                        .uploads
-                        .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
-                    {
-                        let full = std::mem::replace(
-                            &mut enc,
-                            self.gpu.device.create_command_encoder(&Default::default()),
-                        );
-                        self.gpu.queue.submit([full.finish()]);
-                        self.uploads.submitted();
-                        self.uploads.reclaim_waiting(&self.gpu);
-                        if !self
-                            .uploads
-                            .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
-                        {
-                            self.gpu.upload_rgba(tex, f.width, f.height, &f.rgba);
-                        }
-                    }
-                    ring.slot_frame[s] = Some(f.index);
-                }
-            }
-            if self.uploads.has_staged() {
-                self.gpu.queue.submit([enc.finish()]);
-                self.uploads.submitted();
-            }
-            ring
-        });
-        // A clip's residency is its head and window (§12.8.1), a loop's its
-        // plan (§12.5). One line logged both, so a clip's read as a 30-frame
-        // streamed loop: `period` was its head, and `policy` came from a plan
-        // that sizes nothing (§2c, R20's two-key pass, claim 12: a vestigial
-        // log artifact, corrected in v0.4.8 row 13's PR).
-        match clip.as_ref() {
-            Some(c) => tracing::info!(
-                asset = %asset_id,
-                head = textures.len(),
-                window = c.window.len(),
-                length = c.length,
-                "clip ring resident"
-            ),
-            None => tracing::info!(
-                asset = %asset_id,
-                frames = textures.len(),
-                period = asset.period_frames,
-                policy = ?asset.plan.cache_policy_selected,
-                "loop ring resident"
-            ),
-        }
-        let source_frame_rate = asset.source_frame_rate.round().max(1.0) as u32;
-        let period_frames = asset.period_frames;
-        drop(library);
+        tracing::info!(
+            asset = %asset_id,
+            frames = textures.len(),
+            period = asset.period_frames,
+            policy = ?asset.plan.cache_policy_selected,
+            "video ring resident"
+        );
         self.video_rings.insert(
             asset_id.to_string(),
             VideoRing {
                 textures,
-                period_frames,
+                period_frames: asset.period_frames,
                 // Rounded: a source rate is a nominal cadence, and a
                 // 23.976 source is a 24 fps cadence with a pulldown
                 // pattern (SPEC §18), not 23 frames per second.
-                source_frame_rate,
-                clip,
+                source_frame_rate: asset.source_frame_rate.round().max(1.0) as u32,
             },
         );
         true
-    }
-
-    /// SPEC §12.8.1 rule 3: once a frame, move each clip's window to where
-    /// the draw path reads it and refill it from the read-ahead, without
-    /// blocking. The View positions a clip it shows; the Preview positions a
-    /// clip only the Preview shows; a clip on neither rests at its head's end,
-    /// primed for the next take. `uncapped` lifts the per-frame upload budget
-    /// (the settle seam only). Returns the window frames uploaded.
-    fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) -> usize {
-        let mut wanted: HashMap<String, u64> = HashMap::new();
-        let mut order: Vec<String> = Vec::new();
-        for bus in [Bus::View, Bus::Preview] {
-            for bus_scene in self.scene_for(bus, frame) {
-                for layer in &bus_scene.scene.layers {
-                    let LayerSource::Video {
-                        asset_id,
-                        looping: false,
-                    } = &layer.source
-                    else {
-                        continue;
-                    };
-                    if wanted.contains_key(asset_id) {
-                        continue;
-                    }
-                    let Some(ring) = self.video_rings.get(asset_id) else {
-                        continue;
-                    };
-                    let Some(clip) = ring.clip.as_ref() else {
-                        continue;
-                    };
-                    if let Some(i) = crate::decode::clip_source_index(
-                        frame,
-                        bus_scene.t0,
-                        clip.length,
-                        ring.source_frame_rate,
-                        self.house_rate,
-                    ) {
-                        wanted.insert(asset_id.clone(), i);
-                        order.push(asset_id.clone());
-                    }
-                }
-            }
-        }
-        // On-air clips spend the budget first; resting clips re-prime after.
-        for id in self.video_rings.keys() {
-            if !wanted.contains_key(id) {
-                order.push(id.clone());
-            }
-        }
-        let mut budget = if uncapped {
-            usize::MAX
-        } else {
-            READ_AHEAD_UPLOADS_PER_FRAME
-        };
-        let mut uploaded = 0;
-        self.uploads.reclaim(&self.gpu);
-        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        for id in order {
-            let Some(ring) = self.video_rings.get_mut(&id) else {
-                continue;
-            };
-            let Some(clip) = ring.clip.as_mut() else {
-                continue;
-            };
-            if clip.window.is_empty() {
-                continue;
-            }
-            clip.base = wanted.get(&id).copied().unwrap_or(clip.head).max(clip.head);
-            if clip.pending.as_ref().is_some_and(|f| f.index < clip.base) {
-                clip.pending = None;
-            }
-            // The worker is sequential: restart it at the first missing frame
-            // when it is past that frame (a re-take, a reset to the head), or
-            // so far behind it that decoding the gap would only be discarded.
-            // Its position is the frame held back, when one is.
-            if let Some(m) = clip.first_missing() {
-                let restart = match clip.worker.as_ref() {
-                    None => clip.stalled_at != Some(m),
-                    Some(w) => {
-                        let next = clip.pending.as_ref().map(|f| f.index).unwrap_or(w.next());
-                        next > m || m > next + clip.window.len() as u64
-                    }
-                };
-                if restart {
-                    clip.pending = None;
-                    clip.stalled_at = None;
-                    clip.worker = Some(ReadAhead::spawn(&id, clip.path.clone(), m, clip.length));
-                }
-            }
-            while budget > 0 {
-                let delivered = match clip.pending.take() {
-                    Some(f) => Delivery::Frame(f),
-                    None => match clip.worker.as_mut() {
-                        Some(w) => w.poll(),
-                        None => break,
-                    },
-                };
-                match delivered {
-                    Delivery::Frame(f) => {
-                        let j = f.index;
-                        if j < clip.base || clip.resident(j) {
-                            continue;
-                        }
-                        if j >= clip.window_end() {
-                            clip.pending = Some(f);
-                            break;
-                        }
-                        let s = clip.slot(j);
-                        let tex = &clip.window[s];
-                        if !self.uploads.stage(
-                            &self.gpu,
-                            &mut enc,
-                            tex,
-                            clip.width,
-                            clip.height,
-                            &f.rgba,
-                        ) {
-                            // Every staging buffer is in flight: the frame
-                            // waits for a later tick, held like one past the
-                            // window.
-                            clip.pending = Some(f);
-                            budget = 0;
-                            break;
-                        }
-                        clip.slot_frame[s] = Some(j);
-                        budget -= 1;
-                        uploaded += 1;
-                    }
-                    Delivery::Pending => break,
-                    Delivery::Done => {
-                        clip.worker = None;
-                        clip.stalled_at = clip.first_missing();
-                        break;
-                    }
-                }
-            }
-        }
-        // Before the frame's draw is submitted, so the draw samples the
-        // uploaded frames.
-        if self.uploads.has_staged() {
-            self.gpu.queue.submit([enc.finish()]);
-            self.uploads.submitted();
-        }
-        uploaded
-    }
-
-    /// Test and bench seam: pump the read-ahead, uncapped, until every clip's
-    /// window is full and its decoder is held at the window's end (a frame
-    /// past the window delivered and held back: occupancy, rule 3), or the
-    /// decoder has finished; or `timeout` passes. A full window alone is not
-    /// settled: a decoder still free to run would overwrite it. Settled also
-    /// waits for the GPU to consume the staged uploads, so the next frame
-    /// starts with every staging buffer free. Production never calls this: the
-    /// tick pumps once a frame, within the frame's upload budget (SPEC §12.8.1
-    /// rule 3).
-    pub fn settle_read_ahead(&mut self, frame: u64, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            self.pump_read_ahead(frame, true);
-            let settled = self
-                .video_rings
-                .values()
-                .filter_map(|r| r.clip.as_ref())
-                .all(|c| {
-                    c.window.is_empty()
-                        || (c.first_missing().is_none()
-                            && (c.worker.is_none() || c.pending.is_some()))
-                });
-            if settled {
-                self.uploads.reclaim_waiting(&self.gpu);
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
     }
 
     /// The video assets `bus` draws at `frame` — both sides of a transition
@@ -812,9 +449,6 @@ impl RenderLoop {
         if rung >= Rung::LoopsShed {
             self.shed_off_air_loops(frame);
         }
-        let read_ahead_started = Instant::now();
-        let read_ahead_uploads = self.pump_read_ahead(frame, false);
-        let read_ahead = read_ahead_started.elapsed();
 
         let preview_due = match rung {
             Rung::Nominal => true,
@@ -889,8 +523,6 @@ impl RenderLoop {
             rendered_preview: preview_due && !preview_failed,
             view_late_by,
             preview_failed,
-            read_ahead,
-            read_ahead_uploads,
         }
     }
 
@@ -1074,9 +706,7 @@ impl RenderLoop {
         } else {
             for bus_scene in self.scene_for(bus, frame) {
                 for layer in bus_scene.scene.layers {
-                    if let Some(d) =
-                        self.draw_for(bus, &layer, bus_scene.alpha, frame, bus_scene.t0)
-                    {
+                    if let Some(d) = self.draw_for(&layer, bus_scene.alpha, frame, bus_scene.t0) {
                         draws.push(d);
                     }
                 }
@@ -1162,7 +792,6 @@ impl RenderLoop {
 
     fn draw_for(
         &self,
-        bus: Bus,
         layer: &Layer,
         alpha: f32,
         frame: u64,
@@ -1179,46 +808,6 @@ impl RenderLoop {
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
             // SPEC §12.1: which frame shows is a pure function of the master
             // clock. The ring textures were uploaded at load; this is a lookup.
-            // SPEC §12.8.1: a plain clip draws its head, then its window. A
-            // frame not yet resident is a miss: the layer holds (rule 4), the
-            // View counts it, and nothing waits on the decoder. At the clip's
-            // end `clip_source_index` refuses the index, and the layer is not
-            // drawn (rule 5).
-            LayerSource::Video {
-                asset_id,
-                looping: false,
-            } if self
-                .video_rings
-                .get(asset_id)
-                .is_some_and(|r| r.clip.is_some()) =>
-            {
-                let ring = self.video_rings.get(asset_id)?;
-                let clip = ring.clip.as_ref()?;
-                let i = crate::decode::clip_source_index(
-                    frame,
-                    t0,
-                    clip.length,
-                    ring.source_frame_rate,
-                    self.house_rate,
-                )?;
-                let shown = if clip.resident(i) {
-                    i
-                } else {
-                    if bus == Bus::View {
-                        self.state
-                            .read_ahead_misses_total
-                            .fetch_add(1, Ordering::SeqCst);
-                    }
-                    clip.hold_for(i)
-                };
-                if bus == Bus::View {
-                    clip.last_presented.set(Some(shown));
-                }
-                (
-                    clip.texture(&ring.textures, shown)?.clone(),
-                    [1.0, 1.0, 1.0, 1.0],
-                )
-            }
             LayerSource::Video { asset_id, looping } => {
                 let ring = self.video_rings.get(asset_id)?;
                 // SPEC §12.1: source frame is a function of the master clock
@@ -1325,7 +914,7 @@ impl RenderLoop {
                 // Overlay timelines key off the master clock. A video overlay
                 // reads from its own went-on-air frame (`anim_start`, the first
                 // frame it was visible), independent of any take — §12.1's t0.
-                if let Some(d) = self.draw_for(Bus::View, &layer, alpha, frame, t0) {
+                if let Some(d) = self.draw_for(&layer, alpha, frame, t0) {
                     draws.push(d);
                 }
             }

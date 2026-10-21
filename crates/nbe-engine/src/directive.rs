@@ -14,9 +14,7 @@ use tracing::{debug, info};
 
 /// GOP length assumed when the manifest does not declare one; feeds the
 /// §12.8 read-ahead minimum.
-/// SPEC §6.2's keyframe bound: one source of truth with preflight's clip demand
-/// (§12.11.1), so the window the engine allocates is the window preflight counts.
-const DEFAULT_GOP_FRAMES: u32 = nbe_core::loop_cache::HOUSE_GOP_FRAMES;
+const DEFAULT_GOP_FRAMES: u32 = 30;
 
 #[derive(Debug, Error)]
 pub enum DirectiveError {

@@ -527,11 +527,6 @@ pub struct EngineTelemetry {
     /// slate.
     #[serde(default)]
     pub watchdog_clears_total: u64,
-    /// The clip read-ahead's misses: clip frames the View drew held because
-    /// they were not yet resident (SPEC §12.8.1 rule 4, §10.1, v0.4.8 row 12).
-    /// Additive and defaulted, `watchdogTripsTotal`'s shape.
-    #[serde(default)]
-    pub read_ahead_misses_total: u64,
     /// The **effective** profile from the startup probe, capped by the
     /// manifest's requested profile (SPEC §10.1.1, §10.5). `None` before the
     /// probe has run — the control plane then reports the requested profile.

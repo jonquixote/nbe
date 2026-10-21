@@ -29,8 +29,6 @@ export interface TelemetryTick {
    *  recoveries. Engine-owned; 0 when no fresh engine report. */
   watchdogTripsTotal: number;
   watchdogClearsTotal: number;
-  /** SPEC §12.8.1 rule 4 (v0.4.8 row 12): the View's clip frames held, not yet resident. */
-  readAheadMissesTotal: number;
   // control-plane-owned
   viewItem: string | null;
   previewItem: string | null;
@@ -117,7 +115,6 @@ export function buildTick(
     degradationRung: f?.degradationRung ?? 0,
     watchdogTripsTotal: f?.watchdogTripsTotal ?? 0,
     watchdogClearsTotal: f?.watchdogClearsTotal ?? 0,
-    readAheadMissesTotal: f?.readAheadMissesTotal ?? 0,
     // ZERO-COPY: always forwarded, stubbed when the engine has not reported
     // one — no stale engine report, or an engine build older than the stub.
     // Still no `?? "cpuReadback"`: `TAP_NONE` is not a path, so a machine that

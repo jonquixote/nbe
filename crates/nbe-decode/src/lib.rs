@@ -151,9 +151,6 @@ pub struct DecodeSession {
     output: Retained<AVAssetReaderTrackOutput>,
     path: String,
     nominal_frame_rate: f32,
-    /// The track's length in frames from the container's metadata (SPEC
-    /// §12.8.1 rule 5), or `None` when the container does not say.
-    length_frames: Option<u64>,
     next_index: u64,
     started: bool,
 }
@@ -178,15 +175,6 @@ impl DecodeSession {
                 .firstObject()
                 .ok_or_else(|| DecodeError::NoVideoTrack(path_str.clone()))?;
             let nominal_frame_rate = track.nominalFrameRate();
-            // SPEC §12.8.1 rule 5: a clip's end is its track's duration times
-            // its nominal rate, from the metadata, not the count of frames a
-            // caller happened to decode.
-            let range = track.timeRange();
-            let length_frames =
-                (range.duration.timescale > 0 && nominal_frame_rate > 0.0).then(|| {
-                    let seconds = range.duration.value as f64 / range.duration.timescale as f64;
-                    (seconds * nominal_frame_rate as f64).round().max(0.0) as u64
-                });
 
             let reader = AVAssetReader::assetReaderWithAsset_error(asset_ref).map_err(|e| {
                 DecodeError::Open {
@@ -223,7 +211,6 @@ impl DecodeSession {
                 output,
                 path: path_str,
                 nominal_frame_rate,
-                length_frames,
                 next_index: 0,
                 started: false,
             })
@@ -232,12 +219,6 @@ impl DecodeSession {
 
     pub fn nominal_frame_rate(&self) -> f32 {
         self.nominal_frame_rate
-    }
-
-    /// The video track's length in frames, from the container's metadata
-    /// (SPEC §12.8.1 rule 5). `None` when the container gives no duration.
-    pub fn length_frames(&self) -> Option<u64> {
-        self.length_frames
     }
 
     /// Decode the next frame in presentation order, or `None` at end of

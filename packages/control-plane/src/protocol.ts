@@ -411,8 +411,6 @@ export const EngineTelemetryFrameSchema = z
     /** The watchdog's fault counter and its recoveries (SPEC §10.3, v0.4.7). */
     watchdogTripsTotal: z.number().int().nonnegative().default(0),
     watchdogClearsTotal: z.number().int().nonnegative().default(0),
-    // SPEC §12.8.1 rule 4, §10.1 (v0.4.8 row 12): the clip read-ahead's misses.
-    readAheadMissesTotal: z.number().int().nonnegative().default(0),
     /**
      * The effective profile from the engine's startup probe (SPEC §10.5),
      * capped by the manifest's requested profile (§10.1.1). Optional: absent
