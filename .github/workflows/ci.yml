@@ -760,6 +760,33 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL loop_residency: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: "the master limiter suite actually ran (SPEC v0.4.8 row 14)"
+        # Two floors, rule 8. The §8.2 limiter that replaced the master clamp
+        # (R26), measured over offline renders: no device, no GPU, no
+        # capability gate, so no SKIP and floors equal at the full count (9,
+        # new). The suite covers a bounded peak; the inter-sample stimulus,
+        # read by its own independent true-peak meter; no flat top; bit-exact
+        # transparency below the ceiling; the 5 ms attack ramp; the 100 ms
+        # release; the stereo link; the reported latency; and the show's
+        # ceiling taken at show.load.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test limiter -- --nocapture 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL limiter: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "limiter: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=9 exercised>=9)"
+          if [ "$ran" -lt 9 ]; then
+            echo "FAIL limiter: expected at least 9 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 9 ]; then
+            echo "FAIL limiter: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: "the resync-end suite actually ran (SPEC v0.4.8 row 3)"
         # Seven tests on the directive handler alone (no GPU, no capability
         # gate, so no SKIP). A restarted engine ends the timed item at its
