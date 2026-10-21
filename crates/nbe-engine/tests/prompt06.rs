@@ -152,6 +152,12 @@ fn muting_a_bus_ramps_instead_of_stepping() {
         }],
     );
 
+    // The master limiter's lookahead delays the output (§8.2's note, v0.4.8
+    // row 14). The first `lat` frames of each pair belong to the render
+    // before it, so each pair is measured from `lat` on; the join sits at
+    // `BLOCK + lat`. The claim is unchanged.
+    let lat = g.latency_frames();
+
     // Baseline: two blocks with no change, so the tone's own slope is known.
     let base_buf = render_across_change(&mut g, 0, |_| {});
     let present = peak_dbfs(&base_buf);
@@ -160,12 +166,14 @@ fn muting_a_bus_ramps_instead_of_stepping() {
         "precondition: the bus must be audible before muting it means \
          anything, got {present:.1} dBFS"
     );
-    let baseline = worst_discontinuity_dbfs(&base_buf);
+    let baseline = worst_discontinuity_dbfs(&base_buf[lat * CHANNELS..]);
 
     // The same two blocks with a mute at the join.
-    let muted = worst_discontinuity_dbfs(&render_across_change(&mut g, 10, |g| {
-        g.bus_mut(BusId::Mic).set_muted(true, 10.0);
-    }));
+    let muted = worst_discontinuity_dbfs(
+        &render_across_change(&mut g, 10, |g| {
+            g.bus_mut(BusId::Mic).set_muted(true, 10.0);
+        })[lat * CHANNELS..],
+    );
 
     assert!(
         muted <= baseline + 1.0,
@@ -229,12 +237,16 @@ fn stopping_a_soundboard_voice_ramps_it_out() {
     const AMPLITUDE: f32 = 0.8;
     let samples = tone_samples(HZ, AMPLITUDE, SAMPLE_RATE as usize);
     let id = g.trigger("stab", samples, 0.0);
+    // The master limiter's lookahead delays the output (§8.2's note, v0.4.8
+    // row 14): each pair is measured from `lat` on, and the join is at
+    // `BLOCK + lat`. The claim is unchanged.
+    let lat = g.latency_frames();
 
     // Baseline: the voice running, no change at the join. The tone's own slope
     // is the floor, so the bar is "the stop adds nothing on top of that".
     let base_buf = render_across_change(&mut g, 0, |_| {});
     assert!(peak_dbfs(&base_buf) > -20.0, "the voice should be audible");
-    let baseline = worst_discontinuity_dbfs(&base_buf);
+    let baseline = worst_discontinuity_dbfs(&base_buf[lat * CHANNELS..]);
 
     let buf = render_across_change(&mut g, 2, |g| {
         g.stop_voice(Some(id), None);
@@ -246,14 +258,14 @@ fn stopping_a_soundboard_voice_ramps_it_out() {
     // blocks", so adding a render moved the real join to a zero crossing while
     // the guard still read 0.25 and passed. This reads the actual last sample
     // before the join, so nothing can move it without failing here.
-    let at_join = buf[BLOCK * CHANNELS - 1].abs();
+    let at_join = buf[(BLOCK + lat) * CHANNELS - 1].abs();
     assert!(
         at_join > AMPLITUDE * 0.75,
         "this test only tells a cut from a ramp when the join sits near a \
          waveform peak; the sample there is {at_join:.3} of {AMPLITUDE}"
     );
 
-    let worst = worst_discontinuity_dbfs(&buf);
+    let worst = worst_discontinuity_dbfs(&buf[lat * CHANNELS..]);
     assert!(
         worst <= baseline + 1.0,
         "stopping a voice must ramp, not cut: baseline {baseline:.1} dBFS, \
@@ -325,6 +337,10 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
     let budget_frames = (SAMPLE_RATE as usize * 20) / 1000;
     let mut buf = buffer(budget_frames);
     g.render(&mut buf, 0);
+    // The master limiter's lookahead delays everything that leaves the graph
+    // (§8.2's note, v0.4.8 row 14): this test's indices are re-based on it,
+    // and its claims are unchanged.
+    let lat = g.latency_frames();
 
     // `position` cannot exceed the buffer, so `first_audible < budget_frames`
     // was tautological — the `expect` was doing all the work. Assert the AC's
@@ -336,8 +352,13 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
         .position(|f| f.iter().any(|s| s.abs() > 0.001))
         .expect("the trigger must produce output inside the 20 ms budget");
     assert!(
-        first_audible <= 2,
-        "AC-13: a trigger is audible immediately, not {first_audible} samples in"
+        first_audible <= lat + 2,
+        "AC-13: a trigger is audible immediately after the limiter's \
+         {lat}-sample lookahead, not {first_audible} samples in"
+    );
+    assert!(
+        (first_audible as f32) * 1000.0 / (SAMPLE_RATE as f32) < 20.0,
+        "AC-13's own bar: audible within 20 ms, not {first_audible} samples"
     );
     // Immediate, but not a click: §8.7.1 ramps the voice in over the 5 ms
     // floor. Starting a voice at full scale — the click the code comment names
@@ -351,7 +372,7 @@ fn a_soundboard_trigger_is_audible_within_20ms() {
         "precondition: the stab must reach full level, got {peak:.3}"
     );
     let win = (SAMPLE_RATE as f32 * MIN_RAMP_MS / 1000.0) as usize / 5;
-    let early = buf[..win * CHANNELS]
+    let early = buf[lat * CHANNELS..(lat + win) * CHANNELS]
         .iter()
         .fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(
@@ -818,6 +839,40 @@ fn rendering_a_block_allocates_nothing() {
     assert_eq!(
         allocs, 0,
         "render_guest_return must allocate nothing either; it made {allocs}"
+    );
+}
+
+/// The master limiter (§8.2's note) runs inside `render`, so its reduction
+/// path is under the same gate: a master hot enough that the limiter is
+/// reducing on every block allocates nothing either (the limiter plan's F8).
+#[test]
+fn a_limiting_master_allocates_nothing() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    for id in [BusId::Mic, BusId::Clip, BusId::Music, BusId::Guest] {
+        g.set_source(
+            id,
+            vec![Source::Tone {
+                hz: 220.0,
+                amplitude: 0.8,
+            }],
+        );
+    }
+    let mut buf = buffer(BLOCK);
+    // Warm up, then into the reduction: the gain is well under unity.
+    for frame in 0..4 {
+        g.render(&mut buf, frame);
+    }
+    let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        peak > 0.5 && peak < 0.85,
+        "precondition: the limiter is reducing a 3.2 sum, peak {peak:.3}"
+    );
+    let allocs = allocations_during(|| {
+        g.render(&mut buf, 4);
+    });
+    assert_eq!(
+        allocs, 0,
+        "the limiting master must allocate nothing (SPEC §8.9); it made {allocs}"
     );
 }
 
