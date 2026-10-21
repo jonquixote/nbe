@@ -334,6 +334,82 @@ async fn one_frame_late_by_one_and_a_half_budgets_does_not_trip_the_watchdog() {
     );
 }
 
+// R15 (docs/soak-protocol.md): the three-frame pin asserted its wall-clock
+// bound, each frame late by at most one budget, and a runner that stalled
+// inside one frame failed it (late by 277–841 ms on CI). The user's ruling of
+// 2026-10-21: correctness by construction, not by wall-clock arrival. So the
+// trip is read in frames. The loop's own measurement of each frame is counted
+// as the deadline arm counts it, and the slate must agree with §10.3's law
+// applied to those counts, frame by frame. A stall makes a frame count more,
+// and the law moves the trip with it, so a stall cannot fail the
+// construction. A late frame lost from the accounting, or a watchdog that
+// does not hear the measured lateness, fails it on every run. The bound
+// itself is asserted on the normative machine only.
+
+/// A late frame's lateness in frames, as the deadline arm counts it for the
+/// watchdog (`render.rs`): `ceil(late / budget)`, at least 1.
+fn frames_late(late: Duration, budget: Duration) -> u64 {
+    ((late.as_secs_f64() / budget.as_secs_f64()).ceil() as u64).max(1)
+}
+
+/// Frames 1, 2, … each with its injected View work, after a warm-up frame.
+/// For each frame, in order, it asserts what holds whatever the wall clock
+/// did: the loop drew the frame asked for; the frame is late, because `sleep`
+/// sleeps at least as long as asked and every delay exceeds the budget; it is
+/// one more dropped frame (§10.2); and the slate is up exactly when the frames
+/// counted so far exceed 2 (§10.3). Returns each frame's count, and prints
+/// them (`R15-COUNTS`) so a stall stays visible in a green run's log.
+fn late_frames(
+    render: &mut RenderLoop,
+    state: &EngineState,
+    budget: Duration,
+    delays: &[Duration],
+) -> Vec<u64> {
+    // The warm-up has no deadline, so it is on time by construction. It takes
+    // a cold adapter's first render (143 ms on the CI runner, run 36356479347)
+    // out of frame 1, and an on-time frame resets the watchdog's sum.
+    assert!(render.render_frame(0, None).view_late_by.is_none());
+    let mut counts = Vec::new();
+    for (i, &delay) in delays.iter().enumerate() {
+        assert!(delay > budget, "every frame is made late: {delay:?}");
+        let frame = i as u64 + 1;
+        render.injected_view_delay = Some(delay);
+        let report = render.render_frame(frame, Some(budget));
+        assert_eq!(report.frame, frame, "the loop drew the frame asked for");
+        let late = report.view_late_by.unwrap_or_else(|| {
+            panic!("frame {frame}: {delay:?} of work against {budget:?} is late by construction")
+        });
+        assert_eq!(
+            state.dropped_frames_total.load(Ordering::SeqCst),
+            frame,
+            "every late View frame is one dropped frame, in order (SPEC §10.2): frame {frame}"
+        );
+        counts.push(frames_late(late, budget));
+        let sum: u64 = counts.iter().sum();
+        assert_eq!(
+            state.fallback_active(),
+            sum > 2,
+            "the slate is up exactly when the frames counted exceed 2 (§10.3): frame {frame}, counts {counts:?}"
+        );
+    }
+    eprintln!("R15-COUNTS counts={counts:?} budget={budget:?} delays={delays:?}");
+    counts
+}
+
+/// The machine a bound that measures the machine may be asserted on, the dress
+/// rehearsal's rule (`dress-rehearsal.test.ts`), fail-closed: neither `CI` nor
+/// `GITHUB_ACTIONS` set is the normative machine; `GITHUB_ACTIONS=true` is a
+/// CI runner, not the reference machine (SPEC §0.3); anything else is refused.
+fn on_the_normative_machine() -> bool {
+    let ci = std::env::var("CI").unwrap_or_default();
+    let actions = std::env::var("GITHUB_ACTIONS").unwrap_or_default();
+    match (ci.as_str(), actions.as_str()) {
+        ("", "") => true,
+        (_, "true") => false,
+        _ => panic!("unidentified machine: CI={ci:?}, GITHUB_ACTIONS={actions:?}"),
+    }
+}
+
 #[tokio::test]
 async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
     let dir = tempfile::tempdir().unwrap();
@@ -341,29 +417,82 @@ async fn three_frames_each_late_by_under_one_budget_trip_the_watchdog() {
     let (state, _h, mut render) = loaded_engine(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    // A warm-up frame, on time, first (see the test above).
-    assert!(render
-        .render_frame(0, Some(Duration::from_secs(5)))
-        .view_late_by
-        .is_none());
-    // 210 ms of work against a 200 ms budget: each frame is late by far less
-    // than one frame, so none "misses a deadline by more than 1 frame" — and
-    // the sum of three single misses exceeds 2.
+    // 210 ms of work against a 200 ms budget: each frame is late, and on an
+    // unstalled machine by far less than one frame, so none "misses a
+    // deadline by more than 1 frame" — and the sum of three single misses
+    // exceeds 2.
     let budget = Duration::from_millis(200);
-    render.injected_view_delay = Some(Duration::from_millis(210));
-    for f in 0..3 {
-        let late = render
-            .render_frame(f + 1, Some(budget))
-            .view_late_by
-            .expect("the frame is late");
-        assert!(
-            late <= budget,
-            "frame {f} is late by at most one frame: {late:?}"
+    let counts = late_frames(
+        &mut render,
+        &state,
+        budget,
+        &[Duration::from_millis(210); 3],
+    );
+    assert!(
+        state.fallback_active(),
+        "three late frames trip the watchdog by the third: each counts at least 1, and 3 > 2"
+    );
+    // The wall-clock bound measures the machine (R15, R9's class).
+    if on_the_normative_machine() {
+        assert_eq!(
+            counts,
+            [1, 1, 1],
+            "each frame is late by at most one frame, so the slate engages on the third consecutive miss, not before"
         );
+    } else {
+        eprintln!(
+            "SKIP normative: each frame late by at most one budget (counts {counts:?}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_stalled_late_frame_moves_the_trip_to_where_the_frames_counted_say() {
+    let dir = tempfile::tempdir().unwrap();
+    make_package(dir.path(), [10, 20, 30, 255]);
+    let (state, _h, mut render) = loaded_engine(dir.path()).await;
+    *state.view_item.lock().unwrap() = Some("A1".into());
+
+    // A runner's stall, emulated: the second frame carries 400 ms more work,
+    // so it is late by at least 410 ms and counts at least 3 — the shape of
+    // every CI sighting of R15. The trip comes by the second frame, where the
+    // counts put it. A watchdog fed a constant instead of the measured count
+    // would sum 2 there and not trip.
+    let budget = Duration::from_millis(200);
+    let counts = late_frames(
+        &mut render,
+        &state,
+        budget,
+        &[
+            Duration::from_millis(210),
+            Duration::from_millis(610),
+            Duration::from_millis(210),
+        ],
+    );
+    assert!(counts[1] >= 3, "late by at least 410 ms: {counts:?}");
+    assert!(state.fallback_active());
+}
+
+#[tokio::test]
+async fn the_loops_watchdog_sums_frames_missed_and_trips_above_two() {
+    let dir = tempfile::tempdir().unwrap();
+    make_package(dir.path(), [10, 20, 30, 255]);
+    let (state, _h, mut render) = loaded_engine(dir.path()).await;
+
+    // §10.3's law with no clock at all: the loop's own watchdog, at the
+    // loop's threshold, hears frame counts as the deadline arm reports them.
+    // A single frame late by 1–2 budgets counts 2, which is not above 2.
+    render.watchdog.report_frame(2);
+    assert!(!state.fallback_active(), "2 is not above 2: no trip");
+    // An on-time frame resets the sum.
+    render.watchdog.report_frame(0);
+    // Three single misses: the sum passes 2 on the third, not before.
+    for n in 0..3 {
+        render.watchdog.report_frame(1);
         assert_eq!(
             state.fallback_active(),
-            f == 2,
-            "the slate engages on the third consecutive miss, not before (frame {f})"
+            n == 2,
+            "the slate engages on the third consecutive single miss, not before (miss {n})"
         );
     }
 }

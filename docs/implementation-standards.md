@@ -217,6 +217,10 @@ rerun names its retrieval route. A rerun also replaces the run's same-named
 artifact, so an earlier attempt's artifact figures are retrievable only if
 they were read before the rerun.
 
+**A rerun reading names which jobs actually executed** (the user's ruling of
+2026-10-20, item 4; recorded at PR #60's bookend). A carried copy has a fresh
+job id and the original `started_at` and log; it is not a run.
+
 ## 2c. Records and mandated text
 
 Text mandated verbatim by a prompt stays verbatim until the mandating authority

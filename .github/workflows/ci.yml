@@ -107,6 +107,26 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the samples, every 10 s from the line before the tests:" || true
           cat "$RUNNER_TEMP/ci-load-samples.log" 2>/dev/null || echo "[ci-load] no samples file" || true
+      # R15's load capture (docs/soak-protocol.md, R15). Two of R15's CI
+      # failures (PR #61's run 39412596238, attempt 1, and the A/B's run
+      # 39524813308, attempt 8) were in the GPU/render step, which runs after
+      # R10's post line, so neither carried a load reading from inside the
+      # step. These two steps bracket it as R10's bracket the workspace tests,
+      # with the same line script: one line before, a sample every 10 s
+      # during, and one line after, then every sample, printed even when the
+      # tests fail. The phases are `gpu-pre`, `gpu-sample` and `gpu-post`, so
+      # these lines are never read as R10's workspace window.
+      #
+      # The logging must never fail the job. Every command is guarded with
+      # `|| true`, the sampler runs detached with its output in a file, and
+      # both steps are continue-on-error as a second guard.
+      - name: "R15 load capture: before the GPU/render tests, the sampler started"
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" gpu-pre || true
+          { nohup bash -c 'while :; do bash "$0" gpu-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
+              > "$RUNNER_TEMP/ci-load-gpu-samples.log" 2>&1 < /dev/null & } || true
+          echo "$!" > "$RUNNER_TEMP/ci-load-gpu-sampler.pid" || true
       - name: GPU/render tests actually ran (Prompt 04)
         # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
         # If zero tests ran, the render gate is silently absent and CI passes
@@ -118,8 +138,13 @@ jobs:
         # failing test before the echo, and the failure's message was lost.
         # That happened to this step on PR #37's run 37447312366, attempt 1:
         # exit 101, nothing to read. All 28 capture steps were fixed together.
+        #
+        # `--nocapture` prints R15's `R15-COUNTS` lines (each frame's lateness
+        # counted in frames) and the `SKIP normative:` line of the wall-clock
+        # bound this runner does not assert, so a stall stays visible in a
+        # green run (R15's row).
         run: |
-          out=$(cargo test -p nbe-engine --test prompt04 2>&1) && rc=0 || rc=$?
+          out=$(cargo test -p nbe-engine --test prompt04 -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
           if [ "$rc" -ne 0 ]; then echo "FAIL prompt04: cargo test exited $rc (the output is above)"; exit "$rc"; fi
           line=$(echo "$out" | grep "test result: ok")
@@ -134,6 +159,14 @@ jobs:
             echo "expected at least one prompt04 test to run"; exit 1
           fi
           echo "prompt04 tests that ran: $ran"
+      - name: "R15 load capture: after the GPU/render tests, every sample"
+        if: always()
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" gpu-post || true
+          kill "$(cat "$RUNNER_TEMP/ci-load-gpu-sampler.pid" 2>/dev/null)" 2>/dev/null || true
+          echo "[ci-load] the GPU/render samples, every 10 s from the line before its tests:" || true
+          cat "$RUNNER_TEMP/ci-load-gpu-samples.log" 2>/dev/null || echo "[ci-load] no GPU/render samples file" || true
       - name: the midmix suite actually ran (TRANSITIONS step 3)
         # GAP-6 duration edges (default-15, zero, one, over-max/no-clamp) +
         # GAP-11 start+1 bisection live here alongside Step 1's continuity
