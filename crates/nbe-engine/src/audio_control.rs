@@ -38,6 +38,13 @@ pub enum AudioCommand {
         guest_id: String,
         muted: bool,
     },
+    /// The master limiter's ceiling for the loaded show (SPEC §8.2's note):
+    /// its `truePeakDbtp`, or the spec default when it declares none.
+    SetLimiterCeiling {
+        dbtp: f64,
+        /// `"show"` or `"default"`, for the log line that records it.
+        source: &'static str,
+    },
     /// A take: put this item's audio on the clip bus at its `t0`, honouring
     /// the §8.7.3 audio mode.
     TakeItem {
@@ -243,6 +250,16 @@ pub fn apply(
                 // Through silence: the content changes, not just the level, so
                 // ramping the gain alone would still step the waveform.
                 graph.swap_source_through_silence(BusId::Clip, sources, gain_db, ramp);
+            }
+            AudioCommand::SetLimiterCeiling { dbtp, source } => {
+                graph.set_limiter_ceiling_dbtp(dbtp);
+                // The ceiling in force is recorded (the user's ruling L1).
+                tracing::info!(
+                    ceiling_dbtp = dbtp,
+                    source,
+                    latency_frames = graph.latency_frames(),
+                    "master limiter ceiling in force"
+                );
             }
             AudioCommand::GuestMute { guest_id, muted } => {
                 if let Some(b) = graph.guest_bus_mut(&guest_id) {

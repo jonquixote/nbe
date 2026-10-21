@@ -302,6 +302,8 @@ pub struct AudioGraph {
     /// discipline, for the live stream. Same post-master mix, same lock-free
     /// push; a take and a stream each drain their own ring.
     stream_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
+    /// The master-bus limiter (SPEC §8.2; R26: this was a clamp).
+    limiter: crate::limiter::MasterLimiter,
 }
 
 impl AudioGraph {
@@ -325,7 +327,26 @@ impl AudioGraph {
             guest_scratch: BTreeMap::new(),
             record_tap: None,
             stream_tap: None,
+            limiter: crate::limiter::MasterLimiter::new(crate::limiter::DEFAULT_CEILING_DBTP),
         }
+    }
+
+    /// The delay the master limiter's lookahead puts on every sample that
+    /// leaves the graph (§8.2's note; L3: 5 ms plus the true-peak filter's
+    /// delay). Program out, the record tap and the stream tap all carry it.
+    pub fn latency_frames(&self) -> usize {
+        self.limiter.latency_frames()
+    }
+
+    /// Set the master limiter's ceiling: the show's `truePeakDbtp`, at
+    /// `show.load` (L1).
+    pub fn set_limiter_ceiling_dbtp(&mut self, dbtp: f64) {
+        self.limiter.set_ceiling_dbtp(dbtp);
+    }
+
+    /// The master limiter's ceiling in force, in dBTP.
+    pub fn limiter_ceiling_dbtp(&self) -> f64 {
+        self.limiter.ceiling_dbtp()
     }
 
     /// Attach the master-bus record tap (WU34). Called on the control thread,
@@ -585,6 +606,7 @@ impl AudioGraph {
             rendered_samples,
             record_tap,
             stream_tap,
+            limiter,
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
@@ -667,17 +689,18 @@ impl AudioGraph {
             }
         }
 
-        // Master gain and metering last.
+        // Master gain, then the §8.2 limiter, then the meter on what leaves.
+        // R26: this stage was `.clamp(-1.0, 1.0)`, a clipper that flat-topped
+        // every sample past full scale under a comment calling it a limiter.
         let master = buses.get_mut(&BusId::Master).expect("master");
         for f in 0..frames {
             let g = master.next_gain();
-            for c in 0..CHANNELS {
-                let idx = f * CHANNELS + c;
-                // A limiter, not a clipper: hard clipping is a click generator.
-                let v = (out[idx] * g).clamp(-1.0, 1.0);
-                master.observe(v);
-                out[idx] = v;
-            }
+            let idx = f * CHANNELS;
+            let (l, r) = limiter.process(out[idx] * g, out[idx + 1] * g);
+            master.observe(l);
+            master.observe(r);
+            out[idx] = l;
+            out[idx + 1] = r;
         }
 
         // Master-bus record tap (WU34, SPSC rewrite): post-render copy into

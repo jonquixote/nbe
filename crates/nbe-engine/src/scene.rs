@@ -194,6 +194,10 @@ pub struct PackageIndex {
     /// a 25 fps package loaded without that variable mapped every
     /// non-house-rate asset against 30 and no path detected it.
     pub declared_house_rate: Option<u32>,
+    /// `show.audio.truePeakDbtp`: the master limiter's ceiling while this show
+    /// is loaded (SPEC §8.2's note, v0.4.8 row 14). `None` when the manifest
+    /// does not say, and the spec default applies.
+    pub declared_true_peak_dbtp: Option<f64>,
 }
 
 impl PackageIndex {
@@ -269,6 +273,11 @@ impl PackageIndex {
                 .and_then(|v| v.get("frameRate"))
                 .and_then(|v| v.as_u64())
                 .map(|r| r as u32),
+            declared_true_peak_dbtp: manifest
+                .get("show")
+                .and_then(|sh| sh.get("audio"))
+                .and_then(|a| a.get("truePeakDbtp"))
+                .and_then(|v| v.as_f64()),
             template_fonts: manifest
                 .get("templates")
                 .and_then(|v| v.as_array())

@@ -289,3 +289,340 @@ fn a_steady_hot_sine_leaves_as_a_sine_not_a_flat_top() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The limiter as built: transparency, the attack ramp, the release constant,
+// the stereo link, the latency, and the show's ceiling (§8.2's note).
+// ---------------------------------------------------------------------------
+
+use nbe_engine::limiter::{MasterLimiter, DEFAULT_CEILING_DBTP, LOOKAHEAD_MS, RELEASE_MS};
+
+/// Interleaved stereo from one channel's samples, both channels alike.
+fn stereo(mono: &[f32]) -> Vec<f32> {
+    mono.iter().flat_map(|&v| [v, v]).collect()
+}
+
+fn sine(hz: f64, amp: f64, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|n| {
+            (amp * (2.0 * std::f64::consts::PI * hz * n as f64 / SAMPLE_RATE as f64).sin()) as f32
+        })
+        .collect()
+}
+
+// F4 — below the ceiling the limiter is transparent: the input, delayed, bit
+// for bit.
+
+#[test]
+fn below_the_ceiling_the_output_is_the_input_delayed_bit_for_bit() {
+    let frames = SAMPLE_RATE as usize / 2;
+    let quiet = sine(1000.0, 0.1, frames);
+    let chord: Vec<f32> = (0..frames)
+        .map(|n| {
+            let t = n as f64 / SAMPLE_RATE as f64;
+            let v = [261.63, 329.63, 392.0]
+                .iter()
+                .map(|f| (2.0 * std::f64::consts::PI * f * t).sin())
+                .sum::<f64>()
+                / 3.0
+                * 0.5;
+            v as f32
+        })
+        .collect();
+    for (name, mono) in [("a −20 dBFS sine", quiet), ("a −6 dBFS chord", chord)] {
+        let input = stereo(&mono);
+        let mut g = AudioGraph::new(HOUSE_RATE);
+        g.set_source(
+            BusId::Music,
+            vec![Source::Pcm {
+                samples: Arc::new(input.clone()),
+                t0: 0,
+                looping: false,
+            }],
+        );
+        let lat = g.latency_frames();
+        let out = render(&mut g, frames);
+        for f in 0..frames - lat {
+            for c in 0..CHANNELS {
+                let (o, i) = (out[(f + lat) * CHANNELS + c], input[f * CHANNELS + c]);
+                assert!(
+                    o.to_bits() == i.to_bits(),
+                    "{name}: frame {f} channel {c} left as {o:e}, not {i:e} delayed by {lat}"
+                );
+            }
+        }
+        assert!(
+            out[..lat * CHANNELS].iter().all(|&v| v == 0.0),
+            "{name}: the delay line starts silent"
+        );
+    }
+}
+
+// F5 — the attack is a ramp, never a step: no faster than §8.7.1's 5 ms.
+
+#[test]
+fn the_attack_ramps_over_the_whole_5_ms_lookahead() {
+    let mut l = MasterLimiter::new(DEFAULT_CEILING_DBTP);
+    let lookahead = l.lookahead_frames();
+    assert_eq!(
+        lookahead,
+        (SAMPLE_RATE as f64 * LOOKAHEAD_MS / 1000.0).round() as usize,
+        "the lookahead is §8.2's 5 ms"
+    );
+    // Half a second of silence, then a +6 dBFS sine.
+    let burst = sine(1000.0, 2.0, SAMPLE_RATE as usize / 2);
+    let mut gains = Vec::new();
+    for _ in 0..SAMPLE_RATE / 2 {
+        l.process(0.0, 0.0);
+        gains.push(l.gain());
+    }
+    for &v in &burst {
+        l.process(v, v);
+        gains.push(l.gain());
+    }
+    let start = gains
+        .iter()
+        .position(|&g| g < 1.0)
+        .expect("the burst must reduce the gain");
+    let floor = gains.iter().cloned().fold(1.0f64, f64::min);
+    let reach = gains[start..]
+        .iter()
+        .position(|&g| g <= floor + 1e-12)
+        .expect("the gain reaches its floor");
+    let steepest = gains.windows(2).map(|w| w[0] - w[1]).fold(0.0f64, f64::max);
+    assert!(
+        reach + 1 >= lookahead,
+        "the reduction to {floor:.4} took {} samples: faster than the {lookahead}-sample (5 ms) ramp §8.7.1 allows",
+        reach + 1
+    );
+    assert!(
+        steepest <= (1.0 - floor) / lookahead as f64 * (1.0 + 1e-9),
+        "a per-sample gain step of {steepest:.6}: the attack steps, it does not ramp"
+    );
+    assert!(
+        gains[start..start + reach]
+            .windows(2)
+            .all(|w| w[1] <= w[0] + 1e-15),
+        "the attack is monotone"
+    );
+}
+
+// F6 — release: back to unity with the 100 ms time constant, then
+// transparent again.
+
+#[test]
+fn the_gain_recovers_with_the_100_ms_release_constant() {
+    assert_eq!(RELEASE_MS, 100.0, "the release time constant ruled (L4)");
+    let mut l = MasterLimiter::new(DEFAULT_CEILING_DBTP);
+    for &v in &sine(1000.0, 2.0, SAMPLE_RATE as usize / 4) {
+        l.process(v, v);
+    }
+    // Quiet from here: the window empties of overs, then the release runs.
+    let quiet = sine(1000.0, 0.1, 3 * SAMPLE_RATE as usize);
+    let mut gains = Vec::new();
+    for &v in &quiet {
+        l.process(v, v);
+        gains.push(l.gain());
+    }
+    // The release starts where the gain first rises.
+    let start = gains
+        .windows(2)
+        .position(|w| w[1] > w[0])
+        .expect("the gain releases");
+    let g0 = gains[start];
+    let tau = (SAMPLE_RATE as f64 * RELEASE_MS / 1000.0) as usize;
+    let at_tau = gains[start + tau];
+    let expected = 1.0 - (1.0 - g0) * (-1.0f64).exp();
+    assert!(
+        (at_tau - expected).abs() <= 0.01 * (1.0 - g0),
+        "one time constant into the release the gain is {at_tau:.4}; a 100 ms constant gives {expected:.4}"
+    );
+    let at_5tau = gains[start + 5 * tau];
+    assert!(
+        20.0 * at_5tau.log10() >= -0.1,
+        "five time constants in, the gain is {:.3} dB, not within 0.1 dB of unity",
+        20.0 * at_5tau.log10()
+    );
+    assert_eq!(
+        *gains.last().unwrap(),
+        1.0,
+        "recovered: the gain is exactly unity again, so the limiter is transparent"
+    );
+}
+
+// F7 — stereo-linked: one gain for both channels.
+
+#[test]
+fn a_hot_left_channel_reduces_the_right_by_the_same_gain() {
+    let frames = SAMPLE_RATE as usize / 2;
+    let left = sine(1000.0, 2.0, frames);
+    let right = sine(1000.0, 0.1, frames);
+    let input: Vec<f32> = left
+        .iter()
+        .zip(&right)
+        .flat_map(|(&l, &r)| [l, r])
+        .collect();
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.set_source(
+        BusId::Music,
+        vec![Source::Pcm {
+            samples: Arc::new(input.clone()),
+            t0: 0,
+            looping: false,
+        }],
+    );
+    let lat = g.latency_frames();
+    let out = render(&mut g, frames);
+    // Late in the burst, where both channels are well away from zero.
+    for f in (frames / 2..frames - lat).step_by(97) {
+        let (il, ir) = (input[f * 2] as f64, input[f * 2 + 1] as f64);
+        if il.abs() < 0.5 || ir.abs() < 0.02 {
+            continue;
+        }
+        let gl = out[(f + lat) * 2] as f64 / il;
+        let gr = out[(f + lat) * 2 + 1] as f64 / ir;
+        assert!(
+            gl < 0.9 && (gl - gr).abs() < 1e-5,
+            "frame {f}: the left is reduced to {gl:.5} and the right to {gr:.5}; a linked limiter reduces both alike"
+        );
+    }
+}
+
+// F9 — the latency is exact, and reported.
+
+#[test]
+fn the_reported_latency_is_the_delay_every_sample_takes() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let lat = g.latency_frames();
+    assert_eq!(
+        lat,
+        240 + 5,
+        "5 ms of lookahead (240) plus the true-peak filter's 5 samples"
+    );
+    let mut s = vec![0.0f32; SAMPLE_RATE as usize / 10 * CHANNELS];
+    let at = 1000;
+    s[at * CHANNELS] = 0.5;
+    s[at * CHANNELS + 1] = 0.5;
+    g.set_source(
+        BusId::Sfx,
+        vec![Source::Pcm {
+            samples: Arc::new(s),
+            t0: 0,
+            looping: false,
+        }],
+    );
+    let out = render(&mut g, SAMPLE_RATE as usize / 10);
+    let first = out
+        .chunks(CHANNELS)
+        .position(|f| f[0] != 0.0)
+        .expect("the impulse arrives");
+    assert_eq!(
+        first,
+        at + lat,
+        "the impulse arrives exactly latency_frames() late"
+    );
+    assert_eq!(
+        out[first * CHANNELS],
+        0.5,
+        "and unchanged: it is under the ceiling"
+    );
+}
+
+// L1 — the ceiling is the show's `truePeakDbtp`, in force from `show.load`.
+
+fn load_show(true_peak: Option<f64>) -> Vec<nbe_engine::audio_control::AudioCommand> {
+    use nbe_engine::directive::DirectiveHandler;
+    use nbe_engine::state::{EngineState, OutgoingQueue};
+    use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
+    let dir = tempfile::tempdir().unwrap();
+    // The engine's load wants a fallback slate it can decode.
+    std::fs::create_dir_all(dir.path().join("media")).unwrap();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        64,
+        32,
+        image::Rgba([10, 20, 30, 255]),
+    ))
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    std::fs::write(dir.path().join("media/slate.png"), &png).unwrap();
+    let mut audio = serde_json::json!({ "sampleRate": 48000, "loudnessTargetLufs": -16 });
+    if let Some(tp) = true_peak {
+        audio["truePeakDbtp"] = serde_json::json!(tp);
+    }
+    let manifest = serde_json::json!({
+        "manifestVersion": "0.4",
+        "network": { "id": "nbe", "name": "T" },
+        "show": {
+            "id": "s", "title": "T",
+            "video": {"width": 1920, "height": 1080, "frameRate": 30, "colorSpace": "rec709"},
+            "audio": audio,
+            "fallbackAssetId": "slate"
+        },
+        "assets": [{ "id": "slate", "kind": "image", "source": "media/slate.png" }],
+        "scenes": [],
+        "rundown": { "id": "R", "items": [] }
+    });
+    std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+    let state = Arc::new(EngineState::new(30));
+    let handler = DirectiveHandler::new(state.clone(), Arc::new(OutgoingQueue::default()));
+    let frame = DirectiveFrame {
+        v: PROTOCOL_VERSION.into(),
+        kind: DirectiveKind::Directive,
+        seq: 1,
+        state_version: 1,
+        command: "show.load".into(),
+        target: serde_json::json!({}),
+        payload: serde_json::json!({ "packagePath": dir.path().to_string_lossy() }),
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(handler.apply(&frame))
+        .expect("show.load");
+    let pending = state.audio_commands.lock().unwrap().clone();
+    pending
+}
+
+#[test]
+fn the_ceiling_is_the_shows_true_peak_from_show_load() {
+    use nbe_engine::audio_control::{apply, AudioCommand};
+    for (declared, expected, source) in [
+        (Some(-3.0), -3.0, "show"),
+        (None, DEFAULT_CEILING_DBTP, "default"),
+    ] {
+        let cmds = load_show(declared);
+        let set: Vec<_> = cmds
+            .iter()
+            .filter(|c| matches!(c, AudioCommand::SetLimiterCeiling { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            set,
+            vec![AudioCommand::SetLimiterCeiling {
+                dbtp: expected,
+                source
+            }],
+            "show.load sets the ceiling once, from the show ({declared:?})"
+        );
+        let mut g = AudioGraph::new(HOUSE_RATE);
+        apply(&mut g, set, &std::collections::BTreeMap::new());
+        assert_eq!(g.limiter_ceiling_dbtp(), expected);
+        g.set_source(
+            BusId::Music,
+            vec![Source::Tone {
+                hz: 997.0,
+                amplitude: 2.0,
+            }],
+        );
+        let out = render(&mut g, SAMPLE_RATE as usize / 2);
+        let peak = sample_peak(&out);
+        let ceiling = 10f64.powf(expected / 20.0);
+        assert!(
+            peak <= ceiling * (1.0 + 1e-6) && peak > ceiling * 0.9,
+            "the {expected} dBTP ceiling is the one in force: the output peaks at {:.2} dBFS",
+            db(peak)
+        );
+    }
+}
