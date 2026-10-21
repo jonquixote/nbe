@@ -221,6 +221,15 @@ they were read before the rerun.
 2026-10-20, item 4; recorded at PR #60's bookend). A carried copy has a fresh
 job id and the original `started_at` and log; it is not a run.
 
+**How floors are counted** (the two-key pass on PR #64, ruled 2026-10-21).
+- In the rust job, a **floor line** is a gate line of the form
+  `<suite>: ran=N skipped=… exercised=… (floors …)`.
+- The `<suite> tests that ran: N` lines are **count gates**. They are read
+  beside the floor lines and named separately.
+- The workspace `TOTAL` line is a summary, not a gate.
+- A floor or a count gate **moves when its threshold in `ci.yml` changes**,
+  not when a count changes.
+
 ## 2c. Records and mandated text
 
 Text mandated verbatim by a prompt stays verbatim until the mandating authority

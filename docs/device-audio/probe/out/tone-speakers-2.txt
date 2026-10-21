@@ -1,0 +1,10 @@
+decoded /Users/johnny/Code/nbe/tests/fixtures/media/av_tone.mp4: 48000 Hz, 2 ch, 48000 frames (1.000 s), peak -17.8 dBFS; playing at -12 dB
+device 125 "MacBook Pro Speakers": nominal 44100 Hz, actual Some(44100.0) Hz, buffer Some(512) frames, device latency (out) Some(19) frames, safety offset (out) Some(77) frames, output streams [126], stream latency [Some(258)] frames
+mic: Ok("MacBook Pro Microphone") SupportedStreamConfig { channels: 1, sample_rate: 44100, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+callbacks 132: frames per callback Some(512)..Some(512), playback-callback 12.67..12.67 ms, first callback 52.6 ms after play()
+nominal rate: before 44100, while open 48000, after close 48000
+restored nominal rate to 44100: status 0, now 44100
+mic Goertzel at the tone's 999.0 Hz: pre-roll median power 2.893e-3, peak 1.103e2 (45.8 dB over), first 10 ms window above +20 dB at Some(699.917022) ms
+Goertzel onset minus cpal's predicted first audible frame: 23.8 ms (10 ms window resolution)
+mic: 78848 samples captured, pre-roll floor 0.0090, onset Some((709177646, 0.03821849))
+acoustic: first audible frame predicted at 676.1 ms (callback arrival + cpal playback delay), mic onset at 709.2 ms (arrival back-dated): round trip beyond the prediction 33.0 ms

@@ -1,0 +1,9 @@
+device 125 "MacBook Pro Speakers": nominal 44100 Hz, actual Some(44100.0) Hz, buffer Some(512) frames, device latency (out) Some(19) frames, safety offset (out) Some(77) frames, output streams [126], stream latency [Some(258)] frames
+drift: 1800 s of silence on "MacBook Pro Speakers" at its own nominal 44100 Hz (no rate change)
+callbacks 155084, frames 79403008, span 1800.5 s (HAL time)
+rate vs HAL host time: 44100.5627 Hz (+12.76 ppm vs nominal), fit residual rms 2.2 frames
+rate vs callback arrival (Instant): 44100.5623 Hz (+12.75 ppm), residual rms 2.8 frames
+kAudioDevicePropertyActualSampleRate: mean 44100.5593 Hz (+12.68 ppm), min 44099.6310, max 44100.9886, 1792 polls
+  skew at    1 min if uncorrected: +0.77 ms (HAL fit)
+  skew at   10 min if uncorrected: +7.66 ms (HAL fit)
+  skew at   30 min if uncorrected: +22.97 ms (HAL fit)

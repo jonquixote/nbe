@@ -731,6 +731,13 @@ adopt and record).
   | `39524251208` attempt 8, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 07:01:18.72 (`Finished` in 30.18 s); the post line at 07:02:01 | whole step 3.60–5.59 (pre, 8 samples, post). While building: 4.07, 3.60, 4.70. While the tests ran: 5.59, 5.19, 4.84, 4.33, 4.18, then the post line's 3.87, so 3.87–5.59. The R10 test passed at 07:01:42.21, between 4.84 and 4.33. The 42th. (The A/B's red attempt, `39524813308` attempt 8 on leg `88c8316`, rust job `119092020542`, failed R15 in the GPU/render step and is not a row) |
   | `39412596238` attempt 3, PR #61 at `25c1114` (its head); the rust job executed alone, green (535/0/4) | the workspace tests: the test build finished at 08:11:44.91 (`Finished` in 1m 03s); the post line at 08:13:04 | whole step 2.09–**11.08** (pre, 15 samples, post): load1 33.23 at 08:11:42, while building, the highest yet, so the maximum moves again. While building: 2.29, 2.09, 3.45, 6.06, 8.17, 9.66, 11.08. While the tests ran: 9.45, 9.46, 9.27, 8.91, 9.01, 9.03, 8.94, 8.24, then the post line's 8.24, so 8.24–9.46. The R10 test passed at 08:12:17.60, between 9.27 and 8.91. The 43rd |
   | `39581255559`, main at `056fed0` (PR #60's merge), green (535/0/4) | the workspace tests: the test build finished at 10:00:55.54 (`Finished` in 30.49 s); the post line at 10:01:51 | whole step 3.73–8.35 (pre, 9 samples, post). While building: 8.35, 7.41, 7.20. While the tests ran: 6.65, 5.92, 6.06, 5.39, 4.66, 4.02, then the post line's 3.73, so 3.73–6.65. The R10 test passed at 10:01:17.92, between 6.06 and 5.39. The 44th |
+  | `39588856402`, PR #64 at `9385404` (its head), green (537/0/4) | the workspace tests: the test build finished at 11:03:05.59 (`Finished` in 49.63 s); the post line at 11:04:15 | whole step 3.74–7.75 (pre, 12 samples, post). While building: 4.96, 4.64, 5.32, 6.43, 7.15. While the tests ran: 7.75, 6.88, 5.95, 5.11, 4.55, 4.69, 4.27, then the post line's 3.74, so 3.74–7.75. The R10 test passed at 11:03:34.23, between 5.95 and 5.11. The 45th |
+  | `39594546676`, main at `2df03a6` (PR #64's merge), green (537/0/4) | the workspace tests: the test build finished at 11:48:33.44 (`Finished` in 33.66 s); the post line at 11:49:32 | whole step 3.84–6.25 (pre, 10 samples, post). While building: 4.58, 4.96, 5.14, 6.25. While the tests ran: 5.42, 4.66, 4.05, 4.06, 4.00, 3.84, then the post line's 3.84, so 3.84–5.42. The R10 test passed at 11:48:56.71, between 4.66 and 4.05. The 46th |
+  | `39724387596`, #61's fresh merge ref (`baff7a4`, `25c1114` into `2df03a6`), green (537/0/4) | the workspace tests: the test build finished at 04:49:34.27 (`Finished` in 48.47 s); the post line at 04:50:43 | whole step 4.48–**11.38** (pre, 12 samples, post): load1 34.13 at 04:48:45, the pre line and the first sample, while building, above 11.08, so the maximum moves. While building: 11.38, 9.96, 8.94, 8.12, 7.95. While the tests ran: 7.32, 6.54, 5.61, 5.75, 6.01, 5.56, 4.81, then the post line's 4.48, so 4.48–7.32. The R10 test passed at 04:50:00.92, between 5.61 and 5.75. The 47th |
+  | `39750595122`, main at `13d3a7e` (PR #61's merge), green (537/0/4) | the workspace tests: the test build finished at 08:50:18.17 (`Finished` in 32.01 s); the post line at 08:51:14 | whole step 4.21–8.08 (pre, 9 samples, post). While building: 8.08, 7.09, 7.47, 7.56. While the tests ran: 7.43, 6.76, 5.82, 5.00, 4.46, then the post line's 4.21, so 4.21–7.43. The R10 test passed at 08:50:41.10, between 6.76 and 5.82. The 48th |
+  | `39765826824`, PR #66 at `7f81237` (merge ref `1348c6a`), green (537/0/4) | the workspace tests: the test build finished at 10:50:34.76 (`Finished` in 1m 01s); the post line at 10:52:00 | whole step 3.90–8.24 (pre, 15 samples, post). While building: 8.24, 7.16, 6.71, 6.58, 6.41, 6.18, 6.01. While the tests ran: 5.26, 4.53, 4.01, 3.90, 4.89, 5.04, 5.08, 5.11, then the post line's 4.84, so 3.90–5.26. The R10 test passed at 10:51:04.28, between 4.01 and 3.90. The 49th |
+  | `39772900798`, PR #66 at `f24b393` (its head; merge ref `64845e8`), green (537/0/4) | the workspace tests: the test build finished at 11:46:28.11 (`Finished` in 47.75 s); the post line at 11:47:44 | whole step 3.28–8.81 (pre, 13 samples, post). While building: 8.81, 7.69, 7.55, 6.87, 6.27. While the tests ran: 5.48, 4.74, 4.04, 3.50, 3.28, 3.46, 3.54, 3.39, then the post line's 3.39, so 3.28–5.48. The R10 test passed at 11:46:57.61, between 4.04 and 3.50. The 50th |
+  | `39931895990`, main at `8d13d3d` (PR #66's merge), green (537/0/4) | the workspace tests: the test build finished at 09:27:45.21 (`Finished` in 33.68 s); the post line at 09:28:45 | whole step 3.74–7.89 (pre, 10 samples, post). While building: 7.89, 6.89, 6.40, 6.23. While the tests ran: 5.52, 5.27, 4.59, 3.96, 3.74, 4.18, then the post line's 4.18, so 3.74–5.52. The R10 test passed at 09:28:09.25, between 5.27 and 4.59. The 51st |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -897,6 +904,55 @@ they extend the envelope; its red attempt is not a row.
 **The ceiling at PR #60's merge: holds at 13.85 per CPU** (44 green runs;
 main's merge run peaked at 8.35, its pre line, under the 11.08 maximum).
 R10 was silent in every run from row 27 to row 44.
+
+**The ceiling at PR #64's merge: holds at 13.85 per CPU** (46 green runs;
+the peaks were 7.75 and 6.25, both under the 11.08 maximum). R10 was silent
+in both.
+
+**The ceiling through #61, #66 and their merges: moves to 14.22 per CPU,
+then holds** (51 green runs; rows 47–51, every one read job-exact). The
+maximum moved from 11.08 to **11.38** per CPU at row 47: load1 34.13 on 3
+CPUs at 2026-10-22T04:48:45Z, the pre line, while building, in #61's
+fresh-ref run `39724387596`, attempt 1, rust job `119644866600`, green.
+**The ceiling is 1.25 × 11.38 = 14.22 per CPU** (load1 42.7 on the 3-CPU
+runner). Rows 48–51 peaked at 8.08, 8.24, 8.81 and 7.89, all under it. R10
+was silent in all five. #65's run `39603865448` is red and adds no row. The
+image was `macos-14-arm64` 20260831.0302.1 throughout.
+
+**R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
+"The rust step's window" in the pinned rule is the workspace test step's:
+its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
+added by #64, are not R10's.
+
+**R15's GPU-step envelope** (the same ruling). The `gpu-*` lines start an
+envelope of their own, under the pinned rule:
+- the maximum per-CPU anywhere in the GPU/render step's window (`gpu-pre`,
+  `gpu-sample`, `gpu-post`);
+- green runs only;
+- a ceiling of 1.25× that maximum.
+
+A `three_frames…` failure in that step is read against it.
+
+| GPU row | Run | gpu-pre | Whole step | gpu-post |
+|---|---|---|---|---|
+| G1 | `39588856402` attempt 1, rust job `119184455758`, PR #64 at `9385404`, green (`prompt04` 19) | 3.74 | 3.74–3.76 (pre, 1 sample, post; 11:04:15–11:04:19Z) | 3.76 |
+| G2 | `39594546676` attempt 1, rust job `119203495290`, main at `2df03a6` (PR #64's merge), green (`prompt04` 19) | **3.84** | 3.61–3.84 (pre, 1 sample, post; 11:49:32–11:49:36Z) | 3.61 |
+| G3 | `39724387596` attempt 1, rust job `119644866600`, #61's fresh ref (`baff7a4`), green (`prompt04` 19) | **4.48** | 4.18–4.48 (pre, 1 sample, post; 04:50:44–04:50:48Z) | 4.18 |
+| G4 | `39750595122` attempt 1, rust job `119729900179`, main at `13d3a7e` (PR #61's merge), green (`prompt04` 19) | 4.21 | 3.90–4.21 (pre, 1 sample, post; 08:51:14–08:51:17Z) | 3.90 |
+| G5 | `39765826824` attempt 1, rust job `119780898668`, PR #66 at `7f81237`, green (`prompt04` 19) | 4.84 | 4.84–**4.88** (pre, 1 sample, post; 10:52:00–10:52:06Z) | **4.88** |
+| G6 | `39772900798` attempt 1, rust job `119804589136`, PR #66 at `f24b393`, green (`prompt04` 19) | 3.39 | 3.39–3.58 (pre, 1 sample, post; 11:47:44–11:47:50Z) | 3.58 |
+| G7 | `39931895990` attempt 1, rust job `120341940415`, main at `8d13d3d` (PR #66's merge), green (`prompt04` 19) | 4.18 | 4.01–4.18 (pre, 1 sample, post; 09:28:45–09:28:49Z) | 4.01 |
+
+After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
+3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
+1.25 × 3.84 = 4.80 per CPU** (load1 14.4), at 2 green runs. This was applied
+under the pinned rule and reported to the user before it was recorded.
+
+**G3 moves the maximum to 4.48** (load1 13.45 on 3 CPUs, the `gpu-pre` line
+and the sample), inside G2's 4.80 ceiling, so the ceiling became 1.25 × 4.48 =
+5.60. **G5 moves it to 4.88** (load1 14.63, the `gpu-post` line), inside
+5.60, so **the ceiling is 1.25 × 4.88 = 6.10 per CPU** (load1 18.3). G4, G6
+and G7 peaked under it, and `three_frames…` passed the GPU step in all five.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -7734,6 +7790,78 @@ item):
   - **CI:** run `39412547573` at `4534ec7` and run `39412596238` at
     `25c1114`, attempts 1 and 2, were red on R15 (the register row's
     sightings), and attempt 3 is green (#61's rerun path, above).
+  - **The two-key pass on #61** (independent; relayed by the user,
+    2026-10-21) HOLDS on 1–10. Its three disputes were ruled:
+    1. `npm test` 198 → 200 in the record: the stale figure corrected. The
+       body and CI agree.
+    2. **R28 FILED** (the register): the automation suite hangs when
+       `nbe-preflight` is not built. Its fix rides the test-hygiene PR.
+    3. The R24 tests' calendar window: a note on R24's row, and the instant
+       made safe in the same test-hygiene PR.
+  - **The builder's two-key record:**
+    1. **Concur.** #61's attempt-1 control-plane job printed `passed=200
+       failed=0`, with R24's two tests `ok` (job `118593763908`, read
+       job-exact by `gh api --allow-escape-sequences
+       …/actions/jobs/118593763908/logs`).
+    2. **Concur, reproduced** (R28's row). The sibling lines check out:
+       `prompt04.rs:327` bounds `late > budget && late <= 2 * budget`, and
+       `prompt11_watchdog.rs:141` bounds `l <= TRIP_BUDGET`.
+    3. **Disputed, and upheld on 2026-10-22: there is no midnight window;
+       there is a DST one.**
+       - The evaluator reads the wall clock once per arming
+         (`automation.ts:758`).
+       - The R24 test's body was run with the instant forced, at 23:59:59,
+         00:00:00, 00:00:01 and 12:00:00, under both clocks. `25c1114` gave
+         1 action and no rate-limited row everywhere. `cd3f0c6` gave 2
+         actions on the frozen clock, and 1 action plus a rate-limited row
+         on the live one. So there is no midnight window.
+       - Under `TZ=America/New_York`, an instant in fall-back's repeated
+         hour (2026-11-01 01:30:00, the second pass, 06:30Z) resolves
+         through `setHours` to the first pass (05:30Z). That is behind the
+         read, so the rule arms for tomorrow, and the test sees 0 actions.
+         The first pass, and UTC at both instants, read 1.
+       - R24's row carries the DST note.
+    - **An observation, not filed:** the same resolution governs production.
+      A rule whose `at` falls in the repeated hour, armed during the second
+      pass, waits a day.
+  - **#61's fresh merge ref** (the user's order of 2026-10-21):
+    - #61 was closed and reopened at 04:48Z on 2026-10-22, with its head
+      unmoved (`25c1114`).
+    - **The run:** `39724387596`, attempt 1. Every job executed (each started
+      at 04:48:05Z) and checked out `baff7a4` (`25c1114` merged into
+      `2df03a6`). Each job was read job-exact. The image was
+      `macos-14-arm64` 20260831.0302.1.
+    - **rust** (job `119644866600`): 537/0/4; 32/32 floor lines; the 4 count
+      gates (prompt04 19, prompt07_overlay 13, prompt07b_graphics 14,
+      bindings 3). R15's `three_frames…` was `ok` in both steps, and R10 was
+      silent.
+    - **control-plane** (job `119644866509`): `passed=200 failed=0`;
+      automation 37/37; every floor held; the refused start raised at
+      2020 ms.
+    - **dress** (job `119644866418`): 29/29, exercised 18, step 5 `ok`.
+      Drops 0, underruns 204, watchdog trips 0.
+    - **Envelope row 47 and GPU row G3** (Finding R10): R10's maximum moves
+      to 11.38 per CPU and its ceiling to 14.22. The GPU maximum moves to
+      4.48 and its ceiling to 5.60.
+  - **Merged: PR #61 is `13d3a7e`** (the bookend), on the user's word.
+    - **The merge:** a squash at 2026-10-22T08:49:02Z, by the user's command,
+      matched to `25c1114`, with the staged subject and body (`diff` clean).
+      The user's terminal printed "already merged". The merge record shows
+      one squash, with that subject and body. Its one parent is `2df03a6`.
+    - **The tree is the tested merge ref's:** `13d3a7e^{tree}` =
+      `baff7a4^{tree}` = `ad701e3`. It differs from `25c1114`'s by #60's and
+      #64's files.
+    - **The branch:** the remote branch outlived gh's "Deleted remote
+      branch".
+    - **Main's CI:** run `39750595122` (push), attempt 1. Every job executed
+      and checked out `13d3a7e`, and each was read job-exact.
+      - rust: 537/0/4, 32/32 floor lines; R15 `ok` in both steps; R10
+        silent.
+      - control-plane: 200/200, R24's tests `ok`, every floor held; the
+        refused start raised at 2014 ms.
+      - dress: 29/29, step 5 `ok`, drops 0.
+    - **Envelope row 48 (8.08) and GPU row G4 (4.21):** both ceilings hold.
+    - **R24 is FIXED by `13d3a7e`** (the register). R15's run is 4 of 10.
 
   **R15's construction: the three-frame pin counts lateness in frames**
   (branch `r15-three-frames-in-frames`, off `056fed0`; the user's order of
@@ -7811,11 +7939,28 @@ item):
       battery was rerun as v2 (`copyfile`, `touch`, and a rebuild after
       every restore), and v2 is the record.
   - **One limit, put to the user:** the deadline arm's rounding above one
-    budget (`ceil` against `floor().max(1)`) is caught only when a stalled
-    frame lands where they differ. Pinning it always needs a clock seam in
-    `render.rs`, which is engine code, not test-only.
+    budget (`ceil` against `floor().max(1)`) ~~is caught only when a stalled
+    frame lands where they differ~~ *(§2c, the two-key pass on #64, ruled
+    2026-10-21: it is undetected deterministically in both the named case and
+    the emulated stall. `frames_late` mirrors `render.rs:876–877`'s
+    expression, so the oracle follows the engine, and a `floor` mutant passed
+    19/19. Only a real stall landing a frame between one and two budgets late
+    shows it.)*. Pinning it always needs a clock seam in `render.rs`, which is
+    engine code, not test-only. **The clock-seam candidate names both cases:**
+    with an injected elapsed time, the named case counts exactly 1 and the
+    stalled frame exactly 3, and a rounding change fails both.
   - **Floors:** none move. `prompt04` runs 19 (was 17) against its "at
     least one" gate, and the workspace `TOTAL` (no floor) reads 537.
+    *(§2c, the two-key pass on #64, ruled 2026-10-21, the convention pinned:*
+    - *a **floor line** is a gate line of the form `<suite>: ran=N …
+      (floors …)`, 32 in the rust job at `9385404`;*
+    - *the `<suite> tests that ran: N` lines are **count gates**, named
+      separately: four, `prompt04` ≥ 1 (`ci.yml:159`), `prompt07_overlay`
+      ≥ 13 (`:223`), `prompt07b_graphics` ≥ 14 (`:240`) and `bindings` ≥ 3
+      (`:257`);*
+    - *the workspace `TOTAL` is a summary, not a gate;*
+    - *a floor moves when its threshold in `ci.yml` changes. #64 moved none
+      of either.)*
   - **The gate** (times UTC unless marked local, −0700): AC, `caffeinate -i -s`, and no sleep or
     battery event in the window:
     - builds, `fmt` and `clippy --workspace --all-targets` clean;
@@ -7843,6 +7988,101 @@ item):
       headroom, in 2 tests.
     The `gpu-*` load lines are named apart from R10's window, so they extend
     R10's envelope only if the user rules that they do.
+
+  **#64's CI at the reviewed head, read per test (§2b).** Run `39588856402`
+  (`pull_request`, head `9385404`), attempt 1, the only attempt, so every job
+  executed (each `started_at` between 11:01:28Z and 11:01:29Z). Each job was
+  read job-exact by `gh api --allow-escape-sequences
+  repos/jonquixote/nbe/actions/jobs/<id>/logs`.
+  - **rust** (job `119184455758`): `TOTAL: 537 passed, 0 failed, 4 ignored`,
+    32 of 32 floor lines held, no `FAIL` line.
+    - **The GPU/render step** ran `prompt04` 19 (was 17), and printed
+      `R15-COUNTS counts=[1, 3, 1]` (the emulated stall), `R15-COUNTS
+      counts=[1, 1, 1]`, and `SKIP normative: each frame late by at most one
+      budget (counts [1, 1, 1])`. `three_frames…`, `a_stalled…` and
+      `the_loops_watchdog…` were `ok` in both steps.
+    - **R15's GPU-step capture, its first reading:** `gpu-pre` 3.74 per CPU
+      (11:04:15Z), one `gpu-sample`, `gpu-post` 3.76 (11:04:19Z). The step
+      took about 4 s (GPU row G1).
+    - **R10:** silent. The workspace step peaked at 7.75 (envelope row 45).
+  - **control-plane** (job `119184456154`): `passed=198 failed=0`, every floor
+    line held, operator-signals ran 4 and exercised 1, and `LANE-LEG refused`
+    raised at 2006 ms.
+  - **dress** (job `119184456190`): 29/29, skips 11, exercised 18. Step 5
+    `ok`. Drops 0, underruns 185, watchdog trips 0.
+
+  **The two-key pass on PR #64** (independent; relayed by the user on
+  2026-10-21). Verdict: **HOLDS on 1–10**, with three disputes, all ruled. It
+  was taken at the reviewed head `9385404`, before the merge word.
+  - **The builder's two-key record: it concurs on all three, each checked
+    against the tree.**
+    1. **The body annotation, "no production crate file touched": concur.**
+       `git diff --stat 056fed0 9385404` touches five files: `ci.yml`,
+       `crates/nbe-engine/tests/prompt04.rs`, and three docs. There is no
+       `crates/*/src/` file and no Cargo manifest or lock. The PR body
+       carries the annotation (§2c).
+    2. **The floor-counting convention, pinned: concur** (above, at
+       "Floors", and in `docs/implementation-standards.md` §2b).
+    3. **The `ceil` limit, widened to both cases: concur, and measured.**
+       - `frames_late` (`prompt04.rs:351–353`) mirrors the deadline arm's
+         expression (`render.rs:876–877`), so the oracle moves only with the
+         engine.
+       - `render.rs:876`'s `.ceil()` was mutated to `.floor()`, and `prompt04`
+         passed **19/19** (11:41:52–11:41:57Z, load 2.11 → 2.10). It printed
+         the oracle's own `ceil` counts, `[1, 1, 1]` and `[1, 3, 1]`.
+       - The file was restored with `copyfile`, a fresh mtime and a rebuild
+         (the engine rlib rebuilt at 04:42:05 local and the test binary at
+         04:42:08, both after the restore at 04:41:57). It was then
+         `cmp`-identical and `git`-clean, and 19/19 again.
+       - The build record's limit is struck and widened (above).
+  - **Ruled with the pass (the user's word of 2026-10-21):**
+    - **R15:** fix landed by #64. It closes after 10 consecutive green rust
+      jobs with no `three_frames…` failure, and any failure reopens the
+      R20-residual line (the register row).
+    - **The envelopes:** R10's stays workspace-step-only. The `gpu-*` lines
+      start R15's GPU-step envelope under the pinned rule (Finding R10, the
+      GPU-step table).
+    - **The siblings** (`prompt04.rs:327`, `prompt11_watchdog.rs:141`) are
+      queued as the next small test-only PR.
+
+  **Merged: PR #64 is `2df03a6`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-21: a squash at 2026-10-21T11:47:14Z
+  (parent `056fed0`), pinned to the reviewed head `9385404`. The merge tree
+  `a8c6069` is identical to `9385404`'s, and `git diff 9385404 2df03a6` is 0
+  lines. The squash subject and message equal the staged
+  `pr64-merge-subject.txt` and `pr64-merge-body.md`.
+
+  Main's CI at `2df03a6`, run `39594546676` (`push`), attempt 1, the only
+  attempt, so every job executed (each `started_at` between 11:47:20Z and
+  11:47:21Z). Each job was read job-exact by `gh api
+  --allow-escape-sequences repos/jonquixote/nbe/actions/jobs/<id>/logs`:
+  - **rust** (job `119203495290`, executed):
+    - `TOTAL: 537 passed, 0 failed, 4 ignored`. 32 of 32 floor lines held,
+      and the four count gates read `prompt04` 19, `prompt07_overlay` 13,
+      `prompt07b_graphics` 14 and `bindings` 3. No `FAIL` line.
+    - **R15:** `three_frames…` passed at 11:48:41Z in the workspace step and
+      at 11:49:35Z in the GPU/render step, with `a_stalled…` and
+      `the_loops_watchdog…` `ok` in both. The GPU step printed both
+      `R15-COUNTS` lines and the `SKIP normative:` line. **This is 1 of the
+      10** consecutive green rust jobs R15's closing rule counts.
+    - **R10:** silent (11:48:56Z, 11:49:56Z). Envelope row 46 peaked at 6.25,
+      so the ceiling holds at 13.85.
+    - **GPU row G2:** `gpu-pre` 3.84 (11:49:32Z), one `gpu-sample`, `gpu-post`
+      3.61 (11:49:36Z). **The GPU-step maximum moves to 3.84 and its ceiling
+      to 4.80** (applied under the pinned rule, and reported to the user
+      before it was recorded).
+    - The image was `macos-14-arm64` 20260831.0302.1.
+  - **control-plane** (job `119203495462`, executed): `passed=198
+    failed=0`, every floor line held, operator-signals ran 4 and exercised 1,
+    and `LANE-LEG refused` raised at 2015 ms.
+  - **dress rehearsal** (job `119203495475`, executed): `ran=29 passed=29
+    failed=0 skips=11 exercised=18`. Step 5 `ok`. `DRESS-COUNTS` drops 1,
+    underruns 147, watchdog trips 0.
+  - **#61 untouched:** head `25c1114`, held for its two-key pass.
+  - **The staged records land here** (`.git/nbe-staged/after-pr64-records.md`
+    A–I): this block; the strike and the floor convention in R15's build
+    record; §2b's note; envelope rows 45–46; the GPU-step table; and R10's and
+    R15's register rows.
 
   **R29's fix: the dress waits for the load's rings before `show.start`**
   (PR #66, branch `r29-dress-residency-gate`, off `13d3a7e`; the user's
@@ -7892,7 +8132,7 @@ item):
     - **F2's 505–638 ms is `show.start` after the rings.** #66's CI read
       564 ms, inside the range of trees before R20 (241–1246).
     - **Voids:** 10 attempts (F1 3, F2 5, F3 2), each ending at 3.03–3.62.
-      Every one agreed with its variant's kept result. The cause was the
+      ~~Every one agreed with its variant's kept result.~~ *(§2c, #66's two-key pass: as counts.)* F1's 3 voided attempts passed step 3 (66, 99, 93 ms), F2's 5 passed (557, 541, 541, 560, 516 ms), and F3's 2 failed. Those are the outcomes of each variant's kept runs. A void counts toward no result. The cause was the
       inflated dress's own burst (8 decodes) on an ambient ~2.6: iTerm
       (with `top` open in it; the first void named `/usr/bin/top` at 43.9%),
       WindowServer, `coreaudiod` and this session. One F2 entry voided three
@@ -7913,7 +8153,7 @@ item):
     - operator-signals: ran 4, passed 3, skipped 1 (04:41:54–04:42:24,
       2.48 → 2.89). The skip is the refused start: this machine's encoder
       acknowledges `stream.start`. The lost-stop, restart and held tests go
-      through `onAir()`, so they ran on the shared predicate. One void
+      through `onAir()`, so they ran on the shared predicate. *(§2c, #66's two-key pass: both compositions.)* On CI (`f24b393`, job `119804588742`) the composition is the mirror image: ran 4, exercised 1 (the refused start), skipped 3 (lost stop, restart and held: "no hardware H.264 encoder"). The predicate ran on both surfaces, through complementary tests. One void
       (2.23 → 3.40, `coreaudiod` beside iTerm and WindowServer);
     - the full dress, stock and gated, 29/29 (04:42:54–04:44:03, 2.43 →
       2.70). `DRESS-COUNTS`: drops 0, underruns 0, watchdog trips 0, rises
@@ -7932,7 +8172,176 @@ item):
     - Its envelope rows (R10 row 49 at 8.24 per CPU, and the GPU step's G5
       at 4.88, which moves that ceiling to 6.10) are staged with #61's rows
       47–48 and G3–G4. They land with #65's records, which hold rows 45–46
-      and G1–G2, so the rows stay in order. R15's run is 5 of 10.
+      and G1–G2, so the rows stay in order. R15's run is 5 of 10. *(They
+      landed with #65's records: rows 47–51 and G3–G7, Finding R10.)*
+
+  **The two-key pass on PR #66** (independent; relayed by the user on
+  2026-10-23) HOLDS on 1–10. It raised four disputes, all ruled, and the
+  builder concurs on each:
+  1. **Both operator-signals compositions are stated** (the gate above).
+  2. **The 40-run accounting is pinned** (R29's row): 22 runs without R20
+     (241–1246 ms) and 18 with it (437–3333 ms).
+     - Pinning found `0fc45cb` (run `39209726459`, 437 ms, attempt 6's
+       artifact) to be an R20 tree: it is #57's second-key temp branch, with
+       60 read-ahead mentions in `crates/nbe-engine/src` against 3 at
+       `5043ccf`.
+     - **The builder's slip:** #65's diagnosis had filed it under trees
+       without R20, and R29's row had left it out.
+     - "Only trees carrying R20 exceed 1246 ms" holds on the pinned count.
+  3. **The wording "the counts agree"** is replaced: the voids above now
+     read as counts.
+  4. **The 6 ms is this phase's miss**, with the class finding carried in
+     R29's row. Step 3's 3-tick window is in effect two ticks, decided by
+     tick phase. The test-hygiene PR owns it.
+  - **R25's hardening candidate** (the user's ruling, as the builder refined
+    it):
+    - the split line stays open for the operator-signals lane: the join
+      lives in `dress-rehearsal.test.ts`, not in the shared module, and
+      `show-stop.harness.ts:263–267` still splits each chunk with no carry;
+    - count-vs-identity stays open for both lanes;
+    - the user's earlier wording overstated the coverage, and R25's row is
+      corrected.
+
+  **#66's CI at the reviewed head `f24b393`** (docs-only since `7f81237`):
+  - **The run:** `39772900798`, attempt 1. Every job executed and checked out
+    `64845e8`, whose tree equals `f24b393`'s (`d249519`). Each job was read
+    job-exact, and the dress artifacts were fetched by `gh run download`.
+  - **rust:** 537/0/4, 32/32 floor lines, the 4 count gates. R15 was `ok` in
+    both steps, and R10 was silent.
+  - **control-plane:** 200/200, every floor held; the refused start raised at
+    2018 ms.
+  - **dress:** 29/29, drops 0. Load 1's start to epoch was 697 ms.
+  - **Envelope row 50 (8.81) and GPU row G6 (3.58):** both ceilings hold.
+
+  **Merged: PR #66 is `8d13d3d`** (the bookend), on the user's word.
+  - **The merge:** a squash at 2026-10-23T09:26:35Z, matched to `f24b393`,
+    with the staged subject and body (`diff` clean). Its one parent is
+    `13d3a7e`.
+  - **The tree is identical to the reviewed head's:** `8d13d3d^{tree}` =
+    `f24b393^{tree}` = `d249519`.
+  - **Main's CI:** run `39931895990` (push), attempt 1. Every job executed and
+    checked out `8d13d3d`. Each job was read job-exact (`gh api
+    --allow-escape-sequences …/actions/jobs/<id>/logs`). The image was
+    `macos-14-arm64` 20260831.0302.1.
+    - **rust** (job `120341940415`): 537/0/4, 32/32 floor lines, the 4 count
+      gates. R15's `three_frames…` was `ok` in both steps (09:27:52.93Z and
+      09:28:49.06Z), and R10 was silent.
+    - **control-plane** (job `120341940969`): 200/200, every floor held; the
+      refused start raised at 2000 ms.
+    - **dress** (job `120341940725`): 29/29, steps 2, 3 and 5 `ok`. Drops 0,
+      underruns 226, watchdog trips 0. Load 1's start to epoch was **65 ms**:
+      the gate is live on main.
+  - **Envelope row 51 (7.89) and GPU row G7 (4.18):** both ceilings hold.
+  - **R29 is FIXED by `8d13d3d`** (the register). **R15's run is 7 of 10.**
+
+  **R26's limiter (PR #65, branch `limiter-8-2`): its CI red, diagnosed, and
+  its local evidence** (the user's ruled order of 2026-10-22). The build
+  record follows the rebased head's CI.
+  - **The commits named here are the pre-rebase SHAs,** at which the
+    evidence was taken. The rebase onto `8d13d3d` (2026-10-23) left every
+    engine, test and `ci.yml` patch identical: in `git range-diff`, commits
+    2–7 are `=`, and `crates/` is identical between `3972e8c` and the
+    rebased head.
+  - **The red run, `39603865448` at `d571f93`** (attempt 1, its only
+    attempt; every job read job-exact):
+    - **The dress stall at step 3 is not the limiter.** It is R29, filed and
+      fixed by #66.
+      - The clock started 3333 ms after `show.start` was sent, and telemetry
+        never stopped.
+      - The limiter runs on the `nbe-audio` thread, which takes the
+        `audio_commands` lock only to drain a bounded batch. Its 245 frames
+        delay samples, not the clock.
+      - Its cost, estimated and not measured: 96 MACs per stereo frame, plus
+        an amortised O(1) min-deque. That is about 10 MFLOP/s at 48 kHz,
+        under 1% of a core.
+      - The pre-limiter `2497bc8` showed the same signature, at 3040 ms.
+    - **The midmix 3-vs-2 (`prompt04_midmix.rs:526`) is behavior, not
+      alignment.** It was proven before a line changed (2026-10-22, AC,
+      `caffeinate`):
+      - reproduced at `d571f93` (03:18:08–03:18:22, 2.60 → 2.62), with
+        `prompt06` 32/32, `prompt13_recall` 6/6 and `limiter` 9/9 beside
+        it;
+      - the queue printed `[SetLimiterCeiling { dbtp: -1.5, source: "show"
+        }, TakeItem A2 t0 1, TakeItem A3 t0 11]`;
+      - with only `show.load`'s ceiling push removed, it read 20/20;
+      - the restored tree, rebuilt, read 19/20 again.
+
+      `show.load` publishes the L1 ceiling on the shared queue, and that
+      harness runs no audio driver to drain it. The fix (`3972e8c`): the
+      test clears the load's intents, as `prompt13_recall.rs:179` does.
+    - CI's workspace step stopped at that first failing binary, so CI never
+      ran #65's full workspace.
+  - **The battery** (`3972e8c`; 2026-10-22, 03:39–04:03; AC, `caffeinate`):
+    - Each entry was an exact, count-checked replacement. Each restore wrote
+      the file back from `git show HEAD:`, which gives a fresh mtime, and was
+      checked `git`-clean.
+    - Each window ran `limiter`, `prompt06` and the limiter unit tests with
+      `--no-fail-fast`. It started under load 2.8 and was kept only if both
+      ends were under 3.0.
+    - The driver and its log are in `.git/nbe-staged/limiter-battery/`. The
+      first armed battery was lost with the session scratch in the disk
+      cleanup, and was rebuilt from the limiter plan.
+    - The controls, before and after (03:42:58, 2.68; 04:03:25, 2.44), read
+      9/9, 32/32, 2/2.
+    - **17 of 17 killed:**
+
+    | # | Mutant | Kept window, load | Killed by |
+    |---|---|---|---|
+    | M01 | the clamp at full scale (R26 itself) | 03:47:24–03:47:28, 2.71 → 2.71 | F1, F2, F3, F4, F7, F9, the show's-ceiling test, **F10**, F8's precondition, and the moved trigger and voice tests |
+    | M02 | a clamp at the ceiling | 03:49:20–03:49:24, 2.75 → 2.61 | F2, F3, F4, F7, F9, **F10**, and the moved trigger and voice tests |
+    | M03 | no lookahead (the gain on the undelayed frame) | 03:50:18–03:50:21, 2.65 → 2.52 | F1, F4, F7, F9, the show's-ceiling test, **F10**, and the moved trigger and voice tests |
+    | M04 | the gain one sample late | 03:52:56–03:53:00, 2.64 → 2.67 | F1 (the +20 dBFS impulse) |
+    | M05 | no release | 03:53:50–03:53:55, 2.53 → 2.57 | F6 |
+    | M06 | a 10 ms release, not L4's 100 ms | 03:56:30–03:56:34, 2.46 → 2.34 | F6 |
+    | M07 | the right channel unlinked | 03:57:13–03:57:16, 2.70 → 2.56 | F7, F1, the show's-ceiling test, **F10**, and F8's precondition |
+    | M08 | the gain below unity on quiet signals | 03:57:50–03:57:55, 2.53 → 2.57 | F4, F6, F9 |
+    | M09 | an allocation per frame | 03:58:15–03:58:19, 2.54 → 2.58 | F8, and `rendering_a_block_allocates_nothing` |
+    | M10 | `latency_frames()` one high | 03:58:39–03:58:44, 2.78 → 2.64 | F9, F4, and the latency unit test |
+    | M11 | sample-peak detection only (L2) | 03:59:19–03:59:23, 2.72 → 2.58 | F2 |
+    | M12 | `show.load` ignoring `truePeakDbtp` | 03:59:58–04:00:03, 2.51 → 2.47 | the show's-ceiling test |
+    | M13 | the attack stepped | 04:00:22–04:00:27, 2.74 → 2.74 | F5 (9 samples, against 240) |
+    | M14 | the ceiling dropped where it is applied (a disclosed extra) | 04:01:02–04:01:06, 2.79 → 2.72 | the show's-ceiling test (its apply half) |
+    | RF1 | re-falsification: the trigger starts at full gain | 04:01:26–04:01:31, 2.70 → 2.73 | the moved `a_soundboard_trigger_is_audible_within_20ms` |
+    | RF2 | re-falsification: the mute steps | 04:02:06–04:02:10, 2.52 → 2.40 | the moved `muting_a_bus_ramps_instead_of_stepping`, and both guest-mute tests |
+    | RF3 | re-falsification: the voice is cut | 04:02:30–04:02:35, 2.74 → 2.60 | the moved `stopping_a_soundboard_voice_ramps_it_out` |
+
+    - **F10, the rebuilt R26 test,** is re-falsified by the clamp (M01) and
+      also killed by M02, M03 and M07. So each of the four moved tests still
+      catches its original mutant.
+    - **Three voids** (CONTROL-before a1, M03 a1, M07 a1; ending at
+      3.01–3.23), each rerun and kept. **The cause, from each `ps`:**
+      XprotectService (92.8–94.5% CPU) and `syspolicyd`, macOS assessing
+      each freshly built test binary. Beside them, once, was CleanMyMac's
+      HealthMonitor, and once airportd and WiFiAgent. XProtect joins the
+      ambient-load list.
+  - **The valid red run, at `b7dcc43`** (04:49:14–04:49:17, 2.32, kept):
+    - `limiter.rs` 0/3:
+      - F1: "a sample left at 0.00 dBFS, over the -1.50 dBTP ceiling";
+      - F2: "the true peak left at -0.04 dBTP … its samples peak at -3.01
+        dBFS";
+      - F3: "a run of 19 samples at one magnitude".
+    - `prompt06` 30/31, with F10 red: "1.000, against 0.841".
+  - **The local gate, at `3972e8c`** (04:49–05:21):
+    - builds, `fmt` and `clippy -D warnings` clean;
+    - **kept and green:**
+      - prompt04 19/19;
+      - prompt04_midmix 20/20;
+      - limiter 9/9;
+      - prompt06 32/32;
+      - prompt07_overlay 13/13;
+      - prompt07b_graphics 14/14;
+      - bindings 3/3;
+      - the dress 29/29 (05:20:05–05:21:06, 2.39; `DRESS-COUNTS` drops 0,
+        underruns 0, watchdog trips 0).
+    - **The workspace read 549/0/4 three times, and `npm test` 198/198
+      three times. Every window was void, on the suite's own burst** (ends
+      3.34–6.71). This is the first full workspace read of #65. CI at the
+      rebased head is its clean witness.
+    - **The master peak (the plan's named check)** was −15.00 dBFS, the same
+      as #66's limiter-free CI dress. The limiter is transparent on the
+      dress's program, as F4 requires.
+    - The normative machine's dress is not the surface of the CI-class
+      stall (R29).
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -8512,6 +8921,10 @@ register was opened with one entry; the spec has not been swept for others.
 | # | The MUST | Where the tree stops | Owner |
 |---|---|---|---|
 | U1 | §12.10: "Preflight MUST report per loop" (`assetId`, `periodFrames`, `selectedTextureFormat`, `frameCostMib`, `effectiveBudgetMib`, `maxFramesByBudget`, `cachePolicySelected`, `vramResident`, `reason`) | `LoopReport` exists in `nbe-core`'s model and is never populated: preflight writes no `loops[]` entries (found on PR #59). A plan's `reason` therefore surfaces nowhere. For a streamed loop it reads "streaming with N frames read-ahead", which this engine does not do (R23), so it must not ship as it reads when the report is built | unassigned |
+| U2 | `LayerAudio.gainDb` (`schemas/manifest.v0.4.json:730–734`; SPEC §8.2's per-bus gain, the element's own level) is declared and parsed (`nbe-core/src/manifest.rs:516`) | the engine reads only `audio.bus` and `audio.muted` (`crates/nbe-engine/src/scene.rs:766–777`); a take's gain is unity, or −60 dB for `mute` (`audio_control.rs:111–140`) | device audio, this era (`docs/device-audio-design.md`, D4) |
+| U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | device audio, this era (`docs/device-audio-design.md`, D4) |
+| U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | device audio, this era (`docs/device-audio-design.md`, D5) |
+| U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | there is no device sink today. The device build opens one and does not reopen it. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 

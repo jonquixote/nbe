@@ -1,0 +1,15 @@
+# The device-audio probe (docs/device-audio-design.md, section 2). Evidence, not
+# a build target: it is its own workspace, not a member of the repo's, and CI
+# does not build it. It ran with the absolute path to the same nbe-decode.
+[workspace]
+
+[package]
+name = "audio_probe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.18.2"
+objc2-core-audio = "0.3.2"
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+nbe-decode = { path = "../../../crates/nbe-decode" }

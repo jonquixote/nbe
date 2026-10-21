@@ -1,0 +1,15 @@
+cpal host: CoreAudio
+device 125 "MacBook Pro Speakers": nominal 44100 Hz, actual Some(44100.0) Hz, buffer Some(512) frames, device latency (out) Some(19) frames, safety offset (out) Some(77) frames, output streams [126], stream latency [Some(258)] frames
+  cpal default output config: Ok(SupportedStreamConfig { channels: 2, sample_rate: 44100, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 })
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 44100, max_sample_rate: 44100, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 48000, max_sample_rate: 48000, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 88200, max_sample_rate: 88200, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 96000, max_sample_rate: 96000, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+device 99 "VB-Cable": nominal 48000 Hz, actual Some(48000.0) Hz, buffer Some(512) frames, device latency (out) Some(0) frames, safety offset (out) Some(0) frames, output streams [100], stream latency [Some(0)] frames
+  cpal default output config: Ok(SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 })
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 44100, max_sample_rate: 44100, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 48000, max_sample_rate: 48000, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 88200, max_sample_rate: 88200, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 96000, max_sample_rate: 96000, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 176400, max_sample_rate: 176400, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }
+  cpal supported: SupportedStreamConfigRange { channels: 2, min_sample_rate: 192000, max_sample_rate: 192000, buffer_size: Range { min: 15, max: 4096 }, sample_format: F32 }

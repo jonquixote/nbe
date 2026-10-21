@@ -1,0 +1,13 @@
+device 99 "VB-Cable": nominal 48000 Hz, actual Some(48000.0) Hz, buffer Some(512) frames, device latency (out) Some(0) frames, safety offset (out) Some(0) frames, output streams [100], stream latency [Some(0)] frames
+cpal error callback: A buffer underrun or overrun occurred.
+loopback input error: A buffer underrun or overrun occurred.
+callbacks 278, buffer 512 frames (10.67 ms), stall 40 ms at callback 50, cpal error callbacks 1
+  cb   48: arrived   828.597 ms, HAL callback time   512.000 ms, playback   522.667 ms, frames 512
+  cb   49: arrived   839.232 ms, HAL callback time   522.667 ms, playback   533.333 ms, frames 512
+  cb   50: arrived   849.789 ms, HAL callback time   533.333 ms, playback   544.000 ms, frames 512
+  cb   51: arrived   900.955 ms, HAL callback time   584.417 ms, playback   595.083 ms, frames 512
+  cb   52: arrived   911.597 ms, HAL callback time   595.083 ms, playback   605.750 ms, frames 512
+  cb   53: arrived   922.297 ms, HAL callback time   605.750 ms, playback   616.417 ms, frames 512
+  cb   54: arrived   932.916 ms, HAL callback time   616.417 ms, playback   627.083 ms, frames 512
+HAL callback-time step across the stall: 51.083 ms = 4.79 buffer periods
+loopback: 153599 frames captured from first signal; silent runs (offset, frames) [(24063, 512)]
