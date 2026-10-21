@@ -7735,6 +7735,115 @@ item):
     `25c1114`, attempts 1 and 2, were red on R15 (the register row's
     sightings), and attempt 3 is green (#61's rerun path, above).
 
+  **R15's construction: the three-frame pin counts lateness in frames**
+  (branch `r15-three-frames-in-frames`, off `056fed0`; the user's order of
+  2026-10-21, after #60's merge; test-only + `ci.yml`). R15 stays OPEN until
+  the rebuilt test accrues green history (the register row).
+  - **The commits:**
+    - `aaff4a8`: #60's post-merge records, and every record staged since
+      #60's head (above);
+    - `507f54c`: the construction. A shared helper, `late_frames`, asserts
+      four things for each frame, in order, that hold whatever the wall
+      clock did. The loop drew the frame asked for. The frame is late, by
+      construction (`sleep` sleeps at least as long as asked, and every
+      delay exceeds the budget). It is one more dropped frame (§10.2). Its
+      lateness is counted in frames from the loop's own measurement,
+      `ceil(late / budget)`, and the slate is up exactly when the frames
+      counted so far exceed 2 (§10.3). The warm-up frame has no deadline, so
+      it is on time by construction. Three tests use it:
+      - `three_frames_each_late_by_under_one_budget_trip_the_watchdog`
+        (rebuilt): the slate is up after three late frames, always. The
+        one-budget bound (counts `[1, 1, 1]`) is asserted on the normative
+        machine only, by the dress rehearsal's fail-closed rule; a GitHub
+        Actions runner logs `SKIP normative:`;
+      - `a_stalled_late_frame_moves_the_trip_to_where_the_frames_counted_say`
+        (new): a stall emulated on the second frame (400 ms more work). It
+        counts at least 3, and the trip comes by the second frame;
+      - `the_loops_watchdog_sums_frames_missed_and_trips_above_two` (new):
+        §10.3's law with no clock. The loop's own watchdog hears counts: a
+        double miss does not trip, an on-time frame resets, and three single
+        misses trip on the third.
+      Each via-the-loop run prints `R15-COUNTS`;
+    - `b30402d`: R15's load capture wraps the GPU/render step (`gpu-pre`,
+      a detached `gpu-sample` every 10 s, an `if: always()` `gpu-post`; every
+      command `|| true`, both steps `continue-on-error`). The prompt04 step
+      runs with `--nocapture`, so `R15-COUNTS` and `SKIP normative:` reach
+      the log.
+  - **The acceptance criterion** (the user's): a stalled runner must fail
+    never, and a genuine frame-policy regression must fail always. Off the
+    normative machine every assertion is either a lower bound a stall can
+    only strengthen, or §10.3's law applied to the loop's own counts. The
+    machine rule was exercised all three ways locally: normative asserted,
+    `GITHUB_ACTIONS=true` skipped with its line, and `CI=1` alone refused.
+  - **The falsification** (times UTC): the engine's and the test's sources were mutated in
+    place. Each was restored `cmp`-identical and `git`-clean, with a fresh
+    mtime, and rebuilt before the next run. A control on the restored tree
+    ran before the battery and after it (10:35:12–10:35:17, 2.42 → 2.62, and
+    10:42:48–10:42:52, 2.31 → 2.37), 19/19 each. AC, `caffeinate`, and every
+    kept window under 3.0.
+
+    | # | Mutation | Killed by | Window, load |
+    |---|---|---|---|
+    | M1 | **a dropped frame:** the deadline arm loses the second late frame (not counted, and the watchdog told it was on time) | `three_frames…` (`frame 2: 210ms of work against 200ms is late by construction`), `a_stalled…`, `a_late_view_frame…` | 10:35:48–10:35:52, 2.35 → 2.32 |
+    | M2 | a dropped frame, from the watchdog only: the second late frame counted, but reported on time | `three_frames…` (`frame 3, counts [1, 1, 1]`, the slate down), `a_stalled…` (`frame 2, counts [1, 3]`, the slate down) | 10:37:43–10:37:48, 2.49 → 2.49 |
+    | M3 | a constant: the watchdog hears 1 per late frame, not the measured count | `a_stalled…` (`frame 2, counts [1, 3]`, the slate down) | 10:43:48–10:43:53, 2.30 → 2.43 |
+    | M4 | the threshold: the loop builds its watchdog at 3 | `the_loops_watchdog…` (miss 2, the slate down), `three_frames…` (frame 3), `a_late_view_frame…` | 10:40:14–10:40:19, 2.47 → 2.35 |
+    | M5 | no accumulation: the watchdog keeps the last count, not the sum | `the_loops_watchdog…`, `three_frames…`, `a_late_view_frame…` | 10:41:20–10:41:24, 2.49 → 2.94 |
+    | W1 | **the wall clock reintroduced:** `late <= budget` asserted on every machine, every frame | `a_stalled…` (`frame 2 is late by at most one frame: 411.747877ms`) | 10:42:29–10:42:34, 2.24 → 2.22 |
+    | W2 | **the wall clock reintroduced:** the trip expected on the third frame by index | `a_stalled…` (`frame 2, counts [1, 3]`: the slate up, expected down) | 10:42:40–10:42:44, 2.28 → 2.34 |
+
+    - **M3's first run was void:** 10:39:08–10:39:13, 2.47 → 3.07. It made
+      the same kill, and its cause is unproven. It was rerun alone, with its
+      own controls (10:43:12–10:43:16 and 10:46:15–10:46:20, 19/19).
+    - **W1 and W2 pass the named test alone.** An unstalled run cannot show
+      the wall clock's return, which is why the emulated stall exists: it
+      makes that return show on every run.
+    - **`a_late_view_frame…` (60 ms against 33 ms) killed M4 in this battery
+      but not in v1.** Under M4 its outcome depends on whether a frame
+      counts 2. That is a mutant's visibility, not a stall failure: its own
+      assertions are lower bounds.
+    - **The builder's slip (battery v1, 10:30:15–10:32:21):** the restore
+      used `shutil.copy2`, which keeps the source's old mtime. Cargo skipped
+      the rebuild, so W1, W2 and the control ran on M5's engine library. The
+      control failed 15/4 on a `cmp`-identical tree, with M5's and W2's
+      signatures. M1–M5 stood there, because each mutation's fresh write
+      forced the crate's rebuild, and their kills match v2's. The whole
+      battery was rerun as v2 (`copyfile`, `touch`, and a rebuild after
+      every restore), and v2 is the record.
+  - **One limit, put to the user:** the deadline arm's rounding above one
+    budget (`ceil` against `floor().max(1)`) is caught only when a stalled
+    frame lands where they differ. Pinning it always needs a clock seam in
+    `render.rs`, which is engine code, not test-only.
+  - **Floors:** none move. `prompt04` runs 19 (was 17) against its "at
+    least one" gate, and the workspace `TOTAL` (no floor) reads 537.
+  - **The gate** (times UTC unless marked local, −0700): AC, `caffeinate -i -s`, and no sleep or
+    battery event in the window:
+    - builds, `fmt` and `clippy --workspace --all-targets` clean;
+    - `prompt04` 19/19 (10:25:29–10:25:34, 2.21 → 2.59);
+    - the machine rule, all three ways;
+    - the two capture steps dry-run, including with the line script missing:
+      both exit 0, and no sampler is left behind;
+    - the workspace **537/0/4** (10:57:19–10:59:15, 2.49 → 2.88).
+
+    **One void:** the first workspace run, 537/0/4 at 10:53:01–10:55:33,
+    ended at 3.10. The likely cause is the suite's own parallel burst after
+    the builder's clippy and test builds; it is unproven.
+
+    **The ambient load, named:**
+    - opencode, the two-key session, was resident throughout (from 22:53
+      local on 2026-10-20), at 0.1% CPU when checked;
+    - a remote-desktop session was active at 02:05–03:00, 03:46:24–03:47:05
+      and 03:56:26–03:56:56 local. Every kept run fell outside those windows.
+
+    The control plane and the dress are untouched by this PR; CI runs them.
+  - **For the user:** R15's class stands in two siblings, unchanged here
+    because the ruling names `three_frames`:
+    - `prompt04.rs:327`'s `late <= 2 * budget`, with 150 ms of headroom;
+    - `prompt11_watchdog.rs:141`'s `l <= TRIP_BUDGET`, with 190 ms of
+      headroom, in 2 tests.
+    The `gpu-*` load lines are named apart from R10's window, so they extend
+    R10's envelope only if the user rules that they do.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
