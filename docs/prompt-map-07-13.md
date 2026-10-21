@@ -713,6 +713,24 @@ adopt and record).
   | `39374921947`, PR #59 at `4b555c8`, green (534/0/4) | the workspace tests: the test build finished at 05:28:23.35 (`Finished` in 48.84 s); the post line at 05:29:38 | whole step 3.48–6.55 (pre, 13 samples, post). While building: 3.84, 3.48, 4.23, 5.00, 5.60. While the tests ran: 6.43, 6.55, 5.84, 5.37, 5.46, 5.46, 5.54, 4.87, then the post line's 4.87, so 4.87–6.55. The R10 test passed at 05:28:53.00, between 5.84 and 5.37. The 24th |
   | `39389183605` attempt 1, PR #59 at `65115ed` (its head), green (535/0/4) | the test build finished at 07:51:32.47 (`Finished` in 30.90 s); the post line at 07:52:33 | whole step 2.18–4.61 (pre, 10 samples, post). While building: 2.18, 2.55, 4.44, and 4.61, sampled in the second before the build finished. While the tests ran: 4.10, 3.89, 3.42, 4.13, 3.54, 3.92, then the post line's 3.92, so 3.42–4.13. The R10 test passed at 07:51:59.21, between 3.89 and 3.42. The 25th. (Its attempt 2's rust job is a carried copy of this one, not a run: §2b's rerun note) |
   | `39401905763` attempt 2, main at `cd3f0c6` (PR #59's merge), green (535/0/4); attempt 1's rust failed R15's sighting 2 and is not counted | the rust job executed alone in attempt 2 (from 09:45:14); the test build finished at 09:46:39.98 (`Finished` in 42.49 s); the post line at 09:47:46 | whole step 4.19–**10.06** (pre, 11 samples, post): the pre line read load1 30.19, the highest yet. While building: 10.06, 8.80, 8.01, 7.44, 7.05. While the tests ran: 6.24, 5.85, 6.02, 5.72, 5.02, 4.79, then the post line's 4.19, so 4.19–6.24. The R10 test passed at 09:47:06.81, between 5.85 and 6.02. The 26th |
+  | `39409879554`, PR #60 at `66c6461` (its head), green (535/0/4) | the workspace tests: the test build finished at 10:44:39.50 (`Finished` in 48.91 s); the post line at 10:45:49 | whole step 3.97–7.90 (pre, 12 samples, post). While building: 7.90, 6.89, 6.47, 5.99, 6.26. While the tests ran: 5.92, 5.23, 4.48, 3.97, 4.86, 5.35, 5.26, then the post line's 5.72, so 3.97–5.92. The R10 test passed at 10:45:07.25, between 4.48 and 3.97. The 27th |
+  | `39524251208` attempt 1, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 00:57:22.54 (`Finished` in 55.91 s); the post line at 00:58:20 | whole step 2.52–**10.26** (pre, 12 samples, post): load1 30.77 at 00:57:17, while building, above 10.06, so the maximum moves (the pinned rule, below). While building: 2.57, 2.52, 3.65, 6.92, 8.89, 10.26. While the tests ran: 9.52, 9.77, 9.22, 8.19, 7.40, 6.87, then the post line's 6.34, so 6.34–9.77. The R10 test passed at 00:57:55.57, between 9.22 and 8.19. The 28th |
+  | `39524813308` attempt 1, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 01:02:29.15 (`Finished` in 38.56 s); the post line at 01:03:35 | whole step 2.81–4.97 (pre, 11 samples, post). While building: 2.81, 2.90, 3.25, 3.90. While the tests ran: 3.57, 3.45, 3.71, 3.89, 4.68, 4.97, 4.86, then the post line's 4.86, so 3.45–4.97. The R10 test passed at 01:02:57.06, between 3.71 and 3.89. The 29th |
+  | `39524251208` attempt 2, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 01:23:22.07 (`Finished` in 41.99 s); the post line at 01:24:17 | whole step 2.93–4.82 (pre, 10 samples, post). While building: 3.19, 2.93, 3.65, 4.74, 4.53. While the tests ran: 4.82, 4.71, 4.26, 3.76, 3.56, then the post line's 3.33, so 3.33–4.82. The R10 test passed at 01:23:54.10, between 4.26 and 3.76. The 30th |
+  | `39524813308` attempt 2, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 01:42:28.36 (`Finished` in 54.29 s); the post line at 01:43:40 | whole step 3.51–7.23 (pre, 13 samples, post). While building: 3.66, 3.51, 4.42, 5.35, 6.73, 7.23. While the tests ran: 6.58, 6.07, 5.58, 5.40, 5.26, 5.04, 5.33, then the post line's 4.98, so 4.98–6.58. The R10 test passed at 01:42:58.48, between 5.58 and 5.40. The 31th |
+  | `39524251208` attempt 3, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 02:02:08.64 (`Finished` in 37.95 s); the post line at 02:02:57 | whole step 3.44–6.22 (pre, 9 samples, post). While building: 3.88, 3.44, 4.65, 6.03. While the tests ran: 6.22, 5.61, 5.83, 5.62, 4.91, then the post line's 5.27, so 4.91–6.22. The R10 test passed at 02:02:36.81, between 5.83 and 5.62. The 32th |
+  | `39524813308` attempt 3, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 02:20:51.25 (`Finished` in 57.22 s); the post line at 02:22:06 | whole step 3.03–9.22 (pre, 14 samples, post). While building: 3.74, 3.32, 3.03, 5.38, 7.15, 9.22. While the tests ran: 9.22, 8.72, 8.02, 7.34, 6.74, 7.33, 7.77, 6.72, then the post line's 6.72, so 6.72–9.22. The R10 test passed at 02:21:25.52, between 7.34 and 6.74. The 33th |
+  | `39524251208` attempt 4, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 02:39:43.89 (`Finished` in 31.76 s); the post line at 02:40:26 | whole step 4.76–7.50 (pre, 8 samples, post). While building: 7.06, 6.13, 7.07, 7.50. While the tests ran: 7.18, 6.97, 5.95, 5.11, then the post line's 4.76, so 4.76–7.18. The R10 test passed at 02:40:07.44, between 6.97 and 5.95. The 34th |
+  | `39524813308` attempt 4, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 02:58:26.55 (`Finished` in 51.51 s); the post line at 02:59:37 | whole step 5.21–9.88 (pre, 13 samples, post). While building: 8.63, 7.46, 8.19, 9.15, 9.88, 9.35. While the tests ran: 9.05, 7.71, 7.08, 6.45, 6.23, 5.98, 5.21, then the post line's 5.21, so 5.21–9.05. The R10 test passed at 02:58:55.69, between 7.08 and 6.45. The 35th |
+  | `39524251208` attempt 5, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 03:18:39.47 (`Finished` in 56.78 s); the post line at 03:19:33 | whole step 3.13–8.79 (pre, 11 samples, post). While building: 3.49, 3.13, 3.61, 5.25, 6.82, 8.19. While the tests ran: 8.79, 8.54, 7.74, 7.19, 6.71, then the post line's 6.45, so 6.45–8.79. The R10 test passed at 03:19:08.88, between 7.74 and 7.19. The 36th |
+  | `39524813308` attempt 5, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 03:37:45.37 (`Finished` in 42.75 s); the post line at 03:38:52 | whole step 3.80–9.18 (pre, 11 samples, post). While building: 9.18, 8.14, 7.28, 7.09, 6.87. While the tests ran: 5.94, 5.64, 4.93, 4.59, 4.27, 4.19, then the post line's 3.80, so 3.80–5.94. The R10 test passed at 03:38:12.69, between 5.64 and 4.93. The 37th |
+  | `39524251208` attempt 6, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 05:45:04.95 (`Finished` in 41.96 s); the post line at 05:45:56 | whole step 2.01–6.17 (pre, 10 samples, post). While building: 2.01, 2.11, 3.64, 4.35, 5.45. While the tests ran: 6.17, 5.52, 5.36, 5.33, 4.69, then the post line's 4.69, so 4.69–6.17. The R10 test passed at 05:45:34.22, between 5.36 and 5.33. The 38th |
+  | `39524813308` attempt 6, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 06:04:30.79 (`Finished` in 52.49 s); the post line at 06:05:47 | whole step 2.25–6.11 (pre, 13 samples, post). While building: 2.51, 2.25, 3.08, 4.64, 5.90, 6.11. While the tests ran: 6.00, 5.75, 5.47, 5.23, 5.26, 5.06, 5.40, then the post line's 4.70, so 4.70–6.00. The R10 test passed at 06:05:02.54, between 5.47 and 5.23. The 39th |
+  | `39524251208` attempt 7, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 06:23:48.56 (`Finished` in 30.07 s); the post line at 06:24:31 | whole step 3.68–6.83 (pre, 8 samples, post). While building: 6.83, 5.96, 5.83. While the tests ran: 5.74, 5.36, 4.74, 4.59, 3.91, then the post line's 3.68, so 3.68–5.74. The R10 test passed at 06:24:12.68, between 4.74 and 4.59. The 40th |
+  | `39524813308` attempt 7, the R15 A/B's leg `88c8316` (throwaway PR #63), green (525/0/4) | the workspace tests: the test build finished at 06:42:11.66 (`Finished` in 40.67 s); the post line at 06:43:20 | whole step 2.20–5.00 (pre, 11 samples, post). While building: 2.35, 2.20, 2.95, 3.47. While the tests ran: 4.37, 5.00, 4.78, 4.60, 4.45, 4.72, 4.69, then the post line's 4.44, so 4.37–5.00. The R10 test passed at 06:42:41.38, between 4.78 and 4.60. The 41th |
+  | `39524251208` attempt 8, the R15 A/B's leg `5043ccf` (throwaway PR #62), green (515/0/4) | the workspace tests: the test build finished at 07:01:18.72 (`Finished` in 30.18 s); the post line at 07:02:01 | whole step 3.60–5.59 (pre, 8 samples, post). While building: 4.07, 3.60, 4.70. While the tests ran: 5.59, 5.19, 4.84, 4.33, 4.18, then the post line's 3.87, so 3.87–5.59. The R10 test passed at 07:01:42.21, between 4.84 and 4.33. The 42th. (The A/B's red attempt, `39524813308` attempt 8 on leg `88c8316`, rust job `119092020542`, failed R15 in the GPU/render step and is not a row) |
+  | `39412596238` attempt 3, PR #61 at `25c1114` (its head); the rust job executed alone, green (535/0/4) | the workspace tests: the test build finished at 08:11:44.91 (`Finished` in 1m 03s); the post line at 08:13:04 | whole step 2.09–**11.08** (pre, 15 samples, post): load1 33.23 at 08:11:42, while building, the highest yet, so the maximum moves again. While building: 2.29, 2.09, 3.45, 6.06, 8.17, 9.66, 11.08. While the tests ran: 9.45, 9.46, 9.27, 8.91, 9.01, 9.03, 8.94, 8.24, then the post line's 8.24, so 8.24–9.46. The R10 test passed at 08:12:17.60, between 9.27 and 8.91. The 43rd |
+  | `39581255559`, main at `056fed0` (PR #60's merge), green (535/0/4) | the workspace tests: the test build finished at 10:00:55.54 (`Finished` in 30.49 s); the post line at 10:01:51 | whole step 3.73–8.35 (pre, 9 samples, post). While building: 8.35, 7.41, 7.20. While the tests ran: 6.65, 5.92, 6.06, 5.39, 4.66, 4.02, then the post line's 3.73, so 3.73–6.65. The R10 test passed at 10:01:17.92, between 6.06 and 5.39. The 44th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -849,6 +867,36 @@ the peaks were 6.55, 4.61 and **10.06**). The maximum moves from 9.67 to
 10.06 per CPU (load1 30.19 on 3 CPUs at 2026-10-20T09:45:57Z, the pre line
 of main's merge run `39401905763`, attempt 2), and the ceiling is derived
 as 1.25 × 10.06 = 12.58. R10 was silent in all three.
+
+**R10's envelope rule, pinned** (the user's ruling of 2026-10-20, item 1,
+verbatim): "the green maximum is the maximum per-CPU observed anywhere in the
+rust step's window — pre, samples, or post." It matches the reading the
+derivation has used since 2026-10-16 ("the maximum is taken over the whole
+test step").
+
+**The ceiling through the R15 A/B and #61's rerun: moves to 12.83, then
+13.85 per CPU** (43 green runs; rows 27–43, every one read job-exact). The
+A/B's green attempts are green instrumented runs of the rust test step, so
+they extend the envelope; its red attempt is not a row.
+- **12.83:** the maximum moved from 10.06 to **10.26** per CPU, load1 30.77
+  on 3 CPUs at 2026-10-21T00:57:17Z, a sample while building (the test build
+  `Finished` at 00:57:22.55, in 55.91 s): the A/B's leg `5043ccf`, run
+  `39524251208` attempt 1, rust job `118975083661`, green (515/0/4), read
+  job-exact by `gh api --allow-escape-sequences
+  repos/jonquixote/nbe/actions/jobs/118975083661/logs`. The ceiling was
+  1.25 × 10.26 = 12.83 per CPU (load1 38.5).
+- **13.85:** the maximum moved again, to **11.08** per CPU (applied under the
+  pinned rule and reported to the user on 2026-10-21 before it was
+  recorded): load1 33.23 on 3 CPUs at 2026-10-21T08:11:42Z, a sample while
+  building, in #61's run `39412596238`, attempt 3, rust job `119112170748`,
+  green. **The ceiling is 1.25 × 11.08 = 13.85 per CPU** (load1 41.5 on the
+  3-CPU runner).
+- None of the A/B's other 15 attempts peaked above 10.26. The image was
+  `macos-14-arm64` 20260831.0302.1 throughout.
+
+**The ceiling at PR #60's merge: holds at 13.85 per CPU** (44 green runs;
+main's merge run peaked at 8.35, its pre line, under the 11.08 maximum).
+R10 was silent in every run from row 27 to row 44.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -7438,8 +7486,10 @@ item):
     | **F2, the fix**, N = 4 and N = 5 | 6 (03:01:52–03:21:59; one void at its end, 2.48 → 3.17) | pass, every run |
     | **F3, the gate released at the first ring**, N = 4 and N = 5 | 3 (03:02:07–03:24:13, valid) | **fail, every run**: `no ack and no capability refusal`, a command sent inside the boundary |
 
-    F3 reproduces the mechanism deterministically: a command sent while the
-    rings upload waits behind them. F1 reproduces the defect as CI met it,
+    F3 reproduces the mechanism ~~deterministically~~ *(§2c, the two-key
+    pass on #60, ruled 2026-10-21: deterministic while the boundary is still
+    running at the gate's first poll)*: a command sent while the rings upload
+    waits behind them. F1 reproduces the defect as CI met it,
     intermittently. **Runs at N = 8 are invalid, the harness's own error:**
     11 video assets exceed the engine's decode-session cap of 8
     (`MAX_DECODE_SESSIONS`), and one refused asset, whichever came last in
@@ -7460,6 +7510,14 @@ item):
     than 1.5 inside its own 7–8 s. The likely cause is the suite's own
     parallel burst, as on #56's night 2; it is not proven. That joins the
     machine-load thread. CI's run of the suite is the next witness.
+
+    **The witness** (§2c, 2026-10-21): run `39409879554` at `66c6461`,
+    attempt 1, the only attempt, so every job executed. The control-plane
+    job `118584740694` printed `passed=198 failed=0` at 10:44:29Z. It was
+    read job-exact by `gh api --allow-escape-sequences
+    repos/jonquixote/nbe/actions/jobs/118584740694/logs`. The refused-start
+    test was exercised there: `LANE-LEG refused` raised at 2013 ms, and
+    operator-signals ran 4 and exercised 1.
   - **For the user:**
     - **The same construction stands in `show-stop.harness.ts`'s `leg()`**,
       with a 5 s window (`OUTPUT_ACK_MS`) and a wider margin. It is not
@@ -7474,6 +7532,208 @@ item):
       crosses a frame boundary. `automation.test.ts` injects a frozen clock,
       which puts the two fires in different frames, and that is why the gate
       saw two executions.
+
+  **The two-key pass on PR #60** (independent; run in opencode, relayed by
+  the user on 2026-10-21). Verdict: **HOLDS on 1–10**, with five disputes,
+  all ruled. It was taken at the reviewed head `66c6461`, before the merge
+  word.
+  - **The builder's two-key record: it concurs on all five rulings, with
+    refinements read from the tree.**
+    - **F2's body row:** concur. The tree's table records F2's six runs with
+      "one void at its end, 2.48 → 3.17". The PR body read "6 | pass, every
+      run", and it is annotated (§2c): 5 kept passes + 1 void, the tree
+      governing. *Refinement:* the void run passed too, so all six passed and
+      five count.
+    - **F3's "deterministically":** concur, struck in R25's build record
+      above. F3 releases at the first ring line. Its 3 of 3 measured the case
+      where the other rings were still uploading at the gate's first poll; it
+      does not guarantee that case.
+    - **R25's row, built and past tense:** concur (the register). At the
+      head, the refused-start test is `operator-signals.e2e.ts:145–170`; the
+      row's `:120–137` was the base's (`cd3f0c6`). *Refinement:* the row also
+      cites the gate, `:107–132` (`awaitResident` at `:107–115`, `onAir` at
+      `:118–132`).
+    - **The hardening candidate:** concur, by reading. It is recorded on
+      R25's row and left open.
+      - `show-stop.harness.ts:261–262` splits each stdout chunk on `"\n"`
+        with no carry, so a line split across two chunks becomes two entries,
+        and `includes(needle)` misses it.
+      - A split "video asset decoded" undercounts the decoded side and can
+        release the gate early: the defect's direction, and silent.
+      - A split "ring resident" undercounts the resident side and fails at
+        30 s, which is loud.
+      - Separately, the count is not a match: other "ring resident" lines
+        can satisfy it early. The render target logs rung 2's re-acquires
+        and a View recovery (the slip note above).
+      - Neither has been sighted.
+    - **The CI witness:** concur, read job-exact (R25's build record above).
+
+  **#60's CI at the reviewed head, read per test (§2b).** Run `39409879554`
+  (`pull_request`, head `66c6461`), attempt 1, the only attempt, so every job
+  executed. Each was read job-exact by `gh api --allow-escape-sequences
+  …/actions/jobs/<id>/logs`.
+  - **rust** (job `118584741030`): `TOTAL: 535 passed, 0 failed, 4 ignored`
+    and 32 of 32 floor lines held. `three_frames…` was `ok` in both steps
+    (10:44:47Z and 10:45:53Z). The peak was the pre line, load1 23.71 on 3
+    CPUs, 7.90 per CPU, under the maximum (envelope row 27, Finding R10).
+  - **control-plane** (job `118584740694`): `passed=198 failed=0`, and every
+    e2e floor held. operator-signals ran 4, exercised 1, failed 0.
+  - **dress** (job `118584740998`): 29/29, skips 11, exercised 18. Step 5
+    `ok`. Drops 1, underruns 178.
+
+  **Merged: PR #60 is `056fed0`** (the bookend, the standing pattern of
+  §2c), on the user's word of 2026-10-21: a squash at 2026-10-21T09:59:48Z
+  (parent `cd3f0c6`), pinned to the reviewed head `66c6461`. The merge tree
+  `c66865b` is identical to `66c6461`'s, and `git diff 66c6461 056fed0` is
+  empty. **R25 is FIXED** (the register), and its hardening candidate stays
+  open. Main's CI at `056fed0`, run `39581255559` (`push`), attempt 1, the
+  only attempt, so every job executed (each `started_at` between 09:59:57Z
+  and 09:59:59Z on this run). Each job was read job-exact by `gh api
+  --allow-escape-sequences repos/jonquixote/nbe/actions/jobs/<id>/logs`:
+  - **rust** (job `119159151501`, executed): `TOTAL: 535 passed, 0 failed,
+    4 ignored`, and 32 of 32 floor lines held (`automation_rules` 1/1,
+    `r20_clip` 9/9, `loop_residency` 3/3; `prompt04` 17 ran).
+    - **R15:** `three_frames…` `ok` in both steps. The workspace step passed
+      it at 10:01:02Z, between the 6.65 (10:00:55) and 5.92 (10:01:05)
+      samples. The GPU/render step passed it at 10:01:54Z, after the post
+      line (10:01:51Z, 3.73), with no samples inside that step.
+    - **R10:** `telemetry_tick_wires_the_live_session_counter` `ok` in both
+      steps (10:01:17Z, 10:02:14Z), so it is silent.
+    - **Load:** the pre line read load1 25.06 on 3 CPUs, 8.35 per CPU, the
+      step's peak, and the post 3.73 (envelope row 44, Finding R10). The
+      ceiling holds at 13.85. The image is `macos-14-arm64`
+      20260831.0302.1.
+  - **control-plane** (job `119159151268`, executed): `passed=198
+    failed=0`, and every floor line held: automation 35/35, belief 4/4,
+    effects 2/2; slate-release 4/4, recall 2/2, take-duration 3/3,
+    resync-end 3/3, package-reconcile 4/4, resync-request 3/3;
+    show-stop-version ran 6, exercised 1, skipped 5; operator-signals ran 4,
+    exercised 1, skipped 3, the refused start exercised (`LANE-LEG refused`
+    raised at 2015 ms).
+  - **dress rehearsal** (job `119159151466`, executed): `ran=29 passed=29
+    failed=0 skips=11 exercised=18`. Step 5 `ok`. `DRESS-COUNTS` drops 0,
+    underruns 211, watchdog trips 0.
+  - **#61 untouched:** its head is `25c1114`, local and remote, last updated
+    2026-10-20T11:06:28Z, and its latest run is `39412596238` attempt 3
+    (below). It is held for its two-key pass.
+  - **The staged records land here** (`.git/nbe-staged/after-pr60-records.md`
+    A–L and `r24-records.md` A–B, the user's order of 2026-10-21): R15's
+    row, R24's row, R25's row (built, FIXED, its sibling and its hardening
+    candidate) and R10's row, in the register; the ambient-load note beside
+    §6 (`docs/soak-protocol.md`); §2b's rerun note
+    (`docs/implementation-standards.md`); Finding R10's pinned rule, its
+    ceilings and envelope rows 27–44; and in this map, F3's strike and the
+    CI witness in R25's build record, then the blocks above and below. R24's
+    FIXED header and its exit wait for #61's merge.
+
+  **R15's A/B** (the user's ruling of 2026-10-20, item 1; closed on
+  2026-10-21 with no extension, item 6). The register's R15 row carries the
+  outcome and the ruling; the method and its evidence are here.
+  - **The legs:** `5043ccf` (before R20) and `88c8316` (R20's merge), as
+    throwaway draft PRs #62 and #63 (#47's pattern). Each head carried its
+    leg's tree on top of main, so CI's merge ref was that tree exactly.
+  - **The runs:** the rust job rerun job-scoped, interleaved between the
+    legs across 2026-10-20/21, 8 attempts per leg. Every attempt executed
+    (each `started_at` distinct), was read job-exact, and had its R10 load
+    lines recorded. The 15 green ones are envelope rows 28–42 (Finding R10).
+  - **The decision rule, set before the final read** (the user's ruling of
+    2026-10-20, item 3): "0/8 on the 88c8316 leg rejects the ~3-in-8
+    R20-regression hypothesis at ~98% confidence — reclassify R15's
+    sightings as load events and proceed to #61's rerun path. Any other
+    outcome, report before acting." Under the hypothesis a run passes with
+    probability 5/8, and eight passes come at (5/8)^8 ≈ 0.023.
+  - **The driver's break, recorded:** v1 died at about 20:56 local on
+    2026-10-20. `gh run rerun 39524251208 --job 119018005481` (leg
+    `5043ccf`, attempt 6) exited 1, and v1 dropped its stderr, so the cause
+    is unproven. A retry by hand at 22:43 succeeded. Driver v2 logs stderr,
+    retries a failed rerun, reads a pending attempt, and sends the leg with
+    fewer attempts next, so the alternation held. The gap before `5043ccf`'s
+    attempt 6 was about 2h03m, not 15 min.
+  - **Outcome: 0/8 on `5043ccf`, 1/8 on `88c8316`** (its attempt 8, the
+    GPU/render step; the register row). The rule's 0/8 was not met, so it
+    was reported before acting, and the user ruled on 2026-10-21 (the
+    register row).
+  - **Closed:** #62 at 08:09:24Z and #63 at 08:09:27Z on 2026-10-21,
+    unmerged, each with its leg's result in a closing comment. The branches
+    `r15-ab-5043ccf` and `r15-ab-88c8316` were deleted, local and remote.
+    The 16 logs, the driver and the recount stay in `.git/nbe-staged/r15-ab/`.
+
+  **#61's rerun path** (the user's ruling B4 of 2026-10-21: #61's engine
+  tree is main's, so its red is not its own). Run `39412596238` at
+  `25c1114`, attempt 3: the rust job rerun job-scoped (`gh run rerun
+  39412596238 --job 118595961153`, 08:09:41Z).
+  - **What executed:** only rust (job `119112170748`, from 08:09:50Z). The
+    dress (`119112172992`) and control-plane (`119112234085`) jobs are
+    carried copies of attempt 1's, with attempt 1's `started_at` (11:08:03Z
+    and 11:06:30Z on 2026-10-20). They are not runs, and their figures are
+    attempt 1's.
+  - **rust, read job-exact** (`gh api --allow-escape-sequences
+    repos/jonquixote/nbe/actions/jobs/119112170748/logs`):
+    `TOTAL: 535 passed, 0 failed, 4 ignored`, 32 of 32 floor lines held,
+    `automation_rules` 1/1, `r20_clip` 9/9, `loop_residency` 3/3.
+    `three_frames…` was `ok` in both steps (08:11:54Z and 08:13:09Z), and R10
+    was silent. The image was `macos-14-arm64` 20260831.0302.1.
+  - **Load:** the whole step ran 2.09–11.08 per CPU (pre, 15 samples,
+    post). The peak was load1 33.23 at 08:11:42Z, while building (envelope
+    row 43; the maximum moves, Finding R10). The workspace step's
+    `three_frames…` passed at 08:11:54Z, between the 9.45 (08:11:52) and
+    9.46 (08:12:02) samples: R15's assertion green at the highest load the
+    envelope holds.
+  - **Held at the head `25c1114`** for its two-key pass, which the user
+    dispatches. DO NOT MERGE until the pass lands.
+
+  **R24's fix: a `timeOfDay` rule re-arms from the instant just fired**
+  (PR #61, branch `r24-timeofday-rearm`, off `cd3f0c6`; held at `25c1114`
+  for its two-key pass). Its records ride this PR: #61 was branched before
+  R24's register row existed.
+  - **The commits:**
+    - `d7a851e`: the falsification, red. The evaluator is driven directly,
+      its wall clock steered read by read: 40 ms short at arming, 1 ms short
+      at the fire, then running on from the instant. Two monotonic clocks,
+      frozen and live, each assert one action and no rate-limited second
+      fire. Red at 03:45:00–03:45:03 (load 2.47): frozen, 2 actions in 3 of
+      3 runs; live, 2 actions in 1 of 3 runs and 1 action plus a
+      rate-limited row in 2.
+    - `4534ec7`: the fix. `scheduleTimeOfDay(rule, after)` counts the next
+      instant from the later of the instant just fired and the wall clock.
+      Green 5 of 5 under both clocks (03:47:33–03:47:37, 2.27 → 2.57).
+    - `25c1114`: the automation suite's CI floors move to 37 (R24's two
+      tests).
+  - **The builder's slip:** the falsification's first steered clock stayed
+    frozen at "1 ms short", so the defect re-fired every millisecond (6
+    actions on the live clock). That overstated it: a real wall clock moves
+    on, and the defect re-fires once. It was corrected before the red
+    commit.
+  - **The battery** (`automation.ts` mutated in place, restored
+    `cmp`-identical and `git`-clean; every window valid):
+
+    | # | Mutation | Killed by | Window, load |
+    |---|---|---|---|
+    | M1 | the re-arm without `after` (the defect) | both R24 tests (`got 2`) | 03:47:58–03:48:01, 2.46 → 2.35 |
+    | M2 | `from` always the wall clock | both (`got 2`; a rate-limited row) | 03:48:01–03:48:04, 2.35 |
+    | M3 | the boundary weakened to `<` | both (`got 2`; a rate-limited row) | 03:48:04–03:48:07, 2.35 → 2.24 |
+
+    The server-level test, `timeOfDay fires when the local wall clock reaches
+    \`at\``, passed under every mutant. It catches the defect only when a
+    real timer fires early, about 3% of the time, which is why the gate met
+    it once.
+  - **The gate at `4534ec7`** (AC, `caffeinate`):
+    - builds, `fmt`, `clippy` and `tsc` clean;
+    - `r20_clip` 9/9, `loop_residency` 3/3, `v04` 22/22;
+    - **automation 37/37** (+2, the R24 tests; 03:55:20–03:55:24, 2.24,
+      valid), effects 2/2, belief 4/4;
+    - every e2e green (show-stop-version 6/6, operator-signals 3 + 1 skip);
+    - the dress 29/29.
+
+    **Four voids, every one green inside:** the workspace, 535/0/4, twice
+    (2.33 → 3.33 and 2.49 → 4.02); `npm test`, 200/200 (198 + 2), twice
+    (2.45 → 5.66 and 2.31 → 6.68). The machine was shared. At 04:05 the top
+    processes were the builder's own session (41% CPU), iTerm (35%),
+    WindowServer (20%), Microsoft To Do (13%) and opencode (8.5%), beside
+    each suite's own burst. CI's run is the clean witness.
+  - **CI:** run `39412547573` at `4534ec7` and run `39412596238` at
+    `25c1114`, attempts 1 and 2, were red on R15 (the register row's
+    sightings), and attempt 3 is green (#61's rerun path, above).
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
