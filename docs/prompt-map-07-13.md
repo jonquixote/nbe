@@ -8925,6 +8925,8 @@ register was opened with one entry; the spec has not been swept for others.
 | U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | device audio, this era (`docs/device-audio-design.md`, D4) |
 | U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | device audio, this era (`docs/device-audio-design.md`, D5) |
 | U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | there is no device sink today. The device build opens one and does not reopen it. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
+| U6 | §8.2 #1: "The master bus MUST have: 1. compressor" | no compressor exists. The master stage is the master gain, then the limiter (SPEC v0.4.8 row 14) | a later audio PR, its parameters ruled first (the user's ruling L6 of 2026-10-21) |
+| U7 | §8.2 #3: "loudness-safe output", against `show.audio.loudnessTargetLufs` (−16 LUFS by default), with §8.2 #4's peak metering folded in (the user's ruling L6) | nothing measures or normalises the master's loudness. The master meter (`Bus::observe`) reads sample peak and RMS, not true peak or LUFS. The limiter (row 14) bounds the true peak, which is all of loudness safety the tree builds | a later audio PR (L6) |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 
