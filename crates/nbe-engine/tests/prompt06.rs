@@ -1114,10 +1114,25 @@ fn the_master_stage_limits_instead_of_clipping() {
         peak > 0.5,
         "precondition: the sum must actually be loud, got {peak:.3}"
     );
+    // R26: this asserted `peak <= 1.0`, which the old `.clamp(-1.0, 1.0)`
+    // satisfied while flat-topping every sample past full scale. The limiter's
+    // ceiling is the show's true peak, −1.5 dBTP by default (§8.2's note), and
+    // a flat top is the clamp's signature whatever level it clamps at.
+    let ceiling = 10f32.powf(-1.5 / 20.0);
     assert!(
-        peak <= 1.0,
-        "the master stage must limit: a sample reached {peak:.3}, and hard \
-         clipping is a click generator"
+        peak <= ceiling * (1.0 + 1e-6),
+        "the master stage must limit to the −1.5 dBTP ceiling: a sample \
+         reached {peak:.3}, against {ceiling:.3}"
+    );
+    let left: Vec<f32> = buf.iter().step_by(CHANNELS).copied().collect();
+    let flat = left
+        .windows(3)
+        .filter(|w| w[0].abs() > 0.01 && w[0].abs() == w[1].abs() && w[1].abs() == w[2].abs())
+        .count();
+    assert_eq!(
+        flat, 0,
+        "the master stage flat-tops: {flat} runs of three samples at one \
+         magnitude, and hard clipping is a click generator"
     );
     let metered = g
         .bus_peaks()
