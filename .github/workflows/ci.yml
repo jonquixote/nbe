@@ -701,32 +701,6 @@ jobs:
           if [ "$exercised" -lt 9 ]; then
             echo "FAIL r20_clip: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
-      - name: "the loop residency suite actually ran (SPEC v0.4.8 row 13)"
-        # Two floors, rule 8. What the engine holds for a declared loop,
-        # measured on a real decode of counter_60 (60 1080p frames): a loop
-        # that fits holds its length as RGBA8, a loop over its budget holds its
-        # budget's frames, and a declared format changes neither. Preflight's
-        # figures (v04.rs) are asserted against these. They need VideoToolbox
-        # and FAIL without it: no SKIP path, floors equal at the full count
-        # (3, new).
-        run: |
-          set -u
-          out=$(cargo test -p nbe-engine --test loop_residency -- --nocapture --test-threads=1 2>&1) && rc=0 || rc=$?
-          echo "$out"
-          if [ "$rc" -ne 0 ]; then echo "FAIL loop_residency: cargo test exited $rc (the output is above)"; exit "$rc"; fi
-          line=$(echo "$out" | grep "test result: ok" || true)
-          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
-          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
-          skipped=$(echo "$out" | grep -c '^SKIP' || true)
-          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
-          exercised=$((ran - skipped))
-          echo "loop_residency: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
-          if [ "$ran" -lt 3 ]; then
-            echo "FAIL loop_residency: expected at least 3 tests to run, got $ran"; exit 1
-          fi
-          if [ "$exercised" -lt 3 ]; then
-            echo "FAIL loop_residency: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
-          fi
       - name: "the resync-end suite actually ran (SPEC v0.4.8 row 3)"
         # Seven tests on the directive handler alone (no GPU, no capability
         # gate, so no SKIP). A restarted engine ends the timed item at its

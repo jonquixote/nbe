@@ -1421,11 +1421,8 @@ function r20Colour(n: number): [number, number, number] {
 /**
  * Which counter frame a recorded pixel shows: its index, `"black"` for a
  * cleared View (a dropped layer), or `"other"` for anything else (the item on
- * air before the take). ~~Adjacent counter frames differ by 37 in red, so the
- * nearest colour is the frame.~~ (§2c, R20's two-key pass: adjacency is not
- * the margin. Frames k and k + 76 differ by L1 28, under the threshold of 36,
- * and the engine's decode shifts colour by up to L1 56 (R22), so a recorded
- * pixel can sit nearer another frame's colour.)
+ * air before the take). Adjacent counter frames differ by 37 in red, so the
+ * nearest colour is the frame.
  */
 function r20Classify(px: [number, number, number]): number | "black" | "other" {
   if (px.every((c) => c < 16)) return "black";

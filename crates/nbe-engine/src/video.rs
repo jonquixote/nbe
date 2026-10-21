@@ -158,8 +158,6 @@ pub struct VideoAsset {
     /// The loop period. For a non-looping clip this is the count of frames
     /// decoded at load (its head); the clip's own length is `clip`'s.
     pub period_frames: u32,
-    /// A loop's residency plan (§12.5). A plain clip's is vestigial: its
-    /// residency is §12.8.1's head and window, and nothing reads its plan.
     pub plan: CachePlan,
     /// The file this asset decodes from: a clip's read-ahead reopens it.
     pub source_path: PathBuf,
@@ -266,7 +264,7 @@ pub fn load_video_asset(
             // passing a declared format here would make the plan describe a
             // residency the engine does not hold.
             //
-            // ~~The other half of that, which a reader needs to hear: preflight
+            // The other half of that, which a reader needs to hear: preflight
             // plans the format the MANIFEST asked for (§12.11.1 reports
             // declared demand), so for ANY loop whose planned format is not
             // RGBA8 its number is an UNDER-estimate of what this engine holds,
@@ -278,12 +276,8 @@ pub fn load_video_asset(
             // The undeclared case is the default case. Measured also for a
             // 200-frame `bc7` loop at `vramBudgetMib: 512`: 396 MiB reported,
             // streamed here. The smaller number is not the safe one until the
-            // §12.3 ladder is real.~~ (§2c, v0.4.8 row 13: preflight now plans
-            // at the same `HELD_LOOP_FORMAT` and charges the frames this path
-            // holds, `loop_held_frames`. The 474 MiB held only at a budget the
-            // loop fits; at §12.4's default this path holds 32 of its 60
-            // frames, 253.1 MiB, and `loop_residency.rs` measures both.)
-            declared_format: Some(loop_cache::HELD_LOOP_FORMAT),
+            // §12.3 ladder is real.
+            declared_format: None,
         },
         budget,
     );
@@ -296,7 +290,7 @@ pub fn load_video_asset(
     // read-ahead window below, and the renderer streams the rest (SPEC
     // §12.8.1, v0.4.8 row 12).
     let cap = match declared_period {
-        Some(_) => loop_cache::loop_frame_cap(&plan) as usize,
+        Some(_) => plan.max_frames_by_budget.max(1) as usize,
         None => CLIP_PRELOAD_FRAMES,
     };
     let mut frames = vec![first];

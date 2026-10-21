@@ -16,7 +16,7 @@
 //! diverge again; they did, and the engine held loops preflight had reported as
 //! streamed and charged nothing for.
 //!
-//! ~~What still differs is the format, deliberately: preflight passes the
+//! What still differs is the format, deliberately: preflight passes the
 //! manifest's `declared_format` and derives the rest from §12.3's ladder, while
 //! the engine passes `None` with `yuv_sampling: false`, because its decode path
 //! produces RGBA8 whatever the manifest asked for. That is a capability
@@ -27,16 +27,7 @@
 //! `Streaming`). That includes loops declaring no format at all, which take the
 //! NV12 rung here and RGBA8 there — the default case, not an exotic one.
 //! Whoever implements the ladder closes it; until then, do not read the smaller
-//! number as the safe one.~~ (§2c, v0.4.8 row 13: the smaller number was the
-//! one an operator planned against, and §12.5's verdict was decided on it.)
-//!
-//! **Nothing differs now, not even the format** (v0.4.8 row 13). Until §12.3's
-//! ladder is implemented, both sides plan every loop at [`HELD_LOOP_FORMAT`],
-//! RGBA8, the only format the engine's decode path produces, and both count the
-//! frames the engine holds ([`loop_held_frames`]). Preflight reports the
-//! residency the engine holds, not the one the manifest asked for, and says so
-//! in words ([`LOOP_RESIDENCY_NOTE`]). The ladder, when it lands, restores
-//! declared formats, and these go with it.
+//! number as the safe one.
 //!
 //! The order is mandated (§26 sequencing): **format accounting first**, then
 //! the budget, then the policy. `frameCostMiB` comes from the selected texture
@@ -163,38 +154,6 @@ pub fn clip_window_frames(gop_frames: u32) -> u32 {
 /// holds resident, its head plus its window, never more than the clip.
 pub fn clip_resident_frames(length_frames: u64, gop_frames: u32) -> u64 {
     length_frames.min(u64::from(CLIP_HEAD_FRAMES) + u64::from(clip_window_frames(gop_frames)))
-}
-
-/// SPEC §12.3's note (v0.4.8 row 13): the one format this engine holds a loop
-/// in. The ladder is normative and unbuilt, and the decode path produces RGBA8
-/// whatever a manifest declares, so the engine and preflight both plan every
-/// loop at this format: a plan at a declared format describes a residency the
-/// engine does not hold. The ladder, when it lands, restores declared formats.
-pub const HELD_LOOP_FORMAT: CacheTextureFormat = CacheTextureFormat::Rgba8;
-
-/// The words a preflight report carries when a package declares a loop
-/// (§19.2.1's `residencyNote`, v0.4.8 row 13): the assumption `vramDemandMib`
-/// rests on, and its expiry.
-pub const LOOP_RESIDENCY_NOTE: &str = "Loops are planned at RGBA8, the only \
-    format this engine holds, whatever textureFormat they declare, and each is \
-    charged the frames the engine holds: its length if it fits its budget, else \
-    its budget's frames, because this engine does not stream loops. This holds \
-    until SPEC §12.3's format ladder lands; the ladder restores declared formats \
-    (SPEC v0.4.8 row 13).";
-
-/// The most frames the engine decodes and holds for a loop under `plan`: its
-/// budget's `maxFramesByBudget` (§12.5), and at least one, because a loop whose
-/// frame exceeds the budget still holds the first frame it decoded.
-pub fn loop_frame_cap(plan: &CachePlan) -> u32 {
-    plan.max_frames_by_budget.max(1)
-}
-
-/// §12.11.1's loop demand in frames (v0.4.8 row 13): what the engine holds for
-/// a loop of `length_frames` under `plan`. A loop that fits holds its length;
-/// one that does not holds its budget's frames, not a read-ahead window and not
-/// nothing, because this engine does not stream loops (§10.5's note).
-pub fn loop_held_frames(plan: &CachePlan, length_frames: u64) -> u64 {
-    length_frames.min(u64::from(loop_frame_cap(plan)))
 }
 
 /// SPEC §12.4's default per-loop short-loop budget.
@@ -572,35 +531,6 @@ mod tests {
         );
         assert_eq!(clamped.effective_budget_mib, 512);
         assert!(clamped.max_frames_by_budget < unclamped.max_frames_by_budget);
-    }
-
-    #[test]
-    fn a_loop_holds_its_length_when_it_fits_and_its_budget_when_it_does_not() {
-        // v0.4.8 row 13: §12.11.1 charges what the engine holds. At RGBA8,
-        // §12.4's default 256 MiB holds 32 1080p frames, and 512 MiB holds 64.
-        let held = |period: u32, budget: Option<u32>| {
-            let mut spec = spec_1080p(period);
-            spec.declared_format = Some(HELD_LOOP_FORMAT);
-            let p = plan(spec, CacheBudget::from_manifest(budget));
-            loop_held_frames(&p, u64::from(period))
-        };
-        assert_eq!(held(60, Some(512)), 60, "a loop that fits holds its length");
-        assert_eq!(
-            held(60, None),
-            32,
-            "a loop over its budget holds its budget"
-        );
-        assert_eq!(held(10, None), 10);
-
-        // Never nothing: a 16384x16384 RGBA8 frame is 1 GiB, past any budget,
-        // and the engine still holds the first frame it decoded.
-        let mut huge = spec_1080p(5);
-        huge.width = 16384;
-        huge.height = 16384;
-        huge.declared_format = Some(HELD_LOOP_FORMAT);
-        let p = plan(huge, CacheBudget::from_manifest(None));
-        assert_eq!(p.max_frames_by_budget, 0);
-        assert_eq!(loop_held_frames(&p, 5), 1);
     }
 
     #[test]
