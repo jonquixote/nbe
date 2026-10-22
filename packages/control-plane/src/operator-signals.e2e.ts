@@ -39,6 +39,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { loadComplete, residency } from "./load-residency.js";
 import { send, stack, startRtmpSink, type Stack } from "./show-stop.harness.js";
 import { WsRenderBridge, type RenderSender } from "./render-bridge.js";
 import { tempDir } from "./test-tmp.js";
@@ -102,15 +103,14 @@ const refusedByEngine = (s: Stack): boolean => s.log.some((l) => l.includes("E_N
  * load ("video asset decoded") and each ring as it lands ("clip ring resident"
  * or "loop ring resident", the render target's lines, which the harness's log
  * filter admits): the load is complete when every decoded asset's ring is
- * resident.
+ * resident. The predicate is `load-residency.ts`'s, shared with the dress (R29).
  */
 async function awaitResident(s: Stack, from: number): Promise<void> {
-  const since = (needle: string): number => s.log.slice(from).filter((l) => l.includes(needle)).length;
-  const complete = (): boolean => since("video asset decoded") > 0 && since("ring resident") >= since("video asset decoded");
+  const seen = () => residency(s.log.slice(from));
   assert.ok(
-    await waitFor(complete, 30_000),
-    `the load completes: every decoded asset's ring resident (decoded ${since("video asset decoded")}, ` +
-      `resident ${since("ring resident")}; last log: ${JSON.stringify(s.log.slice(-3))})`,
+    await waitFor(() => loadComplete(seen()), 30_000),
+    `the load completes: every decoded asset's ring resident (decoded ${seen().decoded}, ` +
+      `resident ${seen().resident}; last log: ${JSON.stringify(s.log.slice(-3))})`,
   );
 }
 
