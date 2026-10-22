@@ -15,7 +15,8 @@ import { WebSocket } from "ws";
 
 import { AuditLog, type AuditRecord } from "./audit.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
-import { ControlPlaneState } from "./state.js";
+import { ControlPlaneState, type PackageInfo } from "./state.js";
+import { AutomationEvaluator, type ActionRequest, type AutomationAudit, type ParsedRule } from "./automation.js";
 import { preflightBin } from "./package.js";
 import { tempDir } from "./test-tmp.js";
 
@@ -708,6 +709,67 @@ test("timeOfDay fires when the local wall clock reaches `at`", async (t) => {
   assert.deepEqual(firedTriggers(), [{ kind: "timeOfDay", ruleId: "tod" }], `at ${hhmmss}`);
   ws.close();
 });
+
+/**
+ * R24: a timer can fire while the wall clock still reads before its instant
+ * (61 and 65 of 2000 `setTimeout`s fired 1 ms early on the reference machine).
+ * The re-arm read the wall clock at fire time, found the same instant still
+ * ahead, and fired the rule again a millisecond later. Here the evaluator's
+ * wall clock is steered, read by read: 40 ms short of the instant when the
+ * rule is armed, 1 ms short when the timer fires, and from then on running in
+ * real time from the instant, as a wall clock would. Under the frozen clock this suite's
+ * server runs on, the second fire lands in another frame and runs its action
+ * again; under a live clock it lands in the same frame and the frame limiter
+ * audits it as rate-limited. Either is a second fire of a once-a-day rule.
+ */
+for (const clockKind of ["frozen", "live"] as const) {
+  test(`timeOfDay fires once when its timer fires a millisecond before the wall instant (R24, ${clockKind} clock)`, async () => {
+    const instant = new Date();
+    instant.setSeconds(instant.getSeconds() + 5, 0);
+    // Each re-arm reads the wall clock once: arming, the first fire, then on.
+    let reads = 0;
+    let firstFireAt = 0;
+    const wallNow = (): Date => {
+      reads += 1;
+      if (reads === 1) return new Date(instant.getTime() - 40);
+      if (reads === 2) {
+        firstFireAt = performance.now();
+        return new Date(instant.getTime() - 1);
+      }
+      return new Date(instant.getTime() + (performance.now() - firstFireAt));
+    };
+    const executed: ActionRequest[] = [];
+    const audits: AutomationAudit[] = [];
+    const evaluator = new AutomationEvaluator({
+      state: new ControlPlaneState(),
+      execute: async (req) => {
+        executed.push(req);
+        return { ok: true, stateVersion: 1 };
+      },
+      audit: (rec) => audits.push(rec),
+      clock: clockKind === "frozen" ? () => 0 : () => performance.now(),
+      wallNow,
+    });
+    const rule: ParsedRule = {
+      id: "tod",
+      trigger: { kind: "timeOfDay", at: { h: instant.getHours(), m: instant.getMinutes(), s: instant.getSeconds() } },
+      conditions: [],
+      action: { command: "marker.add", payload: {} },
+      enabled: true,
+    };
+    evaluator.load({ automation: [rule], houseRate: 30 } as unknown as PackageInfo);
+    // Armed for 40 ms; when the timer fires, the wall clock still reads 1 ms short.
+    await new Promise((r) => setTimeout(r, 200));
+    await evaluator.settled();
+    evaluator.close();
+    assert.equal(executed.length, 1, `one action for one instant; got ${executed.length}`);
+    assert.deepEqual(
+      audits.filter((a) => a.event === "automation.rateLimited"),
+      [],
+      "no second fire for the frame limiter to catch",
+    );
+  });
+}
 
 test("hotkey fires when its binding fires, whatever the carried command's outcome", async (t) => {
   if (!preflightAvailable()) return t.skip("nbe-preflight not built");

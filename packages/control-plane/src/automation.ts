@@ -744,18 +744,27 @@ export class AutomationEvaluator {
     this.timers.set(id, t);
   }
 
-  private scheduleTimeOfDay(rule: ParsedRule): void {
+  /**
+   * Arm a timeOfDay rule for its next wall instant. After a fire, `after` is
+   * the instant just fired, and the next is counted from it (R24). A
+   * `setTimeout` can fire while the wall clock still reads before its instant
+   * (61 and 65 of 2000 fired 1 ms early on the reference machine), and a
+   * re-arm counted from that reading found the same instant still ahead and
+   * fired the rule again.
+   */
+  private scheduleTimeOfDay(rule: ParsedRule, after?: Date): void {
     if (rule.trigger.kind !== "timeOfDay") return;
     const { h, m, s } = rule.trigger.at;
     const now = this.wallNow();
-    const next = new Date(now);
+    const from = after && after.getTime() > now.getTime() ? after : now;
+    const next = new Date(from);
     next.setHours(h, m, s, 0);
-    if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+    if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1);
     const delay = next.getTime() - now.getTime();
     const firesAt = this.clock() + delay;
     this.setTimer(rule.id, delay, () => {
       this.fire({ kind: "timeOfDay", ruleId: rule.id }, NO_CAUSE, firesAt);
-      this.scheduleTimeOfDay(rule); // daily, while the package is loaded
+      this.scheduleTimeOfDay(rule, next); // daily, from the instant just fired
     });
   }
 }
