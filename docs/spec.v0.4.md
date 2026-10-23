@@ -74,7 +74,7 @@ of that PR, and until then it is a candidate (merged as `cd3f0c6`). **Row 14**
 was drafted in the limiter PR (branch `limiter-8-2`, 2026-10-21), as an early
 commit, on the user's rulings of 2026-10-21: the device-audio design record's
 D4 (the limiter first, its own PR) and the limiter plan's L1–L8. It is
-ratified by the user's merge of that PR, and until then it is a candidate.
+ratified by the user's merge of that PR, and until then it is a candidate (merged as `ccef706`).
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
