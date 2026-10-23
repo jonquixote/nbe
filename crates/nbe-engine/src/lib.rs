@@ -17,6 +17,7 @@ pub mod directive;
 /// session surface is re-exported through `encode` (WU2).
 pub mod encode;
 pub mod gpu;
+pub mod limiter;
 /// SPEC §12.5's budget decision lives in `nbe-core` so preflight and the
 /// engine cannot disagree about it. Re-exported here for callers.
 pub use nbe_core::loop_cache;

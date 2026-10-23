@@ -1,0 +1,8 @@
+decoded tests/fixtures/media/av_tone.mp4: 48000 Hz, 2 ch, 48000 frames (1.000 s), peak -17.8 dBFS; playing at -12 dB
+device 125 "MacBook Pro Speakers": nominal 44100 Hz, actual Some(44100.0) Hz, buffer Some(512) frames, device latency (out) Some(19) frames, safety offset (out) Some(77) frames, output streams [126], stream latency [Some(258)] frames
+mic: Ok("MacBook Pro Microphone") SupportedStreamConfig { channels: 1, sample_rate: 44100, buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }
+callbacks 132: frames per callback Some(512)..Some(512), playback-callback 12.67..12.67 ms, first callback 55.4 ms after play()
+nominal rate: before 44100, while open 48000, after close 48000
+restored nominal rate to 44100: status 0, now 44100
+mic: 79360 samples captured, pre-roll floor 0.0146, onset Some((814960900, -0.058433976))
+acoustic: first audible frame predicted at 779.2 ms (callback arrival + cpal playback delay), mic onset at 815.0 ms (arrival back-dated): round trip beyond the prediction 35.8 ms

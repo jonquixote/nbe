@@ -1,0 +1,11 @@
+device 99 "VB-Cable": nominal 48000 Hz, actual Some(48000.0) Hz, buffer Some(512) frames, device latency (out) Some(0) frames, safety offset (out) Some(0) frames, output streams [100], stream latency [Some(0)] frames
+callbacks 282, buffer 512 frames (10.67 ms), stall 0 ms at callback 50, cpal error callbacks 0
+  cb   48: arrived   813.310 ms, HAL callback time   512.000 ms, playback   522.667 ms, frames 512
+  cb   49: arrived   824.019 ms, HAL callback time   522.667 ms, playback   533.333 ms, frames 512
+  cb   50: arrived   834.566 ms, HAL callback time   533.333 ms, playback   544.000 ms, frames 512
+  cb   51: arrived   845.357 ms, HAL callback time   544.000 ms, playback   554.667 ms, frames 512
+  cb   52: arrived   855.949 ms, HAL callback time   554.667 ms, playback   565.333 ms, frames 512
+  cb   53: arrived   866.614 ms, HAL callback time   565.333 ms, playback   576.000 ms, frames 512
+  cb   54: arrived   877.313 ms, HAL callback time   576.000 ms, playback   586.667 ms, frames 512
+HAL callback-time step across the stall: 10.667 ms = 1.00 buffer periods
+loopback: 155647 frames captured from first signal; silent runs (offset, frames) []

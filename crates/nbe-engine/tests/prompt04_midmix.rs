@@ -512,6 +512,11 @@ async fn midmix_take_queues_fresh_take_at_new_t0() {
     let dir = tempfile::tempdir().unwrap();
     make_package3(dir.path());
     let (state, handler, _render) = loaded_engine(dir.path()).await;
+    // The load's own intents are not a take's: since R26, `show.load`
+    // publishes the master limiter's ceiling on this queue, and no audio
+    // driver runs here to drain it. Clear them, as prompt13_recall does, so
+    // the count below is the takes' alone.
+    state.audio_commands.lock().unwrap().clear();
     state.clock.lock().unwrap().start();
     *state.view_item.lock().unwrap() = Some("A1".into());
 

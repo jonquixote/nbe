@@ -368,6 +368,18 @@ impl DirectiveHandler {
             }
         }
 
+        // SPEC §8.2's note (v0.4.8 row 14): the master limiter's ceiling is
+        // the show's `truePeakDbtp`, in force from `show.load` (L1).
+        let (dbtp, source) = match index.declared_true_peak_dbtp {
+            Some(dbtp) => (dbtp, "show"),
+            None => (crate::limiter::DEFAULT_CEILING_DBTP, "default"),
+        };
+        self.state
+            .audio_commands
+            .lock()
+            .unwrap()
+            .push(crate::audio_control::AudioCommand::SetLimiterCeiling { dbtp, source });
+
         let item_audio = index.item_audio_map();
         info!(items = item_audio.len(), "item audio resolved");
         *self.state.item_audio.lock().unwrap() = item_audio;

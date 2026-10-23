@@ -1,0 +1,9 @@
+device 99 "VB-Cable": nominal 48000 Hz, actual Some(48000.0) Hz, buffer Some(512) frames, device latency (out) Some(0) frames, safety offset (out) Some(0) frames, output streams [100], stream latency [Some(0)] frames
+drift: 1800 s of silence on "VB-Cable" at its own nominal 48000 Hz (no rate change)
+callbacks 168809, frames 86430208, span 1800.6 s (HAL time)
+rate vs HAL host time: 48000.0000 Hz (-0.00 ppm vs nominal), fit residual rms 0.0 frames
+rate vs callback arrival (Instant): 47999.9997 Hz (-0.01 ppm), residual rms 2.2 frames
+kAudioDevicePropertyActualSampleRate: mean 48000.0000 Hz (+0.00 ppm), min 48000.0000, max 48000.0000, 1792 polls
+  skew at    1 min if uncorrected: -0.00 ms (HAL fit)
+  skew at   10 min if uncorrected: -0.00 ms (HAL fit)
+  skew at   30 min if uncorrected: -0.00 ms (HAL fit)
