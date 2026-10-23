@@ -27,6 +27,7 @@ import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { tempDir } from "./test-tmp.js";
+import { loadComplete, residency } from "./load-residency.js";
 import { ENGINE_TELEMETRY_TTL_MS } from "./telemetry.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
@@ -64,6 +65,12 @@ const COMMAND_MS = 5_000;
  * sits between them. 180 s is ~4x the measured worst case.
  */
 const LOAD_MS = 180_000;
+/**
+ * A load's render-thread boundary: every decoded asset's ring resident (R29).
+ * R25's bound for the same wait (#60); CI's rings land 0.3-2.6 s after the
+ * load's acknowledgement on this package.
+ */
+const RESIDENT_MS = 30_000;
 /** Waiting for a telemetry predicate: 3 ticks, so a missed tick is not a flake. */
 const TELEMETRY_MS = 3 * TICK_MS;
 /** `show.stop` must acknowledge inside its own grace window, plus slack. */
@@ -223,6 +230,39 @@ async function ok(
     `${command} must succeed; got ${JSON.stringify(reply["error"] ?? reply)}`,
   );
   return reply;
+}
+
+/** A mark in the engine's log: its length, in characters, so far. */
+function engineLogMark(): number {
+  return engineLog.join("").length;
+}
+
+/**
+ * R29 (R25's construction, R5's class): wait for the load to complete on the
+ * render thread, not only for the engine's acknowledgement of it.
+ *
+ * `show.load` is acknowledged before the render thread's load boundary, where
+ * R20's rings upload on the thread the directives share. A `show.start` sent
+ * inside that boundary waits behind the uploads while the control plane
+ * already reads RUNNING, so step 3's clock window expired against upload time:
+ * #65's run `39603865448` applied `show.start` 3333 ms after sending it. Since
+ * R20, CI's start-to-clock lag on this package is 1712-2785 ms on green runs
+ * against 241-1246 ms before it (R29's row). Pressing START while the package
+ * is still loading is not what an operator does (R5's words).
+ */
+async function awaitLoadComplete(mark: number, what: string): Promise<void> {
+  const seen = () => residency(engineLog.join("").slice(mark).split("\n"));
+  const deadline = Date.now() + RESIDENT_MS;
+  while (Date.now() < deadline) {
+    if (loadComplete(seen())) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const r = seen();
+  assert.fail(
+    `${what}: the load must complete, every decoded asset's ring resident, within ` +
+      `${RESIDENT_MS} ms (decoded ${r.decoded}, resident ${r.resident}; last log: ` +
+      `${JSON.stringify(engineLog.slice(-3))})`,
+  );
 }
 
 /** Wait until a telemetry tick satisfies `pred`, or fail with what was seen. */
@@ -423,6 +463,7 @@ test("[RI-1] step 1: preflight passes on the dress package with a populated repo
 });
 
 test("[RI-1] step 2: show.load, and a render node acknowledges it", async () => {
+  const mark = engineLogMark();
   const reply = await ok("show.load", { packagePath: PKG }, LOAD_MS);
   const version = (reply["stateVersion"] ?? 0) as number;
   assert.ok(version > 0, "an accepted command must bump stateVersion");
@@ -455,6 +496,10 @@ test("[RI-1] step 2: show.load, and a render node acknowledges it", async () => 
     `the engine must confirm it applied show.load (stateVersion ${version}) ` +
       `within ${LOAD_MS} ms; §5.9.5 is the contract`,
   );
+
+  // And for the render thread to have finished the load (R29): applied is
+  // the directive thread's word, and R20's rings upload after it.
+  await awaitLoadComplete(mark, "step 2");
 });
 
 test("[RI-1] the engine binary is actually running its audio driver", async () => {
@@ -1458,12 +1503,14 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   if (ffprobe === null) return;
   const { pkgDir, recordDir } = stageRecordPackage();
 
+  const mark = engineLogMark();
   const loadReply = await ok("show.load", { packagePath: pkgDir, mode: "reload" }, LOAD_MS);
   const loadApplied = await server.awaitApplied(
     (loadReply["stateVersion"] ?? 0) as number,
     LOAD_MS,
   );
   assert.ok(loadApplied, "the engine must apply the record-enabled package load (§5.9.5)");
+  await awaitLoadComplete(mark, "step 11"); // R29: before show.start
   const startReply = await ok("show.start", { startClock: true });
   assert.ok(
     await server.awaitApplied((startReply["stateVersion"] ?? 0) as number, LOAD_MS),
@@ -1775,11 +1822,13 @@ test("[R20] step 12b: the counter clip plays on air, and its read-ahead misses n
   );
   const stopReply = await ok("show.stop", { quiesceOutputs: true });
   await server.awaitApplied((stopReply["stateVersion"] ?? 0) as number, COMMAND_MS);
+  const mark = engineLogMark();
   const loadReply = await ok("show.load", { packagePath: pkgDir, mode: "reload" }, LOAD_MS);
   assert.ok(
     await server.awaitApplied((loadReply["stateVersion"] ?? 0) as number, LOAD_MS),
     "the engine must apply the counter package's load",
   );
+  await awaitLoadComplete(mark, "the counter package"); // R29: before show.start
   const startReply = await ok("show.start", { startClock: true });
   assert.ok(
     await server.awaitApplied((startReply["stateVersion"] ?? 0) as number, LOAD_MS),

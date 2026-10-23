@@ -7844,6 +7844,96 @@ item):
     The `gpu-*` load lines are named apart from R10's window, so they extend
     R10's envelope only if the user rules that they do.
 
+  **R29's fix: the dress waits for the load's rings before `show.start`**
+  (PR #66, branch `r29-dress-residency-gate`, off `13d3a7e`; the user's
+  ruling of 2026-10-22, option C, on #65's diagnosis; test-only). The
+  register row carries the sighting, the 40-run table and its ranges.
+  - **The commits:**
+    - `cdf635b`: R29's row, filed.
+    - `7f81237`: the construction.
+      - R25's predicate moves to `load-residency.ts`, shared: the load is
+        complete when every video asset the engine decoded at the load has
+        its ring resident. operator-signals' `awaitResident` (#60) uses it,
+        with its rule unchanged.
+      - The dress marks its engine log before each `show.load`. After the
+        engine applies the load, it waits (30 s, R25's bound) for the
+        render thread's boundary before `show.start`: at step 2, before
+        step 3's clock window, at step 11, and at step 12b.
+      - The mark is a character offset into the joined log, so a line
+        split across stdout chunks is still counted, unlike R25's
+        line-split hardening note.
+      - No floor moves: the dress still runs 29.
+  - **The falsification** (2026-10-22, local times; the normative machine,
+    AC, `caffeinate`, head `7f81237`):
+    - The dress's test file and the shared predicate were mutated in place
+      and restored from `git show HEAD:` after every run, `git`-clean. Only
+      steps 1–3 ran.
+    - Each window started under load 2.8 (the last under 2.5) and was kept
+      only if both ends were under 3.0.
+    - Step 2's load was inflated, as R25's was, with 5 extra copies of
+      `A1_clip`: 8 decodes, the decode-session cap.
+
+    | Variant | Kept runs | Result | Start to epoch |
+    |---|---|---|---|
+    | control: the stock dress, gated | 1 (04:10:31–04:10:41, 2.69 → 2.81) | pass | 507 ms |
+    | **F1, the old construction** (the gate removed) | 5 | **fail, 1 of 5** (04:28:13–04:28:31, 2.64 → 2.42); pass, 4 | 93–124 ms on the passes |
+    | **F2, the fix** | 5 | pass, every run | 505–638 ms |
+    | **F3, the gate released at the first ring** | 3 | **fail, every run**: `waited 3000 ms for masterClockFrame to advance`, frame 0 | none (the clock never moved in the window) |
+
+    - **F1's failure is the defect itself.** The engine indexed the load at
+      11:28:27.286Z, and the rings landed at 28.169 (`A1_clip`), 28.940,
+      29.715, 30.531 and on. `show.start` went out inside that boundary,
+      and the clock read 0 at every tick from 28.284 to 31.286.
+    - **F1's four passes are the race won.** A `show.start` sent before the
+      render tick begins the uploads is applied at once (93–124 ms), as
+      R25's F1 found here (1 of 7). CI's base rate is the 40-run table.
+    - **F3 reproduces the mechanism deterministically** while the boundary
+      is still running at the gate's release.
+    - **F2's 505–638 ms is `show.start` after the rings.** #66's CI read
+      564 ms, inside the range of trees before R20 (241–1246).
+    - **Voids:** 10 attempts (F1 3, F2 5, F3 2), each ending at 3.03–3.62.
+      Every one agreed with its variant's kept result. The cause was the
+      inflated dress's own burst (8 decodes) on an ambient ~2.6: iTerm
+      (with `top` open in it; the first void named `/usr/bin/top` at 43.9%),
+      WindowServer, `coreaudiod` and this session. One F2 entry voided three
+      times and was rerun under a 2.5 gate. It voided once more
+      (04:31:43–04:32:04, 2.45 → 3.03) and was then kept (04:33:35–04:33:56,
+      2.49 → 2.64).
+    - **The builder's slip:** the driver kept each run's artifacts under its
+      variant and attempt number, so repeated entries overwrote earlier
+      ones. Every run's log line survives, and F1's failing run was copied
+      out before anything overwrote it. Fixed for the rerun. The driver,
+      its log and F1's failing artifacts are in `.git/nbe-staged/r29-falsify/`.
+  - **The gate** (head `7f81237`; main's engine and the release preflight
+    built at that head; load-gated as above, voids named):
+    - `tsc` clean (04:35:16–04:35:20, 2.26 → 2.40);
+    - `npm test` 200/200 (04:40:12–04:40:23, 2.27 → 2.23). Two earlier
+      attempts were void, 2.40 → 5.81 and 2.44 → 4.00, each 200/200 inside:
+      the suite's own parallel burst;
+    - operator-signals: ran 4, passed 3, skipped 1 (04:41:54–04:42:24,
+      2.48 → 2.89). The skip is the refused start: this machine's encoder
+      acknowledges `stream.start`. The lost-stop, restart and held tests go
+      through `onAir()`, so they ran on the shared predicate. One void
+      (2.23 → 3.40, `coreaudiod` beside iTerm and WindowServer);
+    - the full dress, stock and gated, 29/29 (04:42:54–04:44:03, 2.43 →
+      2.70). `DRESS-COUNTS`: drops 0, underruns 0, watchdog trips 0, rises
+      1993 and 1996 ms. Load 1's start to epoch was 997 ms.
+  - **CI at `7f81237`:** run `39765826824`, attempt 1. Every job executed
+    and checked out `1348c6a` (`7f81237` into `13d3a7e`). Each job was read
+    job-exact by `gh api --allow-escape-sequences …/actions/jobs/<id>/logs`,
+    and the dress artifacts were fetched by `gh run download`.
+    - rust 537/0/4, with 32/32 floor lines and the 4 count gates. R15's
+      `three_frames…` was `ok` in both steps, and R10 was silent.
+    - control-plane 200/200, every floor held. operator-signals, now on the
+      shared predicate, ran 4 and exercised 1, with the refused start raised
+      at 2017 ms.
+    - dress 29/29, steps 2, 3 and 5 `ok`, 0 drops. Load 1's `show.start`
+      to epoch was 564 ms.
+    - Its envelope rows (R10 row 49 at 8.24 per CPU, and the GPU step's G5
+      at 4.88, which moves that ceiling to 6.10) are staged with #61's rows
+      47–48 and G3–G4. They land with #65's records, which hold rows 45–46
+      and G1–G2, so the rows stay in order. R15's run is 5 of 10.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
