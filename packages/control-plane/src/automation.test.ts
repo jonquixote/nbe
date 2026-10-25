@@ -692,6 +692,13 @@ test("timeOfDay fires when the local wall clock reaches `at`", { skip: NO_PREFLI
   ws.close();
 });
 
+/** This instant's local h:m:s, resolved through `setHours`, is this instant. */
+function roundTripsThroughSetHours(instant: Date): boolean {
+  const back = new Date(instant);
+  back.setHours(instant.getHours(), instant.getMinutes(), instant.getSeconds(), 0);
+  return back.getTime() === instant.getTime();
+}
+
 /**
  * R24: a timer can fire while the wall clock still reads before its instant
  * (61 and 65 of 2000 `setTimeout`s fired 1 ms early on the reference machine).
@@ -708,6 +715,11 @@ for (const clockKind of ["frozen", "live"] as const) {
   test(`timeOfDay fires once when its timer fires a millisecond before the wall instant (R24, ${clockKind} clock)`, async () => {
     const instant = new Date();
     instant.setSeconds(instant.getSeconds() + 5, 0);
+    // The rule names a local h:m:s, which the evaluator resolves through
+    // `setHours`. In DST's repeated hour, the second pass's h:m:s resolves to
+    // the first pass, behind the arming read, so the rule arms for tomorrow and
+    // fires 0 times (R24's test note). Step to an instant that round-trips.
+    while (!roundTripsThroughSetHours(instant)) instant.setTime(instant.getTime() + 3_600_000);
     // Each re-arm reads the wall clock once: arming, the first fire, then on.
     let reads = 0;
     let firstFireAt = 0;
