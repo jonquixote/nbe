@@ -8506,6 +8506,115 @@ item):
   - The backup branch `limiter-8-2-pre-rebase` was deleted, the bookend
     green.
 
+  **The test-hygiene PR** (branch `test-hygiene`, off `ccef706`; the user's
+  order of 2026-10-23; test-only). Its five items, as ruled and queued. Each
+  falsification was mutated in place, restored from `git show HEAD:` (a
+  fresh mtime) and checked `git`-clean, on AC under `caffeinate`. Each
+  window started under load 2.6 and was kept only if both ends were under
+  3.0. The driver (`fx.py`), its plans and every log are in
+  `.git/nbe-staged/hygiene/`.
+  - **The commits:**
+    - `3e9eadd`: #65's records (above).
+    - `57977b5`: **R28.**
+      - The handle: 31 listening TCP servers, one per skipped test. They
+        were found by listing the process's active resources 15 s in.
+      - The cause: node:test (v22.17.0) runs `beforeEach` for a test that
+        skips itself with a runtime `t.skip()`, and never its `afterEach`.
+        A probe in isolation logged `beforeEach`, the body, and no
+        `afterEach`.
+      - The fix: a shared `test-preflight.ts` exports `NO_PREFLIGHT`, and
+        every preflight-gated test skips by option, naming the binary. That
+        covers the 47 runtime skips in four suites, and six tests in three
+        more that failed without naming it.
+      - `ci.yml`'s two "they SKIP" comments are corrected §2c.
+    - `45a31a2`: **R15's siblings**, on #64's frame-count construction.
+    - `71e76e1`: **R24's DST-safe instant.**
+    - `ccb361a`: **R30**, timed from before the send.
+    - this record. **Item 5** (step 3's tick phase) is a noted limitation
+      on R29's row, by the user's ruling: no fix, the record is the
+      deliverable.
+  - **R28's falsification** (times local, 2026-10-25). The red was rerun
+    for durable logs: the first red's logs (2026-10-23) were lost with the
+    session scratchpad, **the builder's slip**.
+
+    | Run | Binary | Result |
+    |---|---|---|
+    | red at `3e9eadd`: automation, alerts-server, belief, render-channel | missing | **exit 124** at 60 s, each (03:55:05–03:59:51, kept) |
+    | red: companion, server, v04 | missing | 2 failed each, unnamed ("'error' !== 'ok'"; "preflight could not run (exit 127): no stderr") |
+    | red: dispatch | missing | exit 0 (its `beforeEach` opens nothing) |
+    | red: `npm test` | missing | **exit 124** at 180 s (04:00:13–04:03:13, kept) |
+    | green at `57977b5`: all seven suites | missing | exit 0, every gated test skipped: "nbe-preflight not built: /nonexistent/nbe-preflight does not exist" (03:34:36–03:36:02, kept) |
+    | green: `npm test` | missing | exit 0 in ~11 s, 200 tests, 0 failed, 64 skipped; three windows, all void on its own burst (3.04–4.87) |
+    | **M1**: one automation test back to a runtime skip | missing | **exit 124** (03:43:19–03:44:19, kept) |
+    | control: all seven suites | built | 37/37, 5/5, 4/4, 24/24, 9/9, 4/4, 15/15 (03:44:19–03:44:52, kept) |
+
+  - **R15's siblings, fail-never and fail-always** (the runner's env is
+    `CI=true GITHUB_ACTIONS=true`):
+
+    | Run | Construction | Env | Result |
+    |---|---|---|---|
+    | W1: sibling 1's work 750 → 1100 ms (a stall) | old, `57977b5` | — | **fail**: "late by more than one frame and at most two: 810.64 ms" |
+    | W2: `JUST_LATE` 210 → 450 ms | old | — | **fail**, both tests: "late by at most one budget: 259.87 ms" |
+    | controls | new, `45a31a2` | normative and runner | pass (1/1, 4/4) |
+    | W1 | new | runner | **pass**: counts `[3]`, the slate up, the law holding; `SKIP normative:` |
+    | W1 | new | normative | fail: "…so it counts 2", `[3]` (the bound still asserted here) |
+    | W2 | new | runner | **pass** (255 ms late); `SKIP normative:` |
+    | W2 | new | normative | fail, both tests (the bound still asserted here) |
+    | R1: the watchdog built at 1 | new | runner | **killed**: "the slate is up exactly when the frames counted exceed 2 (§10.3): frame 1, counts [2]" |
+    | R2: a late frame keeps the on-time run | new | runner | **killed**: "a late frame restarts the on-time run" |
+    | R3: a trip on every late frame | new | runner | **killed**: "one trip per episode, not per frame", (3, 0) |
+
+    Every window was kept (04:04:28–04:13:56).
+  - **R24's DST-safe instant** (the instant forced to 2026-11-01T06:30:00Z,
+    01:30 EST, the repeated hour's second pass):
+    - old, `45a31a2`: under New York, **red**, "one action for one instant;
+      got 0", both clocks. The controls pass: unforced, the first pass
+      (05:30Z) and the second pass under UTC.
+    - new, `71e76e1`: under New York, **green**, with every control passing.
+      With R24's own defect restored at that instant, **red**: "got 2"
+      (frozen), and a rate-limited row (live).
+    - Every window was kept (04:15:17–04:19:10).
+  - **R30**, the refused start made to exercise on the normative machine by
+    `outputs.stream.tapPath: cpuReadback` (`E_NO_ZEROCOPY`, the
+    configuration refusal decided before any probe):
+
+    | Run | Construction | `raisedAfterMs` | Result |
+    |---|---|---|---|
+    | refusal forced, ×3 | old, `71e76e1` | 2022, 2011, 2018 | pass, on the poll's margin |
+    | + a 40 ms reply injected | old | 1978 | **red**: "not before the window: raised after 1978 ms" |
+    | refusal forced, ×3 | new, `ccb361a` | 2025, 2028, 2023 | pass |
+    | + a 40 ms reply injected | new | 2015 | **pass** |
+    | the server's window at 1900 ms | new | 1920 | **red**: "not before the window: raised after 1920 ms" (`insideWindow` empty) |
+    | the server's window at 1500 ms | new | 1502 | red, caught first by "before the window: nothing" |
+    | control, unforced | new | none | 3 pass, 1 skip (this machine's encoder acknowledges) |
+
+    Every window was kept (04:21:28–04:25:24).
+  - **The gate at `ccb361a`:**
+    - `fmt`, `clippy --workspace --all-targets -D warnings`, `tsc` and the
+      builds are clean.
+    - **The workspace: 549/0/4, kept** (04:34:20–04:36:17, 2.43 → 2.63),
+      after one void (549/0/4 inside).
+    - prompt04 19/19 and prompt11_watchdog 4/4 (kept).
+    - **`npm test` 200/200, kept** (04:37:38–04:37:49, 2.49 → 2.34).
+    - operator-signals 3 + 1 skip (kept).
+    - **The dress: 28/29, kept** (04:39:58–04:41:03, 2.59 → 2.95), after a
+      void that read 29/29. That is a sighting, below.
+  - **A sighting in the gate's dress, not this PR's:** no engine or dress
+    file is touched.
+    - `[R20] step 12c`: "the counter's recorded frames must run in order; 1
+      went backwards, first at {"t":1.433333,"k":41}".
+    - The logged sequence reads `1.37:41 1.40:42 1.43:41 1.47:44`. Frame
+      43's slot holds 41, and 43 never appears.
+    - **Not a misread colour:** frames 41 and 43 differ by L1 270, and R22's
+      worst decode shift is L1 56. The recording at t=1.43 holds frame 41's
+      picture.
+    - The run's telemetry: read-ahead misses 0, dropped frames 0, the record
+      tap `zeroCopy`. Its drift was 2.0 frames, against 0.0 in the void
+      before it.
+    - The artifacts are kept in `.git/nbe-staged/hygiene/gate/dress-sighting/`.
+      Not rerun. It is the user's to rule: a stale frame in the zero-copy
+      record path, or the View's ring.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
