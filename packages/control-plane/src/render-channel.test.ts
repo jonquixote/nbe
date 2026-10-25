@@ -10,7 +10,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 
@@ -20,7 +20,7 @@ import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import { MockRenderBridge } from "./render-bridge.js";
 import { CpError, RESYNC_COMMAND } from "./protocol.js";
-import { preflightBin } from "./package.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 import { tempDir } from "./test-tmp.js";
 
 const ADMIN = "admin-token";
@@ -75,9 +75,6 @@ function makePackage(): string {
 }
 
 /** show.load shells out to nbe-preflight; skip cleanly when it is not built. */
-function preflightAvailable(): boolean {
-  return existsSync(preflightBin());
-}
 
 function conn(role: string, token: string): WebSocket {
   return new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
@@ -469,8 +466,7 @@ function ackOn(render: WebSocket, command: string, delayMs = 0, onDirective?: (s
   });
 }
 
-test("show.stop: acknowledged within the window is graceful; the outputs go idle on the ack, not at send", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop: acknowledged within the window is graceful; the outputs go idle on the ack, not at send", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const render = conn("render", RENDER);
@@ -507,8 +503,7 @@ test("show.stop: acknowledged within the window is graceful; the outputs go idle
   render.close();
 });
 
-test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the outputs", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the outputs", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   // Connected but silent: a timeout, or an ack the engine withheld because a
@@ -533,8 +528,7 @@ test("show.stop: unacknowledged times out, logs the exact warning, and HOLDS the
   render.close();
 });
 
-test("show.stop: a later command's acknowledgement does not stand in for the stop's own", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop: a later command's acknowledgement does not stand in for the stop's own", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const second = conn("admin", ADMIN);
@@ -575,8 +569,7 @@ test("show.stop: a later command's acknowledgement does not stand in for the sto
   render.close();
 });
 
-test("show.stop: a reconnect's resync at the stop's own version does not stand in for the stop's acknowledgement", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop: a reconnect's resync at the stop's own version does not stand in for the stop's acknowledgement", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const first = conn("render", RENDER);
@@ -614,8 +607,7 @@ test("show.stop: a reconnect's resync at the stop's own version does not stand i
   admin.close();
 });
 
-test("show.stop: a resync requested on the same connection inside the window does not stand in either", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop: a resync requested on the same connection inside the window does not stand in either", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const render = conn("render", RENDER);
@@ -649,8 +641,7 @@ test("show.stop: a resync requested on the same connection inside the window doe
   render.close();
 });
 
-test("show.stop force: the control plane still waits for the ack, warns, and goes idle on it", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop force: the control plane still waits for the ack, warns, and goes idle on it", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const render = conn("render", RENDER);
@@ -673,8 +664,7 @@ test("show.stop force: the control plane still waits for the ack, warns, and goe
   render.close();
 });
 
-test("show.stop with no active output: forwarded, no wait, no warning", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("show.stop with no active output: forwarded, no wait, no warning", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   const render = conn("render", RENDER); // silent: nothing to wait for
@@ -844,8 +834,7 @@ test("rate limiting returns E_RATE_LIMITED and does not bump stateVersion", asyn
   assert.equal(state.stateVersion, before, "a rate-limited command mutates nothing");
 });
 
-test("item.reset clears DONE/MISSING/ERROR and refuses anything else", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("item.reset clears DONE/MISSING/ERROR and refuses anything else", { skip: NO_PREFLIGHT }, async () => {
   const admin = conn("admin", ADMIN);
   await connect(admin);
   await send(admin, "show.load", { packagePath: pkgPath });

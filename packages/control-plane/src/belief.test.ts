@@ -17,7 +17,7 @@ import { WebSocket } from "ws";
 import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
-import { preflightBin } from "./package.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 import { tempDir } from "./test-tmp.js";
 
 const ADMIN = "admin-token";
@@ -28,7 +28,6 @@ let server: ControlPlaneServer;
 let state: ControlPlaneState;
 let auditPath: string;
 
-const preflightAvailable = (): boolean => existsSync(preflightBin());
 
 /** A v0.4 package whose rules watch the stream belief: each adds a marker named for itself. */
 function makePackage(automation: unknown[] = []): string {
@@ -192,8 +191,7 @@ async function loadAndStart(automation: unknown[] = []): Promise<WebSocket> {
 
 // --- D3: held is output-active, and the output commands name it ------------------
 
-test("D3: stream.start refuses held by name; stream.stop accepts held and refuses idle by name", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("D3: stream.start refuses held by name; stream.stop accepts held and refuses idle by name", { skip: NO_PREFLIGHT }, async (t) => {
   const admin = await loadAndStart();
   t.after(() => admin.close());
   state.streamState = "held"; // §5.9.5's limbo, with no engine to correct it
@@ -209,8 +207,7 @@ test("D3: stream.start refuses held by name; stream.stop accepts held and refuse
   assert.deepEqual(again.error, { code: "E_FORBIDDEN_STATE", message: "stream is idle" });
 });
 
-test("D3 and §5.9.5: show.stop unacknowledged makes a live stream held, raises the held alert, and leaves the recording recording", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("D3 and §5.9.5: show.stop unacknowledged makes a live stream held, raises the held alert, and leaves the recording recording", { skip: NO_PREFLIGHT }, async (t) => {
   const admin = await loadAndStart();
   t.after(() => admin.close());
   // No render node: nothing acknowledges, nothing reports, so nothing corrects.
@@ -224,8 +221,7 @@ test("D3 and §5.9.5: show.stop unacknowledged makes a live stream held, raises 
 
 // --- D4: a correction is a detection transaction ------------------------------------
 
-test("D4: a correction is one bump and one belief.corrected row, with no stateChange frame and no automation", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("D4: a correction is one bump and one belief.corrected row, with no stateChange frame and no automation", { skip: NO_PREFLIGHT }, async (t) => {
   await engine(t, () => "none", new Set(["stream.start"]));
   const admin = await loadAndStart([rule("left-air", { from: "live" }), rule("to-idle", { to: "idle" })]);
   t.after(() => admin.close());
@@ -257,8 +253,7 @@ test("D4: a correction is one bump and one belief.corrected row, with no stateCh
 
 // --- §13.2's transition rule: live→held on the command path --------------------------
 
-test("§13.2: live→held fires from:\"live\" and to:\"held\" once, on the command path; to:\"idle\" stays silent, and the correction after fires nothing", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("§13.2: live→held fires from:\"live\" and to:\"held\" once, on the command path; to:\"idle\" stays silent, and the correction after fires nothing", { skip: NO_PREFLIGHT }, async (t) => {
   let transport = "live";
   await engine(t, () => transport, new Set(["show.stop"]));
   const admin = await loadAndStart([

@@ -1156,7 +1156,10 @@ jobs:
       - name: the automation suite actually ran (Prompt 11)
         # Two floors, rule 8. Every automation test loads a real package over
         # the wire, which needs nbe-preflight: without it they SKIP, and the
-        # suite-wide floor above would stay green about nothing. This job builds
+        # suite-wide floor above would stay green about nothing. (§2c, R28:
+        # until the test-hygiene PR they did not skip, they hung. A runtime
+        # t.skip() runs beforeEach and never afterEach, so each skip leaked the
+        # server beforeEach opened. They now skip by option, naming the binary.) This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
         # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31, v0.4.8 row 2's take payload: 32, v0.4.8 row 9's field domains: 35, R24's re-arm under a frozen and a live clock: 37).
         run: |
@@ -1165,7 +1168,8 @@ jobs:
           echo "$out" | grep -E "^(ok|not ok|# )" || true
           if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL automation.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           # node's TAP summary: `# tests` counts every test, `# pass` only the
-          # ones that passed WITHOUT skipping (a t.skip() lands in `# skipped`,
+          # ones that passed WITHOUT skipping (a skip, by option or by t.skip(),
+          # lands in `# skipped`,
           # not in `# pass`). So ran = tests, exercised = pass.
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
@@ -1181,6 +1185,9 @@ jobs:
         # Two floors, rule 8, the automation suite's shape and reason: every
         # belief test loads a real package over the wire, which needs
         # nbe-preflight, and without it they SKIP while `npm test` stays green.
+        # (§2c, R28: until the test-hygiene PR this was false. They hung, and
+        # `npm test` with them (exit 124 under a bound), because each runtime
+        # t.skip() leaked its beforeEach server. They now skip by option.)
         # This job builds the release preflight, so exercised == ran (4).
         run: |
           set -u

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { ControlPlaneState, type PackageInfo } from "./state.js";
 import { buildTick, newWorldTelemetry } from "./telemetry.js";
 import { tempDir } from "./test-tmp.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 
 function pkg(houseRate = 30): PackageInfo {
   return {
@@ -78,7 +79,7 @@ test("§10.1: the telemetry tick carries showState", () => {
   assert.equal(buildTick(state, world, Date.now()).showState, "RUNNING");
 });
 
-test("§7.15: show.load rejects a house-rate mismatch, and the check is reachable", async () => {
+test("§7.15: show.load rejects a house-rate mismatch, and the check is reachable", { skip: NO_PREFLIGHT }, async () => {
   // The guard existed and was UNREACHABLE: `DispatchDeps.houseRate` was
   // optional and nothing ever assigned it — not `ServerOptions`, not the
   // production entry point — so `engineRate` was always undefined and the
@@ -186,7 +187,7 @@ test("§7.15: parseHouseRate mirrors the engine's parse, including its refusals"
   assert.equal(parseHouseRate("+50"), 50, "u32::from_str accepts a leading +");
 });
 
-test("§7.15: the rejection is reachable through the SERVER, not only the dispatcher", async () => {
+test("§7.15: the rejection is reachable through the SERVER, not only the dispatcher", { skip: NO_PREFLIGHT }, async () => {
   // The dispatcher test above proves the guard fires when `houseRate` is set.
   // It cannot prove anything about production, where the value arrives through
   // `createControlPlaneServer`: the previous defect was precisely that nothing
