@@ -142,7 +142,9 @@ jobs:
         # `--nocapture` prints R15's `R15-COUNTS` lines (each frame's lateness
         # counted in frames) and the `SKIP normative:` line of the wall-clock
         # bound this runner does not assert, so a stall stays visible in a
-        # green run (R15's row).
+        # green run (R15's row). (§2c, the test-hygiene PR: two such lines
+        # now, three_frames' and its sibling's, one_frame_late_by_one_and_a_
+        # half_budgets…; the count gate reads `test result:`, not them.)
         run: |
           out=$(cargo test -p nbe-engine --test prompt04 -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
@@ -633,6 +635,10 @@ jobs:
         # restarts the run; the recovery never releases an operator's slate.
         # They FAIL loudly without an adapter (prompt04's policy) and print no
         # SKIP, so ran == exercised; floors equal at the full count (4).
+        # (§2c, the test-hygiene PR: on a runner, just_late prints a
+        # `SKIP normative:` line for the one bound it asserts only on the
+        # normative machine, R15's siblings. That skips a bound, not a test, so
+        # the skip count leaves those lines out.)
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -641,7 +647,7 @@ jobs:
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
-          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          skipped=$(echo "$out" | grep '^SKIP' | grep -vc '^SKIP normative:' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
           echo "prompt11_watchdog: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
