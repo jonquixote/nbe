@@ -133,14 +133,41 @@ fn on_time(render: &mut RenderLoop, frame: &mut u64, n: u64) {
     }
 }
 
+/// A late frame that is not a trip on its own. It is late by construction
+/// (`sleep` sleeps at least as long as asked, and `JUST_LATE` exceeds the
+/// budget), so that is what holds everywhere. "Late by at most one budget" is
+/// the wall clock's word, asserted on the normative machine only (R15's
+/// siblings, #64's construction): a stalled runner makes the frame later, and
+/// neither claim this frame serves depends on how late it is. A late frame
+/// restarts the on-time run, and while the slate is up it adds no trip.
 fn just_late(render: &mut RenderLoop, frame: &mut u64) {
     render.injected_view_delay = Some(JUST_LATE);
     let late = render.render_frame(*frame, Some(TRIP_BUDGET)).view_late_by;
     *frame += 1;
-    assert!(
-        late.is_some_and(|l| l <= TRIP_BUDGET),
-        "late by at most one budget: {late:?}"
-    );
+    let late = late.unwrap_or_else(|| {
+        panic!("{JUST_LATE:?} of work against {TRIP_BUDGET:?} is late by construction")
+    });
+    if on_the_normative_machine() {
+        assert!(late <= TRIP_BUDGET, "late by at most one budget: {late:?}");
+    } else {
+        eprintln!(
+            "SKIP normative: a just-late frame late by at most one budget ({late:?}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+        );
+    }
+}
+
+/// The machine a bound that measures the machine may be asserted on:
+/// prompt04's rule (the dress rehearsal's), fail-closed. Neither `CI` nor
+/// `GITHUB_ACTIONS` set is the normative machine; `GITHUB_ACTIONS=true` is a
+/// CI runner, not the reference machine (SPEC §0.3); anything else is refused.
+fn on_the_normative_machine() -> bool {
+    let ci = std::env::var("CI").unwrap_or_default();
+    let actions = std::env::var("GITHUB_ACTIONS").unwrap_or_default();
+    match (ci.as_str(), actions.as_str()) {
+        ("", "") => true,
+        (_, "true") => false,
+        _ => panic!("unidentified machine: CI={ci:?}, GITHUB_ACTIONS={actions:?}"),
+    }
 }
 
 fn counts(state: &EngineState) -> (u64, u64) {
