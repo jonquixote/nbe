@@ -27,6 +27,7 @@ import { MockRenderBridge } from "./render-bridge.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
 import { tempDir } from "./test-tmp.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 
 const TOKEN = "op-token-1";
 const noPersist = { onDirty: () => {}, flushNow: () => {} };
@@ -145,7 +146,7 @@ function adminWs(): WebSocket {
   });
 }
 
-test("AC-12 WS: companion button view.take -> ok + bump + stateChange, no plugin", async () => {
+test("AC-12 WS: companion button view.take -> ok + bump + stateChange, no plugin", { skip: NO_PREFLIGHT }, async () => {
   const ws = adminWs();
   await connect(ws);
   const pkgPath = makePackage();
@@ -343,7 +344,7 @@ test("E_AUTH before state on bad token; token never logged", async () => {
   );
 });
 
-test("intentSource: invalid rejected, rejected-with-source audited, direct is null", async () => {
+test("intentSource: invalid rejected, rejected-with-source audited, direct is null", { skip: NO_PREFLIGHT }, async () => {
   const ws = adminWs();
   await connect(ws);
   try {

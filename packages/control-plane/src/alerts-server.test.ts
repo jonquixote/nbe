@@ -16,7 +16,7 @@ import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { StatePersistence } from "./persistence.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
-import { preflightBin } from "./package.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 import { tempDir } from "./test-tmp.js";
 
 const ADMIN = "admin-token";
@@ -59,7 +59,6 @@ function makePackage(): string {
   return dir;
 }
 
-const preflightAvailable = (): boolean => existsSync(preflightBin());
 
 function conn(role: string, token: string): WebSocket {
   return new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
@@ -191,8 +190,7 @@ afterEach(async () => {
   if (server) await server.close();
 });
 
-test("an unacknowledged stream.start raises after the window, not before, on every shared surface alike", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("an unacknowledged stream.start raises after the window, not before, on every shared surface alike", { skip: NO_PREFLIGHT }, async (t) => {
   // The engine refuses the start, and the probe command below too, so that no
   // later acknowledgement proves the start processed (that hands (b) to (a)).
   const refuse = new Set(["stream.start", "automation.hold"]);
@@ -257,8 +255,7 @@ test("an unacknowledged stream.start raises after the window, not before, on eve
   assert.equal(state.streamState, "idle");
 });
 
-test("held: a show.stop the engine never acknowledges raises outputs.held with its audit row; the explicit stops clear it", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("held: a show.stop the engine never acknowledges raises outputs.held with its audit row; the explicit stops clear it", { skip: NO_PREFLIGHT }, async (t) => {
   let transport = "live";
   await engine(t, () => transport, new Set(["show.stop"]));
   const admin = conn("admin", ADMIN);
@@ -291,8 +288,7 @@ test("held: a show.stop the engine never acknowledges raises outputs.held with i
   assert.match(String((held[1]!["detail"] as Record<string, unknown>)["cause"]), /^record\.stop acknowledged \(stateVersion \d+\): the stop is witnessed$/);
 });
 
-test("held, path (iv): a control-plane restart clears the held alert, as it clears the whole lane (the lane is not persisted)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("held, path (iv): a control-plane restart clears the held alert, as it clears the whole lane (the lane is not persisted)", { skip: NO_PREFLIGHT }, async (t) => {
   await engine(t, () => "closed", new Set(["show.stop"]));
   const admin = conn("admin", ADMIN);
   t.after(() => admin.close());
@@ -365,8 +361,7 @@ test("R18: a sink that really fails raises audit.sinkFailed and the health flag,
   );
 });
 
-test("additive: the snapshot keeps every field it had, with the same meaning; lastError is still preflight's", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight binary not available");
+test("additive: the snapshot keeps every field it had, with the same meaning; lastError is still preflight's", { skip: NO_PREFLIGHT }, async (t) => {
   const admin = conn("admin", ADMIN);
   t.after(() => admin.close());
   await connect(admin);

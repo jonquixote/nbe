@@ -142,7 +142,9 @@ jobs:
         # `--nocapture` prints R15's `R15-COUNTS` lines (each frame's lateness
         # counted in frames) and the `SKIP normative:` line of the wall-clock
         # bound this runner does not assert, so a stall stays visible in a
-        # green run (R15's row).
+        # green run (R15's row). (§2c, the test-hygiene PR: two such lines
+        # now, three_frames' and its sibling's, one_frame_late_by_one_and_a_
+        # half_budgets…; the count gate reads `test result:`, not them.)
         run: |
           out=$(cargo test -p nbe-engine --test prompt04 -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
@@ -633,6 +635,10 @@ jobs:
         # restarts the run; the recovery never releases an operator's slate.
         # They FAIL loudly without an adapter (prompt04's policy) and print no
         # SKIP, so ran == exercised; floors equal at the full count (4).
+        # (§2c, the test-hygiene PR: on a runner, just_late prints a
+        # `SKIP normative:` line for the one bound it asserts only on the
+        # normative machine, R15's siblings. That skips a bound, not a test, so
+        # the skip count leaves those lines out.)
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt11_watchdog -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -641,7 +647,7 @@ jobs:
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
-          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          skipped=$(echo "$out" | grep '^SKIP' | grep -vc '^SKIP normative:' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
           echo "prompt11_watchdog: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=4)"
@@ -1156,7 +1162,10 @@ jobs:
       - name: the automation suite actually ran (Prompt 11)
         # Two floors, rule 8. Every automation test loads a real package over
         # the wire, which needs nbe-preflight: without it they SKIP, and the
-        # suite-wide floor above would stay green about nothing. This job builds
+        # suite-wide floor above would stay green about nothing. (§2c, R28:
+        # until the test-hygiene PR they did not skip, they hung. A runtime
+        # t.skip() runs beforeEach and never afterEach, so each skip leaked the
+        # server beforeEach opened. They now skip by option, naming the binary.) This job builds
         # the release preflight, so exercised == ran is expected; a skip here is
         # a finding. `ran` grows with each work unit (WU1: 8, WU2: 11, WU3: 18, WU4: 24, the recall-hold guard: 25, WU5: 28, the §13.3 exemption: 29, the recall leg's resolved directive and autoFollow pin: 31, v0.4.8 row 2's take payload: 32, v0.4.8 row 9's field domains: 35, R24's re-arm under a frozen and a live clock: 37).
         run: |
@@ -1165,7 +1174,8 @@ jobs:
           echo "$out" | grep -E "^(ok|not ok|# )" || true
           if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL automation.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
           # node's TAP summary: `# tests` counts every test, `# pass` only the
-          # ones that passed WITHOUT skipping (a t.skip() lands in `# skipped`,
+          # ones that passed WITHOUT skipping (a skip, by option or by t.skip(),
+          # lands in `# skipped`,
           # not in `# pass`). So ran = tests, exercised = pass.
           ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
           exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
@@ -1181,6 +1191,9 @@ jobs:
         # Two floors, rule 8, the automation suite's shape and reason: every
         # belief test loads a real package over the wire, which needs
         # nbe-preflight, and without it they SKIP while `npm test` stays green.
+        # (§2c, R28: until the test-hygiene PR this was false. They hung, and
+        # `npm test` with them (exit 124 under a bound), because each runtime
+        # t.skip() leaked its beforeEach server. They now skip by option.)
         # This job builds the release preflight, so exercised == ran (4).
         run: |
           set -u

@@ -635,6 +635,15 @@ display.
 - The alert's thresholds are proposed in the build PR and ruled there.
 - Everything stays out of the video watchdog (§8.10's last paragraph).
 
+**Ruled amendment (the user, 2026-10-23, on #65's two-key pass).** The
+master limiter's ceiling in force joins the tick's audio line: its value in
+dBTP and its source (`show` or `default`), read-only. Sized small; if it
+grows, it takes its own row. It closes the gap #65's pass measured: the
+ceiling is logged only on the engine's stdout at INFO
+(`audio_control.rs:254–262`), invisible under `RUST_LOG=warn` and in the
+lane harness, and in no telemetry and no audit row, so the control plane
+cannot read it. Owner: the device-audio build PR, beside the device line.
+
 ### D6. Air-readiness: is device presence preflight's business?
 
 **No, by the tree's own contract.**
@@ -837,7 +846,9 @@ ruling stands. Each ruling is quoted, followed by what it requires.
   live lie); then every audible element plays its declared bus at its gainDb,
   loops included."
 - **D5: approved.** "audio.underrun and audio.device alerts, E_AUDIO raised,
-  device line on the tick."
+  device line on the tick." *Amended 2026-10-23:* the ceiling in force
+  (value and source) on the tick's audio line, read-only (D5's ruled
+  amendment).
 - **D6: approved.** "preflight stays package-only; engine probes and reports;
   control plane alerts at load, never refuses."
 - **D7: approved.** "cpal macOS-only, silent sink elsewhere, no ALSA,

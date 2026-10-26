@@ -150,8 +150,14 @@ test("[lane] refused start: an engine that refuses stream.start never acknowledg
     await s.close();
   });
   await onAir(s);
-  const v = await ok(s, "stream.start", { url: `rtmp://127.0.0.1:${sink.port}/live/lane` });
+  // R30: timed from before the send. The server's window opens when it
+  // dispatches, before it replies, so a clock started at the reply measured
+  // the window short by the reply's latency, and read under 2000 ms when the
+  // reply was slower than the 25 ms poll (1994 ms at #65's f700795). From the
+  // send, the measured interval is never shorter than the server's window, so
+  // the assertion below can fail only on a raise that really came early.
   const sentAt = Date.now();
+  const v = await ok(s, "stream.start", { url: `rtmp://127.0.0.1:${sink.port}/live/lane` });
   const before = ids(s);
   if (await s.server.awaitApplied(v, 1_500)) {
     console.log("SKIP: the engine opened its encoder and acknowledged stream.start; the refusal is CI's natural seam");

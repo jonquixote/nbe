@@ -12,6 +12,7 @@ import { AuditLog } from "./audit.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
 import { tempDir } from "./test-tmp.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
@@ -102,7 +103,7 @@ test("WS with valid token+role pipes commands through and returns ok", async () 
   ws.close();
 });
 
-test("render-role session receives directives in order with correct stateVersion", async () => {
+test("render-role session receives directives in order with correct stateVersion", { skip: NO_PREFLIGHT }, async () => {
   const conn = (role: string, token: string) =>
     new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
       headers: { authorization: `Bearer ${token}`, "x-nbe-role": role },
@@ -312,7 +313,7 @@ test("bad token fails with E_AUTH at the HTTP upgrade", async () => {
   );
 });
 
-test("deprecated program.take executes and the next telemetry tick carries the warning", async () => {
+test("deprecated program.take executes and the next telemetry tick carries the warning", { skip: NO_PREFLIGHT }, async () => {
   const ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
     headers: { authorization: `Bearer ${TOKEN}`, "x-nbe-role": "admin" },
   });

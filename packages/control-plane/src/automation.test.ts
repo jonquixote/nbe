@@ -17,7 +17,7 @@ import { AuditLog, type AuditRecord } from "./audit.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState, type PackageInfo } from "./state.js";
 import { AutomationEvaluator, type ActionRequest, type AutomationAudit, type ParsedRule } from "./automation.js";
-import { preflightBin } from "./package.js";
+import { NO_PREFLIGHT } from "./test-preflight.js";
 import { tempDir } from "./test-tmp.js";
 
 process.env.NBE_PREFLIGHT_TIMEOUT_MS ??= "5000";
@@ -167,9 +167,6 @@ function automationRows(): AuditRecord[] {
   return audit().filter((r) => r.kind === "automation");
 }
 
-function preflightAvailable(): boolean {
-  return existsSync(preflightBin());
-}
 
 /** Load a package over the wire and start the show; returns the admin socket. */
 async function loadAndStart(automation: unknown[], start = true): Promise<WebSocket> {
@@ -223,8 +220,7 @@ test("the audit kind union carries automation (WU1: the type accepted no automat
   assert.equal(rec.actor, "automation:r");
 });
 
-test("a rule fires through the real command path and its action is audited as automation", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule fires through the real command path and its action is audited as automation", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([
     markerRule("on-air", { kind: "stateChange", params: { field: "showState", to: "RUNNING" } }),
   ]);
@@ -250,8 +246,7 @@ test("a rule fires through the real command path and its action is audited as au
   ws.close();
 });
 
-test("a rule disabled in the manifest never fires; automation.enable re-arms it", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule disabled in the manifest never fires; automation.enable re-arms it", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([
     markerRule("pv", { kind: "stateChange", params: { field: "previewItem" } }, { enabled: false }),
   ]);
@@ -269,8 +264,7 @@ test("a rule disabled in the manifest never fires; automation.enable re-arms it"
   ws.close();
 });
 
-test("an action refused by a precondition is refused exactly as an operator's, and audited as refused", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("an action refused by a precondition is refused exactly as an operator's, and audited as refused", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([
     {
       id: "stopper",
@@ -293,8 +287,7 @@ test("an action refused by a precondition is refused exactly as an operator's, a
   ws.close();
 });
 
-test("a rule that cannot be evaluated refuses the load, by name — never accepted and inert", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule that cannot be evaluated refuses the load, by name — never accepted and inert", { skip: NO_PREFLIGHT }, async () => {
   const ws = conn("admin", ADMIN);
   await connect(ws);
   const r = await send(ws, "show.load", {
@@ -420,8 +413,7 @@ test("every field takes its whole domain and refuses a value outside it, misspel
   }
 });
 
-test("a previewItem rule naming a scene loads, and fires when the scene is armed into an empty preview", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a previewItem rule naming a scene loads, and fires when the scene is armed into an empty preview", { skip: NO_PREFLIGHT }, async () => {
   // Both readers at load: preflight's (the package's scene ids) and the
   // control plane's own (package.ts passes them too). `scene.arm` into an
   // empty preview writes the scene id to previewItem (state.ts, armScene).
@@ -434,8 +426,7 @@ test("a previewItem rule naming a scene loads, and fires when the scene is armed
   ws.close();
 });
 
-test("an action payload preflight cannot judge refuses the load at the control plane's own read", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("an action payload preflight cannot judge refuses the load at the control plane's own read", { skip: NO_PREFLIGHT }, async () => {
   // Preflight checks an action's command name and required KEYS, as it does
   // for a control binding; the payload's full §16 validation is the control
   // plane's (the command schemas live here). `itemRef: 5` has the key and the
@@ -458,8 +449,7 @@ test("an action payload preflight cannot judge refuses the load at the control p
   ws.close();
 });
 
-test("an automation action faces an operator's role check, not an admin's", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("an automation action faces an operator's role check, not an admin's", { skip: NO_PREFLIGHT }, async () => {
   // plugin.reload is admin-only (§16.0). A rule acts as operator (§13.1), so
   // its plugin.reload is refused E_AUTH — where an admin would have reached
   // the handler and been told E_NOT_FOUND.
@@ -485,8 +475,7 @@ test("an automation action faces an operator's role check, not an admin's", asyn
 // WU2 — the once-per-frame limiter, hold, and the pending queue (B5)
 // ---------------------------------------------------------------------------
 
-test("a rule that would fire twice in one frame fires once; the second is audited rate-limited", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule that would fire twice in one frame fires once; the second is audited rate-limited", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("pv", { kind: "stateChange", params: { field: "previewItem" } })]);
   // Two changes in the same frame (the clock is not moved between them).
   assert.equal((await send(ws, "preview.set", { itemRef: "A1" })).status, "ok");
@@ -508,8 +497,7 @@ test("a rule that would fire twice in one frame fires once; the second is audite
   ws.close();
 });
 
-test("a held engine fires nothing — each suppression audited — and release resumes", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a held engine fires nothing — each suppression audited — and release resumes", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("pv", { kind: "stateChange", params: { field: "previewItem" } })]);
   assert.equal((await send(ws, "automation.hold", { hold: true })).status, "ok");
   nextFrame();
@@ -530,8 +518,7 @@ test("a held engine fires nothing — each suppression audited — and release r
   ws.close();
 });
 
-test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", { skip: NO_PREFLIGHT }, async () => {
   // One trigger fires three rules, queued in manifest order: the first
   // engages the hold, so the other two are PENDING — fired, not yet
   // dispatched — when the hold lands. They must be cancelled, not run.
@@ -564,8 +551,7 @@ test("a hold cancels every pending action before it dispatches (B5, AC-25 #2)", 
   ws.close();
 });
 
-test("a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a snapshot.recall that restores a held snapshot cancels pending actions too (§13.5: hold is a state)", { skip: NO_PREFLIGHT }, async () => {
   // The hold is engaged by whichever accepted command sets `automationHold`.
   // Recalling a snapshot saved while held sets it with no `automation.hold` —
   // the path WU2 found missed (e985e40). The recall is the first of three
@@ -644,8 +630,7 @@ function firedTriggers(): unknown[] {
     .map((r) => r.detail?.["trigger"]);
 }
 
-test("mediaStart fires when a take puts its item on air (B3: control-plane-side)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("mediaStart fires when a take puts its item on air (B3: control-plane-side)", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("start-a2", { kind: "mediaStart", params: { itemRef: "A2" } })]);
   assert.equal((await send(ws, "view.cut", { itemRef: "A1" })).status, "ok");
   nextFrame();
@@ -656,8 +641,7 @@ test("mediaStart fires when a take puts its item on air (B3: control-plane-side)
   ws.close();
 });
 
-test("mediaEnd fires on the engine's end of a PLAYING item — and not for a stopped one", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("mediaEnd fires on the engine's end of a PLAYING item — and not for a stopped one", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("end-at", { kind: "mediaEnd", params: { itemRef: "AT" } })]);
   const render = await renderSession();
   const end = JSON.stringify({ v: "0.3", kind: "itemEvent", itemRef: "AT", event: "end" });
@@ -681,8 +665,7 @@ test("mediaEnd fires on the engine's end of a PLAYING item — and not for a sto
   ws.close();
 });
 
-test("timer fires atMs of show clock after show.start", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("timer fires atMs of show clock after show.start", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("t50", { kind: "timer", params: { atMs: 50 } })], false);
   await new Promise((r) => setTimeout(r, 120));
   assert.deepEqual(firedTriggers(), [], "the show clock has not started: no timer");
@@ -696,8 +679,7 @@ test("timer fires atMs of show clock after show.start", async (t) => {
   ws.close();
 });
 
-test("timeOfDay fires when the local wall clock reaches `at`", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("timeOfDay fires when the local wall clock reaches `at`", { skip: NO_PREFLIGHT }, async () => {
   const at = new Date(Date.now() + 2000);
   const hhmmss = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
   const ws = await loadAndStart([markerRule("tod", { kind: "timeOfDay", params: { at: hhmmss } })]);
@@ -709,6 +691,13 @@ test("timeOfDay fires when the local wall clock reaches `at`", async (t) => {
   assert.deepEqual(firedTriggers(), [{ kind: "timeOfDay", ruleId: "tod" }], `at ${hhmmss}`);
   ws.close();
 });
+
+/** This instant's local h:m:s, resolved through `setHours`, is this instant. */
+function roundTripsThroughSetHours(instant: Date): boolean {
+  const back = new Date(instant);
+  back.setHours(instant.getHours(), instant.getMinutes(), instant.getSeconds(), 0);
+  return back.getTime() === instant.getTime();
+}
 
 /**
  * R24: a timer can fire while the wall clock still reads before its instant
@@ -726,6 +715,11 @@ for (const clockKind of ["frozen", "live"] as const) {
   test(`timeOfDay fires once when its timer fires a millisecond before the wall instant (R24, ${clockKind} clock)`, async () => {
     const instant = new Date();
     instant.setSeconds(instant.getSeconds() + 5, 0);
+    // The rule names a local h:m:s, which the evaluator resolves through
+    // `setHours`. In DST's repeated hour, the second pass's h:m:s resolves to
+    // the first pass, behind the arming read, so the rule arms for tomorrow and
+    // fires 0 times (R24's test note). Step to an instant that round-trips.
+    while (!roundTripsThroughSetHours(instant)) instant.setTime(instant.getTime() + 3_600_000);
     // Each re-arm reads the wall clock once: arming, the first fire, then on.
     let reads = 0;
     let firstFireAt = 0;
@@ -771,8 +765,7 @@ for (const clockKind of ["frozen", "live"] as const) {
   });
 }
 
-test("hotkey fires when its binding fires, whatever the carried command's outcome", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("hotkey fires when its binding fires, whatever the carried command's outcome", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([markerRule("hk", { kind: "hotkey", params: { bindingId: "take-key" } })]);
   // The binding's own command is refused (no preview armed) — the key was
   // still pressed.
@@ -788,8 +781,7 @@ test("hotkey fires when its binding fires, whatever the carried command's outcom
   ws.close();
 });
 
-test("streamHealth fires on a change TO its transport state; the first observation is a baseline", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("streamHealth fires on a change TO its transport state; the first observation is a baseline", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([
     markerRule("sh-live", { kind: "streamHealth", params: { state: "live" } }),
     markerRule("sh-redial", { kind: "streamHealth", params: { state: "reconnecting" } }),
@@ -812,8 +804,7 @@ test("streamHealth fires on a change TO its transport state; the first observati
   ws.close();
 });
 
-test("audioLevel fires on the engine's matching crossing (v0.4.7) and not on another", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("audioLevel fires on the engine's matching crossing (v0.4.7) and not on another", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([
     markerRule("hot-mic", { kind: "audioLevel", params: { bus: "mic", thresholdDbfs: -12 } }),
   ]);
@@ -841,8 +832,7 @@ function followRows(): AuditRecord[] {
   return automationRows().filter((r) => (r.event ?? "").startsWith("autoFollow."));
 }
 
-test("autoFollow advances to the next rundown item when its item completes", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("autoFollow advances to the next rundown item when its item completes", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([]);
   const render = await renderSession();
   assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
@@ -859,8 +849,7 @@ test("autoFollow advances to the next rundown item when its item completes", asy
   ws.close();
 });
 
-test("autoFollow does not advance for an item without it, or for a stopped item", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("autoFollow does not advance for an item without it, or for a stopped item", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([]);
   const render = await renderSession();
   // AT carries no autoFollow: it completes, and the View stays on it.
@@ -879,8 +868,7 @@ test("autoFollow does not advance for an item without it, or for a stopped item"
   ws.close();
 });
 
-test("a hold suppresses autoFollow (§13.5 #2), audited", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a hold suppresses autoFollow (§13.5 #2), audited", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([]);
   const render = await renderSession();
   assert.equal((await send(ws, "view.cut", { itemRef: "AF" })).status, "ok");
@@ -895,8 +883,7 @@ test("a hold suppresses autoFollow (§13.5 #2), audited", async (t) => {
   ws.close();
 });
 
-test("a pending autoFollow is cancelled by a hold that lands before it dispatches (B5)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a pending autoFollow is cancelled by a hold that lands before it dispatches (B5)", { skip: NO_PREFLIGHT }, async () => {
   // A rule on AF's end engages the hold; it is queued ahead of the advance,
   // so the advance is PENDING when the hold lands.
   const ws = await loadAndStart([
@@ -921,8 +908,7 @@ test("a pending autoFollow is cancelled by a hold that lands before it dispatche
 // first landing audited `autoFollow.endOfRundown`. The user's word
 // (2026-09-27): a completion with no next item is a no-op that audits
 // nothing, because nothing was attempted (§2c).
-test("autoFollow on the last rundown item is a no-op that audits nothing", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("autoFollow on the last rundown item is a no-op that audits nothing", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([]);
   const render = await renderSession();
   assert.equal((await send(ws, "view.cut", { itemRef: "AZ" })).status, "ok");
@@ -935,8 +921,7 @@ test("autoFollow on the last rundown item is a no-op that audits nothing", async
   ws.close();
 });
 
-test("autoFollow advances once per completion, never twice, and the limiter counts it", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("autoFollow advances once per completion, never twice, and the limiter counts it", { skip: NO_PREFLIGHT }, async () => {
   const ws = await loadAndStart([]);
   const render = await renderSession();
   // A duplicate end for one completion: one advance.
@@ -975,8 +960,7 @@ const EFFECTS = JSON.parse(
   readFileSync(new URL("../../../crates/nbe-core/src/automation_effects.json", import.meta.url), "utf8"),
 ) as { commands: Record<string, { stateChange?: string[]; mediaStart?: boolean; deferred?: string[]; item?: string }> };
 
-test("a rule's action carries its chain into the triggers it raises in the same dispatch", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule's action carries its chain into the triggers it raises in the same dispatch", { skip: NO_PREFLIGHT }, async () => {
   // r1's action changes previewItem, which r2 listens for. r2's firing names
   // r1 in its chain — the fact the runtime's self-trigger suppression reads.
   const ws = await loadAndStart([
@@ -998,8 +982,7 @@ test("a rule's action carries its chain into the triggers it raises in the same 
   ws.close();
 });
 
-test("the runtime suppresses a rule its own action re-triggered (§13.4), audited", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("the runtime suppresses a rule its own action re-triggered (§13.4), audited", { skip: NO_PREFLIGHT }, async () => {
   // No manifest preflight admits can do this through the command path: the
   // static check refuses every cycle §13.4.1's data shows, and the data
   // over-approximates. The suppression exists for an edge the data lacks, so
@@ -1030,8 +1013,7 @@ test("the runtime suppresses a rule its own action re-triggered (§13.4), audite
   ws.close();
 });
 
-test("§13.4.1, row by row: every command raises only the same-dispatch triggers its row names", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("§13.4.1, row by row: every command raises only the same-dispatch triggers its row names", { skip: NO_PREFLIGHT }, async () => {
   // Watchers on every field a stateChange rule can name, and on mediaStart.
   // Each command runs from a fresh admin session (§10.7's limiter is per
   // connection), a frame apart, and the watchers it raises — fired, held or
@@ -1237,8 +1219,7 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
 // §13.3 (v0.4.7): a rule's actions are exempt from §10.7's command limiter
 // ---------------------------------------------------------------------------
 
-test("a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a rule firing on every frame, past 5 actions a second, is not throttled by the operator limiter (§13.3)", { skip: NO_PREFLIGHT }, async () => {
   // §10.7's limiter admits 10 per burst and refills 5/s, per connection per
   // command family. A rule dispatches on its own connection, so before the
   // exemption its 11th action in a burst was refused E_RATE_LIMITED — below
@@ -1288,8 +1269,7 @@ function directivesOn(render: WebSocket): Array<Record<string, unknown>> {
   return seen;
 }
 
-test("snapshot.recall reaches the engine resolved: the recalled item as a cut, the overlays wholesale, never the name", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("snapshot.recall reaches the engine resolved: the recalled item as a cut, the overlays wholesale, never the name", { skip: NO_PREFLIGHT }, async () => {
   // Before the fix the control plane forwarded the recall's payload — the
   // snapshot's NAME — and the engine routed nothing for it. §5.9.1: the
   // engine never resolves, so the directive carries the resolved View: the
@@ -1344,8 +1324,7 @@ test("snapshot.recall reaches the engine resolved: the recalled item as a cut, t
   ws.close();
 });
 
-test("a recall is not a cut for autoFollow: the rundown goes on from the snapshot's position", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a recall is not a cut for autoFollow: the rundown goes on from the snapshot's position", { skip: NO_PREFLIGHT }, async () => {
   // autoFollow keeps no pointer: it advances from the item that ENDS
   // (server.ts, itemEvent → `order[indexOf(ended) + 1]`), and only through a
   // PLAYING → DONE completion. So the snapshot's position holds when the
@@ -1410,8 +1389,7 @@ test("a recall is not a cut for autoFollow: the rundown goes on from the snapsho
   ws.close();
 });
 
-test("a take directive carries the ITEM's duration for a timed item, apart from the transition's (SPEC v0.4.8 row 2)", async (t) => {
-  if (!preflightAvailable()) return t.skip("nbe-preflight not built");
+test("a take directive carries the ITEM's duration for a timed item, apart from the transition's (SPEC v0.4.8 row 2)", { skip: NO_PREFLIGHT }, async () => {
   // The engine schedules an item's end from `itemDurationFrames` alone. Before
   // v0.4.8 row 2 it read the transition's `durationFrames`, so a cut never
   // ended a timed item and a mix ended it at the mix's length. The control
