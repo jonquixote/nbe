@@ -1453,6 +1453,7 @@ jobs:
         # the generation race (a second connection's command during the
         # load's preflight; the reconnect after loads nothing).
         run: |
+          echo "THROWAWAY (R32 capture's failure-path proof): this step is forced to exit 1"; exit 1
           set -u
           out=$(node --import tsx --test src/package-reconcile.e2e.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
