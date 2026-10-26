@@ -129,6 +129,7 @@ fn pcm(samples: Vec<f32>) -> Vec<Source> {
         samples: Arc::new(samples),
         t0: 0,
         looping: true,
+        gain: 1.0,
     }]
 }
 
@@ -338,6 +339,7 @@ fn below_the_ceiling_the_output_is_the_input_delayed_bit_for_bit() {
                 samples: Arc::new(input.clone()),
                 t0: 0,
                 looping: false,
+                gain: 1.0,
             }],
         );
         let lat = g.latency_frames();
@@ -469,6 +471,7 @@ fn a_hot_left_channel_reduces_the_right_by_the_same_gain() {
             samples: Arc::new(input.clone()),
             t0: 0,
             looping: false,
+            gain: 1.0,
         }],
     );
     let lat = g.latency_frames();
@@ -509,6 +512,7 @@ fn the_reported_latency_is_the_delay_every_sample_takes() {
             samples: Arc::new(s),
             t0: 0,
             looping: false,
+            gain: 1.0,
         }],
     );
     let out = render(&mut g, SAMPLE_RATE as usize / 10);

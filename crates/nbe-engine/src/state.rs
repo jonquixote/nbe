@@ -155,10 +155,11 @@ pub struct EngineState {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
-    /// Item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
-    /// §8.7.3 takes). Built once at `show.load` by walking item → scene →
+    /// Item ref → what a take of that item plays, one source per audible
+    /// element (SPEC §7.1 scenes, §8.7.3 takes; the device-audio design
+    /// record, D4). Built once at `show.load` by walking item → scene →
     /// elements → asset, so a take is a map lookup and never a graph walk.
-    pub item_audio: Mutex<std::collections::BTreeMap<String, String>>,
+    pub item_audio: Mutex<std::collections::BTreeMap<String, Vec<crate::scene::ElementAudio>>>,
     /// One overlay's on-air state (SPEC §7.10). Timelines key off the master
     /// clock: `anim_start` is the master frame the animation begins — the frame
     /// after the command lands, the same boundary discipline AC-17 imposes on a

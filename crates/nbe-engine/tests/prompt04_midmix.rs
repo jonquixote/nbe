@@ -538,7 +538,7 @@ async fn midmix_take_queues_fresh_take_at_new_t0() {
     let item_of = |c: &nbe_engine::audio_control::AudioCommand| match c {
         nbe_engine::audio_control::AudioCommand::TakeItem {
             item_ref,
-            asset_id: _,
+            sources: _,
             t0,
             mode: _,
             ramp_ms: _,

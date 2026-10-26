@@ -150,6 +150,11 @@ pub struct Bus {
     peak: f32,
     rms_accum: f64,
     rms_count: u64,
+    /// The level the operator set (`audio.bus.set`, §16.8), 0 dB until then.
+    /// A take swaps an element bus back to it (D4): a take sets the clip
+    /// bus's gain from its audio mode, and must not reset an operator's music
+    /// or sfx level.
+    operator_db: f32,
 }
 
 impl Bus {
@@ -161,7 +166,19 @@ impl Bus {
             peak: 0.0,
             rms_accum: 0.0,
             rms_count: 0,
+            operator_db: 0.0,
         }
+    }
+
+    /// The operator's level (`audio.bus.set`): the gain, and the level a take
+    /// returns this bus to.
+    pub fn set_operator_gain_db(&mut self, db: f32, ramp_ms: f32) {
+        self.operator_db = db.clamp(-60.0, 12.0);
+        self.set_gain_db(db, ramp_ms);
+    }
+
+    pub fn operator_gain_db(&self) -> f32 {
+        self.operator_db
     }
 
     /// SPEC §8.2: −60 dB to +12 dB.
@@ -226,6 +243,9 @@ pub enum Source {
         /// The master frame this source went on air (SPEC §12.1's `t0`).
         t0: u64,
         looping: bool,
+        /// Linear gain: the element's `audio.gainDb` (the device-audio design
+        /// record, D4; U2). 1.0 for a source no element declares.
+        gain: f32,
     },
     /// A test tone, for the synthetic guest bus and the acceptance tests.
     Tone { hz: f32, amplitude: f32 },
@@ -382,6 +402,12 @@ impl AudioGraph {
 
     pub fn bus(&self, id: BusId) -> &Bus {
         self.buses.get(&id).expect("every BusId has a Bus")
+    }
+
+    /// Whether `id` has a source installed (D4: a take leaves an element bus
+    /// alone when neither the old item nor the new one feeds it).
+    pub fn has_sources(&self, id: BusId) -> bool {
+        self.sources.get(&id).is_some_and(|v| !v.is_empty())
     }
 
     pub fn set_source(&mut self, id: BusId, sources: Vec<Source>) {
@@ -621,19 +647,48 @@ impl AudioGraph {
         let scratch = &mut scratch[..out.len()];
 
         // Program buses, in the fixed §8.1 order — no key collection needed.
+        //
+        // `sfx` carries two feeds: its element sources (D4) and the soundboard
+        // voices. Both sum into one buffer before the bus's gain, so the bus's
+        // ramps advance once a frame. (§2c, found by reading in the
+        // device-audio build: the voices had their own pass after this loop,
+        // which advanced the sfx ramps a second time on every frame a voice
+        // sounded, so an sfx fade or mute ran at twice its duration's speed.)
         for id in BusId::ALL {
             if !id.feeds_master() {
                 continue;
             }
-            let Some(bus_sources) = sources.get(id) else {
+            let bus_sources = sources.get(id);
+            let with_voices = *id == BusId::Sfx && !voices.is_empty();
+            if bus_sources.is_none() && !with_voices {
                 // No source, but the ramps still advance.
                 if let Some(bus) = buses.get_mut(id) {
                     bus.advance_silent(frames);
                 }
                 continue;
-            };
+            }
             scratch.fill(0.0);
-            render_sources(bus_sources, scratch, base, *house_frame_rate);
+            if let Some(bus_sources) = bus_sources {
+                render_sources(bus_sources, scratch, base, *house_frame_rate);
+            }
+            if with_voices {
+                for v in voices.iter_mut() {
+                    for f in 0..frames {
+                        let g = v.gain.advance();
+                        for c in 0..CHANNELS {
+                            let idx = v.position + f * CHANNELS + c;
+                            if idx < v.samples.len() {
+                                scratch[f * CHANNELS + c] += v.samples[idx] * g;
+                            }
+                        }
+                    }
+                    v.position += frames * CHANNELS;
+                }
+                // A voice is done when it runs out or its stop ramp reached zero.
+                voices.retain(|v| {
+                    v.position < v.samples.len() && !(v.stopping && v.gain.value() <= 0.0)
+                });
+            }
 
             let ducking = *id == BusId::Music;
             let bus = buses.get_mut(id).expect("every BusId has a Bus");
@@ -644,36 +699,6 @@ impl AudioGraph {
                     let v = scratch[f * CHANNELS + c] * g * duck;
                     bus.observe(v);
                     out[f * CHANNELS + c] += v;
-                }
-            }
-        }
-
-        // Soundboard voices sum into `sfx`.
-        if !voices.is_empty() {
-            scratch.fill(0.0);
-            for v in voices.iter_mut() {
-                for f in 0..frames {
-                    let g = v.gain.advance();
-                    for c in 0..CHANNELS {
-                        let idx = v.position + f * CHANNELS + c;
-                        if idx < v.samples.len() {
-                            scratch[f * CHANNELS + c] += v.samples[idx] * g;
-                        }
-                    }
-                }
-                v.position += frames * CHANNELS;
-            }
-            // A voice is done when it runs out or its stop ramp reached zero.
-            voices
-                .retain(|v| v.position < v.samples.len() && !(v.stopping && v.gain.value() <= 0.0));
-
-            let bus = buses.get_mut(&BusId::Sfx).expect("sfx");
-            for f in 0..frames {
-                let g = bus.next_gain();
-                for c in 0..CHANNELS {
-                    let val = scratch[f * CHANNELS + c] * g;
-                    bus.observe(val);
-                    out[f * CHANNELS + c] += val;
                 }
             }
         }
@@ -842,6 +867,7 @@ fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, house_r
                 samples,
                 t0,
                 looping,
+                gain,
             } => {
                 // SPEC §8.9: the read offset comes from the master clock and
                 // the source's own start, never from a private cursor. The
@@ -864,7 +890,7 @@ fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, house_r
                     };
                     for c in 0..CHANNELS {
                         let i = (idx + c as i64) as usize % samples.len();
-                        out[f * CHANNELS + c] += samples[i];
+                        out[f * CHANNELS + c] += samples[i] * gain;
                     }
                 }
             }

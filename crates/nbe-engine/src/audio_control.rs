@@ -6,7 +6,7 @@
 //! here allocates on the audio thread's side of the boundary — SPEC §8.9's
 //! rule is that control crosses as data, not as a call.
 
-use crate::audio::{AudioGraph, BusId, DEFAULT_RAMP_MS};
+use crate::audio::{db_to_linear, AudioGraph, BusId, DEFAULT_RAMP_MS};
 use crate::directive::DirectiveError;
 use nbe_protocol::DirectiveFrame;
 
@@ -45,14 +45,15 @@ pub enum AudioCommand {
         /// `"show"` or `"default"`, for the log line that records it.
         source: &'static str,
     },
-    /// A take: put this item's audio on the clip bus at its `t0`, honouring
-    /// the §8.7.3 audio mode.
+    /// A take: put this item's audio on its buses at its `t0`, honouring the
+    /// §8.7.3 audio mode.
     TakeItem {
         item_ref: String,
-        /// The asset whose audio this item plays, resolved at load time from
-        /// the package index. `None` means the item shows no audio-bearing
-        /// asset — a graphic scene, legitimately silent.
-        asset_id: Option<String>,
+        /// What this item plays, one source per audible element of its scene
+        /// (D4), resolved at load time from the package index. Empty means
+        /// the item shows nothing audible — a graphic scene, legitimately
+        /// silent.
+        sources: Vec<crate::scene::ElementAudio>,
         t0: u64,
         /// `follow` | `crossfade` | `cut` | `mute` (SPEC §8.7.3).
         mode: String,
@@ -105,6 +106,16 @@ impl AudioCommand {
         })
     }
 }
+
+/// The buses an element's `audio.bus` can name (`LayerAudio.bus`), each fed
+/// by the take (D4).
+pub const ELEMENT_BUSES: [BusId; 5] = [
+    BusId::Clip,
+    BusId::Music,
+    BusId::Sfx,
+    BusId::Guest,
+    BusId::Mic,
+];
 
 /// Apply intents to the graph. Called by the graph's owner, never by the
 /// directive thread.
@@ -199,7 +210,7 @@ pub fn apply(
                 };
                 let b = graph.bus_mut(id);
                 if let Some(db) = gain_db {
-                    b.set_gain_db(db, DEFAULT_RAMP_MS);
+                    b.set_operator_gain_db(db, DEFAULT_RAMP_MS);
                 }
                 if let Some(m) = muted {
                     b.set_muted(m, DEFAULT_RAMP_MS);
@@ -213,7 +224,7 @@ pub fn apply(
             } => graph.set_duck(enabled, depth_db, attack_ms, release_ms),
             AudioCommand::TakeItem {
                 item_ref,
-                asset_id,
+                sources,
                 t0,
                 mode,
                 ramp_ms,
@@ -221,35 +232,50 @@ pub fn apply(
             } => {
                 let house = graph.house_frame_rate();
                 let (gain_db, ramp) = take_gain_and_ramp(&mode, ramp_ms, crossfade_frames, house);
-                // The item's audio is whatever was made resident at show.load.
-                // By asset id, and ONLY by asset id. Resolving by `item_ref`
-                // was the P0: the library is keyed by asset id, so any package
-                // whose item and asset ids differ took silently.
-                //
-                // No fallback to `item_ref` when `asset_id` is `None`. The
-                // first version of this fix kept one, which quietly reinstated
-                // the same collision for the branch the field's own doc
-                // comment calls legitimately silent: a graphic-only item named
-                // `stab`, in a package with a soundboard asset named `stab`,
-                // put that sample on the clip bus at -1.9 dBFS. `None` means
-                // silent, so it flows to the empty-source branch — a silent
-                // item clears the bus rather than leaving the previous item
-                // audible under the new picture.
-                let _ = &item_ref;
-                let sources = asset_id
-                    .as_deref()
-                    .and_then(|k| library.get(k))
-                    .map(|samples| {
-                        vec![crate::audio::Source::Pcm {
-                            samples: samples.clone(),
-                            t0,
-                            looping: false,
-                        }]
-                    })
-                    .unwrap_or_default();
-                // Through silence: the content changes, not just the level, so
-                // ramping the gain alone would still step the waveform.
-                graph.swap_source_through_silence(BusId::Clip, sources, gain_db, ramp);
+                // Every element bus is swapped through silence (§8.7.1): the
+                // content changes, not just the level, so ramping the gain
+                // alone would still step the waveform. Each source is resolved
+                // by ASSET id, and only by asset id (the P0: the library is
+                // keyed by asset, and resolving by `item_ref` took silently).
+                for e in &sources {
+                    if BusId::parse(&e.bus).is_none_or(|b| !ELEMENT_BUSES.contains(&b)) {
+                        tracing::warn!(item = %item_ref, element = %e.element_id, bus = %e.bus,
+                            "element audio names no programme bus; not played");
+                    }
+                }
+                for bus in ELEMENT_BUSES {
+                    let feed: Vec<crate::audio::Source> = sources
+                        .iter()
+                        .filter(|e| BusId::parse(&e.bus) == Some(bus))
+                        .filter_map(|e| {
+                            library
+                                .get(&e.asset_id)
+                                .map(|samples| crate::audio::Source::Pcm {
+                                    samples: samples.clone(),
+                                    t0,
+                                    looping: e.looping,
+                                    gain: db_to_linear(e.gain_db),
+                                })
+                        })
+                        .collect();
+                    if bus == BusId::Clip {
+                        // The clip bus takes the item's audio mode, as it
+                        // always has, and a silent item clears it rather than
+                        // leaving the previous item audible under the new
+                        // picture.
+                        graph.swap_source_through_silence(bus, feed, gain_db, ramp);
+                    } else if !feed.is_empty() || graph.has_sources(bus) {
+                        // Another element bus returns to the operator's level
+                        // (`audio.bus.set`), muted only by a `mute` take: a take
+                        // must not reset what the operator set on music or sfx.
+                        let level = if mode == "mute" {
+                            -60.0
+                        } else {
+                            graph.bus(bus).operator_gain_db()
+                        };
+                        graph.swap_source_through_silence(bus, feed, level, ramp);
+                    }
+                }
             }
             AudioCommand::SetLimiterCeiling { dbtp, source } => {
                 graph.set_limiter_ceiling_dbtp(dbtp);
