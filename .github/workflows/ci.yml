@@ -169,6 +169,29 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-gpu-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the GPU/render samples, every 10 s from the line before its tests:" || true
           cat "$RUNNER_TEMP/ci-load-gpu-samples.log" 2>/dev/null || echo "[ci-load] no GPU/render samples file" || true
+      # R10's floor-step capture (docs/soak-protocol.md, R10, sighting 3).
+      # Main's merge run 40250323983 failed R10's drain in the prompt10_rtmp
+      # floor step, which runs after R15's post line, so the sighting carried
+      # no load: the nearest reading was 41 s old. These two steps bracket
+      # every floor step, the midmix suite through automation_rules (the
+      # count gates between them included), with the same line script: one
+      # line before, a sample every 10 s during, and one line after, then
+      # every sample, printed even when a floor step fails. One bracket over
+      # the whole span covers each floor step that carries a network or
+      # timing assertion without a list to keep in step with the suites. The
+      # phases are `floor-pre`, `floor-sample` and `floor-post`, so these
+      # lines are never read as R10's workspace window or R15's GPU window.
+      #
+      # The logging must never fail the job. Every command is guarded with
+      # `|| true`, the sampler runs detached with its output in a file, and
+      # both steps are continue-on-error as a second guard.
+      - name: "R10 load capture: before the floor steps, the sampler started"
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" floor-pre || true
+          { nohup bash -c 'while :; do bash "$0" floor-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
+              > "$RUNNER_TEMP/ci-load-floor-samples.log" 2>&1 < /dev/null & } || true
+          echo "$!" > "$RUNNER_TEMP/ci-load-floor-sampler.pid" || true
       - name: the midmix suite actually ran (TRANSITIONS step 3)
         # GAP-6 duration edges (default-15, zero, one, over-max/no-clamp) +
         # GAP-11 start+1 bisection live here alongside Step 1's continuity
@@ -959,6 +982,14 @@ jobs:
           if [ "$exercised" -lt 1 ]; then
             echo "FAIL automation_rules: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: "R10 load capture: after the floor steps, every sample"
+        if: always()
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" floor-post || true
+          kill "$(cat "$RUNNER_TEMP/ci-load-floor-sampler.pid" 2>/dev/null)" 2>/dev/null || true
+          echo "[ci-load] the floor-step samples, every 10 s from the line before the first floor step:" || true
+          cat "$RUNNER_TEMP/ci-load-floor-samples.log" 2>/dev/null || echo "[ci-load] no floor-step samples file" || true
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
