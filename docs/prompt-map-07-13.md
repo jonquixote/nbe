@@ -8857,6 +8857,146 @@ item):
     holds), G15 (5.32; 7.46 holds), and F2 (5.32, moving the floor maximum:
     the ceiling 6.65).
 
+  **The device-audio build PR** (branch `device-audio`, off `0421933`; the
+  user's order of 2026-10-26; the device-audio design record, D1–D8 as ruled
+  2026-10-21, and D5's amendment of 2026-10-23). SPEC v0.4.8 row 15, a
+  candidate until the merge. The era's final piece.
+  - **The commits:**
+    - `5862f9c`: #67's and #68's records (above).
+    - `5fd9f4b`: **the device sink** (D1, D2, D5, D6, D7; R27). A lock-free
+      SPSC ring the cpal callback copies out of; presentation marks (the
+      ring frame a callback starts on, and when it is heard: arrival,
+      cpal's offset, and the stream latency cpal omits); the `Feeder`,
+      which anchors the cursor at the master sample due when a block is
+      heard, slips a block one sample short or long past 0.5 ms (4-point
+      cubic, end to end), and re-anchors past 4 ms; the rate guard; the
+      HAL helper (`nbe-decode`'s `hal`, the change's one `unsafe`); the
+      tick's `audioDevice` and `audioLimiterCeiling`; the lane's
+      `audio.device` and `audio.underrun`; `NBE_AUDIO_SINK`, every harness
+      null by default; SIGTERM/SIGINT close the sink with a device open.
+    - `ee311cc`: **D4** (U2, U3): every audible element on its declared bus
+      at its `gainDb`, loops included; a take returns music and sfx to the
+      operator's level. **Found by reading and fixed:** the soundboard
+      voices' own pass advanced the sfx bus's ramps a second time on every
+      frame a voice sounded, so an sfx fade ran in half its time.
+    - `6e164b0`: **D3**: the 44.1 kHz conversion, held to a measured bound.
+    - `a5b19b1`: the hardware cases; **the limiter's lookahead compensated**
+      (row 14's owed item: the driver renders 245 frames ahead, so program
+      out, the record and the stream carry no 5.1 ms delay; found while
+      writing the loopback case, since the device skew would have read 0
+      with the audio 5.1 ms late); pre-start silence not an underrun (16 at
+      one open, on the normative machine); the test seams; CI's surface.
+    - `d974455`: SPEC row 15; the design record's as-built notes; the
+      presented sum pinned (M-latency); CI's floor at 20; the dress floor
+      restored (the builder's slip, below).
+    - this record.
+  - **Departures from the rulings' wording, put to the user:**
+    1. **D1's close points.** `show.unload` has no engine route (row 7's
+       stated gap), so the sink closes on drop and on SIGTERM/SIGINT with a
+       device open (exit 143, 130).
+    2. **D3's pin.** `AVSampleRateConverterAudioQualityKey` is unsupported by
+       `AVAssetReaderTrackOutput` (it raised an exception that aborted the
+       process); the algorithm key pinned to Mastering measured -100.9 dB,
+       the same as the default. No pin is kept; the guard is the measured
+       bound (under -95 dB, at 1 kHz ± 2 Hz and 48 000 ± 100 frames).
+    3. **M-latency's guard.** The engine's own skew cannot see the stream
+       latency's absence (every mark would carry it alike), and VB-Cable's
+       stream latency is 0, so the presented sum is pinned by a unit test.
+  - **Proposals for ruling:** the 0.5 ms slip threshold and the 4 ms
+    realign; the 2-block ring target (the take head's ~70 ms, stated in
+    §8.11); `audio.underrun` on 3 rising reports, cleared by 10 quiet ones,
+    and `audio.device` a warning when absent and critical when lost; the
+    slip-residual bounds (at the copy-out, 72 slips at +100 ppm: the
+    fixed-frequency residual under -25 dB, measured -28.4, the 1/1600
+    re-timing itself; the interpolation's own under -80 dB, measured -91.7;
+    the floor -153.6; joins within the tone's own step; through the
+    loopback, the median window -153.7 dB and every impaired window a
+    slip's, worst -46.4 dB).
+  - **CI's surface:** `NBE_AUDIO_SINK=null` for every job; the
+    `device_audio` floor (20/20), inside the floor bracket, so **the rust job
+    prints 34 floor lines** and the bracket spans named steps 8 and 37 (28
+    between); an observational step lists the runner's audio devices.
+  - **The builder's slips:**
+    - In `a5b19b1`, a sed raising the `device_audio` floor 18 -> 19 also
+      raised the dress's `exercised` floor 18 -> 19, and the dress
+      exercises exactly 18. It was caught before push, by diffing every
+      threshold against main, and restored in `d974455`.
+    - The first loopback-residual run counted 559 short callbacks, all
+      after its drive: the test left the device open, with nobody pushing,
+      while it analysed. Named and fixed: the device closes first.
+  - **The 30-minute proving run** (D2's proving case; `proving/run30.*`): the
+    release test binary at `a5b19b1`, 06:08:11–06:38:43Z, started under 2.6
+    (2.50 -> 1.69 at the ends; 31 samples 1.30–3.04, one at 3.04 at
+    06:19:11Z whose cause the load-only sampler did not capture), on AC
+    (charged, 100%), no sleep or battery event in `pmset -g log`. `d974455`
+    changes the device path only by extracting the presented sum, the same
+    arithmetic.
+    - **Engine-internal, the speakers** (switched 44 100 -> 48 000 and
+      restored): presented skew **-0.454 ms at 1 min, -0.478 at 10, -0.483
+      at 30**; max |skew| after the first 2 s 0.551 ms. 1059 duplicates, 0
+      drops, 1 realign. The skew rides the -0.5 ms threshold, as the slip
+      holds it. **1059 slips in ~1800 s is +12.25 ppm**: the speakers' 48 kHz
+      family measured for the first time (design record §5's unknown; 44.1
+      kHz was +12.76 ppm).
+    - **End to end, the VB-Cable loopback**: 180 bursts, each onset
+      **+31.11..+31.98 ms** after its master time (+31.20 at 1 min, +31.48 at
+      10, +31.60 at 30): a 0.87 ms spread across 30 minutes. VB-Cable's own
+      output-to-input path, measured by a raw cpal burst in the tone case, is
+      +31.85..+31.89 ms, so the engine lands within about -0.7..+0.1 ms of its
+      master time beyond the path.
+  - **The gate at `d974455`** (`gate/plan.py`, `hygiene/fx.py`; local
+    2026-10-25 23:56 – 2026-10-26 00:07; every window started under 2.6):
+    - **the workspace 580/0/5, kept** (23:59:58–00:02:00, 2.23 -> 2.62), after
+      one void (2.24 -> 3.54: the top processes another session's opencode and
+      Python);
+    - **the device cases 5 + 1 ignored, kept** (00:02:15–00:02:48);
+    - **`npm test` 205/205, kept** (00:02:48–00:02:59);
+    - **the e2e suites 28 + 1 skip, kept** (00:02:59–00:04:43; the skip is
+      operator-signals' refused start, which this machine's encoder
+      acknowledges);
+    - **the dress 29/29, kept** (00:06:20–00:07:27, 2.34 -> 1.85), after one
+      void (1.87 -> 3.13: coreaudiod 22.7 %, MediaRemote, sysmond; the
+      engine's own log reads `state=null` in that run, so not this engine's
+      device). drops 0, underruns 0, watchdog trips 0.
+    - **End to end over the real protocol**, from the dress's ticks: all 62
+      read `audioDevice` `null` ("NBE_AUDIO_SINK=null"); the ceiling read
+      `default` for 5 ticks, then `show` (-1.5 dBTP) from `show.load` on; no
+      audio alert raised.
+  - **The battery** (`battery/plan.py`, driven by `hygiene/fx.py` at
+    `d974455`: each mutation in place, restored from `git show HEAD:`, the
+    tree git-clean after; every window kept, 23:42–23:53 local 2026-10-25, load
+    1.99–2.60). **23 mutants, 23 killed, each by its named guard and for its
+    own reason; 3 controls green:**
+
+    | Mutant | What it does | Killed by | Its signature |
+    |---|---|---|---|
+    | M-ring | the callback allocates (graph work in the copy-out) | `the_callback_copy_out_allocates_nothing` | 4 allocations |
+    | M-slip-sign | the slip's sign reversed | the 30-minute simulation | +12.76 ppm: 4.009 ms |
+    | M-slip-off | no slip | the 30-minute simulation | +12.76 ppm: 4.001 ms |
+    | M-latency | the stream latency left out of the presented instant | `the_presented_instant_includes_the_stream_latency` | 12 671 000 for 18 400 166 |
+    | M-rate | the prior rate not restored at close | `the_speakers_rate_is_switched_and_restored` (hw) | 48 000 after close (the test then restored 44 100) |
+    | M-xrun | the device's overload not counted | `a_forced_stall_is_one_counted_underrun_episode` (hw) | no overload counted |
+    | M-empty | an empty ring plays stale samples | `a_short_callback_plays_silence_and_counts_one_underrun` | the stale 7.0s |
+    | M-gain | `gainDb` ignored | `a_take_plays_every_element_on_its_bus_at_its_gain_db` | music at -12.04, not -24 |
+    | M-clip | the limiter replaced by a clamp | `a_clip_and_a_loop_are_both_heard_and_their_sum_is_limited_not_clipped` | 1.000 past the 0.841 ceiling |
+    | M-fallback | an unknown sink panics | `a_sink_that_cannot_open_is_silence_with_its_reason` | the panic |
+    | M-lookahead | the limiter's lookahead not compensated | `the_driver_compensates_the_limiters_lookahead` | 3445 for 3200 |
+    | M-prestart | pre-start silence counted | `silence_before_the_first_block_is_not_an_underrun` | 1 for 0 |
+    | M-sfx-twice | the old double ramp advance | `an_sfx_fade_runs_its_whole_ramp_while_a_voice_sounds` | 0.1279 for 0.3141 |
+    | M-drift-R27 | the tick's drift not the device's | `the_tick_drift_is_the_devices_presented_skew` | 0.000 then 0.000 |
+    | M-underrun-uncounted | device events not counted | `device_short_callbacks_and_overloads_are_underruns` | 0 for 3 |
+    | M-lost-ignored | loss ignored | `a_lost_device_falls_back_to_silence_and_says_so` | the device kept |
+    | M-ceiling-unpublished | the ceiling not on the tick | `the_limiter_ceiling_in_force_reaches_the_tick` | (-1.5, default) |
+    | M-cp-null-alerts | a configured null sink alerts | `alerts.test.ts` #37 | 37/39 |
+    | M-cp-sustain-1 | one rising report raises | `alerts.test.ts` #38 | 38/39 |
+    | M-loop-silent | a videoLoop's audio dropped | `a_videoloop_plays_its_audio_looped` | the loop missing |
+    | M-bus-ignored | every element on clip | `each_element_plays_on_the_bus_it_declares_whatever_its_z` | guest read as clip |
+    | M-operator-reset | a take resets music to 0 dB | `a_take_returns_an_element_bus_to_the_operators_level` | -12.04 for -22.04 |
+    | M-unconverted | the reader asked for 44.1 kHz | `a_44k1_source_converts_to_48k_at_its_own_pitch_and_length` | 44 100 frames |
+
+    Controls: `device_audio` 20/20, `device_audio_hw` 5 + 1 ignored,
+    `alerts.test.ts` 39/39. The speakers read 44 100 Hz after the battery.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
@@ -9435,10 +9575,10 @@ register was opened with one entry; the spec has not been swept for others.
 | # | The MUST | Where the tree stops | Owner |
 |---|---|---|---|
 | U1 | §12.10: "Preflight MUST report per loop" (`assetId`, `periodFrames`, `selectedTextureFormat`, `frameCostMib`, `effectiveBudgetMib`, `maxFramesByBudget`, `cachePolicySelected`, `vramResident`, `reason`) | `LoopReport` exists in `nbe-core`'s model and is never populated: preflight writes no `loops[]` entries (found on PR #59). A plan's `reason` therefore surfaces nowhere. For a streamed loop it reads "streaming with N frames read-ahead", which this engine does not do (R23), so it must not ship as it reads when the report is built | unassigned |
-| U2 | `LayerAudio.gainDb` (`schemas/manifest.v0.4.json:730–734`; SPEC §8.2's per-bus gain, the element's own level) is declared and parsed (`nbe-core/src/manifest.rs:516`) | the engine reads only `audio.bus` and `audio.muted` (`crates/nbe-engine/src/scene.rs:766–777`); a take's gain is unity, or −60 dB for `mute` (`audio_control.rs:111–140`) | device audio, this era (`docs/device-audio-design.md`, D4) |
-| U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | device audio, this era (`docs/device-audio-design.md`, D4) |
-| U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | device audio, this era (`docs/device-audio-design.md`, D5) |
-| U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | there is no device sink today. The device build opens one and does not reopen it. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
+| U2 | `LayerAudio.gainDb` (`schemas/manifest.v0.4.json:730–734`; SPEC §8.2's per-bus gain, the element's own level) is declared and parsed (`nbe-core/src/manifest.rs:516`) | the engine reads only `audio.bus` and `audio.muted` (`crates/nbe-engine/src/scene.rs:766–777`); a take's gain is unity, or −60 dB for `mute` (`audio_control.rs:111–140`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge** (`docs/device-audio-design.md`, D4) |
+| U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge** (`docs/device-audio-design.md`, D4) |
+| U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`5fd9f4b`): the lane's `audio.device` and `audio.underrun`, `E_AUDIO` in status (§8.10, §10.4); the entry leaves at its merge** (`docs/device-audio-design.md`, D5) |
+| U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | ~~there is no device sink today.~~ *(§2c, the device-audio build:)* The device sink opens at engine start and does not reopen. A lost device (reported, or 1 s without a callback) leaves the engine silent on the null sink's cadence, the tick reading `lost`, and the lane raises `audio.device`, critical. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
 | U6 | §8.2 #1: "The master bus MUST have: 1. compressor" | no compressor exists. The master stage is the master gain, then the limiter (SPEC v0.4.8 row 14) | a later audio PR, its parameters ruled first (the user's ruling L6 of 2026-10-21) |
 | U7 | §8.2 #3: "loudness-safe output", against `show.audio.loudnessTargetLufs` (−16 LUFS by default), with §8.2 #4's peak metering folded in (the user's ruling L6) | nothing measures or normalises the master's loudness. The master meter (`Bus::observe`) reads sample peak and RMS, not true peak or LUFS. The limiter (row 14) bounds the true peak, which is all of loudness safety the tree builds | a later audio PR (L6) |
 
