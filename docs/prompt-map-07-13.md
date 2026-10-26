@@ -786,6 +786,8 @@ adopt and record).
   | `40250323983`, main at `3afb73b` (PR #67's merge); the workspace step green (549/0/4), the job red in the `prompt10_rtmp` floor step (R10's sighting 3) | the workspace tests: the test build finished at 00:40:44.65 (`Finished` in 1m 22s); the post line at 00:42:22 | whole step 3.39–**15.31** (pre, 18 samples, post). While building: 3.59, 3.39, 3.79, 6.14, 9.31, 11.43, 13.21, 14.44, **15.31** (load1 45.92 at 00:40:42Z). While the tests ran: 14.54, 13.15, 11.87, 10.70, 9.70, 9.18, 8.48, 7.63, 6.54, then the post line's 5.91, so 5.91–14.54. The R10 test passed at 00:41:23.58, between 10.70 and 9.70. The 57th |
   | `40262177993`, PR #68 at `b838023` (its head), green (549/0/4) | the workspace tests: the test build finished at 03:05:24.25 (`Finished` in 49.89 s); the post line at 03:06:46 | whole step 1.83–5.96 (pre, 14 samples, post). While building: 1.83, 1.90, 3.69, 5.04, 5.96, 5.81. While the tests ran: 5.79, 5.53, 5.21, 5.00, 4.46, 4.49, 4.25, 4.25, then the post line's 4.28, so 4.25–5.79. The R10 test passed at 03:05:58.82, between 5.21 and 5.00. The 58th |
   | `40266562638`, main at `0421933` (PR #68's merge), green (549/0/4) | the workspace tests: the test build finished at 03:58:52.58 (`Finished` in 53.08 s); the post line at 04:00:07 | whole step 4.46–9.68 (pre, 13 samples, post). While building: 9.68 (the pre line, load1 29.05), 8.38, 7.50, 7.42, 7.10, 6.74. While the tests ran: 5.86, 5.24, 4.56, 4.46, 4.87, 4.96, 4.89, then the post line's 5.38, so 4.46–5.86. The R10 test passed at 03:59:22.91, between 4.56 and 4.46. The 59th |
+  | `40284114106`, PR #70 at `52371e8` (its head), green (580/0/5) | the workspace tests: the test build finished at 07:15:08.79 (`Finished` in 2m 54s: #70 changed `Cargo.lock`, so rust-cache missed); the post line at 07:16:36 | whole step 2.48–8.08 (pre, 26 samples, post). While building: 2.48, 3.35, 4.42, 4.74, 4.14, 4.41, 3.91, 4.02, 4.19, 3.83, 3.42, 3.05, 3.56, 4.41, 5.19, 6.56, 7.47, 8.02. While the tests ran: 8.08, 7.88, 7.35, 6.46, 6.52, 5.91, 6.01, 5.56, then the post line's 5.57, so 5.56–8.08. The R10 test passed at 07:15:44.95, between 7.35 and 6.46. The 60th |
+  | `40293707305`, main at `0132d07` (PR #70's merge); the workspace step green (580/0/5), the run red on control-plane (R32's sighting 2) | the workspace tests: the test build finished at 08:42:23.90 (`Finished` in 1m 49s); the post line at 08:43:23 | whole step 2.68–4.57 (pre, 17 samples, post). While building: 4.57 (the pre line, load1 13.71), 4.51, 3.99, 3.59, 3.23, 3.00, 3.06, 2.95, 2.73, 2.94, 3.91. While the tests ran: 3.96, 3.38, 3.70, 3.29, 3.01, 2.87, then the post line's 2.68, so 2.68–3.96. The R10 test passed at 08:42:49.47, between 3.70 and 3.29. The 61st |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -997,6 +999,11 @@ run removes its own evidence, so today's counts."
 runs; rows 58 and 59 peaked at 5.96 and 9.68, under the 15.31 maximum). R10
 was silent in both.
 
+**The ceiling at #70's head and its merge: holds at 19.13 per CPU** (61 green
+runs; rows 60 and 61 peaked at 8.08 and 4.57, under the 15.31 maximum). Row
+60's build ran 2m 54s on a rust-cache miss (#70 changed `Cargo.lock`); its
+peak, 8.08, is the first sample after the build. R10 was silent in both.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1028,6 +1035,8 @@ A `three_frames…` failure in that step is read against it.
 | G13 | `40250323983` attempt 1, rust job `121340580334`, main at `3afb73b` (PR #67's merge; the GPU step green, `prompt04` 19; the job red on R10's sighting 3) | 5.91 | 5.91–**5.97** (pre, 1 sample, post; 00:42:22–00:42:29Z) | **5.97** |
 | G14 | `40262177993` attempt 1, rust job `121376701187`, PR #68 at `b838023`, green (`prompt04` 19) | 4.28 | 3.97–4.28 (pre, 1 sample, post; 03:06:47–03:06:53Z) | 3.97 |
 | G15 | `40266562638` attempt 1, rust job `121390146285`, main at `0421933` (PR #68's merge), green (`prompt04` 19) | 5.32 | 5.32 (pre, 1 sample, post; 04:00:07–04:00:12Z) | 5.32 |
+| G16 | `40284114106` attempt 1, rust job `121443674416`, PR #70 at `52371e8`, green (`prompt04` 19) | 5.28 | 5.28–5.39 (pre, 1 sample, post; 07:16:36–07:16:42Z) | 5.39 |
+| G17 | `40293707305` attempt 1, rust job `121474548526`, main at `0132d07` (PR #70's merge; the rust job green, `prompt04` 19; the run red on control-plane, R32's sighting 2) | 2.68 | 2.68 (pre, 1 sample, post; 08:43:23–08:43:26Z) | 2.68 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1047,7 +1056,8 @@ G8 (#65 at `39c05fb`) peaked at 3.75, under it, as did G9 (4.25) and G10
 maximum to 5.97** (load1 17.91 on 3 CPUs, the `gpu-post` line), inside 6.10,
 so **the ceiling is 1.25 × 5.97 = 7.46 per CPU** (load1 22.4). G14 (4.28) and
 G15 (5.32) peaked under it, and `three_frames…` passed the GPU step in all
-five.
+five. G16 (#70 at `52371e8`, 5.39) and G17 (main `0132d07`, 2.68) peaked under
+it too, and `three_frames…` passed the GPU step in both.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1066,12 +1076,28 @@ proof was, and its bracket held a failed floor step (a mixed step).
 |---|---|---|---|---|
 | F1 | `40262177993` attempt 1, rust job `121376701187`, PR #68 at `b838023`, green (33/33 floor lines) | 3.97 | 3.44–**4.72** (pre, 10 samples, post; 03:06:53–03:08:33Z) | 4.24 |
 | F2 | `40266562638` attempt 1, rust job `121390146285`, main at `0421933` (PR #68's merge), green (33/33 floor lines) | **5.32** | 3.94–**5.32** (pre, 7 samples, post; 04:00:12–04:01:13Z) | 3.94 |
+| F3 | `40284114106` attempt 1, rust job `121443674416`, PR #70 at `52371e8`, green (34/34 floor lines) | 5.39 | 4.93–**8.01** (pre, 15 samples, post; 07:16:43–07:19:15Z) | 5.99 |
+| F4 | `40293707305` attempt 1, rust job `121474548526`, main at `0132d07` (PR #70's merge; the rust job green, 34/34 floor lines; the run red on control-plane, R32's sighting 2) | 2.52 | 1.90–3.52 (pre, 10 samples, post; 08:43:26–08:45:01Z) | 3.52 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
 the `floor-pre` line, at the same instant as that run's `gpu-post`: the two
 windows meet at one boundary reading), inside 5.90, so **the ceiling is 1.25
 × 15.96/3 = 6.65 per CPU** (load1 19.95), at 2 green runs.
+
+**F3 moves the maximum to 8.01** (load1 24.04 at 07:17:34Z, a sample; 24.02
+at 07:17:23Z), counted by the user's ruling of 2026-10-26 on #70's two-key
+pass, its cause named: the `bindings` floor step compiled `nbe-preflight`
+cold inside the bracket (43 s, against about 4 s on main), because #70
+changed `Cargo.lock` and rust-cache missed. So **the ceiling is 1.25 ×
+24.04/3 = 10.02 per CPU** (load1 30.05), at 4 green runs. **F4 peaked at
+3.52**, under it. Main's rust-cache missed again, as predicted (a
+restore-key hit, "full match: false"), and `nbe-preflight` compiled in the
+bracket for 21.35 s, but the bracket read 2.44 and 2.24 per CPU during that
+compile. F4's peak is the window's end (the 08:44:57Z sample and the post
+line, load1 10.57), during the `automation_rules` floor step. The user's
+ruling of 2026-10-26 accepted the row as read: it says what the log says,
+not what was expected.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -8997,6 +9023,100 @@ item):
     Controls: `device_audio` 20/20, `device_audio_hw` 5 + 1 ignored,
     `alerts.test.ts` 39/39. The speakers read 44 100 Hz after the battery.
 
+  - **CI at `52371e8`:** run `40284114106`, attempt 1. Every job executed
+    (07:10:04Z), and each was read job-exact (`gh api
+    --allow-escape-sequences …/actions/jobs/<id>/logs`).
+    - **rust** (job `121443674416`): 580/0/5; 34/34 floor lines
+      (`device_audio` 20/20) and the 4 count gates; R10's drain tests `ok`
+      in both runs of the suite; `three_frames…` `ok` in both steps. The
+      simulations reproduce the local figures exactly (DRIFT-SIM ±12.76 and
+      ±100 ppm, max 0.501 and 0.511 ms; SLIP-RESIDUAL 72 slips, -28.4 /
+      -91.7 / -153.6 dB). The device cases print `SKIP normative:`.
+    - **The design record's §5 unknown, answered:** a `macos-14` runner has
+      output devices, "Apple Virtual Sound Device" (the default, 48 kHz;
+      HAL latency 0, safety offset 100, stream 0) and "Null Audio Device"
+      (44.1 kHz). D7's explicit null sink is what keeps CI's audio
+      deterministic.
+    - **control-plane** (job `121443674092`): 205/205, package-reconcile
+      4/4; the refused start 2020 ms.
+    - **dress** (job `121443674446`): 29/29, 12c `ok`; drops 0, underruns
+      176 (the null sink's cadence), watchdog trips 0.
+    - The envelope rows: R10's 60, G16 and F3 (Finding R10's tables).
+
+  **The two-key pass on PR #70** (independent; relayed by the user,
+  2026-10-26) HOLDS on 1–12. Its four disputes were ruled. Its two voids
+  stand as declared: the long proving runs (the 30-minute run and the
+  hardware cases were not re-run by the second key) and the D3 premise's
+  verification. The builder's record:
+  1. **Row 15's "(19" is 20** (§2c, struck in the row): the builder's slip.
+     `d974455` added the 20th test (`the_presented_instant_includes_the_stream_latency`,
+     M-latency's pin) and wrote row 15 from `a5b19b1`'s count of 19.
+  2. **The D3 premise's status line** (§2c, added at the ruling in
+     `docs/device-audio-design.md`): the premise did not hold. The SDK
+     header says "AVSampleRateConverterAudioQualityKey is not supported"
+     (`AVAssetReaderOutput.h`, SDK 26.2, `:356`, `:377`; `:225` and `:260`
+     in other words); set anyway, it aborted. The verification's void
+     stands: the evidence is the header and the builder's run.
+  3. **The pass's own sfx slip** (§2c, the pass's text as relayed): the
+     misplaced first mutant, after the output pass, survived; the
+     corrected one, a second advance inside the bus loop, was killed,
+     0.1279 at frame 714. The guard is sound; the first probe was not.
+  4. **F3 counts** (8.01, its cause named: `nbe-preflight` compiled cold in
+     the bracket after the `Cargo.lock` change), and the floor ceiling
+     moves 6.65 → 10.02.
+  5. **R27's strike, disputed on the fact:** the relay read it as landed;
+     at `52371e8` R27's header was still open, and every FIXED strike is
+     made in the PR after the fix. The bookend's order struck it by the
+     merge SHA, here.
+
+  **Merged: PR #70 is `0132d07`** (the bookend), on the user's word.
+  - **The merge:** a squash at 2026-10-26T08:38:43Z, matched to `52371e8`,
+    with the staged subject. Its one parent is `0421933`.
+  - **The tree is identical to the reviewed head's:** `0132d07^{tree}` =
+    `52371e8^{tree}` = `9bcedaa`.
+  - **Main's CI:** run `40293707305` (push), attempt 1. Every job executed
+    (08:38:49Z and 08:39:22Z), and each was read job-exact. **Red on
+    control-plane alone.**
+    - **rust** (job `121474548526`): 580/0/5 (the step's `TOTAL` line),
+      34/34 floor lines, the 4 count gates, 9 `SKIP normative:` lines; R10's
+      drain tests `ok` in both runs of the suite; `three_frames…` `ok` in
+      both steps.
+    - **control-plane** (job `121474548893`): red at named step 15 (UI 23),
+      package-reconcile 3 of 4: **R32's sighting 2** (its row). `npm test`
+      205/205 and every step before it were green. Named steps 16–18 (UI
+      24–26: show.stop, resync-request and operator-signals end to end) did
+      not run, so the run holds no evidence for them.
+    - **dress** (job `121474548971`): 29/29, 12c `ok`; drops 0, underruns
+      176, watchdog trips 0.
+  - **The cache, as predicted:** all three jobs restored rust-cache from a
+    restore key ("full match: false"), main's cache keyed on the
+    `Cargo.lock` before #70.
+  - **Row 15 is ratified** (merged as `0132d07`); **R27 is FIXED by
+    `0132d07`**; **U2, U3 and U4 leave the unbuilt-MUST register**; the
+    design record's head records the merge.
+  - **The envelopes** (Finding R10's tables): R10 rows 60 and 61 (19.13
+    holds), G16 and G17 (7.46 holds), F3 and F4 (the floor ceiling 10.02).
+    **R15's watch** notes both runs (R15's row).
+
+  **The user's rulings of 2026-10-26, on the bookend:**
+  1. **R32 escalates: hunt OPEN** (its row): (a) the control-plane job's
+     `[ci-load]` bracket, a small workflow PR with its own envelope and its
+     own two-key pass; (b) a local reproducer, test 4's scenario with an
+     induced reload, N runs under inflated load, a reproduction falsified
+     normally and about 50 clean runs demoting R32 to watch; (c) the reload
+     path logs when audio sources build. Sighting 2 stands recorded with
+     its defenses.
+  2. **The bookend's envelope rows are accepted as read**, F4's cause note
+     included: the cache missed, and the peak was `automation_rules`' end
+     of window. The row says what the log says, not what was expected.
+  3. **The sfx-slip slot** carries the pass's text (the two-key pass, 3).
+  4. **R31's probe: go.** 30 minutes, 12c's record path, the recording
+     kept, swap watched; ahead of or beside the R32 bracket PR, in the
+     builder's sequencing.
+
+  The queue: R32's bracket PR, then R31's probe, then the era's ledger
+  closes. AC-5 soaks last, per the era's order.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
@@ -9575,9 +9695,9 @@ register was opened with one entry; the spec has not been swept for others.
 | # | The MUST | Where the tree stops | Owner |
 |---|---|---|---|
 | U1 | §12.10: "Preflight MUST report per loop" (`assetId`, `periodFrames`, `selectedTextureFormat`, `frameCostMib`, `effectiveBudgetMib`, `maxFramesByBudget`, `cachePolicySelected`, `vramResident`, `reason`) | `LoopReport` exists in `nbe-core`'s model and is never populated: preflight writes no `loops[]` entries (found on PR #59). A plan's `reason` therefore surfaces nowhere. For a streamed loop it reads "streaming with N frames read-ahead", which this engine does not do (R23), so it must not ship as it reads when the report is built | unassigned |
-| U2 | `LayerAudio.gainDb` (`schemas/manifest.v0.4.json:730–734`; SPEC §8.2's per-bus gain, the element's own level) is declared and parsed (`nbe-core/src/manifest.rs:516`) | the engine reads only `audio.bus` and `audio.muted` (`crates/nbe-engine/src/scene.rs:766–777`); a take's gain is unity, or −60 dB for `mute` (`audio_control.rs:111–140`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge** (`docs/device-audio-design.md`, D4) |
-| U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge** (`docs/device-audio-design.md`, D4) |
-| U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`5fd9f4b`): the lane's `audio.device` and `audio.underrun`, `E_AUDIO` in status (§8.10, §10.4); the entry leaves at its merge** (`docs/device-audio-design.md`, D5) |
+| U2 | `LayerAudio.gainDb` (`schemas/manifest.v0.4.json:730–734`; SPEC §8.2's per-bus gain, the element's own level) is declared and parsed (`nbe-core/src/manifest.rs:516`) | the engine reads only `audio.bus` and `audio.muted` (`crates/nbe-engine/src/scene.rs:766–777`); a take's gain is unity, or −60 dB for `mute` (`audio_control.rs:111–140`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge**; **it left at `0132d07`** (PR #70's merge; recorded in the next PR, §2c) (`docs/device-audio-design.md`, D4) |
+| U3 | A loop's audio (§12.10 #5: "no audio gap if loop has audio"; §12.11.1 charges it in `audioDemandMib`) | it is decoded and held at `show.load` (`directive.rs:328–345`) and never routed to a bus: `item_audio_asset` takes `clip`-kind elements only (`scene.rs:475`) | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`ee311cc`); the entry leaves at its merge**; **it left at `0132d07`** (PR #70's merge; recorded in the next PR, §2c) (`docs/device-audio-design.md`, D4) |
+| U4 | §8.10: sustained underruns and device loss raise `E_AUDIO` | `E_AUDIO` is defined (`crates/nbe-protocol/src/lib.rs:82`, `:146`), and no engine path raises it | ~~device audio, this era~~ **built and falsified by the device-audio build PR (`5fd9f4b`): the lane's `audio.device` and `audio.underrun`, `E_AUDIO` in status (§8.10, §10.4); the entry leaves at its merge**; **it left at `0132d07`** (PR #70's merge; recorded in the next PR, §2c) (`docs/device-audio-design.md`, D5) |
 | U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | ~~there is no device sink today.~~ *(§2c, the device-audio build:)* The device sink opens at engine start and does not reopen. A lost device (reported, or 1 s without a callback) leaves the engine silent on the null sink's cadence, the tick reading `lost`, and the lane raises `audio.device`, critical. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
 | U6 | §8.2 #1: "The master bus MUST have: 1. compressor" | no compressor exists. The master stage is the master gain, then the limiter (SPEC v0.4.8 row 14) | a later audio PR, its parameters ruled first (the user's ruling L6 of 2026-10-21) |
 | U7 | §8.2 #3: "loudness-safe output", against `show.audio.loudnessTargetLufs` (−16 LUFS by default), with §8.2 #4's peak metering folded in (the user's ruling L6) | nothing measures or normalises the master's loudness. The master meter (`Bus::observe`) reads sample peak and RMS, not true peak or LUFS. The limiter (row 14) bounds the true peak, which is all of loudness safety the tree builds | a later audio PR (L6) |
