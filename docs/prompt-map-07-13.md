@@ -9116,6 +9116,132 @@ item):
 
   The queue: R32's bracket PR, then R31's probe, then the era's ledger
   closes. AC-5 soaks last, per the era's order.
+  **R31's 12c probe, its sighting, the hunt, and the fix** (branch
+  `r31-zero-copy-fence`, off `0132d07`; the user's specification of
+  2026-10-26 for the probe, its go of the same day, and the rulings of
+  2026-10-26 on the hunt). Every run is kept beside
+  `.git/nbe-staged/r31/sighting2.md`, the hunt's full record.
+  - **The probe** (`packages/control-plane/src/r31-12c.probe.ts`, `npm run
+    probe:r31`, not in `npm test`): step 12c's record path for 30 minutes,
+    the real control plane and the dress's debug engine, counter_150 taken
+    and an empty scene between takes (the separator), one recording; its
+    evidence kept under `.git/nbe-staged/r31/`, never a temp directory. Read
+    back with step 12c's classifier (moved, unchanged, to `r20-counter.ts`),
+    and joined through the engine's record trace (`NBE_RECORD_TRACE`) to the
+    master frame each recorded frame was drawn at: clause 1 (never
+    backwards) and clause 2, exact (each picture the one its tick drew);
+    R33's repeats and skips counted beside them.
+  - **Sighting 2** (the probe's first run, 10:43–11:14Z, zero-copy, the AMD
+    adapter, load 4.3–6.5, power-limited): 9 frames backwards in 277 takes,
+    every one S1's shape (k − 1, k, **k − 1**, k + 2), clustered in takes
+    181–186; 1943 held frames; the engine counted nothing.
+  - **The hunt, in eight steps** (`sighting2.md`):
+
+    | Step | What ran | What it showed |
+    |---|---|---|
+    | 1 | CPU readback, the same state, 30 min | 0 backwards, 124 held |
+    | 2 | a GPU completion wait before the handoff, untraced, 30 min | 0 backwards, 1446 held (§2c: first read as the prediction failing; the totals mixed R33's holds with this class) |
+    | 3 | a trace joining each recorded frame to its tick's master frame | the held frames split: R33's cadence (the same master frame twice) and this class (a picture older than its tick drew) |
+    | 4 | zero-copy, AMD against Intel, traced, 4 × 10 min interleaved | the class on both (1, 13, 7, 13); the coherency hypothesis falsified; on Intel at clip frame 88 |
+    | 5 | CPU readback, both GPUs, traced, 4 × 10 min | 0 in 40 minutes |
+    | 6 | Intel, zero-copy, with and without the wait, interleaved | **0 and 0 with it, 20 and 28 without** |
+    | 7 | the fix, falsified as ruled | below |
+    | 8 | the battery | below |
+
+  - **The mechanism:** the View drew into a pool surface, the draw was
+    submitted, and the surface went to VideoToolbox at once; the encoder
+    could read it before the GPU drew into it, and recorded the picture the
+    surface held before.
+  - **The second defect, filed as R33** (its row): the render loop can draw
+    the previous master frame again and skip the next; both GPUs, both
+    record paths; uncounted; on air.
+
+  **The user's rulings of 2026-10-26, on R31's hunt:**
+  1. **R31's fix is shape (a):** the recording thread waits on the GPU
+     work's ID before encoding; the View never waits; a late GPU delays the
+     encode only. Falsification: the traced probe, both GPUs, 0 stale frames
+     in 30 minutes on the normative adapter, the class returning with the
+     wait removed. The probe lands in the fix PR as the falsification tool,
+     then stays as a guard.
+  2. **The render-loop timing defect is FILED as R33** (its row carries the
+     measured rate and the falsification plan).
+  3. **R31's clause 2 is moot per the fix;** the remaining holds are R33's.
+  4. **CP1 on #71: the 60-second settle**, not the build-tail count.
+  5. **The experiment branch** (`r31-hunt-gpu-wait`) **stays local and dies
+     there;** the trace runs and their joins are kept beside `sighting2.md`.
+
+  Sequencing: R31's fix PR (with the probe) next; R32's reproducer and reload
+  log follow; #71's two-key pass dispatch stands ready whenever its settle
+  lands.
+
+  **R31's fix PR, the build record.**
+  - **The fix** (`c15c4de`, `af83c3c`):
+    - render: `render_bus` returns its submission; the View's is kept per
+      frame (`view_submission`), cleared at the start of every frame.
+    - the tap: after the draw the tick marks the loan
+      (`TapLoan::mark_drawn`) with that submission and the master frame; a
+      zero-copy surface with no draw to wait on (a failed View, an unmarked
+      loan) is never handed off: a counted skip.
+    - the record thread: `encode_after_draw` waits on the exact submission
+      (`DrawDone`) before `encode_pixel_buffer`, at most `DRAW_WAIT` (1 s);
+      an unfinished draw is a counted skip, never an encode.
+    - **the wait never blocks inside wgpu** (`af83c3c`): the first form's
+      blocking `poll(Wait)` held wgpu-core's snatch lock for reading through
+      the GPU wait, which the render thread's per-frame `poll(Poll)`
+      (`gpu.rs` `reclaim`) can need for writing; now a zero-timeout
+      `poll(Wait)` every `DRAW_POLL` (500 µs).
+    - measurement knobs, off by default: `NBE_RECORD_TRACE` (the record
+      trace) and wgpu's own `WGPU_POWER_PREF` (the adapter; the default stays
+      HighPerformance).
+  - **The probe** (`f9fa430`, `485aaa3`, `3e949a7`, `635601b`, `1226a94`):
+    built, then `--tap cpu`, the run's `NBE_*`/`WGPU_*` in its meta (never a
+    credential-like name: the security review's finding, fixed), and the
+    trace's exact clause 2 with R33 counted and `--gpu low`.
+  - **Guards:** `record::feed` 2 unit tests (the wait precedes the encode,
+    bounded by `DRAW_WAIT`; an unfinished draw is never encoded);
+    `zerocopy_tap` +3 (a drawn surface reaches the record thread with its
+    draw and its frame; a View that did not draw, after one that did, hands
+    on nothing; an unmarked surface is never handed off), its CI floors
+    12/4 → 15/7; the GPU tests that drive the tap themselves mark their
+    loans as the tick does.
+  - **Falsified as ruled** (`.git/nbe-staged/r31/fix/`, every recorded frame
+    traced, the draw wait never timed out):
+
+    | Run | commit | adapter | minutes | stale | View drops | R33 repeats / skips |
+    |---|---|---|---|---|---|---|
+    | amd-fix | `1226a94` (blocking wait) | AMD | 30 | **0** | 0 | 491 / 692 |
+    | intel-fix | `1226a94` | Intel | 10 | **0** | 1 | 354 / 422 |
+    | intel-nowait (the wait removed) | `1226a94` mutated | Intel | 10 | **34** (one two back: S1's shape) | 0 | 331 / 399 |
+    | amd-fix2 | `af83c3c` (non-blocking) | AMD | 30 | **0** | 0 | 643 / 852 |
+    | intel-fix2 | `af83c3c` | Intel | 10 | **0** | 0 | 258 / 325 |
+
+    The counter-proof's mutant bypasses the wait call, so it stands for
+    `af83c3c`.
+  - **The battery** (`battery/plan.py`, `hygiene/fx.py`, at `af83c3c`): 7
+    mutants, 7 killed, each by its named guard (M-no-wait, M-timeout-encodes,
+    M-zero-timeout by the unit tests; M-never-marked, M-stale-submission,
+    M-unfenced-handed-off by `zerocopy_tap`; M-no-mark-in-tick by the dress:
+    27/29, steps 11 and 12b); 2 controls green; the engine rebuilt from HEAD.
+  - **The gate:** two runs, every window started under 2.6 and was kept with both ends
+    under 3.0 (`gate/plan.py`, `hygiene/fx.py`; voids named).
+    - **At `af83c3c`** (`gate/run/`): the workspace window read **315
+      passed, 1 failed**: `prompt09_feed::loop_wiring_pre_check_before_readback`,
+      a source-scan guard looking for `handoff_record_frame` in
+      `end_tap_frame`; the fix routes that handoff through
+      `send_record_frame`. The ordering it guards is unchanged. **The
+      builder's slip:** the touched suites were run before committing, the
+      whole workspace was not. Fixed in `89d272a` (§2c). `npm test` 205/205,
+      e2e 28 + 1 skip, the dress 29/29 (step 12c: 149 counter frames, 1–149,
+      through the zero-copy tap).
+    - **At `89d272a`** (`gate/run2/`): **the workspace 585/0/5** (580 + the 2
+      unit tests + the 3 GPU tests); **`npm test` 205/205**; **e2e 28 + 1
+      skip** (the refused start: this machine's encoder acknowledges); **the
+      dress 26/29, a sighting, named and not rerun**
+      (`gate/run2/dress-sfx-sighting/README.md`): step 6's soundboard stab
+      never reached the sfx bus within 10 s, and its two consequences. Not
+      this PR's (the engine byte-identical to `af83c3c`'s 29/29); not R13 (a
+      late rise that always came); #70 changed that path. Put to the user to
+      file.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
