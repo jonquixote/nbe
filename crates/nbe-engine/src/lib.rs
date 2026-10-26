@@ -5,8 +5,12 @@
 //! the watchdog skeleton. No GPU work until Prompt 04.
 
 pub mod audio;
+pub mod audio_clock;
 pub mod audio_control;
+#[cfg(target_os = "macos")]
+pub mod audio_device;
 pub mod audio_driver;
+pub mod audio_ring;
 pub mod channel;
 pub mod clock;
 /// Hardware decode lives in its own crate so `nbe-preflight` can use it

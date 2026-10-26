@@ -62,6 +62,15 @@ export interface TelemetryTick {
    *  through a redial (§9.5), so this is where a redial is visible. Required,
    *  same reason as `recordTapPath`. */
   streamTransportState: string;
+  /** The device-audio design record, D5 and D6: which output device carries
+   *  program audio — `"open"`, `"null"` (silent by configuration), `"absent"`,
+   *  `"lost"`, or `"none"` with no fresh engine report. Engine-owned; required,
+   *  same reason as `recordTapPath`. */
+  audioDevice: { state: string; name: string | null; rateHz: number | null; reason: string | null };
+  /** D5's amendment: the master limiter's ceiling in force, value and source.
+   *  Engine-owned, read-only; `null` with no fresh engine report, because the
+   *  control plane must not claim a ceiling it has not been told. */
+  audioLimiterCeiling: { dbtp: number; source: string } | null;
   /** SPEC §10.1.2 (v0.4.8 row 8): the operator-signal lane, control-plane owned, the same list every snapshot surface carries. */
   alerts: Alert[];
   /** SPEC §10.1.2: R18's fallback flag. */
@@ -135,6 +144,12 @@ export function buildTick(
     // report the control plane does not know what the socket is doing, and
     // `engineConnected: false` already says why.
     streamTransportState: f?.streamTransportState ?? TAP_NONE,
+    // The device-audio design record: forwarded, stubbed "none" when no fresh
+    // report says which device is on air, for the reason `streamTransportState`
+    // is. The ceiling is null in that case, not a default: a default would be
+    // the control plane fabricating the engine's answer.
+    audioDevice: f?.audioDevice ?? { state: TAP_NONE, name: null, rateHz: null, reason: null },
+    audioLimiterCeiling: f?.audioLimiterCeiling ?? null,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),

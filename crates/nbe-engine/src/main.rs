@@ -40,11 +40,16 @@ async fn main() -> anyhow::Result<()> {
     // Started before the GPU: audio does not depend on wgpu, and a slow or
     // failing device init must not silence the show.
     //
-    // The sink is the null sink: device glue is the recorded deferral in
-    // agents/prompts/06-audio-graph.md. Everything above the sink is real.
-    // B1: with the outbound queue, so an `audioLevel` crossing reaches the
-    // control plane within the block it happened in.
-    audio_driver::spawn_with_events(state.clone(), house_rate, outgoing.clone());
+    // The sink is chosen by `NBE_AUDIO_SINK` (the device-audio design record,
+    // D7): `device`, the default, opens the default output device on macOS;
+    // `null` runs the silent sink, which is what CI and every test harness
+    // set. A device that does not open falls back to silence, its reason on
+    // the tick's device line (D6). B1: with the outbound queue, so an
+    // `audioLevel` crossing reaches the control plane within the block it
+    // happened in.
+    let sink = audio_driver::sink_choice(std::env::var("NBE_AUDIO_SINK").ok().as_deref());
+    let device = sink == audio_driver::SinkChoice::Device;
+    let audio = audio_driver::spawn_with_events(state.clone(), house_rate, outgoing.clone(), sink);
 
     // The render loop runs on its own task, driven by master-clock frame
     // boundaries — not a spin. It renders even while the clock is STOPPED so
@@ -73,8 +78,23 @@ async fn main() -> anyhow::Result<()> {
         nbe_engine::tick::run_loop(&mut render, &render_state, house_rate, |_| true).await;
     });
 
-    render_loops
-        .run_until(channel::run_forever(cfg, state, outgoing))
-        .await;
-    Ok(())
+    let engine = render_loops.run_until(channel::run_forever(cfg, state, outgoing));
+    if !device {
+        // The null sink holds nothing to put back: termination stays the
+        // default, untouched.
+        engine.await;
+        return Ok(());
+    }
+    // An orderly shutdown closes the device sink, and closing restores the
+    // device's prior rate (D1 a). The handlers exist only with a device, so a
+    // null-sink engine's termination is unchanged. The exit codes are the
+    // signals' own (128 + n), as a default termination would report.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let code = tokio::select! {
+        () = engine => 0,
+        _ = terminate.recv() => 143,
+        _ = tokio::signal::ctrl_c() => 130,
+    };
+    audio.stop();
+    std::process::exit(code);
 }

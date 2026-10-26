@@ -46,6 +46,15 @@ impl MasterClock {
         self.epoch = None;
     }
 
+    /// The instant master frame 0 began; None while STOPPED. A device sink
+    /// measures its skew against it (device-audio design D2).
+    pub fn epoch(&self) -> Option<Instant> {
+        match self.state {
+            ClockState::Stopped => None,
+            ClockState::Running => self.epoch,
+        }
+    }
+
     /// Current master frame; None while STOPPED.
     pub fn frame(&self) -> Option<u64> {
         match self.state {

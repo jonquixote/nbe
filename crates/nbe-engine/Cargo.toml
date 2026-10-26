@@ -27,6 +27,16 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 # fontdb source-loading of system directories.
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 
+# Device audio (the device-audio design record, D1 and D7): program audio to
+# the default output device, macOS only. cpal is safe over coreaudio-rs and
+# the `objc2` family nbe-decode already pins; the two HAL reads it does not
+# expose live in nbe-decode's `device-audio` feature. Elsewhere the engine
+# builds the null sink alone, and no ALSA crate is ever resolved for a build
+# (the target gate keeps cpal's Linux backend out).
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.18.2"
+nbe-decode = { path = "../nbe-decode", features = ["gpu-tap", "device-audio"] }
+
 [dev-dependencies]
 pollster = "0.4"
 tempfile = "3"

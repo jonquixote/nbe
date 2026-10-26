@@ -584,11 +584,20 @@ impl AudioGraph {
     /// Allocation-free and lock-free in the steady state: safe to call from a
     /// device callback once `reserve` has covered the block size.
     pub fn render(&mut self, out: &mut [f32], master_frame: u64) {
+        let base = self.sample_for_master_frame(master_frame, 0);
+        self.render_at(out, base);
+    }
+
+    /// Render starting at master sample `base`, which need not fall on a frame
+    /// boundary. A device sink renders from its own cursor (device-audio
+    /// design D2): the block it renders is the one due when the device will
+    /// play it, so its start is wherever the latency puts it. `render` is this
+    /// at a frame's first sample.
+    pub fn render_at(&mut self, out: &mut [f32], base: i64) {
         self.reserve(out.len());
         self.service_pending_swaps();
         out.fill(0.0);
         let frames = out.len() / CHANNELS;
-        let base = self.sample_for_master_frame(master_frame, 0);
 
         // Destructured so each field is borrowed independently. The previous
         // version collected key vectors and cloned source lists every call,

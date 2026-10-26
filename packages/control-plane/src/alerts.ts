@@ -47,7 +47,20 @@ export const ALERT = {
   streamDivergence: { id: "stream.divergence", auditEvent: "stream.divergence" },
   outputsHeld: { id: "outputs.held", auditEvent: "show.stopHeld" },
   auditSinkFailed: { id: "audit.sinkFailed", auditEvent: null },
+  // The device-audio design record, D5 and D6: the audio fault class, in the
+  // lane's style. Both carry SPEC §8.10's E_AUDIO condition in status (§10.4).
+  audioUnderrun: { id: "audio.underrun", auditEvent: "audio.underrun" },
+  audioDevice: { id: "audio.device", auditEvent: "audio.device" },
 } as const;
+
+/**
+ * §8.10's "sustained underruns", proposed in the device-audio build PR for
+ * ruling: the engine's underrun count rose in this many consecutive fresh
+ * reports (about 1 s apart), with a device open.
+ */
+export const AUDIO_UNDERRUN_SUSTAIN_REPORTS = 3;
+/** The underrun alert clears after this many consecutive fresh reports with no rise. */
+export const AUDIO_UNDERRUN_QUIET_REPORTS = 10;
 
 /** The list itself, kept on the state so every snapshot reads one source. */
 export class AlertLane {
@@ -350,6 +363,75 @@ export class OperatorSignals {
 
     this.divergence();
     this.correction();
+    this.audio();
+  }
+
+  /** The last report the audio evaluation counted, and its underrun total. */
+  private audioSeen: { receivedAt: number; underruns: number } | null = null;
+  private audioRising = 0;
+  private audioQuiet = 0;
+
+  /**
+   * The device-audio design record, D5 and D6. Two alerts from the engine's
+   * fresh report, and neither refuses anything:
+   * - `audio.device`: a show is loaded and no device carries program audio
+   *   (the device line reads `absent` or `lost`). A configured null sink is
+   *   not a fault: CI and every harness run one on purpose.
+   * - `audio.underrun`: with a device open, the underrun count rose in
+   *   `AUDIO_UNDERRUN_SUSTAIN_REPORTS` consecutive reports (§8.10's
+   *   "sustained underruns"); it clears after `AUDIO_UNDERRUN_QUIET_REPORTS`
+   *   quiet ones.
+   */
+  private audio(): void {
+    const { state, lane } = this.i;
+    const fresh = this.freshReport();
+    if (fresh === null) return; // the not-reporting alert owns staleness
+    const device = fresh.frame.audioDevice;
+    const deviceState = device?.state ?? "none";
+    const loaded = state.showState !== "UNLOADED";
+    if (loaded && (deviceState === "absent" || deviceState === "lost")) {
+      const what =
+        deviceState === "lost"
+          ? `the output device ${device?.name ?? ""} was lost`
+          : "no output device carries program audio";
+      lane.raise(
+        ALERT.audioDevice,
+        deviceState === "lost" ? "critical" : "warning",
+        `E_AUDIO: ${what}${device?.reason ? ` (${device.reason})` : ""}; the show runs silent`,
+      );
+    } else {
+      lane.clear(
+        ALERT.audioDevice.id,
+        loaded ? `the output device reads ${deviceState}` : "no show is loaded",
+      );
+    }
+
+    if (this.audioSeen !== null && fresh.receivedAt === this.audioSeen.receivedAt) return;
+    const underruns = fresh.frame.audioUnderrunsTotal;
+    const rose = this.audioSeen !== null && underruns > this.audioSeen.underruns;
+    this.audioSeen = { receivedAt: fresh.receivedAt, underruns };
+    if (deviceState !== "open") {
+      this.audioRising = 0;
+      this.audioQuiet = 0;
+      lane.clear(ALERT.audioUnderrun.id, `the output device reads ${deviceState}`);
+      return;
+    }
+    if (rose) {
+      this.audioRising += 1;
+      this.audioQuiet = 0;
+    } else {
+      this.audioRising = 0;
+      this.audioQuiet += 1;
+    }
+    if (this.audioRising >= AUDIO_UNDERRUN_SUSTAIN_REPORTS) {
+      lane.raise(
+        ALERT.audioUnderrun,
+        "warning",
+        `E_AUDIO: sustained audio underruns on ${device?.name ?? "the output device"}: the count rose in ${this.audioRising} consecutive reports (${underruns} total)`,
+      );
+    } else if (this.audioQuiet >= AUDIO_UNDERRUN_QUIET_REPORTS) {
+      lane.clear(ALERT.audioUnderrun.id, `no underrun in ${this.audioQuiet} consecutive reports`);
+    }
   }
 
   /** (a) The stream's standing contradiction (row 8, unchanged). */

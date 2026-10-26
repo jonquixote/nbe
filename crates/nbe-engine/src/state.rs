@@ -137,6 +137,13 @@ pub struct EngineState {
     pub audio_drift_ms_bits: AtomicU64,
     /// Per-bus peak levels for telemetry (SPEC §10.1).
     pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// The tick's device line (the device-audio design record, D5 and D6),
+    /// written by the audio driver: open, null, absent or lost.
+    pub audio_device: Mutex<nbe_protocol::AudioDeviceLine>,
+    /// The master limiter's ceiling in force, value and source (D5's
+    /// amendment), written by the audio driver when `show.load`'s ceiling
+    /// reaches the graph.
+    pub audio_limiter_ceiling: Mutex<nbe_protocol::LimiterCeilingLine>,
     /// The loaded package's `audioLevel` watches (SPEC v0.4.7 candidate B1),
     /// installed by `show.load` from the manifest's automation rules. The
     /// audio driver swaps them in by pointer on its next block and reports a
@@ -273,6 +280,11 @@ impl EngineState {
             unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            audio_device: Mutex::new(nbe_protocol::AudioDeviceLine::none()),
+            audio_limiter_ceiling: Mutex::new(nbe_protocol::LimiterCeilingLine {
+                dbtp: crate::limiter::DEFAULT_CEILING_DBTP,
+                source: "default".into(),
+            }),
             audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),

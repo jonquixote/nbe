@@ -247,6 +247,10 @@ test("[lane] restart: the engine restarts under a stream believed live; the resy
       ...process.env,
       NBE_CP_URL: `ws://127.0.0.1:${s.tap.port}/nbe/v0.3`,
       NBE_RENDER_TOKEN: "render-token",
+      // The silent sink unless the environment asks for the device (the
+      // device-audio design record, D7): a test never plays through, or
+      // re-rates, the machine's speakers. A soak may set `device`.
+      NBE_AUDIO_SINK: process.env.NBE_AUDIO_SINK ?? "null",
       NBE_HOUSE_RATE: "30",
       RUST_LOG: "warn",
       NO_COLOR: "1",

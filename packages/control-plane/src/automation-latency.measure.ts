@@ -564,6 +564,10 @@ async function tierEngine(): Promise<Row[]> {
       ...process.env,
       NBE_CP_URL: `ws://127.0.0.1:${ctx.server.port}/nbe/v0.3`,
       NBE_RENDER_TOKEN: RENDER,
+      // The silent sink unless the environment asks for the device (the
+      // device-audio design record, D7): a test never plays through, or
+      // re-rates, the machine's speakers. A soak may set `device`.
+      NBE_AUDIO_SINK: process.env.NBE_AUDIO_SINK ?? "null",
       NBE_HOUSE_RATE: String(HOUSE_RATE),
       RUST_LOG: "warn",
     },
