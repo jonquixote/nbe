@@ -133,9 +133,6 @@ async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true });
   const runs = createWriteStream(join(OUT, "runs.jsonl"));
   const engineFile = createWriteStream(join(OUT, "engine.log"));
-  for (let i = 0; i < LOAD; i++) {
-    busy.push(spawn("yes", [], { stdio: "ignore" }));
-  }
   const meta = {
     reproducer: "R32",
     n: N,
@@ -195,7 +192,7 @@ async function main(): Promise<void> {
   };
   engine.stdout?.on("data", onEngine);
   engine.stderr?.on("data", onEngine);
-  if ((await until(() => server.wsBridge.renderNodeCount() === 1, 30_000)) === null) throw new Error("the engine never registered");
+  if ((await until(() => server.wsBridge.renderNodeCount() === 1, GIVE_UP_MS)) === null) throw new Error("the engine never registered");
   const open = async (): Promise<WebSocket> => {
     const w = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
       headers: { authorization: `Bearer ${ADMIN}`, "x-nbe-role": "admin" },
@@ -208,6 +205,12 @@ async function main(): Promise<void> {
   };
   ws = await open();
   ws2 = await open();
+  // The inflated load starts once the harness stands: it is the runs' load,
+  // not the engine's start (48 busy processes starved the engine's start past
+  // 30 s on the first try, before any run).
+  for (let i = 0; i < LOAD; i++) {
+    busy.push(spawn("yes", [], { stdio: "ignore" }));
+  }
   console.log(`R32 REPRO: n=${N}, ${LOAD} busy process(es), reload ${INDUCE ? "induced" : "not induced"}; kept in ${OUT}`);
 
   let pastBound = 0;
