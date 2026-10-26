@@ -1219,6 +1219,55 @@ jobs:
             | grep -v "\.test\.ts" \
             | grep -v "^\s*//" || true)
           if [ -n "$hits" ]; then echo "vocabulary violation:"; echo "$hits"; exit 1; fi
+      # PR #34's fix round: the operator's slate, end to end — the real engine
+      # binary under the real control plane, asserting the engine's report and
+      # the control plane's state together after a take and after a cut. Not in
+      # `npm test`: it needs the engine, which this job builds here (release,
+      # the binary the rehearsal and the soak run). (R32's capture, the user's
+      # ruling of 2026-10-26: built here, ahead of the capture below, so no
+      # compile runs inside its window. No `npm test` suite reads the engine
+      # binary; the end-to-end steps that do run after it, as before.)
+      - name: "build the engine for the slate-release end-to-end (PR #34)"
+        working-directory: .
+        run: cargo build -p nbe-engine --release
+      # R32's load capture (docs/soak-protocol.md, R32; the user's ruling of
+      # 2026-10-26, (a)). R32's two sightings, package-reconcile's test 4 in
+      # main's run 40293707305 and #67's run 40190112362, were load-blind:
+      # this job carried no `[ci-load]` capture. These two steps bracket every
+      # test step in the job, `npm test` through the operator-signals end to
+      # end, with the rust job's line script, written here because this job
+      # runs on its own runner: one line before, a sample every 10 s during,
+      # and one line after, then every sample, printed even when a step fails.
+      # One bracket over the whole span covers each step that carries a
+      # network or timing assertion without a list to keep in step with the
+      # suites. The phases are `cp-pre`, `cp-sample` and `cp-post`, so these
+      # lines are never read as another job's window.
+      #
+      # The logging must never fail the job. Every command is guarded with
+      # `|| true`, the sampler runs detached with its output in a file, and
+      # both steps are continue-on-error as a second guard.
+      - name: "R32 load capture: before the test steps, the sampler started"
+        continue-on-error: true
+        run: |
+          cat > "$RUNNER_TEMP/ci-load-line.sh" <<'LINE' || true
+          # One `[ci-load]` line: the phase ($1), then UTC, load, CPUs, memory.
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+          load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print "load1=" $1 " load5=" $2 " load15=" $3}')
+          ncpu=$(sysctl -n hw.ncpu 2>/dev/null)
+          total=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1 / 1048576}')
+          mem=$(vm_stat 2>/dev/null | awk '
+            /page size of/ { ps = $8 }
+            /^Pages free:/ { gsub(/\./, "", $3); f = $3 }
+            /^Pages inactive:/ { gsub(/\./, "", $3); i = $3 }
+            /^Pages speculative:/ { gsub(/\./, "", $3); s = $3 }
+            END { if (ps) printf "free=%d inactive=%d speculative=%d", f * ps / 1048576, i * ps / 1048576, s * ps / 1048576 }')
+          swap=$(sysctl -n vm.swapusage 2>/dev/null | awk '{print $6}')
+          echo "[ci-load] $1 $ts $load ncpu=$ncpu mem_mib total=$total $mem swap_used=$swap"
+          LINE
+          bash "$RUNNER_TEMP/ci-load-line.sh" cp-pre || true
+          { nohup bash -c 'while :; do bash "$0" cp-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
+              > "$RUNNER_TEMP/ci-load-cp-samples.log" 2>&1 < /dev/null & } || true
+          echo "$!" > "$RUNNER_TEMP/ci-load-cp-sampler.pid" || true
       - name: tests pass and actually run (summary echoed for the audit trail)
         run: |
           set -o pipefail
@@ -1305,14 +1354,6 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL effects static scan: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to execute, got $exercised"; exit 1; fi
-      # PR #34's fix round: the operator's slate, end to end — the real engine
-      # binary under the real control plane, asserting the engine's report and
-      # the control plane's state together after a take and after a cut. Not in
-      # `npm test`: it needs the engine, which this job builds here (release,
-      # the binary the rehearsal and the soak run).
-      - name: "build the engine for the slate-release end-to-end (PR #34)"
-        working-directory: .
-        run: cargo build -p nbe-engine --release
       - name: "the slate-release end-to-end actually ran (PR #34)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
         # not a pass), and zero failures. 4 tests: take, cut, and (the fix
@@ -1501,6 +1542,14 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL operator-signals e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL operator-signals e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL operator-signals e2e: expected at least 1 test (the refused start) to execute, got $exercised"; exit 1; fi
+      - name: "R32 load capture: after the test steps, every sample"
+        if: always()
+        continue-on-error: true
+        run: |
+          bash "$RUNNER_TEMP/ci-load-line.sh" cp-post || true
+          kill "$(cat "$RUNNER_TEMP/ci-load-cp-sampler.pid" 2>/dev/null)" 2>/dev/null || true
+          echo "[ci-load] the control-plane samples, every 10 s from the line before the first test step:" || true
+          cat "$RUNNER_TEMP/ci-load-cp-samples.log" 2>/dev/null || echo "[ci-load] no control-plane samples file" || true
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
