@@ -220,6 +220,19 @@ impl PackageIndex {
     }
 }
 
+/// One source a take plays (the device-audio design record, D4): an
+/// element's asset, on the bus its `audio.bus` declares, at its `gainDb`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementAudio {
+    pub element_id: String,
+    pub asset_id: String,
+    /// `clip`, `guest`, `sfx`, `music` or `mic` (`LayerAudio.bus`).
+    pub bus: String,
+    pub gain_db: f32,
+    /// A `videoLoop` element loops its audio.
+    pub looping: bool,
+}
+
 /// One element, reduced to what this prompt can draw.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElementSpec {
@@ -235,6 +248,9 @@ pub struct ElementSpec {
     /// `element.audio.muted` (SPEC §7.4). Also in the schema, also previously
     /// unread — a muted element went to air.
     pub audio_muted: bool,
+    /// `element.audio.gainDb` (SPEC §7.4), 0 dB by default: the element's
+    /// level on its bus (D4; U2, which found it parsed and ignored).
+    pub audio_gain_db: f32,
     pub color: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
@@ -438,79 +454,76 @@ impl PackageIndex {
     /// this kind of walk on the frame path, and a take must not depend on a
     /// map lookup that can fail silently.
     ///
-    /// The asset whose audio a take installs on the CLIP bus for this item.
+    /// What a take of this item plays: one source per audible element of the
+    /// scene it shows (the device-audio design record, D4, ruled 2026-10-21:
+    /// "every audible element plays its declared bus at its gainDb, loops
+    /// included"; U2, U3).
     ///
-    /// Four rules have been wrong here and five production bugs came out of
-    /// them, every one the same mistake: inferring from an element's POSITION
-    /// what the manifest STATES. So this version states its premises and reads
-    /// every field the schema provides.
-    ///
-    /// The candidate must be **drawn** — it comes from `drawn_elements`, the
-    /// same walk `resolve` uses, so it cannot be an element the renderer never
+    /// The element must be **drawn**: it comes from `drawn_elements`, the same
+    /// walk `resolve` uses, so it cannot be an element the renderer never
     /// shows. Then, all of:
     ///
-    /// - the item is not `audioPolicy: "mute"` (SPEC §17)
-    /// - the element is a `clip` — programme picture. A `videoLoop` is a loop
-    ///   or an overlay bug; its audio is not the take's programme audio
-    /// - the element does not declare `audio.muted` (SPEC §7.4)
-    /// - the element's `audio.bus` is `clip`. **No positional fallback.** An
-    ///   element declaring `guest`, `music` or `sfx` is declaring that its
-    ///   audio is not programme audio, and the previous rule overrode that
-    ///   declaration with "…but it was first". Routing those to their declared
-    ///   buses needs more than one source, which is §8.7.5 per-source envelope
-    ///   work deferred to Prompt 07
-    /// - its asset is `video` or `alphaVideo` — picture that can carry a track
+    /// - the item is not `audioPolicy: "mute"` (SPEC §17);
+    /// - the element is a `clip` or a `videoLoop` (a loop loops its audio);
+    /// - it does not declare `audio.muted` (SPEC §7.4);
+    /// - its asset can carry audio: `video`, `alphaVideo` or `audio`. A
+    ///   picture with no track, or an asset the load never made resident,
+    ///   misses in the library and plays nothing.
     ///
-    /// Ties break by z (lowest first), then manifest order, both from the
-    /// stable sort in `build`. Documented because a picture-in-picture has two
-    /// legitimate clip elements.
+    /// Each source goes to the bus its `audio.bus` declares, at its
+    /// `audio.gainDb`, and sources on one bus sum. In z then manifest order.
     ///
-    /// `audioPolicy: "bed"` resolves as `clip` and is NOT implemented: a bed
-    /// playing alongside the clip is two sources on two buses. Deferred to
-    /// Prompt 07 with the per-source envelope work, and logged so an author
-    /// who writes `bed` is not silently given `clip`.
-    pub fn item_audio_asset(&self, item_ref: &str) -> Option<String> {
+    /// *(§2c: this replaces `item_audio_asset`, which chose ONE clip-bus
+    /// picture asset: the first unmuted `clip` declaring `bus: "clip"`. Under it
+    /// a loop's audio was decoded, held and never heard, an element declaring
+    /// `music` or `sfx` was never played, and `gainDb` was ignored. Its rules
+    /// against positional guessing stand: every source here is what the
+    /// manifest states.)*
+    ///
+    /// `audioPolicy: "bed"` is logged and treated as `clip`, as before: the
+    /// item-level policy has no meaning distinct from its elements' buses.
+    pub fn item_audio(&self, item_ref: &str) -> Vec<ElementAudio> {
         match self.item_audio_policy.get(item_ref).map(String::as_str) {
-            Some("mute") => return None,
+            Some("mute") => return Vec::new(),
             Some("bed") => tracing::warn!(
                 item = %item_ref,
-                "audioPolicy \"bed\" is not implemented; treating as \"clip\" \
-                 (SPEC §8.7.5, deferred to Prompt 07)"
+                "audioPolicy \"bed\" has no meaning beyond its elements' buses; treating as \"clip\""
             ),
             _ => {}
         }
         self.drawn_elements(item_ref)
             .into_iter()
-            .filter(|e| e.kind == "clip")
+            .filter(|e| e.kind == "clip" || e.kind == "videoLoop")
             .filter(|e| !e.audio_muted)
-            .filter(|e| e.audio_bus == "clip")
-            .find_map(|e| {
+            .filter_map(|e| {
                 let asset = e.asset_id.as_deref()?;
-                self.asset_is_picture_with_audio(asset)
-                    .then(|| asset.to_string())
+                self.asset_can_carry_audio(asset).then(|| ElementAudio {
+                    element_id: e.id.clone(),
+                    asset_id: asset.to_string(),
+                    bus: e.audio_bus.clone(),
+                    gain_db: e.audio_gain_db,
+                    looping: e.kind == "videoLoop",
+                })
             })
+            .collect()
     }
 
-    /// Whether an asset is picture that can also carry an audio track.
-    ///
-    /// `audio`-kind assets are deliberately excluded: a soundboard stab or a
-    /// music bed is not a take's programme audio, and treating it as one is
-    /// how a bed authored below the clip silenced the clip.
-    fn asset_is_picture_with_audio(&self, asset_id: &str) -> bool {
+    /// Whether an asset can carry an audio track.
+    fn asset_can_carry_audio(&self, asset_id: &str) -> bool {
         matches!(
             self.asset_kind.get(asset_id).map(String::as_str),
-            Some("video") | Some("alphaVideo")
+            Some("video") | Some("alphaVideo") | Some("audio")
         )
     }
 
-    /// item ref → the asset whose audio that item plays, for every item in the
-    /// package. Built once at load.
-    pub fn item_audio_map(&self) -> std::collections::BTreeMap<String, String> {
+    /// item ref → what a take of that item plays, for every item with any
+    /// audio. Built once at load.
+    pub fn item_audio_map(&self) -> std::collections::BTreeMap<String, Vec<ElementAudio>> {
         self.item_scene
             .keys()
             .filter_map(|item| {
-                self.item_audio_asset(item)
-                    .map(|asset| (item.clone(), asset))
+                let sources = self.item_audio(item);
+                (!sources.is_empty()).then(|| (item.clone(), sources))
             })
             .collect()
     }
@@ -783,6 +796,12 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .and_then(|a| a.get("muted"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        audio_gain_db: e
+            .get("audio")
+            .and_then(|a| a.get("gainDb"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .clamp(-60.0, 12.0) as f32,
         color,
         rect: rect_of(e.get("transform")),
         opacity,

@@ -821,7 +821,14 @@ impl DirectiveHandler {
                     // legitimate answer — a graphic-only scene has no audio —
                     // and is distinct from "the lookup missed", which is what
                     // used to happen silently.
-                    asset_id: self.state.item_audio.lock().unwrap().get(r).cloned(),
+                    sources: self
+                        .state
+                        .item_audio
+                        .lock()
+                        .unwrap()
+                        .get(r)
+                        .cloned()
+                        .unwrap_or_default(),
                     t0: start_frame,
                     mode: mode.to_string(),
                     ramp_ms,
@@ -1741,7 +1748,7 @@ impl DirectiveHandler {
         self.state.audio_commands.lock().unwrap().push(
             crate::audio_control::AudioCommand::TakeItem {
                 item_ref: String::new(),
-                asset_id: None,
+                sources: Vec::new(),
                 t0: start_frame,
                 mode: "follow".to_string(),
                 ramp_ms,

@@ -137,6 +137,13 @@ pub struct EngineState {
     pub audio_drift_ms_bits: AtomicU64,
     /// Per-bus peak levels for telemetry (SPEC §10.1).
     pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// The tick's device line (the device-audio design record, D5 and D6),
+    /// written by the audio driver: open, null, absent or lost.
+    pub audio_device: Mutex<nbe_protocol::AudioDeviceLine>,
+    /// The master limiter's ceiling in force, value and source (D5's
+    /// amendment), written by the audio driver when `show.load`'s ceiling
+    /// reaches the graph.
+    pub audio_limiter_ceiling: Mutex<nbe_protocol::LimiterCeilingLine>,
     /// The loaded package's `audioLevel` watches (SPEC v0.4.7 candidate B1),
     /// installed by `show.load` from the manifest's automation rules. The
     /// audio driver swaps them in by pointer on its next block and reports a
@@ -148,10 +155,11 @@ pub struct EngineState {
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
-    /// Item ref → the asset whose audio that item plays (SPEC §7.1 scenes,
-    /// §8.7.3 takes). Built once at `show.load` by walking item → scene →
+    /// Item ref → what a take of that item plays, one source per audible
+    /// element (SPEC §7.1 scenes, §8.7.3 takes; the device-audio design
+    /// record, D4). Built once at `show.load` by walking item → scene →
     /// elements → asset, so a take is a map lookup and never a graph walk.
-    pub item_audio: Mutex<std::collections::BTreeMap<String, String>>,
+    pub item_audio: Mutex<std::collections::BTreeMap<String, Vec<crate::scene::ElementAudio>>>,
     /// One overlay's on-air state (SPEC §7.10). Timelines key off the master
     /// clock: `anim_start` is the master frame the animation begins — the frame
     /// after the command lands, the same boundary discipline AC-17 imposes on a
@@ -273,6 +281,11 @@ impl EngineState {
             unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            audio_device: Mutex::new(nbe_protocol::AudioDeviceLine::none()),
+            audio_limiter_ceiling: Mutex::new(nbe_protocol::LimiterCeilingLine {
+                dbtp: crate::limiter::DEFAULT_CEILING_DBTP,
+                source: "default".into(),
+            }),
             audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),

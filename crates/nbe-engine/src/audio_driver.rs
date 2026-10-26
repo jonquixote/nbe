@@ -8,19 +8,25 @@
 //! written by production code rather than stubs a test filled in.
 //!
 //! The sink is deliberately abstract. A `NullSink` consumes blocks on cadence,
-//! which is what CI runs; the device sink is the recorded deferral in
-//! `agents/prompts/06-audio-graph.md`. Everything above the sink — the graph,
-//! the drain, the counters, the drift measurement — is real either way.
+//! which is what CI runs. The device sink (`audio_device`, macOS, the
+//! device-audio design record D1–D2) pushes into a lock-free ring the device's
+//! callback copies out of: the driver renders from its own cursor whenever the
+//! ring's fill falls below target, aligned to the master clock through the
+//! callback's presentation marks (`audio_clock`). Everything above the sink —
+//! the graph, the drain, the counters — is the same either way; the drift a
+//! device sink publishes is the device's (SPEC §8.9, R27).
 
 use crate::audio::{AudioGraph, CHANNELS, SAMPLE_RATE};
+use crate::audio_clock::{DeviceMarks, Feeder};
 use crate::audio_control::{self, AudioCommand};
+use crate::audio_ring::RingProducer;
 use crate::state::{SharedEngineState, SharedOutgoing};
 use nbe_core::automation::{AudioLevelWatch, CrossingDirection, LEVEL_FLOOR_DBFS};
 use nbe_protocol::EngineFrame;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The meter window, in milliseconds (SPEC §10.1's telemetry cadence).
 ///
@@ -42,6 +48,96 @@ pub trait AudioSink: Send {
     fn write(&mut self, block: &[f32]) -> bool;
     /// Block size in sample frames.
     fn block_frames(&self) -> usize;
+    /// The device side, when this sink is a device (D2): the ring the driver
+    /// pushes into and the marks the callback publishes. `None` for a sink the
+    /// driver feeds on its own cadence.
+    fn device(&mut self) -> Option<&mut DeviceIo> {
+        None
+    }
+}
+
+/// What a device sink hands the driver.
+pub struct DeviceIo {
+    pub producer: RingProducer,
+    pub marks: Arc<DeviceMarks>,
+    pub info: DeviceInfo,
+}
+
+/// What was opened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub rate_hz: u32,
+    /// The device's rate before the sink switched it to 48 kHz, restored at
+    /// close; `None` when it already ran at 48 kHz (D1 a).
+    pub prior_rate_hz: Option<f64>,
+    /// The HAL's full output latency in frames: the device's own, its safety
+    /// offset, and its stream's (D1 b).
+    pub latency_frames: u32,
+}
+
+/// The ring's fill the driver holds, in frames: two house-rate blocks. Below
+/// it the driver renders another block. The fill is latency the cursor
+/// compensates, and margin the audio thread spends when it is late.
+pub const TARGET_FILL_BLOCKS: u64 = 2;
+
+/// The ring's capacity, in blocks.
+pub const RING_BLOCKS: usize = 8;
+
+/// How often a device-mode driver checks the ring.
+pub const DEVICE_POLL: Duration = Duration::from_millis(4);
+
+/// A device that has stopped calling back for this long is lost (SPEC
+/// §8.10's device loss), even if it never said so.
+pub const DEVICE_SILENT_LIMIT: Duration = Duration::from_millis(1000);
+
+/// Underruns closer together than this are one episode; only an episode's
+/// first is logged (SPEC §8.10).
+pub const EPISODE_GAP: Duration = Duration::from_millis(1000);
+
+/// The rate guard's decision (D1 a): the rate is the engine's explicit act,
+/// never cpal's side effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RatePlan {
+    /// Already 48 kHz: open, change nothing.
+    Keep,
+    /// Switch to 48 kHz now, restore `prior_hz` at close.
+    Switch { prior_hz: f64 },
+    /// The device cannot run at 48 kHz: refuse it (`E_AUDIO`), and the
+    /// engine falls back to silence.
+    Refuse,
+}
+
+/// Decide what the rate guard does with a device at `nominal_hz`.
+pub fn rate_plan(nominal_hz: f64, supports_48k: bool) -> RatePlan {
+    if nominal_hz == SAMPLE_RATE as f64 {
+        RatePlan::Keep
+    } else if supports_48k {
+        RatePlan::Switch {
+            prior_hz: nominal_hz,
+        }
+    } else {
+        RatePlan::Refuse
+    }
+}
+
+/// Which sink the engine runs (D7): `NBE_AUDIO_SINK=device|null`, `device`
+/// by default. CI and every test harness set `null`, so their audio stays
+/// deterministic whether or not a runner has a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SinkChoice {
+    Device,
+    Null,
+    /// A value neither word: the engine runs silent and says why.
+    Unknown(String),
+}
+
+pub fn sink_choice(var: Option<&str>) -> SinkChoice {
+    match var.map(str::trim) {
+        None | Some("") | Some("device") => SinkChoice::Device,
+        Some("null") => SinkChoice::Null,
+        Some(other) => SinkChoice::Unknown(other.to_string()),
+    }
 }
 
 /// A sink that consumes blocks and keeps the count. What CI runs, and what a
@@ -116,6 +212,23 @@ pub struct AudioDriver {
     /// Crossings detected since this driver started — observable to tests
     /// whether or not anyone is listening.
     crossings: u64,
+    /// Device mode: the cursor, the slip, the push log (D2).
+    pub feeder: Feeder,
+    /// Device events already counted: short callbacks and overloads.
+    seen_short: u64,
+    seen_xruns: u64,
+    /// The last underrun, for §8.10's one log line per episode.
+    last_underrun: Option<Instant>,
+    /// When the device was last seen calling back, and its count then.
+    seen_callbacks: u64,
+    last_callback_seen: Instant,
+    /// The skew the device last presented, ms (§8.9's drift, device-referenced).
+    device_skew_ms: Option<f64>,
+    /// Blocks the ring could not take whole (the device stopped consuming).
+    pub overruns: u64,
+    /// Underrun episodes begun on the device (§8.10: each one's first is
+    /// logged).
+    pub episodes: u64,
 }
 
 /// Whether the wanted tap differs from the attached one (by pointer).
@@ -158,6 +271,15 @@ impl AudioDriver {
             watches: Arc::new(Vec::new()),
             above: Vec::new(),
             crossings: 0,
+            feeder: Feeder::new(block_frames),
+            seen_short: 0,
+            seen_xruns: 0,
+            last_underrun: None,
+            seen_callbacks: 0,
+            last_callback_seen: Instant::now(),
+            device_skew_ms: None,
+            overruns: 0,
+            episodes: 0,
         }
     }
 
@@ -227,20 +349,16 @@ impl AudioDriver {
         self.sync_library();
         self.sync_record_tap();
         self.sync_stream_tap();
+        self.drain_commands();
 
-        // Drain a bounded batch of intents. The lock is held only long enough
-        // to move them out — the directive thread is never blocked behind a
-        // render.
-        let batch: Vec<AudioCommand> = {
-            let mut pending = self.state.audio_commands.lock().unwrap();
-            let take = pending.len().min(MAX_COMMANDS_PER_CYCLE);
-            pending.drain(..take).collect()
-        };
-        if !batch.is_empty() {
-            audio_control::apply(&mut self.graph, batch, &self.library);
-        }
-
-        self.graph.render(&mut self.block, master_frame);
+        // Render the master limiter's lookahead ahead (SPEC §8.2's note,
+        // v0.4.8 row 14: "5 ms in recordings until the device-audio build
+        // compensates it"): the block that leaves the limiter is then the one
+        // due at `master_frame`, for program out, the record tap and the
+        // stream tap alike.
+        let base = self.graph.sample_for_master_frame(master_frame, 0)
+            + self.graph.latency_frames() as i64;
+        self.graph.render_at(&mut self.block, base);
         if !self.sink.write(&self.block) {
             // SPEC §8.10: a block the sink could not take is an underrun. It
             // is counted and never touches the video watchdog.
@@ -249,6 +367,161 @@ impl AudioDriver {
 
         self.publish(master_frame);
         self.block.len() / CHANNELS
+    }
+
+    /// Drain a bounded batch of intents. The lock is held only long enough to
+    /// move them out — the directive thread is never blocked behind a render.
+    fn drain_commands(&mut self) {
+        let batch: Vec<AudioCommand> = {
+            let mut pending = self.state.audio_commands.lock().unwrap();
+            let take = pending.len().min(MAX_COMMANDS_PER_CYCLE);
+            pending.drain(..take).collect()
+        };
+        if batch.is_empty() {
+            return;
+        }
+        // The ceiling in force reaches the tick (D5's amendment of
+        // 2026-10-23): its value and source, read-only, beside the log line
+        // `apply` writes.
+        for cmd in &batch {
+            if let AudioCommand::SetLimiterCeiling { dbtp, source } = cmd {
+                *self.state.audio_limiter_ceiling.lock().unwrap() =
+                    nbe_protocol::LimiterCeilingLine {
+                        dbtp: *dbtp,
+                        source: (*source).to_string(),
+                    };
+            }
+        }
+        audio_control::apply(&mut self.graph, batch, &self.library);
+    }
+
+    /// One device-mode cycle (D2): count what the device reported, then render
+    /// while the ring's fill is under target, each block planned against the
+    /// device's latest presentation mark. Returns blocks rendered.
+    pub fn cycle_device(&mut self) -> usize {
+        self.sync_library();
+        self.sync_record_tap();
+        self.sync_stream_tap();
+        self.drain_commands();
+        self.collect_device_events();
+
+        let epoch = self.state.clock.lock().unwrap().epoch();
+        let block = self.block_frames() as u64;
+        let mut rendered = 0;
+        while let Some(dev) = self.sink.device() {
+            let fill = dev.producer.fill_frames();
+            if fill >= TARGET_FILL_BLOCKS * block {
+                break;
+            }
+            let marks = dev.marks.clone();
+            let next = dev.producer.written_frames();
+            let lead = fill + dev.info.latency_frames as u64;
+            let plan = self.feeder.plan(
+                epoch.map(|e| marks.signed_ns_of(e)),
+                next,
+                marks.latest(),
+                marks.ns_of(Instant::now()),
+                lead,
+            );
+            // The limiter's lookahead rendered ahead, as in `cycle`: the frames
+            // that leave the graph are the master samples the plan maps them to.
+            let lead = self.graph.latency_frames() as i64;
+            self.graph
+                .render_at(&mut self.block, plan.base_sample + lead);
+            let out = self.feeder.emit(&self.block, &plan, next);
+            let dev = self.sink.device().expect("checked above");
+            if dev.producer.push(out) < out.len() {
+                // Cannot happen while the device consumes: the fill was under
+                // target. Counted, never blocked on.
+                self.overruns += 1;
+                break;
+            }
+            rendered += 1;
+            self.publish(plan.base_sample.max(0) as u64 / block);
+        }
+        rendered
+    }
+
+    /// Count what the device reported since the last cycle: underruns (short
+    /// callbacks and overloads, §8.10), the presented skew (§8.9), and loss.
+    fn collect_device_events(&mut self) {
+        let Some(dev) = self.sink.device() else {
+            return;
+        };
+        let marks = dev.marks.clone();
+        let name = dev.info.name.clone();
+        let short = marks.short_callbacks.load(Ordering::Relaxed);
+        let xruns = marks.xruns.load(Ordering::Relaxed);
+        let new_short = short - self.seen_short;
+        let new_xruns = xruns - self.seen_xruns;
+        self.seen_short = short;
+        self.seen_xruns = xruns;
+        let now = Instant::now();
+        if new_short + new_xruns > 0 {
+            for _ in 0..new_short + new_xruns {
+                self.graph.note_underrun();
+            }
+            let episode = self
+                .last_underrun
+                .is_none_or(|t| now.duration_since(t) > EPISODE_GAP);
+            if episode {
+                self.episodes += 1;
+                tracing::warn!(
+                    device = %name,
+                    short_callbacks = new_short,
+                    overloads = new_xruns,
+                    total = self.graph.underruns(),
+                    "audio underrun episode begins (SPEC §8.10)"
+                );
+            }
+            self.last_underrun = Some(now);
+        }
+        self.device_skew_ms = marks
+            .latest()
+            .and_then(|m| self.feeder.presented_skew_ms(m));
+        // Straight to the tick: a cycle that renders nothing (the ring at
+        // target) still reports what the device did.
+        self.state
+            .audio_underruns_total
+            .store(self.graph.underruns(), Ordering::SeqCst);
+        if let Some(ms) = self.device_skew_ms {
+            self.state
+                .audio_drift_ms_bits
+                .store(ms.to_bits(), Ordering::SeqCst);
+        }
+        let callbacks = marks.callbacks.load(Ordering::Relaxed);
+        if callbacks != self.seen_callbacks {
+            self.seen_callbacks = callbacks;
+            self.last_callback_seen = now;
+        }
+        let silent = now.duration_since(self.last_callback_seen) > DEVICE_SILENT_LIMIT;
+        if marks.lost.load(Ordering::Relaxed) || silent {
+            let reason = if silent {
+                format!("the device stopped calling back for over {DEVICE_SILENT_LIMIT:?}")
+            } else {
+                "the device reported itself lost".to_string()
+            };
+            self.fall_back(nbe_protocol::AudioDeviceLine::lost(&name, &reason));
+        }
+    }
+
+    /// Lose the device: silence from here on, on the null sink's cadence, so
+    /// the graph, the taps and the meters keep running (SPEC §8.10: never
+    /// block the render loop; the reopen is U5's, unbuilt).
+    fn fall_back(&mut self, line: nbe_protocol::AudioDeviceLine) {
+        tracing::error!(
+            reason = line.reason.as_deref().unwrap_or(""),
+            "audio device lost (E_AUDIO): program audio continues silent"
+        );
+        *self.state.audio_device.lock().unwrap() = line;
+        let block = self.block_frames();
+        self.sink = Box::new(NullSink::new(block));
+        self.device_skew_ms = None;
+    }
+
+    /// Whether this driver is feeding a device.
+    pub fn is_device(&mut self) -> bool {
+        self.sink.device().is_some()
     }
 
     /// Publish the v0.3.3 telemetry fields (SPEC §10.1).
@@ -270,10 +543,16 @@ impl AudioDriver {
         self.state
             .audio_underruns_total
             .store(self.graph.underruns(), Ordering::SeqCst);
-        self.state.audio_drift_ms_bits.store(
-            self.graph.drift_ms(master_frame).to_bits(),
-            Ordering::SeqCst,
-        );
+        // §8.9's drift: the device's presented skew when a device is open
+        // (R27); with the null sink, the render cadence's slip, as before.
+        let drift = match self.device_skew_ms {
+            Some(ms) => ms,
+            None if self.sink.device().is_some() => 0.0,
+            None => self.graph.drift_ms(master_frame),
+        };
+        self.state
+            .audio_drift_ms_bits
+            .store(drift.to_bits(), Ordering::SeqCst);
         // The block's own peaks, read once: the crossing check wants THIS
         // block (render cadence, B1), the telemetry window wants them merged.
         let block_peaks = self.graph.bus_peaks();
@@ -402,33 +681,87 @@ impl AudioThread {
 }
 
 pub fn spawn(state: SharedEngineState, house_rate: u32) -> AudioThread {
-    spawn_driver(state, house_rate, None)
+    spawn_driver(state, house_rate, None, SinkChoice::Null)
 }
 
 /// [`spawn`], with `audioLevelCrossing` frames going to the render channel's
-/// outbound queue (B1). What the engine binary runs.
+/// outbound queue (B1), on the sink `choice` names. What the engine binary
+/// runs, with `NBE_AUDIO_SINK`'s choice (D7).
 pub fn spawn_with_events(
     state: SharedEngineState,
     house_rate: u32,
     outgoing: SharedOutgoing,
+    choice: SinkChoice,
 ) -> AudioThread {
-    spawn_driver(state, house_rate, Some(outgoing))
+    spawn_driver(state, house_rate, Some(outgoing), choice)
+}
+
+/// Open the sink `choice` names and publish the tick's device line. A device
+/// that does not open falls back to silence with its reason on the line: the
+/// control plane alerts on it, and nothing refuses (D6).
+pub fn open_sink(
+    choice: &SinkChoice,
+    block_frames: usize,
+    state: &crate::state::EngineState,
+) -> Box<dyn AudioSink> {
+    let null = || -> Box<dyn AudioSink> { Box::new(NullSink::new(block_frames)) };
+    let (sink, line) = match choice {
+        SinkChoice::Null => (
+            null(),
+            nbe_protocol::AudioDeviceLine::null("NBE_AUDIO_SINK=null"),
+        ),
+        SinkChoice::Unknown(v) => (
+            null(),
+            nbe_protocol::AudioDeviceLine::absent(&format!(
+                "NBE_AUDIO_SINK={v:?} is neither \"device\" nor \"null\""
+            )),
+        ),
+        SinkChoice::Device => open_device(block_frames),
+    };
+    if line.state != "open" {
+        tracing::warn!(
+            state = %line.state,
+            reason = line.reason.as_deref().unwrap_or(""),
+            "audio runs silent: no output device carries program audio"
+        );
+    }
+    *state.audio_device.lock().unwrap() = line;
+    sink
+}
+
+#[cfg(target_os = "macos")]
+fn open_device(block_frames: usize) -> (Box<dyn AudioSink>, nbe_protocol::AudioDeviceLine) {
+    use crate::audio_device::{DeviceChoice, DeviceSink};
+    match DeviceSink::open(&DeviceChoice::Default, block_frames) {
+        Ok(sink) => {
+            let line = nbe_protocol::AudioDeviceLine::open(&sink.info().name, sink.info().rate_hz);
+            (Box::new(sink), line)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "audio device did not open (E_AUDIO)");
+            (
+                Box::new(NullSink::new(block_frames)),
+                nbe_protocol::AudioDeviceLine::absent(&e.to_string()),
+            )
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_device(block_frames: usize) -> (Box<dyn AudioSink>, nbe_protocol::AudioDeviceLine) {
+    (
+        Box::new(NullSink::new(block_frames)),
+        nbe_protocol::AudioDeviceLine::absent("no device sink on this platform (D7)"),
+    )
 }
 
 fn spawn_driver(
     state: SharedEngineState,
     house_rate: u32,
     outgoing: Option<SharedOutgoing>,
+    choice: SinkChoice,
 ) -> AudioThread {
     let block_frames = SAMPLE_RATE as usize / house_rate.max(1) as usize;
-    let mut driver = AudioDriver::new(
-        state.clone(),
-        Box::new(NullSink::new(block_frames)),
-        house_rate,
-    );
-    if let Some(q) = outgoing {
-        driver = driver.with_events(q);
-    }
     // A DEDICATED OS THREAD, not a task on the shared runtime.
     //
     // This was `tokio::spawn`, which put the audio cadence on the same worker
@@ -443,11 +776,22 @@ fn spawn_driver(
     // so the counter was right and the scheduling was wrong. Audio cadence is
     // not cooperative work: it cannot yield to a frame and must not wait behind
     // one. `cycle` is synchronous, so this loop needs no executor at all.
+    //
+    // The sink opens ON this thread: a device's stream is created where it is
+    // driven, and closed where it is dropped, so the rate restore (D1 a) runs
+    // on this thread when the loop returns.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
     let handle = std::thread::Builder::new()
         .name("nbe-audio".into())
-        .spawn(move || run_blocking(driver, state, &flag))
+        .spawn(move || {
+            let sink = open_sink(&choice, block_frames, &state);
+            let mut driver = AudioDriver::new(state.clone(), sink, house_rate);
+            if let Some(q) = outgoing {
+                driver = driver.with_events(q);
+            }
+            run_blocking(driver, state, &flag)
+        })
         .expect("the audio thread must start");
     AudioThread { stop, handle }
 }
@@ -465,6 +809,24 @@ pub fn run_blocking(
     let mut next = std::time::Instant::now();
     let mut logged_first = false;
     while !stop.load(Ordering::SeqCst) {
+        if driver.is_device() {
+            // Device mode (D2): the ring sets the pace, so production follows
+            // the device's clock and the slip holds it to the master's. A late
+            // wake-up here is absorbed by the ring's fill; only the callback
+            // finding the ring short is an underrun.
+            driver.cycle_device();
+            if !logged_first {
+                logged_first = true;
+                tracing::info!(
+                    rendered_samples = driver.graph.rendered_samples(),
+                    "audio driver cycling (device)"
+                );
+            }
+            std::thread::sleep(DEVICE_POLL);
+            // If the device is lost, the null cadence resumes from now.
+            next = std::time::Instant::now();
+            continue;
+        }
         let now = std::time::Instant::now();
         if next > now {
             std::thread::sleep(next - now);

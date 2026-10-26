@@ -136,6 +136,10 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
             .map(|s| format!("{:?}", s.reason))
             .unwrap_or_else(nbe_protocol::tap_none),
         stream_transport_state,
+        // The device-audio design record's D5 and D6: which device carries
+        // program audio, and the limiter's ceiling in force (D5's amendment).
+        audio_device: state.audio_device.lock().unwrap().clone(),
+        audio_limiter_ceiling: state.audio_limiter_ceiling.lock().unwrap().clone(),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),
@@ -143,7 +147,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as f64)
             .unwrap_or(0.0),
-        fields: frame,
+        fields: Box::new(frame),
     }
 }
 

@@ -74,7 +74,11 @@ of that PR, and until then it is a candidate (merged as `cd3f0c6`). **Row 14**
 was drafted in the limiter PR (branch `limiter-8-2`, 2026-10-21), as an early
 commit, on the user's rulings of 2026-10-21: the device-audio design record's
 D4 (the limiter first, its own PR) and the limiter plan's L1–L8. It is
-ratified by the user's merge of that PR, and until then it is a candidate (merged as `ccef706`).
+ratified by the user's merge of that PR, and until then it is a candidate (merged as `ccef706`). **Row 15**
+was drafted in the device-audio build PR (branch `device-audio`, 2026-10-26),
+on the user's rulings of 2026-10-21 on the device-audio design record (D1–D8)
+and D5's amendment of 2026-10-23. It is ratified by the user's merge of that
+PR, and until then it is a candidate.
 
 | # | Change | Sections | Guarded by |
 |---|---|---|---|
@@ -92,6 +96,7 @@ ratified by the user's merge of that PR, and until then it is a candidate (merge
 | 12 | **A plain clip plays past its first second: clip read-ahead, the miss policy, the clip's end from its metadata, and its residency** (the user's rulings of 2026-10-18 on R20; queue position 8). A plain clip, a video asset with no declared loop, drew only the 30 frames the engine decoded at load: past them `clip_source_index` refused the index and the layer was dropped, while the clip's audio, decoded whole, played on. §12.8 governed loops only, and nothing governed a clip past its preload. This row extends §12.8 to clips. A clip keeps a head (its first 30 frames, decoded at load, never overwritten) and a read-ahead window of K = 2 × GOP frames past it, primed at load and refilled by a decoder paced by occupancy, never by the wall clock. Which frame shows is still a pure function of the master clock (§12.1). A frame not yet resident is a `readAheadMiss`: the layer holds the last resident frame below it, the miss is counted on the §10.1 tick (`readAheadMissesTotal`), the render thread never blocks, and nothing is drawn black before the clip's end. The clip's end is its track's length from the container's metadata, not the count decoded. Its resident frames enter §12.11.1's demand. Audio is unchanged, and picture and sound now agree for the clip's full length | 12.8.1 (new), 10.1 (one field, the counters note), 10.1.1 (ownership row), 10.5 (rung 2's streaming sentence, struck and amended; clips on rung 2), 12.11.1 (clip demand) | `r20_clip.rs` (the falsification battery, red before the fix, and the fix's guards against ~~M1–M7~~ M1–M8: M8, the refill's cost against the frame deadline, was added at the gate), preflight's clip-demand test, `telemetry.test.ts` (forwarded and stubbed), the mirror's telemetry fixture |
 | 13 | **Preflight reports the residency the engine holds: loops planned at RGBA8 until §12.3's ladder lands, and charged the frames the engine holds** (the user's order of 2026-10-19; the air-readiness queue's first item). §12.3's ladder is normative and unbuilt: the engine decodes to RGBA8 on every path, so every loop is held as RGBA8, whatever it declares. Preflight planned the declared format, and a loop declaring none took the NV12 rung. So its number sat under what the engine holds, and §12.5's verdict was decided on a cost the engine never pays. It was also blind to frames: a loop over its budget was charged nothing, as if streamed, while the engine holds its budget's frames, because this engine does not stream loops (§10.5's note). §19's "the proof a package is air-ready" was false for the default case. The spec's own example, a 60-frame 1080p loop declaring no `textureFormat`, measured on the engine: at `vramBudgetMib: 512` preflight reported 178 MiB where the engine holds 60 frames, 474.6 MiB. At §12.4's default budget it reported the same 178 MiB, VRAM-resident, where the engine holds 32 frames, 253.1 MiB, and plans the loop as streamed. Now preflight plans every loop at RGBA8 until the ladder lands, and §12.5's verdict and §12.11.1's charge follow that plan. A loop is charged the frames the engine holds: its length when it fits its budget, else ~~its budget's frames (`maxFramesByBudget`)~~ its budget's frames, `max(maxFramesByBudget, 1)`, never nothing (§2c, the second key's ruling 2 on PR #59). The report says so in words: `resources.residencyNote` names the assumption and its expiry. The ladder restores declared formats. Clips were already honest (row 12) and are unchanged. **A loop its budget cannot hold is refused, never warned** (R23, the user's ruling of 2026-10-19): the engine holds its budget's frames and draws the last of them for the rest of every period, so the refusal names the freeze and the remedies (raise the budget, shorten the loop, or wait for the ladder or loop streaming) | 12.3 (the v0.4 implementation note, struck and amended), 12.5 (an implementation note, R23), 12.11.1 (`loopDemandMiB`, struck and amended), 19.2.1 (`residencyNote`, new) | `v04.rs` (the spec's example at both budgets, a declared format, the §12.5 verdict, a loop over its budget, the note, the R23 refusal; three earlier assertions struck §2c, the ones that certified the old charge, and the auto test's "streaming is lawful" struck for R23); `loop_residency.rs` (the engine: what a loop holds, measured); `loop_cache`'s unit test (the held frames); `model.rs` (the field's spelling). Falsifications: `docs/prompt-map-07-13.md`, the residency honesty record |
 | 14 | **The master limiter, as built** (the user's rulings of 2026-10-21: the device-audio record's D4 and the limiter plan's L1–L8; finding R26). §8.2 required a limiter, and the master stage was a clamp: `(out[idx] * g).clamp(-1.0, 1.0)`, which flat-topped every sample past full scale under a comment calling it a limiter, and whose test asserted only `peak <= 1.0`. Now the master bus has a lookahead, stereo-linked, true-peak limiter. Its ceiling is the show's `truePeakDbtp` (default −1.5 dBTP), in force from `show.load` and logged there. True peak is 4× oversampled per BS.1770-4. The lookahead is 5 ms, so the gain moves no faster than §8.7.1's minimum ramp (§8.7.1 governs the limiter's gain, ruled). The release time constant is 100 ms. Below the ceiling the limiter is transparent, the input delayed bit for bit. Its delay is reported (`AudioGraph::latency_frames`) and carried by program out, the record and the stream alike. It is 5 ms in recordings until the device-audio build compensates it, and D2's ±1 ms is measured after that compensation. The compressor and loudness-safe output stay unbuilt (U6, U7; peak metering folds into U7) | 8.2 (a note, new) | `crates/nbe-engine/tests/limiter.rs` (the bounded peak, the inter-sample stimulus, no hard clip, transparency, the attack ramp, the release constant, the stereo link, real-time safety, the latency, the ceiling from the show); `prompt06`'s master-stage test, rebuilt; `prompt06`'s three latency-aligned tests, re-based and re-falsified. Falsifications: `docs/prompt-map-07-13.md`, the limiter's build record |
+| 15 | **Device audio, as built** (the user's rulings of 2026-10-21 on the device-audio design record, D1–D8, and D5's amendment of 2026-10-23; findings R27, U2, U3, U4). Program audio reaches the default output device on macOS through cpal 0.18.2; elsewhere, and wherever `NBE_AUDIO_SINK=null` (CI and every test harness), the engine runs the silent null sink. The audio thread renders on the master clock into a lock-free ring, and the device's callback only copies out (§8.9's thread discipline, as built). The device's rate is the engine's own act: a device not at 48 kHz is switched, and its prior rate is restored when the sink closes (on drop, or on SIGTERM or SIGINT with a device open; a crash or a `SIGKILL` cannot restore it, and the open's log line names the prior rate). A device without 48 kHz is refused. Each callback marks when its first frame is heard (cpal's playback instant plus the output stream's latency, which cpal omits), and the drift is that instant against the master time of the sample it carries: `audioDriftMs` is device-referenced while a device is open (R27). Past 0.5 ms of skew a block is re-spaced one sample short or long (a slip), and past 4 ms the cursor re-anchors; the skew is held within ±1 ms. The master limiter's lookahead (row 14) is rendered ahead, so program out, the record and the stream carry no 5 ms delay. A take plays every audible element of its scene, each on the bus its `audio.bus` declares, at its `audio.gainDb`, loops looping (§8.11, new; U2, U3). The tick gains `audioDevice` and `audioLimiterCeiling` (D5 and its amendment); the lane gains `audio.device` and `audio.underrun`, both `E_AUDIO` in status (U4). Stated, not built: §8.10's reopen with backoff (U5) | 8.9, 8.10, 8.11 (new), 10.1, 10.1.2 | `device_audio` (19, every CI run: the ring, the copy-out's zero allocations, the slip over a simulated 30 minutes at ±12.76 and ±100 ppm and its control, the slip residual, the rate guard's table, the sink choice and its fallback, the driver's underruns, drift, loss, ceiling and lookahead); `device_audio_hw` (the normative machine: the tone through a loopback at its master time, the rate restored, a forced stall, the slip residual through the loopback, the 30-minute skew); `prompt05`'s audio rules restated; `prompt06` +4; `nbe-decode`'s 44.1 kHz conversion; `alerts.test.ts` +5; the wire audit (`mirror.rs`). Falsifications: `docs/prompt-map-07-13.md`, the device-audio build record |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.8. Row 2
 adds one field to a directive payload, `itemDurationFrames`. That is a wire
@@ -2038,12 +2043,25 @@ from a playback cursor that advances on its own. A source that has been on air
 for `F - t0` frames is heard at exactly that offset, so a video frame and its
 audio cannot disagree about where they are.
 
-**Drift is measured, not assumed.** Each callback records the master frame it
-was serving. The difference between the samples the device has consumed and the
+**Drift is measured, not assumed.** ~~Each callback records the master frame it
+was serving.~~ The difference between the samples the device has consumed and the
 samples the master clock implies is the drift, and it is reported
 (Section 10.1). Correction follows Section 11.5.1: adjust audio presentation, or
 drop/hold non-critical frames, within ±1 frame over a 30-minute show. Unbounded
 drift is forbidden.
+
+*(As built, v0.4.8 row 15; §2c: the struck sentence described no mechanism,
+since a callback serves no master frame.)* Each callback marks the ring frame its
+buffer starts on and the instant that frame is heard: cpal's playback instant
+plus the output stream's latency, which cpal omits. The audio thread logs which
+master samples every pushed block carries, so the drift is the instant a sample
+is heard against the master time it belongs to. The audio thread renders ahead
+of the master clock by the device's output latency, the ring's fill and the
+master limiter's lookahead, so that difference is near zero. A block whose
+predicted skew passes **0.5 ms** is re-spaced one sample short or long, end to
+end, by 4-point cubic interpolation (a *slip*); past **4 ms** the cursor
+re-anchors. The device-referenced skew is held within **±1 ms**. With the null
+sink, which no device consumes, `audioDriftMs` stays the render cadence's slip.
 
 **Thread discipline (Section 7.13 applied to audio).** The audio callback runs
 on the device's real-time thread, at a higher priority than the render loop and
@@ -2071,11 +2089,49 @@ counted the same way (Section 10.1).
 | Sustained underruns | the audio graph cannot keep up | raise the `E_AUDIO` condition in status (Section 10.4) and log loudly |
 | Device loss | the output device disappeared | `E_AUDIO`; attempt reopen with backoff; never block the render loop |
 
+**As built (v0.4.8 row 15).**
+- **Underrun:** with a device open, a device callback the ring could not fill,
+  or an overload the device reports. The device's silence before the audio
+  thread's first block is a stream not yet started, not an underrun. Underruns
+  closer together than 1 s are one episode, and its first is logged.
+- **Sustained underruns** raise the control plane's `audio.underrun` alert
+  (§10.1.2), `E_AUDIO` in status: the count rose in 3 consecutive fresh engine
+  reports with a device open. It clears after 10 quiet reports.
+- **Device loss** (the device reports itself gone, or calls back for no 1 s):
+  the tick's `audioDevice` reads `lost`, the engine continues silent on the null
+  sink's cadence and never blocks the render loop, and the control plane raises
+  `audio.device`, `E_AUDIO`. **The reopen with backoff is not built**: it is the
+  unbuilt-MUST register's U5, by the user's ruling D8.
+
 **An audio fault MUST NOT trigger the video fallback slate.** The Section 10.3
 watchdog exists to keep a broken picture off air; a glitch in the audio graph
 does not make the picture wrong, and cutting the View to a slate because a
 soundboard sample underran would turn a small fault into a visible one. The two
 subsystems fail independently and report independently.
+
+## 8.11 What is heard (normative, new in v0.4.8 row 15)
+
+A take plays **every audible element of the scene its item shows**:
+- the element is drawn, by the same walk that resolves the picture, so it is
+  never an element the renderer does not show;
+- it is a `clip` or a `videoLoop`;
+- it does not declare `audio.muted`;
+- its asset can carry audio: `video`, `alphaVideo` or `audio`.
+
+Each plays on the bus its `audio.bus` declares, at its `audio.gainDb`, and the
+sources on one bus sum. A `videoLoop` loops its audio. An item whose
+`audioPolicy` is `mute` plays none of them. The take's audio mode (§8.7.3) sets
+the clip bus. Any other element bus returns to the level the operator set
+(`audio.bus.set`, §16.8), and a take never resets it. So §12.10 #5 (a loop's
+audio gaps) and §12.11.1's `audioDemandMib` count audio that plays.
+
+Program audio goes to the **default output device** (selection by name is out
+of this era). The audio thread renders ahead of the master clock by the
+device's output latency and the ring's fill (about 100 ms), so what is heard is
+in sync with the picture. The price is stated: a take that lands on the next
+frame is heard from the master sample due when its first audio reaches the
+device. The roughly 70 ms of its audio before that point were already rendered
+as the previous item's, and are not heard.
 
 ---
 
@@ -2435,6 +2491,8 @@ Telemetry fields:
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
   "busPeakDbfs": { "master": -12.3, "mic": -18.0 },
+  "audioDevice": { "state": "open", "name": "MacBook Pro Speakers", "rateHz": 48000, "reason": null },
+  "audioLimiterCeiling": { "dbtp": -1.5, "source": "show" },
   "recordTapPath": "zeroCopy",
   "recordTapReason": "Table",
   "alerts": [],
@@ -2447,6 +2505,21 @@ audibly with nothing in telemetry to show for it: `audioUnderrunsTotal` counts
 missed callbacks (Section 8.10), `audioDriftMs` is the measured audio-to-master
 drift (Section 8.9), and `busPeakDbfs` carries per-bus peak levels so an
 operator can see which bus is hot without opening a meter bridge.
+
+**The output device and the limiter's ceiling (normative, new in v0.4.8 row
+15).**
+- `audioDevice` says which device carries program audio. Its `state` is
+  `"open"` (`name` at `rateHz`), `"null"` (the silent sink by configuration),
+  `"absent"` (wanted and missing; `reason` says why: none found, the open
+  failed, or the rate guard refused it) or `"lost"` (§8.10).
+- `audioLimiterCeiling` is the master limiter's ceiling in force: `dbtp`, and
+  `source`, `"show"` (the show's `truePeakDbtp`) or `"default"` (§8.2's note).
+  It is read-only.
+- Both are engine-owned and always emitted. The engine stubs `audioDevice`
+  as `"none"` before its audio driver reports; with no fresh engine report,
+  the control plane stubs `audioDevice` as `"none"` and emits
+  `audioLimiterCeiling` as `null`, because it must not claim a ceiling it has
+  not been told (§10.1.1).
 
 **The watchdog's counters (normative, new in v0.4.7).** `watchdogTripsTotal`
 is §10.3's fault counter: the watchdog's trips since the engine started, one per
@@ -2578,6 +2651,8 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 | `outputs.held` | `show.stop` was not acknowledged, and its outputs are held (§5.9.5) | `warning` | `show.stopHeld` |
 | `engine.notReporting` | no engine report within §10.1.1's freshness threshold. Measured from the latest of the last report, the last render registration and the control plane's start, once a render node has registered or while the show runs | `critical` | `engine.notReporting` |
 | `audit.sinkFailed` | the audit sink cannot be written (R18's fallback, below) | `critical` | none |
+| `audio.device` | a show is loaded and no output device carries program audio: the tick's `audioDevice` reads `absent` or `lost`. A configured null sink is not a fault. It never refuses a load (v0.4.8 row 15; the device-audio record's D6) | `warning` (`absent`), `critical` (`lost`) | `audio.device` |
+| `audio.underrun` | with a device open, the engine's underrun count rose in 3 consecutive fresh reports (§8.10's sustained underruns); it clears after 10 quiet ones (v0.4.8 row 15) | `warning` | `audio.underrun` |
 
 **Two mechanisms, one question each.** Both are needed:
 - **(b) Command confirmation.** `stream.start`, `stream.stop`, `record.start` and `record.stop`, when given no exact acknowledgement within §5.9.5's window (2000 ms), raise `command.unacknowledged`. A refused or skipped directive is never acknowledged: the render node acknowledges only a directive it applied. So the absence is the signal. `show.stop` is excluded, because it has its own exact wait and `outputs.held` is its surface.

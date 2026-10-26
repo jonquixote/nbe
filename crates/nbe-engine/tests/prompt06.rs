@@ -78,6 +78,17 @@ use alloc_probe::{allocations_during, CountingAlloc};
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
 
+/// A take's source: one `clip` element on the clip bus at 0 dB (D4's shape).
+fn clip_element(asset: &str) -> nbe_engine::scene::ElementAudio {
+    nbe_engine::scene::ElementAudio {
+        element_id: "main".into(),
+        asset_id: asset.into(),
+        bus: "clip".into(),
+        gain_db: 0.0,
+        looping: false,
+    }
+}
+
 const HOUSE_RATE: u32 = 30;
 
 /// One master frame's worth of sample frames at the house rate. Rendering in
@@ -549,6 +560,7 @@ fn the_house_rate_is_configuration_not_a_constant() {
             samples,
             t0: 25,
             looping: false,
+            gain: 1.0,
         }],
     );
     let mut buf = buffer(512);
@@ -1429,7 +1441,7 @@ fn a_silent_item_stays_silent_even_when_its_name_matches_an_asset() {
         &mut g,
         vec![AudioCommand::TakeItem {
             item_ref: "stab".into(), // the item's name collides with the asset
-            asset_id: None,          // ... but the scene carries no audio asset
+            sources: Vec::new(),     // ... but the scene carries no audible element
             t0: 0,
             mode: "follow".into(),
             ramp_ms: 10.0,
@@ -1503,7 +1515,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
         &mut g,
         vec![AudioCommand::TakeItem {
             item_ref: "A1".into(),
-            asset_id: Some("A1".into()),
+            sources: vec![clip_element("A1")],
             t0: 0,
             mode: "follow".into(),
             ramp_ms: 10.0,
@@ -1527,7 +1539,7 @@ fn a_muted_take_silences_the_clip_bus_without_a_step() {
             g,
             vec![AudioCommand::TakeItem {
                 item_ref: "A1".into(),
-                asset_id: Some("A1".into()),
+                sources: vec![clip_element("A1")],
                 t0: 2,
                 mode: "mute".into(),
                 ramp_ms: 10.0,
@@ -1595,5 +1607,207 @@ fn a_transient_shorter_than_the_window_still_reaches_the_meter() {
         (sfx - -6.0).abs() < 1.5,
         "the window must report its loudest moment, not its last block; the \
          transient was -6 dBFS and the window reported {sfx:.1} dBFS"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D4 (the device-audio design record, ruled 2026-10-21): every audible
+// element plays its declared bus at its gainDb, loops included (U2, U3).
+// Path: `apply`'s TakeItem, `Source::Pcm`'s gain, the bus pass.
+// ---------------------------------------------------------------------------
+
+fn element(asset: &str, bus: &str, gain_db: f32, looping: bool) -> nbe_engine::scene::ElementAudio {
+    nbe_engine::scene::ElementAudio {
+        element_id: format!("{asset}_el"),
+        asset_id: asset.into(),
+        bus: bus.into(),
+        gain_db,
+        looping,
+    }
+}
+
+fn take(sources: Vec<nbe_engine::scene::ElementAudio>, t0: u64) -> AudioCommand {
+    AudioCommand::TakeItem {
+        item_ref: "A1".into(),
+        sources,
+        t0,
+        mode: "follow".into(),
+        ramp_ms: 10.0,
+        crossfade_frames: 0,
+    }
+}
+
+/// Render master frames `from..to`, the meters reset before the last, and
+/// return the last block with the per-bus peaks it metered.
+fn settle(g: &mut AudioGraph, from: u64, to: u64) -> (Vec<f32>, BTreeMap<String, f64>) {
+    let mut buf = buffer(BLOCK);
+    for f in from..to - 1 {
+        g.render(&mut buf, f);
+    }
+    g.reset_meters();
+    g.render(&mut buf, to - 1);
+    let peaks = g.bus_peaks();
+    (buf, peaks)
+}
+
+/// M-gain: `gainDb` ignored, as the tree was before D4, fails this.
+#[test]
+fn a_take_plays_every_element_on_its_bus_at_its_gain_db() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert(
+        "clip".to_string(),
+        tone_samples(440.0, 0.25, SAMPLE_RATE as usize * 2),
+    );
+    library.insert(
+        "bed".to_string(),
+        tone_samples(220.0, 0.25, SAMPLE_RATE as usize * 2),
+    );
+    apply(
+        &mut g,
+        vec![take(
+            vec![
+                element("clip", "clip", 0.0, false),
+                element("bed", "music", -12.0, false),
+            ],
+            0,
+        )],
+        &library,
+    );
+    let (_, peaks) = settle(&mut g, 0, 8);
+    let source = linear_to_db(0.25) as f64;
+    assert!(
+        (peaks["clip"] - source).abs() < 0.5,
+        "the clip element at 0 dB: {:.2} against {source:.2}",
+        peaks["clip"]
+    );
+    assert!(
+        (peaks["music"] - (source - 12.0)).abs() < 0.5,
+        "the bed at its gainDb, -12 dB, on the music bus it declares: {:.2}",
+        peaks["music"]
+    );
+}
+
+/// D4's proving case: a clip under a looping element, both heard, each on its
+/// bus, and the sum limited, not clipped. M-clip (R26's clamp in place of the
+/// limiter) puts the master's peak at full scale, past the ceiling.
+#[test]
+fn a_clip_and_a_loop_are_both_heard_and_their_sum_is_limited_not_clipped() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert(
+        "clip".to_string(),
+        tone_samples(440.0, 0.7, SAMPLE_RATE as usize * 2),
+    );
+    // A quarter-second loop: one second in, it is on its fourth lap.
+    library.insert(
+        "loop".to_string(),
+        tone_samples(330.0, 0.7, SAMPLE_RATE as usize / 4),
+    );
+    apply(
+        &mut g,
+        vec![take(
+            vec![
+                element("clip", "clip", 0.0, false),
+                element("loop", "music", 0.0, true),
+            ],
+            0,
+        )],
+        &library,
+    );
+    let (buf, peaks) = settle(&mut g, 0, 31);
+    let each = linear_to_db(0.7) as f64;
+    assert!(
+        (peaks["music"] - each).abs() < 0.5,
+        "the loop is heard a second in, past its own length: {:.2}",
+        peaks["music"]
+    );
+    assert!(
+        (peaks["clip"] - each).abs() < 0.5,
+        "the clip is heard: {:.2}",
+        peaks["clip"]
+    );
+    let ceiling = db_to_linear(nbe_engine::limiter::DEFAULT_CEILING_DBTP as f32);
+    let master = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        master <= ceiling + 1e-4,
+        "the sum (up to 1.4) is limited to the ceiling {ceiling:.3}, not clipped: {master:.3}"
+    );
+    assert!(master > 0.7, "limited, not silenced: {master:.3}");
+}
+
+/// A take returns an element bus other than clip to the operator's level: it
+/// must not reset what `audio.bus.set` put on music. A later item with no
+/// music element takes the bed off.
+#[test]
+fn a_take_returns_an_element_bus_to_the_operators_level() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert(
+        "bed".to_string(),
+        tone_samples(220.0, 0.25, SAMPLE_RATE as usize * 4),
+    );
+    apply(
+        &mut g,
+        vec![AudioCommand::BusSet {
+            bus: "music".into(),
+            guest_id: None,
+            gain_db: Some(-10.0),
+            muted: None,
+        }],
+        &library,
+    );
+    apply(
+        &mut g,
+        vec![take(vec![element("bed", "music", 0.0, false)], 0)],
+        &library,
+    );
+    let (_, peaks) = settle(&mut g, 0, 8);
+    let expected = linear_to_db(0.25) as f64 - 10.0;
+    assert!(
+        (peaks["music"] - expected).abs() < 0.5,
+        "the operator's -10 dB holds through the take: {:.2} against {expected:.2}",
+        peaks["music"]
+    );
+    apply(&mut g, vec![take(vec![], 8)], &library);
+    let (_, peaks) = settle(&mut g, 8, 16);
+    assert!(
+        peaks["music"] < -100.0,
+        "an item with no music element takes the bed off: {:.2}",
+        peaks["music"]
+    );
+}
+
+/// §2c, found by reading in the device-audio build: the soundboard voices had
+/// their own pass after the bus loop, which advanced the sfx bus's ramps a
+/// second time on every frame a voice sounded. A fade then ran in half its
+/// time. Halfway through a 40 ms fade, the level must be about halfway.
+#[test]
+fn an_sfx_fade_runs_its_whole_ramp_while_a_voice_sounds() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.trigger(
+        "dc",
+        Arc::new(vec![0.5; SAMPLE_RATE as usize * CHANNELS]),
+        0.0,
+    );
+    let mut buf = buffer(BLOCK);
+    g.render(&mut buf, 0);
+    assert!(
+        (buf[(BLOCK - 1) * CHANNELS] - 0.5).abs() < 1e-3,
+        "the voice sounds at 0.5"
+    );
+    g.bus_mut(BusId::Sfx).set_gain_db(-60.0, 40.0);
+    // 40 ms is 1920 frames; render half of them.
+    let mut half = buffer(960);
+    g.render(&mut half, 1);
+    // The master limiter's lookahead delays what leaves the graph, so the last
+    // frame out carries the fade at frame 959 - latency.
+    let at = 959.0 - g.latency_frames() as f32;
+    let expected = 0.5 * (1.0 - at / 1920.0 * (1.0 - db_to_linear(-60.0)));
+    let level = half[959 * CHANNELS];
+    assert!(
+        (level - expected).abs() < 0.01,
+        "the fade at frame {at} reads {expected:.4} at one step a frame (two would read about {:.4}): {level:.4}",
+        0.5 * (1.0 - 2.0 * at / 1920.0)
     );
 }

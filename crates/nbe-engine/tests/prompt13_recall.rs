@@ -357,7 +357,7 @@ async fn a_recall_of_an_empty_view_clears_it_and_silences_the_clip_bus() {
     assert!(
         matches!(
             audio.as_slice(),
-            [AudioCommand::TakeItem { asset_id: None, .. }]
+            [AudioCommand::TakeItem { sources, .. }] if sources.is_empty()
         ),
         "the clip bus takes the silent source; got {audio:?}"
     );

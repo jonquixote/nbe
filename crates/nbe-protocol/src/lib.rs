@@ -503,6 +503,96 @@ pub fn tap_none() -> String {
 /// buffer is empty" — which is the distinction it exists to make diagnosable.
 pub const STREAM_BUFFER_NO_SESSION_MS: f64 = -1.0;
 
+/// The output device carrying program audio (the device-audio design record,
+/// D5 and D6): the tick's device line.
+///
+/// `state` is one of:
+/// - `"open"`: a device is carrying program audio, `name` at `rateHz`;
+/// - `"null"`: the engine runs the silent sink by configuration
+///   (`NBE_AUDIO_SINK=null`, what CI and every test harness set);
+/// - `"absent"`: the engine wanted a device and has none (none found, the open
+///   failed, or the rate guard refused it), `reason` says which;
+/// - `"lost"`: the device went away mid-run; the engine continues silent
+///   (SPEC §8.10's device loss; the reopen is U5's, unbuilt);
+/// - `"none"`: no audio driver has reported. The §10.1.1 stub, never a device
+///   state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDeviceLine {
+    pub state: String,
+    pub name: Option<String>,
+    pub rate_hz: Option<u32>,
+    pub reason: Option<String>,
+}
+
+impl AudioDeviceLine {
+    /// The §10.1.1 stub: no driver has reported.
+    pub fn none() -> Self {
+        Self {
+            state: "none".into(),
+            name: None,
+            rate_hz: None,
+            reason: None,
+        }
+    }
+
+    pub fn open(name: &str, rate_hz: u32) -> Self {
+        Self {
+            state: "open".into(),
+            name: Some(name.to_string()),
+            rate_hz: Some(rate_hz),
+            reason: None,
+        }
+    }
+
+    pub fn null(reason: &str) -> Self {
+        Self {
+            state: "null".into(),
+            name: None,
+            rate_hz: None,
+            reason: Some(reason.to_string()),
+        }
+    }
+
+    pub fn absent(reason: &str) -> Self {
+        Self {
+            state: "absent".into(),
+            name: None,
+            rate_hz: None,
+            reason: Some(reason.to_string()),
+        }
+    }
+
+    pub fn lost(name: &str, reason: &str) -> Self {
+        Self {
+            state: "lost".into(),
+            name: Some(name.to_string()),
+            rate_hz: None,
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+/// The master limiter's ceiling in force (SPEC §8.2's note; the device-audio
+/// design record's D5 amendment of 2026-10-23): its value in dBTP and its
+/// source, `"show"` (the show's `truePeakDbtp`) or `"default"`. Read-only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimiterCeilingLine {
+    pub dbtp: f64,
+    pub source: String,
+}
+
+impl LimiterCeilingLine {
+    /// SPEC §8.2's default ceiling: what the graph runs before any `show.load`.
+    pub fn default_ceiling() -> Self {
+        Self {
+            dbtp: -1.5,
+            source: "default".into(),
+        }
+    }
+}
+
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -592,6 +682,16 @@ pub struct EngineTelemetry {
     /// whose transport closed. After a stream stops it reads `"closed"`.
     #[serde(default = "tap_none")]
     pub stream_transport_state: String,
+    /// The output device carrying program audio (the device-audio design
+    /// record, D5 and D6). Always emitted, stubbed `"none"` before the audio
+    /// driver reports: §10.1.1's rule, `record_tap_path`'s precedent.
+    #[serde(default = "AudioDeviceLine::none")]
+    pub audio_device: AudioDeviceLine,
+    /// The master limiter's ceiling in force, value and source (D5's
+    /// amendment). Always emitted: before any `show.load` it reads SPEC §8.2's
+    /// default, which is what the graph runs.
+    #[serde(default = "LimiterCeilingLine::default_ceiling")]
+    pub audio_limiter_ceiling: LimiterCeilingLine,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.
@@ -670,8 +770,12 @@ pub enum EngineFrame {
     EngineTelemetry {
         v: String,
         ts: f64,
+        /// Boxed: the tick is by far the largest frame (the device-audio
+        /// record's device line and ceiling took it past clippy's
+        /// `large_enum_variant`), and every other frame would otherwise carry
+        /// its size. The wire is unchanged: `flatten` sees through the box.
         #[serde(flatten)]
-        fields: EngineTelemetry,
+        fields: Box<EngineTelemetry>,
     },
     #[serde(rename = "appliedStateVersion")]
     AppliedStateVersion {

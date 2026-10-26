@@ -392,6 +392,21 @@ export type DirectiveFrame = z.infer<typeof DirectiveFrameSchema>;
 // render-role sessions.
 // ---------------------------------------------------------------------------
 
+/** The tick's device line (the device-audio design record, D5 and D6). Named
+ *  here, outside the frame schema, so the wire audit's block ends at the
+ *  frame's own `.strict()` (`mirror.rs` reads up to the first one). */
+export const AudioDeviceLineSchema = z
+  .object({
+    state: z.string(),
+    name: z.string().nullable(),
+    rateHz: z.number().int().nullable(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+
+/** The master limiter's ceiling in force (D5's amendment). */
+export const LimiterCeilingLineSchema = z.object({ dbtp: z.number(), source: z.string() }).strict();
+
 export const EngineTelemetryFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
@@ -458,6 +473,16 @@ export const EngineTelemetryFrameSchema = z
     // every tick from an older build. Not `.default()`: the control plane
     // must never fabricate what the socket is doing.
     streamTransportState: z.string().optional(),
+    // The device-audio design record, D5 and D6: the output device carrying
+    // program audio. `state` is "open", "null" (the silent sink by
+    // configuration), "absent", "lost", or the "none" stub before the
+    // engine's audio driver reports. `.optional()` is tolerance of an older
+    // engine build, as for `streamTransportState`: the engine always emits it.
+    audioDevice: AudioDeviceLineSchema.optional(),
+    // D5's amendment (2026-10-23): the master limiter's ceiling in force, in
+    // dBTP, and its source, "show" or "default". Read-only. Optional for the
+    // same tolerance.
+    audioLimiterCeiling: LimiterCeilingLineSchema.optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

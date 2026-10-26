@@ -25,6 +25,12 @@ pub mod zerocopy;
 
 pub mod encode;
 
+/// CoreAudio HAL property reads for the device sink (the device-audio design
+/// record, D1): the nominal rate and the output stream's latency. The same
+/// exception covers it: every HAL property call is `unsafe` by construction.
+#[cfg(feature = "device-audio")]
+pub mod hal;
+
 /// AAC-LC audio encode for recording (Prompt 09 WU34, SPEC §9.3).
 ///
 /// Same exception as `encode`: AudioToolbox is `unsafe` by construction, so

@@ -53,6 +53,10 @@ function rig(opts: { apply?: boolean } = {}) {
     report: (streamTransportState: string) => {
       report = { frame: { streamTransportState } as EngineReport["frame"], receivedAt: now() };
     },
+    /** A fresh engine report carrying `fields`, received now. */
+    reportWith: (fields: Partial<EngineReport["frame"]>) => {
+      report = { frame: { streamTransportState: "none", ...fields } as EngineReport["frame"], receivedAt: now() };
+    },
     /** Time passes beyond the TTL with no new report: the last one goes stale. */
     stale: () => {
       offset += TTL + 1;
@@ -577,5 +581,102 @@ test("D2a: it stands in every other case — a correction, a transient none, a r
   assert.ok(r.ids().includes(ALERT.outputsHeld.id), "a refused stop, never acknowledged, does not clear it");
   r.signals.onApplied(9, false); // a later acknowledgement of some other command
   assert.ok(r.ids().includes(ALERT.outputsHeld.id), "persistence is the witness working");
+  r.signals.close();
+});
+
+// --- the audio fault class (the device-audio design record, D5 and D6) --------
+
+const device = (state: string, name: string | null = null, reason: string | null = null) => ({
+  state,
+  name,
+  rateHz: state === "open" ? 48000 : null,
+  reason,
+});
+
+test("audio.device: a loaded show with no output device raises E_AUDIO, a warning; the device opening clears it", async () => {
+  const r = rig();
+  r.state.showState = "LOADED";
+  await sleep(2);
+  r.reportWith({ audioDevice: device("absent", null, "no output device") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.audioDevice.id]);
+  assert.equal(r.state.alerts[0]!.severity, "warning");
+  assert.match(r.state.alerts[0]!.reason, /^E_AUDIO: no output device carries program audio \(no output device\); the show runs silent$/);
+  await sleep(2);
+  r.reportWith({ audioDevice: device("open", "MacBook Pro Speakers") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), []);
+  assert.deepEqual(
+    r.rows.filter((x) => x.id === ALERT.audioDevice.id).map((x) => [x.edge, x.event]),
+    [
+      ["raised", "audio.device"],
+      ["cleared", "audio.device"],
+    ],
+  );
+  r.signals.close();
+});
+
+test("audio.device: a lost device is critical; unloading the show clears it", async () => {
+  const r = rig();
+  r.state.showState = "RUNNING";
+  await sleep(2);
+  r.reportWith({ audioDevice: device("lost", "USB Interface", "the device reported itself lost") });
+  r.signals.evaluate();
+  assert.equal(r.state.alerts[0]!.severity, "critical");
+  assert.match(r.state.alerts[0]!.reason, /the output device USB Interface was lost/);
+  r.state.showState = "UNLOADED";
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), []);
+  assert.equal(r.rows.at(-1)!.cause, "no show is loaded");
+  r.signals.close();
+});
+
+test("audio.device negative: the configured null sink, or no show loaded, raises nothing (D6: nothing refuses, and CI runs silent on purpose)", async () => {
+  const r = rig();
+  r.state.showState = "RUNNING";
+  await sleep(2);
+  r.reportWith({ audioDevice: device("null", null, "NBE_AUDIO_SINK=null") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "a configured null sink is not a fault");
+  r.state.showState = "UNLOADED";
+  await sleep(2);
+  r.reportWith({ audioDevice: device("absent", null, "no output device") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "no show loaded: nothing to go to air silent");
+  r.signals.close();
+});
+
+test("audio.underrun: with a device open, a count rising in 3 consecutive reports raises; 10 quiet reports clear it", async () => {
+  const r = rig();
+  r.state.showState = "RUNNING";
+  const tick = async (underruns: number) => {
+    await sleep(2);
+    r.reportWith({ audioDevice: device("open", "MacBook Pro Speakers"), audioUnderrunsTotal: underruns });
+    r.signals.evaluate();
+  };
+  await tick(0);
+  await tick(1);
+  await tick(2);
+  assert.deepEqual(r.ids(), [], "two rising reports are not sustained");
+  await tick(3);
+  assert.deepEqual(r.ids(), [ALERT.audioUnderrun.id]);
+  assert.match(r.state.alerts[0]!.reason, /^E_AUDIO: sustained audio underruns on MacBook Pro Speakers: the count rose in 3 consecutive reports \(3 total\)$/);
+  for (let i = 0; i < 9; i++) await tick(3);
+  assert.deepEqual(r.ids(), [ALERT.audioUnderrun.id], "nine quiet reports do not clear it");
+  await tick(3);
+  assert.deepEqual(r.ids(), [], "the tenth does");
+  assert.equal(r.rows.at(-1)!.cause, "no underrun in 10 consecutive reports");
+  r.signals.close();
+});
+
+test("audio.underrun negative: the null sink's cadence underruns raise nothing (the CI dress counts ~200 a run)", async () => {
+  const r = rig();
+  r.state.showState = "RUNNING";
+  for (let n = 0; n < 6; n++) {
+    await sleep(2);
+    r.reportWith({ audioDevice: device("null", null, "NBE_AUDIO_SINK=null"), audioUnderrunsTotal: n * 10 });
+    r.signals.evaluate();
+  }
+  assert.deepEqual(r.ids(), []);
   r.signals.close();
 });

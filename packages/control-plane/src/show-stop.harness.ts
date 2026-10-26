@@ -251,6 +251,10 @@ export async function stack(): Promise<Stack> {
       ...process.env,
       NBE_CP_URL: `ws://127.0.0.1:${tap.port}/nbe/v0.3`,
       NBE_RENDER_TOKEN: RENDER,
+      // The silent sink unless the environment asks for the device (the
+      // device-audio design record, D7): a test never plays through, or
+      // re-rates, the machine's speakers. A soak may set `device`.
+      NBE_AUDIO_SINK: process.env.NBE_AUDIO_SINK ?? "null",
       NBE_HOUSE_RATE: "30",
       // The render target's info lines carry the load boundary's completion
       // (each video ring as it lands; R25's gate reads them), and they are few:

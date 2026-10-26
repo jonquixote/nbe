@@ -176,7 +176,7 @@ fn render_channel_frames_round_trip() {
     round_trip(&EngineFrame::EngineTelemetry {
         v: PROTOCOL_VERSION.into(),
         ts: 1768000000000.0,
-        fields: EngineTelemetry {
+        fields: Box::new(EngineTelemetry {
             master_clock_frame: 54000,
             dropped_frames_total: 0,
             render_gpu_time_ms: 4.7,
@@ -199,7 +199,14 @@ fn render_channel_frames_round_trip() {
             record_tap_path: "zeroCopy".into(),
             record_tap_reason: "Table".into(),
             stream_transport_state: "reconnecting".into(),
-        },
+            // The device-audio design record, D5 and its amendment: sampled
+            // with values, the open device and a show's ceiling.
+            audio_device: nbe_protocol::AudioDeviceLine::open("MacBook Pro Speakers", 48_000),
+            audio_limiter_ceiling: nbe_protocol::LimiterCeilingLine {
+                dbtp: -2.0,
+                source: "show".into(),
+            },
+        }),
     });
     round_trip(&PushFrame::StateChange {
         v: PROTOCOL_VERSION.into(),
@@ -396,6 +403,14 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         // rule above: `"reconnecting"` is the token the field exists to carry
         // (a redial `streamState` does not show).
         stream_transport_state: "reconnecting".into(),
+        // The device-audio design record's device line and D5's ceiling,
+        // sampled with values per the rule above: a lost device carries its
+        // name and reason, and a show's ceiling its source.
+        audio_device: nbe_protocol::AudioDeviceLine::lost("USB Interface", "unplugged"),
+        audio_limiter_ceiling: nbe_protocol::LimiterCeilingLine {
+            dbtp: -1.0,
+            source: "show".into(),
+        },
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();
