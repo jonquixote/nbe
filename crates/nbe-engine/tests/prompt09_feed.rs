@@ -438,8 +438,12 @@ fn loop_wiring_pre_check_before_readback() {
         .find("readback().await")
         .map(|i| pre + i)
         .expect("the seam must read back on the CPU path");
+    // ~~`handoff_record_frame`~~ (§2c, R31's fix: the seam now hands off
+    // through `send_record_frame`, which carries the master frame the View
+    // drew for the record trace; `handoff_record_frame` is its wrapper for
+    // callers without a frame. The ordering guarded here is unchanged.)
     let handoff = body[readback..]
-        .find("handoff_record_frame")
+        .find("send_record_frame")
         .map(|i| readback + i)
         .expect("the seam must hand off to the record thread");
     assert!(
