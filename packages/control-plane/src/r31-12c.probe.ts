@@ -7,6 +7,7 @@
 //!   npm run probe:r31 -- --state idle                 # 30 minutes
 //!   npm run probe:r31 -- --state ambient --minutes 30
 //!   npm run probe:r31 -- --analyse <run directory>    # re-read a kept run
+//!   npm run probe:r31 -- --state ambient --tap cpu    # the A/B: CPU readback
 //!
 //! R31's sighting 1 was the dress's step 12c reading frame 41's picture in
 //! frame 43's slot, and its recording was lost with the temp directory it was
@@ -120,14 +121,18 @@ function resolveTool(name: string, fallbacks: string[]): string | null {
  * directory, recording into the run's directory. Step 12b's staging, plus the
  * empty scene.
  */
-function stagePackage(out: string): { pkgDir: string; recordDir: string } {
+function stagePackage(out: string, tap: "zeroCopy" | "cpuReadback"): { pkgDir: string; recordDir: string } {
   const pkgDir = join(out, "package");
   const recordDir = join(out, "record");
   mkdirSync(recordDir, { recursive: true });
   cpSync(DRESS, pkgDir, { recursive: true });
   const manifestPath = join(pkgDir, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-  (manifest["show"] as Record<string, unknown>)["outputs"] = { record: { directory: recordDir } };
+  // `--tap cpu`: the A/B against the zero-copy tap, through the manifest's
+  // own preference (SPEC v0.4.5 `tapPath`), so nothing in the engine changes.
+  (manifest["show"] as Record<string, unknown>)["outputs"] = {
+    record: tap === "cpuReadback" ? { directory: recordDir, tapPath: "cpuReadback" } : { directory: recordDir },
+  };
   (manifest["assets"] as unknown[]).push({
     id: "R20_counter",
     kind: "video",
@@ -262,14 +267,15 @@ function analyse(out: string): Analysis {
   return result;
 }
 
-async function run(out: string, minutes: number, stateLabel: string): Promise<Record<string, unknown>> {
+async function run(out: string, minutes: number, stateLabel: string, tap: "zeroCopy" | "cpuReadback"): Promise<Record<string, unknown>> {
   if (!existsSync(ENGINE_BIN)) throw new Error(`the engine binary must be built first: ${ENGINE_BIN} (cargo build -p nbe-engine)`);
   mkdirSync(out, { recursive: true });
-  const { pkgDir } = stagePackage(out);
+  const { pkgDir } = stagePackage(out, tap);
   const meta: Record<string, unknown> = {
     probe: "R31 12c",
     state: stateLabel,
     minutes,
+    tap,
     engine: ENGINE_BIN,
     head: spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
     startedAt: new Date().toISOString(),
@@ -382,7 +388,7 @@ async function run(out: string, minutes: number, stateLabel: string): Promise<Re
     await sleep(2000);
     const tapPath = tick()["recordTapPath"];
     meta["recordTapPath"] = tapPath;
-    if (tapPath !== "zeroCopy") throw new Error(`the probe runs step 12c's zero-copy tap; the tick reads recordTapPath ${JSON.stringify(tapPath)}`);
+    if (tapPath !== tap) throw new Error(`the probe asked for the ${tap} tap; the tick reads recordTapPath ${JSON.stringify(tapPath)}`);
     const before = { ...tick() };
 
     // A timed item ends DONE, and a DONE item takes again only after
@@ -442,7 +448,8 @@ async function main(): Promise<void> {
   const out = resolve(again ?? arg("out") ?? join(REPO, ".git/nbe-staged/r31", new Date().toISOString().replace(/[:.]/g, "-")));
   if (again === undefined) {
     const minutes = Number(arg("minutes") ?? 30);
-    const meta = await run(out, minutes, arg("state") ?? "unlabelled");
+    const tap = arg("tap") === "cpu" ? "cpuReadback" : "zeroCopy";
+    const meta = await run(out, minutes, arg("state") ?? "unlabelled", tap);
     console.log(`R31 PROBE RUN: ${JSON.stringify(meta)}`);
   }
   const a = analyse(out);
