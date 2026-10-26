@@ -1243,6 +1243,12 @@ jobs:
       # suites. The phases are `cp-pre`, `cp-sample` and `cp-post`, so these
       # lines are never read as another job's window.
       #
+      # The settle (the user's ruling of 2026-10-26 on CP1): load1 is the
+      # kernel's one-minute average, so the engine build ending just before
+      # this step would carry its tail into the window's first readings (#71's
+      # first run read 10.59 per CPU at `cp-pre`, 0.26 s after the build). The
+      # step waits 60 s first, so the window opens on the tests' own load.
+      #
       # The logging must never fail the job. Every command is guarded with
       # `|| true`, the sampler runs detached with its output in a file, and
       # both steps are continue-on-error as a second guard.
@@ -1264,6 +1270,7 @@ jobs:
           swap=$(sysctl -n vm.swapusage 2>/dev/null | awk '{print $6}')
           echo "[ci-load] $1 $ts $load ncpu=$ncpu mem_mib total=$total $mem swap_used=$swap"
           LINE
+          sleep 60 || true
           bash "$RUNNER_TEMP/ci-load-line.sh" cp-pre || true
           { nohup bash -c 'while :; do bash "$0" cp-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
               > "$RUNNER_TEMP/ci-load-cp-samples.log" 2>&1 < /dev/null & } || true
