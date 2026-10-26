@@ -12,7 +12,9 @@
 //! removed (Standards §2a).
 
 use nbe_engine::audio::{CHANNELS, SAMPLE_RATE};
-use nbe_engine::audio_clock::{copy_out, respace, DeviceMarks, Feeder, Mark, SLIP_THRESHOLD_MS};
+use nbe_engine::audio_clock::{
+    copy_out, presented_ns, respace, DeviceMarks, Feeder, Mark, SLIP_THRESHOLD_MS,
+};
 use nbe_engine::audio_driver::{
     open_sink, rate_plan, sink_choice, AudioDriver, AudioSink, DeviceInfo, DeviceIo, RatePlan,
     SinkChoice,
@@ -760,4 +762,18 @@ fn the_driver_compensates_the_limiters_lookahead() {
         "the impulse due at master frame 2 leaves at frame 2's first sample (the lookahead is {} frames)",
         driver.graph.latency_frames()
     );
+}
+
+/// D1 b, M-latency: the presented instant includes the output stream's
+/// latency, which cpal leaves out. The engine's own skew cannot catch its
+/// absence (every mark would carry it alike) and neither can VB-Cable (its
+/// stream latency is 0), so it is pinned here: the speakers' 275 frames at
+/// 48 kHz are 5.729 ms (design record §2.1).
+#[test]
+fn the_presented_instant_includes_the_stream_latency() {
+    assert_eq!(
+        presented_ns(1_000, 12_670_000, 275),
+        1_000 + 12_670_000 + 5_729_166
+    );
+    assert_eq!(presented_ns(0, 0, 0), 0);
 }

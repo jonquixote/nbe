@@ -4,8 +4,12 @@
 committed, and no build dispatches before the rulings land.**~~ **Status:
 RULED 2026-10-21, D1–D8 approved with additions (§6), and the register
 filings made (§7)** (§2c). **The build sequence:**
-1. **The §8.2 limiter PR first** (D4), whose first commit lands this record;
-2. **then the device-audio build** per this record.
+1. **The §8.2 limiter PR first** (D4), whose first commit lands this record
+   *(merged as `ccef706`, #65)*;
+2. **then the device-audio build** per this record *(built on branch
+   `device-audio`, 2026-10-26; SPEC v0.4.8 row 15. Where the build departs
+   from a ruling's wording, the departure is stated at the ruling, marked "As
+   built", and put to the user with the build)*.
 
 Each is DO NOT MERGE until its two-key pass and the user's word. The record
 itself is docs only: no production code, no dependency added. Drafted 2026-10-21 by the builder, on
@@ -439,6 +443,14 @@ citation or a probe measurement). The rulings themselves are §6.
     prior rate, so an operator can restore it by hand.
   - Restoring a crashed run's prior rate at the next start (a small file
     holding it) is a candidate, not part of this ruling.
+  - **As built (the device-audio build, 2026-10-26; put to the user):** the
+    sink opens at engine start, where D6 probes, and closes on drop and on
+    an orderly shutdown: SIGTERM or SIGINT, handled only while a device is
+    open, then exit 143 or 130. It cannot close on `show.unload`: that
+    command has no route to the engine (SPEC v0.4.8 row 7's stated gap, the
+    queued `show.unload` routing). Measured on the normative machine: the
+    speakers switched from 44 100 to 48 000 Hz at open and back to 44 100 Hz
+    at close.
 
 ### D2. The clock: A/V skew
 
@@ -553,6 +565,17 @@ the graph is at `audio.rs:20` and the decoder at `nbe-decode/src/lib.rs:585`.
 **The clip's rate to the house rate** already happens at load, by
 AVFoundation's converter (§1.1). It is unmeasured in quality and unexercised
 on a non-48 kHz source.
+
+*As built (the device-audio build, 2026-10-26; put to the user):* the quality
+key the ruling names, `AVSampleRateConverterAudioQualityKey`, cannot be set:
+`AVAssetReaderTrackOutput` does not support it (its header says so, and
+setting it raised an Objective-C exception that aborted the process). The
+reader's own knob, `AVSampleRateConverterAlgorithmKey` pinned to Mastering,
+measured the same as the default on an exact 44.1 kHz tone: a -100.9 dB
+residual (the same tone at 48 kHz reads -154.9 dB with nothing converting). So
+no pin was kept, and the guard is the measurement:
+`nbe-decode/tests/audio.rs` bounds the residual under -95 dB, at 1 kHz ± 2 Hz
+and 48 000 ± 100 frames.
 - **Recommendation:**
   - keep it at load, where §8.9 #4 puts every expensive operation;
   - **pin its quality explicitly** (`AVSampleRateConverterAudioQualityKey` in

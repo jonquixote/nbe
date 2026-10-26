@@ -423,6 +423,11 @@ fn the_speakers_rate_is_switched_and_restored() {
         std::thread::sleep(Duration::from_millis(10));
     }
     println!("RATE prior {prior} Hz, open 48000 Hz, after close {now} Hz");
+    // Put the machine back however the assertion goes: a failing restore
+    // (M-rate) must not leave the speakers at 48 kHz.
+    if now != prior {
+        let _ = nbe_decode::hal::set_nominal_rate(id, prior);
+    }
     if before == 48_000.0 {
         let _ = nbe_decode::hal::set_nominal_rate(id, 48_000.0);
     }

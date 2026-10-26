@@ -136,6 +136,17 @@ impl DeviceMarks {
     }
 }
 
+/// When a callback's first frame is heard, ns after the marks' base (D1 b):
+/// its arrival, plus cpal's offset from the callback to playback (the buffer,
+/// the device's latency and its safety offset), plus the output stream's
+/// latency, which cpal's estimate leaves out (5.7 ms on the normative
+/// machine's speakers, design record §2.2). The engine's own skew cannot see
+/// this term's absence, since every mark would carry it alike, so it is
+/// pinned here.
+pub fn presented_ns(arrived_ns: u64, cpal_ahead_ns: u64, stream_latency_frames: u32) -> u64 {
+    arrived_ns + cpal_ahead_ns + stream_latency_frames as u64 * 1_000_000_000 / SAMPLE_RATE as u64
+}
+
 /// The device callback's whole body (D2): mark when the buffer's first frame
 /// is heard, copy the ring out, and silence and count what the ring could not
 /// fill. Atomics and copies only: no lock, no allocation, nothing that waits

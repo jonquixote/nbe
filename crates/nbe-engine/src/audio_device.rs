@@ -29,7 +29,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use nbe_decode::hal;
 
 use crate::audio::{CHANNELS, SAMPLE_RATE};
-use crate::audio_clock::{copy_out, DeviceMarks};
+use crate::audio_clock::{copy_out, presented_ns, DeviceMarks};
 use crate::audio_driver::{rate_plan, AudioSink, DeviceInfo, DeviceIo, RatePlan, RING_BLOCKS};
 use crate::audio_ring;
 
@@ -153,7 +153,7 @@ impl DeviceSink {
 
         // The presentation offset cpal leaves out (D1 b), read at 48 kHz.
         let latency = hal::output_latency(hal_id)?;
-        let stream_ns = latency.stream as u64 * 1_000_000_000 / SAMPLE_RATE as u64;
+        let stream_frames = latency.stream;
 
         let (producer, mut consumer) = audio_ring::ring(block_frames * RING_BLOCKS);
         let marks = DeviceMarks::new();
@@ -172,7 +172,7 @@ impl DeviceSink {
                 .playback
                 .saturating_duration_since(ts.callback)
                 .as_nanos() as u64;
-            let presented = cb_marks.ns_of(arrived) + ahead + stream_ns;
+            let presented = presented_ns(cb_marks.ns_of(arrived), ahead, stream_frames);
             copy_out(&mut consumer, &cb_marks, out, presented);
         };
         let err_marks = marks.clone();

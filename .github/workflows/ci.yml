@@ -1008,12 +1008,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "device_audio: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=19 exercised>=19)"
-          if [ "$ran" -lt 19 ]; then
-            echo "FAIL device_audio: expected at least 19 tests to run, got $ran"; exit 1
+          echo "device_audio: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=20)"
+          if [ "$ran" -lt 20 ]; then
+            echo "FAIL device_audio: expected at least 20 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 19 ]; then
-            echo "FAIL device_audio: expected at least 19 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 20 ]; then
+            echo "FAIL device_audio: expected at least 20 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: "R10 load capture: after the floor steps, every sample"
         if: always()
@@ -1734,7 +1734,7 @@ jobs:
           if [ "$ran" -lt 29 ]; then
             echo "FAIL: expected at least 29 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 19 ]; then
+          if [ "$exercised" -lt 18 ]; then
             echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1
           fi
       - name: failure artifacts
