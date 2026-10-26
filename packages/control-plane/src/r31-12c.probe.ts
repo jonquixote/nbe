@@ -277,6 +277,9 @@ async function run(out: string, minutes: number, stateLabel: string, tap: "zeroC
     minutes,
     tap,
     engine: ENGINE_BIN,
+    // Every NBE_* variable the engine inherits: an experiment's switch is
+    // part of the run's identity.
+    engineEnv: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("NBE_"))),
     head: spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
     startedAt: new Date().toISOString(),
     machineAtStart: machine(),
