@@ -101,6 +101,11 @@ function engineLines(needle: string): number {
   return engineLog.join("").split(needle).length - 1;
 }
 const reloads = () => engineLines("show.resync: the package was reloaded");
+
+/** The engine's last 80 log lines, for a failure's message. */
+function engineTail(): string {
+  return engineLog.join("").split("\n").slice(-80).join("\n");
+}
 const failedAttempts = () => engineLines("show.resync: the package did not load");
 
 async function lastApplied(): Promise<number | null> {
@@ -125,7 +130,16 @@ async function reconnect(): Promise<void> {
   const sv = state.stateVersion;
   const deadline = Date.now() + REPORT_MS;
   while ((await lastApplied()) !== sv) {
-    if (Date.now() > deadline) throw new Error("the engine never applied its resync");
+    if (Date.now() > deadline) {
+      // R32 (c), the user's ruling of 2026-10-26: the next sighting's log
+      // carries the answer sighting 2's lacked. The engine's directive log
+      // says whether the resync arrived, whether it reloaded the package (and
+      // for which identity), and how long the reload's audio phase took.
+      throw new Error(
+        `the engine never applied its resync (sv ${sv}, last applied ${await lastApplied()}); ` +
+          `the engine's last log lines:\n${engineTail()}`,
+      );
+    }
     await new Promise((r) => setTimeout(r, 25));
   }
 }

@@ -325,6 +325,7 @@ impl DirectiveHandler {
         // SPEC §8.4: soundboard and clip audio are RAM-resident from
         // `show.load`. A trigger that reads disk cannot meet AC-13's 20 ms,
         // and a take that decodes cannot meet §7.13.
+        let audio_started = std::time::Instant::now();
         let mut audio_assets = std::collections::BTreeMap::new();
         for (asset_id, src) in &index.asset_source {
             match nbe_decode::decode_audio(&root.join(src)) {
@@ -343,6 +344,7 @@ impl DirectiveHandler {
                 }
             }
         }
+        let audio_asset_count = audio_assets.len();
         *self.state.audio_assets.lock().unwrap() = audio_assets;
 
         // The item→asset walk happens HERE, once, not on the take path.
@@ -382,6 +384,15 @@ impl DirectiveHandler {
 
         let item_audio = index.item_audio_map();
         info!(items = item_audio.len(), "item audio resolved");
+        // R32 (c): the load's audio sources, built: how many, and how long the
+        // decode and the item walk took, so a slow reload names its phase.
+        info!(
+            assets = audio_asset_count,
+            items = item_audio.len(),
+            sources = item_audio.values().map(|v| v.len()).sum::<usize>(),
+            elapsed_ms = audio_started.elapsed().as_millis() as u64,
+            "audio sources built"
+        );
         *self.state.item_audio.lock().unwrap() = item_audio;
 
         *self.state.package.lock().unwrap() = Some(index);
@@ -1452,6 +1463,9 @@ impl DirectiveHandler {
     }
 
     async fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // R32 (c): the resync's arrival, so a log shows where an unapplied one
+        // stopped (the apply's own line is "show.resync applied").
+        info!(sv = d.state_version, "show.resync received");
         let snapshot = &d.payload;
         // SPEC v0.4.8 row 3: the on-air timed item's end, read BEFORE anything
         // is applied. An end that does not read, or that names an item other
@@ -1629,6 +1643,17 @@ impl DirectiveHandler {
                 return false;
             }
         }
+        // R32 (c): said before the reload starts, so a reload that never
+        // finishes is visible in the log, with the identity it reloads for.
+        let held = self
+            .state
+            .loaded_package
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| p.load_state_version);
+        info!(path, version, held = ?held, "show.resync: the package identity differs from the load held; reloading");
+        let started = std::time::Instant::now();
         let handler = self.clone();
         let owned = path.to_string();
         let result = tokio::task::spawn_blocking(move || handler.load_package(&owned))
@@ -1637,7 +1662,12 @@ impl DirectiveHandler {
             .and_then(|r| r);
         match result {
             Ok(()) => {
-                info!(path, version, "show.resync: the package was reloaded");
+                info!(
+                    path,
+                    version,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "show.resync: the package was reloaded"
+                );
                 self.record_load(path, version);
                 false
             }
