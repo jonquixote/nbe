@@ -51,6 +51,70 @@ pub fn should_skip_record_frame(render_elapsed: Duration, budget: Option<Duratio
     }
 }
 
+// ---------------------------------------------------------------------------
+// The draw's completion (R31)
+// ---------------------------------------------------------------------------
+
+/// How long the record thread waits for the GPU to finish a frame's View draw
+/// before it gives the frame up. A draw takes milliseconds; a GPU that has not
+/// finished in a second is stalled, and the frame is skipped (counted), never
+/// encoded from a surface the draw has not reached. The wait is the record
+/// thread's: the View never waits for it.
+pub const DRAW_WAIT: Duration = Duration::from_secs(1);
+
+/// A frame's View draw, as the GPU will report it done.
+///
+/// R31: on the zero-copy path the View draws into a pool surface and the
+/// surface goes to the encoder after `submit` returns, which is before the GPU
+/// has finished the draw. VideoToolbox could read it first and record the
+/// picture the surface held before: the previous frame usually (the pool
+/// hands out its first free surface, mostly the same one), an older one when
+/// another surface was used (S1's frame 41 in frame 43's slot). Measured on
+/// the normative machine by R31's probe: 20 and 28 such frames in 10 minutes
+/// without a completion wait, 0 and 0 with one. The record thread now waits on
+/// this before encoding.
+pub trait AwaitDraw {
+    /// Block until the GPU reports the draw complete, at most `timeout`.
+    /// False when it did not.
+    fn wait(&self, timeout: Duration) -> bool;
+}
+
+/// The View draw's submission on the engine's device. `Device` and
+/// `SubmissionIndex` are both `Send + Sync`, so the record thread waits on the
+/// exact submission itself, and the render thread never does.
+#[derive(Debug, Clone)]
+pub struct DrawDone {
+    device: wgpu::Device,
+    submission: wgpu::SubmissionIndex,
+}
+
+impl DrawDone {
+    pub fn new(device: wgpu::Device, submission: wgpu::SubmissionIndex) -> Self {
+        Self { device, submission }
+    }
+}
+
+impl AwaitDraw for DrawDone {
+    fn wait(&self, timeout: Duration) -> bool {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(self.submission.clone()),
+                timeout: Some(timeout),
+            })
+            .is_ok()
+    }
+}
+
+/// Encode a zero-copy frame only once its draw is done: `None` (a skip, for
+/// the caller to count) when the GPU did not finish within [`DRAW_WAIT`].
+/// The one place the order lives, so a test holds it.
+pub fn encode_after_draw<R>(drawn: &dyn AwaitDraw, encode: impl FnOnce() -> R) -> Option<R> {
+    if !drawn.wait(DRAW_WAIT) {
+        return None;
+    }
+    Some(encode())
+}
+
 /// Hand one recorded frame to the record thread. `rgba` is the View readback
 /// the caller already awaited; `readback_elapsed` is how long that await cost
 /// (folded into `feed_ms`, never into the render budget). Never blocks: a
@@ -61,9 +125,20 @@ pub fn handoff_record_frame(
     tx: &SyncSender<RecordMsg>,
     readback_elapsed: Duration,
 ) -> HandoffOutcome {
+    send_record_frame(rgba, None, tx, readback_elapsed)
+}
+
+/// [`handoff_record_frame`] carrying the master frame the View drew (the
+/// record trace's join, `NBE_RECORD_TRACE`).
+fn send_record_frame(
+    rgba: Vec<u8>,
+    frame: Option<u64>,
+    tx: &SyncSender<RecordMsg>,
+    readback_elapsed: Duration,
+) -> HandoffOutcome {
     let readback_ms = readback_elapsed.as_secs_f64() * 1000.0;
     let started = Instant::now();
-    match tx.try_send(RecordMsg::Frame { rgba }) {
+    match tx.try_send(RecordMsg::Frame { rgba, frame }) {
         Ok(()) => HandoffOutcome {
             sent: true,
             feed_ms: readback_ms + started.elapsed().as_secs_f64() * 1000.0,
@@ -117,10 +192,16 @@ pub fn acquire_record_surface(
 /// the channel had no room for.
 pub fn handoff_record_surface(
     surface: Arc<SharedSurface>,
+    drawn: DrawDone,
+    frame: u64,
     tx: &SyncSender<RecordMsg>,
 ) -> HandoffOutcome {
     let started = Instant::now();
-    match tx.try_send(RecordMsg::Surface { surface }) {
+    match tx.try_send(RecordMsg::Surface {
+        surface,
+        drawn,
+        frame,
+    }) {
         Ok(()) => HandoffOutcome {
             sent: true,
             feed_ms: started.elapsed().as_secs_f64() * 1000.0,
@@ -149,6 +230,11 @@ pub struct TapLoan {
     /// has already counted its skip and must not count a second one, nor fall
     /// through to a readback the take did not choose.
     zero_copy_take: bool,
+    /// R31: this frame's View draw into `surface`, set by [`Self::mark_drawn`]
+    /// after the draw. A zero-copy surface without one is never handed off.
+    drawn: Option<DrawDone>,
+    /// The master frame the View drew (the record trace's join).
+    frame: Option<u64>,
 }
 
 impl TapLoan {
@@ -158,6 +244,19 @@ impl TapLoan {
     pub fn has_surface(&self) -> bool {
         self.surface.is_some()
     }
+    /// **After the draw**: record which submission drew this frame's View, and
+    /// the master frame it drew. The record thread waits on that submission
+    /// before the encoder reads the surface (R31). A View that failed to draw
+    /// has no submission this frame, and its surface is then never handed off.
+    pub fn mark_drawn(&mut self, render: &crate::render::RenderLoop, frame: u64) {
+        self.frame = Some(frame);
+        if self.surface.is_some() {
+            self.drawn = render
+                .view_submission()
+                .map(|s| DrawDone::new(render.gpu.device.clone(), s));
+        }
+    }
+
     /// Read-only share of this frame's surface (G1 both-live: one composite,
     /// N `Arc` holders). Cloning never moves the loan — the record handoff
     /// below is unchanged. No behavior change: pure getter.
@@ -200,6 +299,8 @@ pub fn begin_tap_frame(
     Ok(TapLoan {
         surface,
         zero_copy_take: true,
+        drawn: None,
+        frame: None,
     })
 }
 
@@ -244,11 +345,20 @@ where
         skipped.fetch_add(1, Ordering::SeqCst);
         return 0.0;
     }
-    let outcome = match loan.surface {
-        Some(surface) => handoff_record_surface(surface, tx),
-        None => {
+    let outcome = match (loan.surface, loan.drawn) {
+        (Some(surface), Some(drawn)) => {
+            handoff_record_surface(surface, drawn, loan.frame.unwrap_or(u64::MAX), tx)
+        }
+        // R31: a zero-copy surface with no draw to wait on (the View failed to
+        // draw this frame, or the caller never marked it) is never handed to
+        // the encoder: it would record whatever the surface held before.
+        (Some(_), None) => HandoffOutcome {
+            sent: false,
+            feed_ms: 0.0,
+        },
+        (None, _) => {
             let (rgba, elapsed) = readback().await;
-            handoff_record_frame(rgba, tx, elapsed)
+            send_record_frame(rgba, loan.frame, tx, elapsed)
         }
     };
     if !outcome.sent {
@@ -297,4 +407,60 @@ pub fn end_take_on_chain_loss(state: &crate::state::EngineState, cause: &str) ->
         "record tap: zero-copy chain lost mid-take; take ended, file kept as-is"
     );
     token
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A draw whose completion the test decides, logging every call.
+    struct FakeDraw<'a> {
+        done: bool,
+        log: &'a RefCell<Vec<String>>,
+    }
+
+    impl AwaitDraw for FakeDraw<'_> {
+        fn wait(&self, timeout: Duration) -> bool {
+            self.log.borrow_mut().push(format!("wait {timeout:?}"));
+            self.done
+        }
+    }
+
+    #[test]
+    fn the_encoder_reads_a_zero_copy_surface_only_after_its_draw_completes() {
+        let log = RefCell::new(Vec::new());
+        let drawn = FakeDraw {
+            done: true,
+            log: &log,
+        };
+        let out = encode_after_draw(&drawn, || {
+            log.borrow_mut().push("encode".into());
+            7
+        });
+        assert_eq!(out, Some(7));
+        assert_eq!(
+            *log.borrow(),
+            vec![format!("wait {DRAW_WAIT:?}"), "encode".to_string()],
+            "R31: the wait on the View's draw comes first, bounded by DRAW_WAIT, then the encode"
+        );
+    }
+
+    #[test]
+    fn a_draw_that_never_completes_is_a_skip_never_an_encode() {
+        let log = RefCell::new(Vec::new());
+        let drawn = FakeDraw {
+            done: false,
+            log: &log,
+        };
+        let out = encode_after_draw(&drawn, || {
+            log.borrow_mut().push("encode".into());
+        });
+        assert_eq!(out, None, "an unfinished draw is the caller's skip");
+        assert_eq!(
+            *log.borrow(),
+            vec![format!("wait {DRAW_WAIT:?}")],
+            "R31: a surface the GPU has not finished drawing is never encoded"
+        );
+    }
 }

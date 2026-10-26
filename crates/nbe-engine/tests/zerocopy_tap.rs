@@ -477,6 +477,119 @@ async fn the_compositor_draws_into_the_loaned_surface_and_the_readback_reads_it(
 }
 
 // ---------------------------------------------------------------------------
+// R31 — the encoder reads a surface only once the View's draw into it is done.
+// ---------------------------------------------------------------------------
+
+/// A render loop and a two-surface pool at the View's geometry, or a loud skip.
+async fn chain_or_skip() -> Option<(
+    std::sync::Arc<EngineState>,
+    nbe_engine::render::RenderLoop,
+    nbe_decode::zerocopy::SurfacePool,
+)> {
+    let state = std::sync::Arc::new(EngineState::new(HOUSE_RATE));
+    let Ok(render) = nbe_engine::render::RenderLoop::new(state.clone()).await else {
+        eprintln!("SKIP: no wgpu adapter on this machine; RenderLoop::new cannot open a device");
+        return None;
+    };
+    let device = state.render_device().expect("published by RenderLoop::new");
+    let pool = nbe_decode::zerocopy::SurfacePool::new(
+        &device,
+        nbe_engine::render::VIEW_W,
+        nbe_engine::render::VIEW_H,
+        2,
+    )
+    .expect("pool builds at the View's geometry");
+    Some((state, render, pool))
+}
+
+/// One tap frame through the loop's own seams. `mark` is whether the caller
+/// marks the loan after the draw, as `tick.rs` does.
+async fn tap_one(
+    render: &mut nbe_engine::render::RenderLoop,
+    pool: &nbe_decode::zerocopy::SurfacePool,
+    frame: u64,
+    mark: bool,
+) -> (Option<nbe_engine::record::thread::RecordMsg>, u64) {
+    let skipped = std::sync::atomic::AtomicU64::new(0);
+    let (tx, rx) = std::sync::mpsc::sync_channel(4);
+    let mut loan = nbe_engine::record::begin_tap_frame(render, Some(pool), true, &skipped)
+        .expect("the pool exists: no chain loss");
+    assert!(loan.has_surface(), "a two-surface pool has one free");
+    let _ = render.render_frame(frame, None);
+    nbe_engine::record::restore_view(render, &loan);
+    if mark {
+        loan.mark_drawn(render, frame);
+    }
+    let _ = nbe_engine::record::end_tap_frame(
+        loan,
+        std::time::Duration::from_millis(1),
+        None,
+        &tx,
+        &skipped,
+        || async { panic!("a zero-copy take never reads back") },
+    )
+    .await;
+    (
+        rx.try_recv().ok(),
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
+#[tokio::test]
+async fn a_drawn_surface_reaches_the_encoder_with_its_draw_and_its_frame() {
+    let Some((_state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    let (msg, skipped) = tap_one(&mut render, &pool, 5, true).await;
+    assert_eq!(
+        skipped, 0,
+        "a drawn, marked frame is handed off, not skipped"
+    );
+    let Some(nbe_engine::record::thread::RecordMsg::Surface { drawn, frame, .. }) = msg else {
+        panic!("the record thread must receive the surface, got {msg:?}");
+    };
+    assert_eq!(frame, 5, "the handoff names the master frame the View drew");
+    use nbe_engine::record::AwaitDraw;
+    assert!(
+        drawn.wait(nbe_engine::record::DRAW_WAIT),
+        "the handoff carries the View's own draw, which the GPU completes"
+    );
+}
+
+#[tokio::test]
+async fn a_view_that_did_not_draw_hands_its_surface_to_no_encoder() {
+    let Some((_state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    // A good frame first, so a submission from the frame before is there to
+    // be wrongly handed on: the View's submission must be this frame's or none.
+    let (good, _) = tap_one(&mut render, &pool, 6, true).await;
+    assert!(good.is_some(), "the frame before draws and hands off");
+    // The View's draw fails (the injection seam): this frame has no draw to
+    // wait on, and the surface holds whatever it held before.
+    render.fail_view = true;
+    let (msg, skipped) = tap_one(&mut render, &pool, 7, true).await;
+    assert!(
+        msg.is_none(),
+        "R31: a surface the View did not draw into must never reach the encoder, got {msg:?}"
+    );
+    assert_eq!(skipped, 1, "the frame is a counted skip");
+}
+
+#[tokio::test]
+async fn an_unmarked_surface_is_never_handed_off() {
+    let Some((_state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    let (msg, skipped) = tap_one(&mut render, &pool, 9, false).await;
+    assert!(
+        msg.is_none(),
+        "R31: a zero-copy surface with no draw to wait on must never reach the encoder, got {msg:?}"
+    );
+    assert_eq!(skipped, 1, "the frame is a counted skip");
+}
+
+// ---------------------------------------------------------------------------
 // Falsification 3 — the published table drives the choice, not a pin.
 // ---------------------------------------------------------------------------
 

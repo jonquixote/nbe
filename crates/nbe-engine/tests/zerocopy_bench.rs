@@ -112,10 +112,11 @@ async fn before_and_after_the_migration() {
     let mut cpu_frame = Vec::with_capacity(FRAMES);
     for frame in 0..FRAMES {
         let f0 = Instant::now();
-        let loan = nbe_engine::record::begin_tap_frame(&mut render, None, false, &skipped)
+        let mut loan = nbe_engine::record::begin_tap_frame(&mut render, None, false, &skipped)
             .expect("the CPU path has no surface to fail on");
         let _ = render.render_frame(frame as u64, Some(Duration::from_secs_f64(1.0 / 30.0)));
         nbe_engine::record::restore_view(&mut render, &loan);
+        loan.mark_drawn(&render, frame as u64);
         let t0 = Instant::now();
         let ms = nbe_engine::record::end_tap_frame(
             loan,
@@ -153,10 +154,12 @@ async fn before_and_after_the_migration() {
     for frame in 0..FRAMES {
         let before = skipped.load(std::sync::atomic::Ordering::SeqCst);
         let f0 = Instant::now();
-        let loan = nbe_engine::record::begin_tap_frame(&mut render, Some(&pool), true, &skipped)
-            .expect("the pool is at the View's geometry");
+        let mut loan =
+            nbe_engine::record::begin_tap_frame(&mut render, Some(&pool), true, &skipped)
+                .expect("the pool is at the View's geometry");
         let _ = render.render_frame(frame as u64, Some(Duration::from_secs_f64(1.0 / 30.0)));
         nbe_engine::record::restore_view(&mut render, &loan);
+        loan.mark_drawn(&render, frame as u64);
         let t0 = Instant::now();
         let _ms = nbe_engine::record::end_tap_frame(
             loan,

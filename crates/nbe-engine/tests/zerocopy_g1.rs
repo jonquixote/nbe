@@ -114,7 +114,7 @@ struct RecordAtItsBound {
 
 impl RecordAtItsBound {
     fn tick(&mut self) {
-        while let Ok(RecordMsg::Surface { surface }) = self.rx.try_recv() {
+        while let Ok(RecordMsg::Surface { surface, .. }) = self.rx.try_recv() {
             self.queue.push_back(surface);
         }
         while self.queue.len() > RECORD_CHANNEL_BOUND {
@@ -169,13 +169,14 @@ async fn a_stalled_stream_costs_record_nothing() {
     let mut worst_handoff = Duration::ZERO;
 
     for frame in 0..60u64 {
-        let loan =
+        let mut loan =
             nbe_engine::record::begin_tap_frame(&mut render, Some(&pool), true, &record_skips)
                 .expect("the pool exists: no chain loss");
         let started = std::time::Instant::now();
         let _ = render.render_frame(frame, None);
         let render_elapsed = started.elapsed();
         nbe_engine::record::restore_view(&mut render, &loan);
+        loan.mark_drawn(&render, frame);
         let shared = loan.surface();
         let _ = nbe_engine::record::end_tap_frame(
             loan,

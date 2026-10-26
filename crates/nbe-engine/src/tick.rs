@@ -75,7 +75,7 @@ pub async fn run_tick(
         *state.record_tap_selection.lock().unwrap(),
         Some(sel) if sel.path == crate::record::tap_path::TapPath::ZeroCopy
     ) && recording;
-    let loan = match crate::record::begin_tap_frame(
+    let mut loan = match crate::record::begin_tap_frame(
         render,
         pool.as_deref(),
         claims_zero_copy,
@@ -127,6 +127,10 @@ pub async fn run_tick(
     // left in place would composite the NEXT frame into a surface nobody
     // is holding.
     crate::record::restore_view(render, &loan);
+    // R31: which submission drew this frame's View, for the record thread to
+    // wait on before the encoder reads the surface (the render thread never
+    // waits on it).
+    loan.mark_drawn(render, frame);
     if own_surface.is_some() {
         let _ = render.set_view_surface(None);
     }

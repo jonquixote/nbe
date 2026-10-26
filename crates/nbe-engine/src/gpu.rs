@@ -34,9 +34,15 @@ impl Gpu {
         // relying on a heuristic that varies with wgpu version, macOS version
         // and whether the machine is on battery. Naming the preference makes
         // adapter choice a decision rather than a default.
+        //
+        // wgpu's own `WGPU_POWER_PREF` (`low`, `high`) overrides it, for
+        // measurement only: R31's falsification runs the probe on both GPUs of
+        // the reference machine. Unset, as in production, it is
+        // `HighPerformance`; the adapter chosen is logged below either way.
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::from_env()
+                    .unwrap_or(wgpu::PowerPreference::HighPerformance),
                 ..Default::default()
             })
             .await

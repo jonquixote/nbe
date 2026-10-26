@@ -348,6 +348,13 @@ pub struct EncodeSession {
 }
 
 impl EncodeSession {
+    /// How many frames this session has submitted: the record path's PTS index
+    /// for the next one (`frame_index / fps`). The record trace logs it, so a
+    /// recorded frame joins to the handoff that produced it.
+    pub fn submitted_frames(&self) -> u64 {
+        self.frame_index
+    }
+
     /// Open a hardware H.264 encoder for `width`x`height` at `fps` with an
     /// average bit rate of `bitrate` bits per second.
     pub fn open(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, EncodeError> {

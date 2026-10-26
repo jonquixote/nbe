@@ -173,13 +173,14 @@ async fn run_take(
             *state.record_tap_selection.lock().unwrap(),
             Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
         );
-        let loan =
+        let mut loan =
             nbe_engine::record::begin_tap_frame(render, pool.as_deref(), claims_zero_copy, skipped)
                 .expect("retarget");
         let started = Instant::now();
         let _ = render.render_frame(frame as u64, Some(budget));
         let render_elapsed = started.elapsed();
         nbe_engine::record::restore_view(render, &loan);
+        loan.mark_drawn(render, frame as u64);
         let tx = endpoint.expect("a live take has a frame sender");
         let feed_ms = nbe_engine::record::end_tap_frame(
             loan,
@@ -570,7 +571,7 @@ async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_fr
             *state.record_tap_selection.lock().unwrap(),
             Some(sel) if sel.path == nbe_engine::record::tap_path::TapPath::ZeroCopy
         );
-        let loan = match nbe_engine::record::begin_tap_frame(
+        let mut loan = match nbe_engine::record::begin_tap_frame(
             &mut render,
             pool.as_deref(),
             claims_zero_copy,
@@ -587,6 +588,7 @@ async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_fr
         };
         let _ = render.render_frame(frame as u64, Some(budget));
         nbe_engine::record::restore_view(&mut render, &loan);
+        loan.mark_drawn(&render, frame as u64);
         let tx = endpoint.expect("a live take has a frame sender");
         let feed_ms = nbe_engine::record::end_tap_frame(
             loan,
