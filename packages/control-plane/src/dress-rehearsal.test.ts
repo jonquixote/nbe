@@ -28,6 +28,7 @@ import { ControlPlaneState } from "./state.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { tempDir } from "./test-tmp.js";
 import { loadComplete, residency } from "./load-residency.js";
+import { R20_FRAMES, R20_ITEM, r20Classify } from "./r20-counter.js";
 import { ENGINE_TELEMETRY_TTL_MS } from "./telemetry.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
@@ -1456,39 +1457,6 @@ function stageRecordPackage(
   }
   writeFileSync(manifestPath, JSON.stringify(manifest));
   return { pkgDir, recordDir };
-}
-
-/** R20's picture step: the counter clip's item and its length in frames. */
-const R20_ITEM = "R20C";
-const R20_FRAMES = 150;
-
-/** counter_150's frame `n` is one flat colour (scripts/generate-fixtures.sh). */
-function r20Colour(n: number): [number, number, number] {
-  return [(37 * n) % 256, (91 * n) % 256, (7 * n) % 256];
-}
-
-/**
- * Which counter frame a recorded pixel shows: its index, `"black"` for a
- * cleared View (a dropped layer), or `"other"` for anything else (the item on
- * air before the take). ~~Adjacent counter frames differ by 37 in red, so the
- * nearest colour is the frame.~~ (§2c, R20's two-key pass: adjacency is not
- * the margin. Frames k and k + 76 differ by L1 28, under the threshold of 36,
- * and the engine's decode shifts colour by up to L1 56 (R22), so a recorded
- * pixel can sit nearer another frame's colour.)
- */
-function r20Classify(px: [number, number, number]): number | "black" | "other" {
-  if (px.every((c) => c < 16)) return "black";
-  let best = -1;
-  let bestD = Infinity;
-  for (let n = 0; n < R20_FRAMES; n++) {
-    const c = r20Colour(n);
-    const d = Math.abs(c[0] - px[0]) + Math.abs(c[1] - px[1]) + Math.abs(c[2] - px[2]);
-    if (d < bestD) {
-      bestD = d;
-      best = n;
-    }
-  }
-  return bestD <= 36 ? best : "other";
 }
 
 /** The single `*.mp4` in `dir`, or fail listing what was there. */

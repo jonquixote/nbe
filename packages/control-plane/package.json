@@ -17,7 +17,8 @@
     "test:rehearsal": "node --import tsx --test src/dress-rehearsal.test.ts",
     "measure:automation": "node --import tsx src/automation-latency.measure.ts",
     "measure:package-reconcile": "node --import tsx src/package-reconcile.measure.ts",
-    "measure:show-stop": "node --import tsx src/show-stop.measure.ts"
+    "measure:show-stop": "node --import tsx src/show-stop.measure.ts",
+    "probe:r31": "node --import tsx src/r31-12c.probe.ts"
   },
   "dependencies": {
     "uuid": "^11.1.0",
