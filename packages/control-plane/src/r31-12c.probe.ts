@@ -8,6 +8,7 @@
 //!   npm run probe:r31 -- --state ambient --minutes 30
 //!   npm run probe:r31 -- --analyse <run directory>    # re-read a kept run
 //!   npm run probe:r31 -- --state ambient --tap cpu    # the A/B: CPU readback
+//!   npm run probe:r31 -- --state ambient --gpu low    # the integrated GPU
 //!
 //! R31's sighting 1 was the dress's step 12c reading frame 41's picture in
 //! frame 43's slot, and its recording was lost with the temp directory it was
@@ -24,21 +25,33 @@
 //! cleared View records black and separates one take of the counter from the
 //! next. One recording spans the whole run.
 //!
+//! The trace: the probe runs the engine with `NBE_RECORD_TRACE` pointed into
+//! the run's directory, so the record thread logs, for every frame it was
+//! handed, the master frame the View drew and the encoder's submit count. The
+//! record path's PTS is that count, so every recorded frame joins to the frame
+//! its tick drew.
+//!
 //! What it asserts, per recorded frame, read with step 12c's classifier
 //! (`r20-counter.ts`), in each take of the counter:
 //! 1. the recorded sequence never goes backwards (a frame shows a lower
 //!    index than the frame before it: step 12c's assertion, S1's signature);
-//! 2. no frame's slot carries an earlier frame's picture (a frame shows a
-//!    lower index than one already shown in that take).
+//! 2. no frame's slot carries an earlier frame's picture: each recorded
+//!    picture is the one its tick drew. Within a take the counter's index is
+//!    the master frame less a constant (the take's offset, read as the mode of
+//!    master frame minus index); a frame whose picture sits below that is
+//!    STALE. The clip's held last frame (index 149) is by design and excluded.
 //!
 //! Any occurrence is a sighting: R31 reopens for a real hunt. A clean run is
-//! the specification's demotion to watch, the user's to rule.
+//! the specification's demotion to watch, the user's to rule. R31's fix (the
+//! record thread waits for the View's draw before encoding) is falsified by
+//! this probe: 0 stale frames on both GPUs, and the class returning with the
+//! wait removed (the user's ruling of 2026-10-26).
 //!
-//! Held frames are counted apart: a frame recorded twice, the next frame's
-//! slot carrying it and the next frame never recorded (k, k, k + 2). Read by
-//! slot, clause 2 would count each one; read as S1 was, it does not (S1 was
-//! an older picture after a newer one). The probe reports them as HELD, with
-//! their positions, for the user to rule, and never folds them into CLEAN.
+//! R33 is counted beside it, never folded in: consecutive recorded frames
+//! whose ticks drew the same master frame (a repeat) or skipped one (a skip).
+//! The render loop's cadence, not the tap; reported per run, measured. A run
+//! read without a trace (an older run) falls back to clause 1 and 2 read by
+//! index alone, and reports repeats as HELD.
 //!
 //! Counted per run: the read-ahead's misses, the View's dropped frames, the
 //! machine's swap-ins and swap-outs (and the swap in use), and the load
@@ -152,8 +165,9 @@ function stagePackage(out: string, tap: "zeroCopy" | "cpuReadback"): { pkgDir: s
 }
 
 interface Take {
-  /** The counter's take: its index in each frame, in recorded order. */
-  frames: { t: number; k: number }[];
+  /** The counter's take: its index in each frame, in recorded order, and the
+   *  master frame its tick drew when the run was traced. */
+  frames: { t: number; k: number; f?: number }[];
   /** Frames inside the take that read neither the counter nor black. */
   other: number;
   /** Short black runs inside the take (a dropped layer, step 12c's third assertion). */
@@ -177,6 +191,29 @@ interface Analysis {
   shortTakes: number[];
   other: number;
   blackInside: number;
+  /** Whether the run carried the record trace (the exact clause 2). */
+  traced: boolean;
+  /** Recorded frames the trace does not name (should be 0 on a traced run). */
+  untraced: number;
+  /** Clause 2, exact: a picture older than the frame its tick drew. */
+  stale: { take: number; at: { t: number; k: number; f: number }; offset: number }[];
+  /** R33: consecutive recorded frames drawn at the same master frame, or a
+   *  master frame apart by more than one. */
+  r33: { repeats: number; skips: number };
+}
+
+/** The record trace: the master frame each submitted frame was drawn at, by
+ *  its submit index (the recording's PTS index). */
+function readTrace(out: string): Map<number, number> | null {
+  const path = join(out, "trace.log");
+  if (!existsSync(path)) return null;
+  const byIndex = new Map<number, number>();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const kv = Object.fromEntries(line.split(" ").slice(1).map((x) => x.split("=") as [string, string]));
+    if (kv["submitted"] !== "true" || kv["frame"] === undefined || kv["frame"] === "-") continue;
+    byIndex.set(Number(kv["submits"]) - 1, Number(kv["frame"]));
+  }
+  return byIndex;
 }
 
 /** Read the run's recording back, frame by frame, with step 12c's classifier. */
@@ -210,6 +247,8 @@ function analyse(out: string): Analysis {
     k: r20Classify([bytes[3 * i] as number, bytes[3 * i + 1] as number, bytes[3 * i + 2] as number]),
   }));
   writeFileSync(join(out, "sequence.txt"), frames.map((f) => `${f.t.toFixed(3)}:${f.k}`).join("\n") + "\n");
+  const trace = readTrace(out);
+  const tickFrame = (t: number): number | undefined => trace?.get(Math.round(t * HOUSE_RATE));
 
   // Split into takes at each separator: a run of SEPARATOR_FRAMES black frames
   // or more. A shorter black run inside a take is step 12c's black on air.
@@ -229,7 +268,10 @@ function analyse(out: string): Analysis {
     }
     blackRun = 0;
     if (f.k === "other") cur.other += 1;
-    else cur.frames.push({ t: f.t, k: f.k });
+    else {
+      const tf = tickFrame(f.t);
+      cur.frames.push(tf === undefined ? { t: f.t, k: f.k } : { t: f.t, k: f.k, f: tf });
+    }
   }
 
   const result: Analysis = {
@@ -244,7 +286,23 @@ function analyse(out: string): Analysis {
     shortTakes: [],
     other: 0,
     blackInside: 0,
+    traced: trace !== null,
+    untraced: trace === null ? frames.length : frames.filter((f) => tickFrame(f.t) === undefined).length,
+    stale: [],
+    r33: { repeats: 0, skips: 0 },
   };
+  if (trace !== null) {
+    // R33, over every recorded frame in submit order: the ticks' master frames.
+    let prevF: number | undefined;
+    for (const f of frames) {
+      const tf = tickFrame(f.t);
+      if (tf !== undefined && prevF !== undefined) {
+        if (tf === prevF) result.r33.repeats += 1;
+        else if (tf > prevF + 1) result.r33.skips += 1;
+      }
+      prevF = tf;
+    }
+  }
   takes.forEach((take, n) => {
     result.other += take.other;
     result.blackInside += take.blackInside;
@@ -263,11 +321,37 @@ function analyse(out: string): Analysis {
       shown = Math.max(shown, f.k);
     });
     if (shown < 120) result.shortTakes.push(n);
+    // Clause 2, exact: the take's offset is the mode of master frame less
+    // index; a picture below it is older than the frame its tick drew.
+    const counts = new Map<number, number>();
+    for (const f of take.frames) {
+      if (f.f !== undefined && f.k < R20_FRAMES - 1) counts.set(f.f - f.k, (counts.get(f.f - f.k) ?? 0) + 1);
+    }
+    let offset: number | undefined;
+    let best = 0;
+    for (const [o, c] of counts) {
+      if (c > best) {
+        best = c;
+        offset = o;
+      }
+    }
+    if (offset === undefined) return;
+    for (const f of take.frames) {
+      if (f.f !== undefined && f.k < R20_FRAMES - 1 && f.f - f.k > offset) {
+        result.stale.push({ take: n, at: { t: f.t, k: f.k, f: f.f }, offset });
+      }
+    }
   });
   return result;
 }
 
-async function run(out: string, minutes: number, stateLabel: string, tap: "zeroCopy" | "cpuReadback"): Promise<Record<string, unknown>> {
+async function run(
+  out: string,
+  minutes: number,
+  stateLabel: string,
+  tap: "zeroCopy" | "cpuReadback",
+  gpu: "high" | "low",
+): Promise<Record<string, unknown>> {
   if (!existsSync(ENGINE_BIN)) throw new Error(`the engine binary must be built first: ${ENGINE_BIN} (cargo build -p nbe-engine)`);
   mkdirSync(out, { recursive: true });
   const { pkgDir } = stagePackage(out, tap);
@@ -276,12 +360,15 @@ async function run(out: string, minutes: number, stateLabel: string, tap: "zeroC
     state: stateLabel,
     minutes,
     tap,
+    gpu,
     engine: ENGINE_BIN,
     // Every NBE_* variable the engine inherits: an experiment's switch is
     // part of the run's identity. Never a credential (NBE_RENDER_TOKEN and its
     // kind): the meta is evidence that may be quoted into the records.
     engineEnv: Object.fromEntries(
-      Object.entries(process.env).filter(([k]) => k.startsWith("NBE_") && !/TOKEN|SECRET|KEY|PASS|CRED/i.test(k)),
+      Object.entries(process.env).filter(
+        ([k]) => (k.startsWith("NBE_") || k.startsWith("WGPU_")) && !/TOKEN|SECRET|KEY|PASS|CRED/i.test(k),
+      ),
     ),
     head: spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
     startedAt: new Date().toISOString(),
@@ -318,6 +405,12 @@ async function run(out: string, minutes: number, stateLabel: string, tap: "zeroC
       NBE_AUDIO_SINK: process.env.NBE_AUDIO_SINK ?? "null",
       NBE_HOUSE_RATE: String(HOUSE_RATE),
       RUST_LOG: "info",
+      // The record trace: each handed-off frame's master frame and submit
+      // count, so every recorded frame joins to the frame its tick drew.
+      NBE_RECORD_TRACE: join(out, "trace.log"),
+      // `--gpu low`: wgpu's own preference variable selects the integrated
+      // GPU (the engine's default is HighPerformance).
+      ...(gpu === "low" ? { WGPU_POWER_PREF: "low" } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -444,6 +537,11 @@ async function run(out: string, minutes: number, stateLabel: string, tap: "zeroC
     ws.close();
     await server.close();
     for (const w of [machineLog, telemetryLog, takeLog, engineLogFile]) w.end();
+    await sleep(200);
+    meta["adapter"] =
+      readFileSync(join(out, "engine.log"), "utf8")
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .match(/gpu adapter selected adapter=(.*?) backend=/)?.[1] ?? null;
     writeFileSync(join(out, "meta.json"), JSON.stringify(meta, null, 2));
   }
   return meta;
@@ -455,20 +553,30 @@ async function main(): Promise<void> {
   if (again === undefined) {
     const minutes = Number(arg("minutes") ?? 30);
     const tap = arg("tap") === "cpu" ? "cpuReadback" : "zeroCopy";
-    const meta = await run(out, minutes, arg("state") ?? "unlabelled", tap);
+    const meta = await run(out, minutes, arg("state") ?? "unlabelled", tap, arg("gpu") === "low" ? "low" : "high");
     console.log(`R31 PROBE RUN: ${JSON.stringify(meta)}`);
   }
   const a = analyse(out);
-  const sighting = a.backwards.length > 0 || a.earlier.length > 0;
-  const verdict = sighting ? "SIGHTING" : a.repeats > 0 ? "HELD" : "CLEAN";
+  // Traced: clause 2 is exact, and every repeat is attributed (R33's, or
+  // stale). Untraced (an older run): clause 2 by index alone, repeats HELD.
+  const sighting = a.traced
+    ? a.backwards.length > 0 || a.stale.length > 0
+    : a.backwards.length > 0 || a.earlier.length > 0;
+  const verdict = sighting ? "SIGHTING" : !a.traced && a.repeats > 0 ? "HELD" : "CLEAN";
   writeFileSync(join(out, "result.json"), JSON.stringify({ ...a, verdict }, null, 2));
   console.log(
     `R31 PROBE READ: ${a.recordedFrames} recorded frames, ${a.takesRead} takes of the counter; ` +
       `backwards ${a.backwards.length}, earlier ${a.earlier.length}; repeats ${a.repeats}, skips ${a.skips}, ` +
       `short takes ${a.shortTakes.length}, other ${a.other}, black inside ${a.blackInside}`,
   );
+  if (a.traced) {
+    console.log(
+      `R31 PROBE TRACE: stale ${a.stale.length} (clause 2, exact); untraced frames ${a.untraced}; ` +
+        `R33: ${a.r33.repeats} repeated master frames, ${a.r33.skips} skipped`,
+    );
+  }
   if (sighting) {
-    console.log(`R31 PROBE: SIGHTING. First: ${JSON.stringify(a.backwards[0] ?? a.earlier[0])}. Kept in ${out}`);
+    console.log(`R31 PROBE: SIGHTING. First: ${JSON.stringify(a.stale[0] ?? a.backwards[0] ?? a.earlier[0])}. Kept in ${out}`);
     process.exitCode = 1;
   } else if (verdict === "HELD") {
     console.log(`R31 PROBE: HELD. No frame went backwards; ${a.repeats} frame(s) held (the slot reading of clause 2, the user's to rule). Kept in ${out}`);
