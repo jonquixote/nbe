@@ -278,8 +278,11 @@ async function run(out: string, minutes: number, stateLabel: string, tap: "zeroC
     tap,
     engine: ENGINE_BIN,
     // Every NBE_* variable the engine inherits: an experiment's switch is
-    // part of the run's identity.
-    engineEnv: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("NBE_"))),
+    // part of the run's identity. Never a credential (NBE_RENDER_TOKEN and its
+    // kind): the meta is evidence that may be quoted into the records.
+    engineEnv: Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => k.startsWith("NBE_") && !/TOKEN|SECRET|KEY|PASS|CRED/i.test(k)),
+    ),
     head: spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
     startedAt: new Date().toISOString(),
     machineAtStart: machine(),
