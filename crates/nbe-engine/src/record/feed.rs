@@ -62,6 +62,11 @@ pub fn should_skip_record_frame(render_elapsed: Duration, budget: Option<Duratio
 /// thread's: the View never waits for it.
 pub const DRAW_WAIT: Duration = Duration::from_secs(1);
 
+/// How often the record thread re-checks a draw it is waiting on. Each check
+/// is a zero-timeout poll; the thread sleeps between them (see [`DrawDone`]'s
+/// wait for why it never blocks inside wgpu).
+pub const DRAW_POLL: Duration = Duration::from_micros(500);
+
 /// A frame's View draw, as the GPU will report it done.
 ///
 /// R31: on the zero-copy path the View draws into a pool surface and the
@@ -82,6 +87,16 @@ pub trait AwaitDraw {
 /// The View draw's submission on the engine's device. `Device` and
 /// `SubmissionIndex` are both `Send + Sync`, so the record thread waits on the
 /// exact submission itself, and the render thread never does.
+///
+/// **It never blocks inside wgpu.** A blocking `poll(Wait)` holds the device's
+/// snatch lock for reading while it waits on the GPU (wgpu-core 30
+/// `Device::poll_and_return_closures` → `maintain`), and the render thread's
+/// own `poll(Poll)` on the frame path (`gpu.rs` `reclaim`) takes that lock for
+/// writing whenever a dropped resource awaits destruction. A late GPU would
+/// then hold the View behind the record thread's wait. So the wait is a
+/// zero-timeout `poll(Wait)` (a fence check: `WaitSucceeded`, or `Timeout`
+/// without blocking) repeated every [`DRAW_POLL`] until [`DRAW_WAIT`]: the lock
+/// is held for microseconds, and a late GPU delays the encode only.
 #[derive(Debug, Clone)]
 pub struct DrawDone {
     device: wgpu::Device,
@@ -96,12 +111,19 @@ impl DrawDone {
 
 impl AwaitDraw for DrawDone {
     fn wait(&self, timeout: Duration) -> bool {
-        self.device
-            .poll(wgpu::PollType::Wait {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.device.poll(wgpu::PollType::Wait {
                 submission_index: Some(self.submission.clone()),
-                timeout: Some(timeout),
-            })
-            .is_ok()
+                timeout: Some(Duration::ZERO),
+            }) {
+                Ok(_) => return true,
+                Err(wgpu::PollError::Timeout) if Instant::now() < deadline => {
+                    std::thread::sleep(DRAW_POLL);
+                }
+                Err(_) => return false,
+            }
+        }
     }
 }
 
