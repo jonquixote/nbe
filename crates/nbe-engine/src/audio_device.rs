@@ -161,6 +161,11 @@ impl DeviceSink {
         let data = move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
             // Real-time: the arrival instant, cpal's offset to playback, and
             // `copy_out` (atomics and copies only, SPEC §8.9).
+            let stall = cb_marks.stall_next_ms.swap(0, Ordering::Relaxed);
+            if stall > 0 {
+                // The forced-stall test seam (never set in production).
+                std::thread::sleep(Duration::from_millis(stall));
+            }
             let arrived = Instant::now();
             let ts = info.timestamp();
             let ahead = ts

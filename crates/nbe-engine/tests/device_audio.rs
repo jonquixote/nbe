@@ -558,3 +558,206 @@ fn the_limiter_ceiling_in_force_reaches_the_tick() {
         "no driver reported: the stub"
     );
 }
+
+// ------------------------------------------- the slip residual (D2's addition)
+
+/// Residual of `x` against the least-squares sine at `hz` (amplitude and
+/// phase fitted), in dB relative to the fitted tone.
+fn residual_db(x: &[f64], hz: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * hz / SAMPLE_RATE as f64;
+    let (mut ss, mut sc, mut cc, mut xs, mut xc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (n, &v) in x.iter().enumerate() {
+        let (s, c) = ((w * n as f64).sin(), (w * n as f64).cos());
+        ss += s * s;
+        sc += s * c;
+        cc += c * c;
+        xs += v * s;
+        xc += v * c;
+    }
+    let det = ss * cc - sc * sc;
+    let (a, b) = ((xs * cc - xc * sc) / det, (xc * ss - xs * sc) / det);
+    let (mut tone, mut resid) = (0.0, 0.0);
+    for (n, &v) in x.iter().enumerate() {
+        let fit = a * (w * n as f64).sin() + b * (w * n as f64).cos();
+        tone += fit * fit;
+        resid += (v - fit) * (v - fit);
+    }
+    10.0 * (resid / tone).log10()
+}
+
+/// The best residual over frequencies near `hz`: the fit's frequency freed,
+/// so what remains is the interpolation's own distortion, not the slip's
+/// intended 1/1600 re-timing.
+fn free_residual_db(x: &[f64], hz: f64) -> f64 {
+    (-40..=40)
+        .map(|k| residual_db(x, hz * (1.0 + k as f64 * 2.5e-5)))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// D2's addition (the user's ruling of 2026-10-21): the proving case carries
+/// a correction-audibility measure. The 999 Hz tone (`av_tone.mp4`'s
+/// frequency) at -12 dBFS goes through the production `Feeder` against a
+/// simulated device at +100 ppm, so slips are forced every ~0.2 s, and the
+/// stream it pushes is measured at the copy-out, where it is deterministic:
+/// - **the slip residual**, per re-spaced block, against a 999 Hz fit with
+///   the frequency fixed (the ruling's quantity: it includes the slip's own
+///   0.06 % re-timing) and with the frequency freed (the interpolation's
+///   distortion alone);
+/// - **the floor**, the same measures over blocks that did not slip;
+/// - **the join**: the largest sample step at any block boundary against the
+///   tone's own largest step.
+///
+/// The bounds are the build's proposal, set from this measurement.
+#[test]
+fn the_slip_residual_is_measured_and_bounded() {
+    const HZ: f64 = 999.0;
+    let amp = 0.25f64;
+    let mut feeder = Feeder::new(BLOCK);
+    let device_hz = SAMPLE_RATE as f64 * (1.0 + 100e-6);
+    let (mut written, mut read) = (0u64, 0u64);
+    let mut mark: Option<Mark> = None;
+    let mut stream: Vec<f64> = Vec::new();
+    let mut blocks: Vec<(usize, usize, bool)> = Vec::new(); // (start, len, slipped)
+    let mut rendered = vec![0.0f32; BLOCK * CHANNELS];
+    for k in 0..(20.0 * device_hz / 512.0) as u64 {
+        let t_ns = k as f64 * 512.0 / device_hz * 1e9;
+        while written - read < 2 * BLOCK as u64 {
+            let plan = feeder.plan(Some(0), written, mark, t_ns as u64, (written - read) + 883);
+            for (f, frame) in rendered.chunks_mut(CHANNELS).enumerate() {
+                let n = plan.base_sample + f as i64;
+                let v =
+                    amp * (2.0 * std::f64::consts::PI * HZ * n as f64 / SAMPLE_RATE as f64).sin();
+                frame.fill(v as f32);
+            }
+            let out = feeder.emit(&rendered, &plan, written);
+            let len = out.len() / CHANNELS;
+            blocks.push((stream.len(), len, len != BLOCK));
+            stream.extend(out.chunks(CHANNELS).map(|f| f[0] as f64));
+            written += len as u64;
+        }
+        mark = Some(Mark {
+            frame: read,
+            ns: (t_ns + 18.4e6) as u64,
+        });
+        read += 512;
+    }
+    let (mut slip_fixed, mut slip_free, mut floor_fixed): (f64, f64, f64) =
+        (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut slips = 0;
+    for &(start, len, slipped) in blocks.iter().skip(2) {
+        let x = &stream[start..start + len];
+        if slipped {
+            slips += 1;
+            slip_fixed = slip_fixed.max(residual_db(x, HZ));
+            slip_free = slip_free.max(free_residual_db(x, HZ));
+        } else {
+            floor_fixed = floor_fixed.max(residual_db(x, HZ));
+        }
+    }
+    let tone_step = 2.0 * std::f64::consts::PI * HZ / SAMPLE_RATE as f64 * amp;
+    let worst_join = blocks
+        .iter()
+        .skip(2)
+        .map(|&(start, _, _)| (stream[start] - stream[start - 1]).abs())
+        .fold(0.0, f64::max);
+    println!(
+        "SLIP-RESIDUAL slips={slips} fixed={slip_fixed:.1} dB free={slip_free:.1} dB floor={floor_fixed:.1} dB join={:.3}x the tone's largest step",
+        worst_join / tone_step
+    );
+    assert!(slips > 50, "+100 ppm over 20 s forces slips: {slips}");
+    assert!(
+        floor_fixed < -100.0,
+        "an unaltered block is the tone: {floor_fixed:.1} dB"
+    );
+    assert!(
+        slip_free < -80.0,
+        "the cubic re-spacing's own distortion: {slip_free:.1} dB"
+    );
+    assert!(
+        slip_fixed < -25.0,
+        "a slipped block against the fixed 999 Hz: the 1/1600 re-timing and nothing worse: {slip_fixed:.1} dB"
+    );
+    assert!(
+        worst_join <= tone_step * 1.01,
+        "no join steps further than the tone itself does: {:.3}x",
+        worst_join / tone_step
+    );
+}
+
+/// The device opens before the audio thread's first block. Its callbacks then
+/// play silence, and that is a stream not yet started, not an underrun: a
+/// false count at every boot was found on the normative machine (16 at one
+/// open). After the first push, a short callback counts.
+#[test]
+fn silence_before_the_first_block_is_not_an_underrun() {
+    let (mut p, mut c) = ring(8);
+    let marks = DeviceMarks::new();
+    let mut out = vec![1.0; 4 * CHANNELS];
+    copy_out(&mut c, &marks, &mut out, 0);
+    assert!(out.iter().all(|&v| v == 0.0), "silence");
+    assert_eq!(
+        marks.short_callbacks.load(Ordering::Relaxed),
+        0,
+        "not an underrun"
+    );
+    p.push(&[0.5; 2 * CHANNELS]);
+    copy_out(&mut c, &marks, &mut out, 1);
+    assert_eq!(
+        marks.short_callbacks.load(Ordering::Relaxed),
+        1,
+        "after the first block, a short callback is one"
+    );
+}
+
+/// A sink that keeps every block it is given.
+struct KeepSink(Arc<std::sync::Mutex<Vec<f32>>>);
+
+impl AudioSink for KeepSink {
+    fn write(&mut self, block: &[f32]) -> bool {
+        self.0.lock().unwrap().extend_from_slice(block);
+        true
+    }
+    fn block_frames(&self) -> usize {
+        BLOCK
+    }
+}
+
+/// SPEC v0.4.8 row 14's owed compensation: the master limiter's lookahead
+/// (245 frames, 5.1 ms) was carried by program out, the record and the stream
+/// "until the device-audio build compensates it". The driver now renders that
+/// far ahead, so an impulse taken at master frame 2 leaves the driver at the
+/// first frame of frame 2's block, not 245 frames into it.
+#[test]
+fn the_driver_compensates_the_limiters_lookahead() {
+    let state = Arc::new(EngineState::new(30));
+    let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut driver = AudioDriver::new(state, Box::new(KeepSink(kept.clone())), 30);
+    let mut impulse = vec![0.0f32; 4800 * CHANNELS];
+    impulse[0] = 0.5;
+    impulse[1] = 0.5;
+    driver.graph.set_source(
+        nbe_engine::audio::BusId::Clip,
+        vec![nbe_engine::audio::Source::Pcm {
+            samples: Arc::new(impulse),
+            t0: 2,
+            looping: false,
+            gain: 1.0,
+        }],
+    );
+    for f in 0..4 {
+        driver.cycle(f);
+    }
+    let out = kept.lock().unwrap().clone();
+    let peak = out
+        .chunks(CHANNELS)
+        .enumerate()
+        .max_by(|a, b| a.1[0].abs().partial_cmp(&b.1[0].abs()).unwrap())
+        .map(|(i, _)| i)
+        .unwrap();
+    assert_eq!(
+        peak,
+        2 * BLOCK,
+        "the impulse due at master frame 2 leaves at frame 2's first sample (the lookahead is {} frames)",
+        driver.graph.latency_frames()
+    );
+}

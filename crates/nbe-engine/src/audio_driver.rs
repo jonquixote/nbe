@@ -226,6 +226,9 @@ pub struct AudioDriver {
     device_skew_ms: Option<f64>,
     /// Blocks the ring could not take whole (the device stopped consuming).
     pub overruns: u64,
+    /// Underrun episodes begun on the device (§8.10: each one's first is
+    /// logged).
+    pub episodes: u64,
 }
 
 /// Whether the wanted tap differs from the attached one (by pointer).
@@ -276,6 +279,7 @@ impl AudioDriver {
             last_callback_seen: Instant::now(),
             device_skew_ms: None,
             overruns: 0,
+            episodes: 0,
         }
     }
 
@@ -347,7 +351,14 @@ impl AudioDriver {
         self.sync_stream_tap();
         self.drain_commands();
 
-        self.graph.render(&mut self.block, master_frame);
+        // Render the master limiter's lookahead ahead (SPEC §8.2's note,
+        // v0.4.8 row 14: "5 ms in recordings until the device-audio build
+        // compensates it"): the block that leaves the limiter is then the one
+        // due at `master_frame`, for program out, the record tap and the
+        // stream tap alike.
+        let base = self.graph.sample_for_master_frame(master_frame, 0)
+            + self.graph.latency_frames() as i64;
+        self.graph.render_at(&mut self.block, base);
         if !self.sink.write(&self.block) {
             // SPEC §8.10: a block the sink could not take is an underrun. It
             // is counted and never touches the video watchdog.
@@ -412,7 +423,11 @@ impl AudioDriver {
                 marks.ns_of(Instant::now()),
                 lead,
             );
-            self.graph.render_at(&mut self.block, plan.base_sample);
+            // The limiter's lookahead rendered ahead, as in `cycle`: the frames
+            // that leave the graph are the master samples the plan maps them to.
+            let lead = self.graph.latency_frames() as i64;
+            self.graph
+                .render_at(&mut self.block, plan.base_sample + lead);
             let out = self.feeder.emit(&self.block, &plan, next);
             let dev = self.sink.device().expect("checked above");
             if dev.producer.push(out) < out.len() {
@@ -450,6 +465,7 @@ impl AudioDriver {
                 .last_underrun
                 .is_none_or(|t| now.duration_since(t) > EPISODE_GAP);
             if episode {
+                self.episodes += 1;
                 tracing::warn!(
                     device = %name,
                     short_callbacks = new_short,

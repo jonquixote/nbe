@@ -67,6 +67,11 @@ pub struct DeviceMarks {
     pub xruns: AtomicU64,
     /// The device went away (unplugged, invalidated).
     pub lost: AtomicBool,
+    /// Test seam for the normative machine's forced-stall case: the next
+    /// callback sleeps this many ms before copying out, which the HAL reports
+    /// as an overload (design record §2.3's method). Never set in production;
+    /// the callback's cost is one atomic swap.
+    pub stall_next_ms: AtomicU64,
 }
 
 impl DeviceMarks {
@@ -81,6 +86,7 @@ impl DeviceMarks {
             short_frames: AtomicU64::new(0),
             xruns: AtomicU64::new(0),
             lost: AtomicBool::new(false),
+            stall_next_ms: AtomicU64::new(0),
         })
     }
 
@@ -142,9 +148,17 @@ pub fn copy_out(
     presented_ns: u64,
 ) {
     marks.mark(consumer.read_frames(), presented_ns);
+    let started = consumer.started();
     let n = consumer.pop_into(out);
     if n < out.len() {
         out[n..].fill(0.0);
+        if !started {
+            // The device opened before the audio thread's first block: the
+            // stream has not started, and its silence is not an underrun
+            // (found on the normative machine: 16 such callbacks counted
+            // at an open, which would read as underruns at every boot).
+            return;
+        }
         marks.short_callbacks.fetch_add(1, Ordering::Relaxed);
         marks
             .short_frames
@@ -249,6 +263,10 @@ pub struct Feeder {
     /// Test seam: the slip disabled, or its sign reversed (M-slip-off,
     /// M-slip-sign).
     pub slip_gain: i32,
+    /// Test seam for the normative loopback's slip-residual case: a ppm the
+    /// planner adds to the device's clock. VB-Cable is clocked from the host
+    /// (0 ppm, design record §2.4), so corrections through it must be forced.
+    pub inject_ppm: f64,
 }
 
 impl Feeder {
@@ -264,6 +282,7 @@ impl Feeder {
             duplicates: 0,
             realigns: 0,
             slip_gain: 1,
+            inject_ppm: 0.0,
         }
     }
 
@@ -301,7 +320,7 @@ impl Feeder {
         let heard = match mark {
             Some(m) => m.ns as f64 + next_ring_frame.saturating_sub(m.frame) as f64 * NS_PER_SAMPLE,
             None => now_ns as f64 + fallback_lead_frames as f64 * NS_PER_SAMPLE,
-        };
+        } * (1.0 + self.inject_ppm * 1e-6);
         let anchor = |heard: f64| ((heard - epoch as f64) / NS_PER_SAMPLE).round() as i64;
         if self.anchored != Some(epoch) || self.cursor.is_none() {
             // The clock started: the cursor starts at the master sample due

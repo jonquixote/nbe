@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# The device-audio design record's D7: CI's audio is the silent sink, set
+# explicitly, so it stays deterministic whether or not a runner happens to
+# have an output device. Every test harness defaults to it as well; the
+# engine's own default is `device`.
+env:
+  NBE_AUDIO_SINK: "null"
+
 jobs:
   rust:
     runs-on: macos-14
@@ -982,6 +989,32 @@ jobs:
           if [ "$exercised" -lt 1 ]; then
             echo "FAIL automation_rules: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: "the device-audio suite actually ran (the device-audio design record, D1, D2, D7)"
+        # The CI surface D7 rules: the ring, the callback's copy-out (no
+        # allocation), the slip holding ±1 ms over a simulated 30 minutes at
+        # ±12.76 and ±100 ppm (and its control), the slip residual at the
+        # copy-out, the rate guard's table, the sink choice and its fallback,
+        # and the driver's underruns, drift, loss and ceiling. Runner-
+        # independent, no device opened: floors equal. Opening a device is
+        # the normative machine's (`device_audio_hw`).
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test device_audio -- --nocapture 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL device_audio: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "device_audio: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=19 exercised>=19)"
+          if [ "$ran" -lt 19 ]; then
+            echo "FAIL device_audio: expected at least 19 tests to run, got $ran"; exit 1
+          fi
+          if [ "$exercised" -lt 19 ]; then
+            echo "FAIL device_audio: expected at least 19 tests to actually execute rather than skip, got $exercised"; exit 1
+          fi
       - name: "R10 load capture: after the floor steps, every sample"
         if: always()
         continue-on-error: true
@@ -990,6 +1023,15 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-floor-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the floor-step samples, every 10 s from the line before the first floor step:" || true
           cat "$RUNNER_TEMP/ci-load-floor-samples.log" 2>/dev/null || echo "[ci-load] no floor-step samples file" || true
+      - name: audio devices on this runner (OBSERVATIONAL - reports, does not gate)
+        # The device-audio design record's §5 unknown: whether a macos-14
+        # runner has an output device at all, and what cpal sees there. Lists
+        # and asserts nothing; the device cases in `device_audio_hw` print
+        # `SKIP normative:` here (CI is never the normative machine).
+        continue-on-error: true
+        run: |
+          system_profiler SPAudioDataType 2>&1 || true
+          cargo test -p nbe-engine --test device_audio_hw -- --nocapture 2>&1 || true
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
@@ -1692,7 +1734,7 @@ jobs:
           if [ "$ran" -lt 29 ]; then
             echo "FAIL: expected at least 29 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 18 ]; then
+          if [ "$exercised" -lt 19 ]; then
             echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1
           fi
       - name: failure artifacts

@@ -109,6 +109,13 @@ impl RingConsumer {
         n
     }
 
+    /// Whether the producer has ever pushed: before its first block, the
+    /// device plays the silence of a stream that has not started, not an
+    /// underrun.
+    pub fn started(&self) -> bool {
+        self.shared.written.load(Ordering::Acquire) > 0
+    }
+
     /// Frames ever popped: the ring index of the next frame the device plays.
     pub fn read_frames(&self) -> u64 {
         self.shared.read.load(Ordering::Relaxed) / CHANNELS as u64
