@@ -562,6 +562,7 @@ jobs:
         # PR #30 exercised 1 of 13 here (§2c).
         run: |
           set -u
+          echo "THROWAWAY: the floor-step capture's failure-path proof; this step exits 1 after 25 s, before cargo runs"; sleep 25; exit 1
           out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1) && rc=0 || rc=$?
           echo "$out"
           if [ "$rc" -ne 0 ]; then echo "FAIL prompt10_rtmp: cargo test exited $rc (the output is above)"; exit "$rc"; fi
