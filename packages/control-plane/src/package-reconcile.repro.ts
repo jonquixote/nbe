@@ -130,6 +130,12 @@ function logSince(mark: number): string[] {
 }
 
 async function main(): Promise<void> {
+  // Under inflated load preflight's media decode slows past its 60 s floor
+  // (48 busy processes on 12 hardware threads starved the first show.load's
+  // preflight outright). The measurement here is the reconnect's reload, not
+  // preflight's speed, so the reproducer gives preflight 300 s unless told
+  // otherwise, through the control plane's own knob; the meta records it.
+  process.env["NBE_PREFLIGHT_TIMEOUT_MS"] ??= "300000";
   mkdirSync(OUT, { recursive: true });
   const runs = createWriteStream(join(OUT, "runs.jsonl"));
   const engineFile = createWriteStream(join(OUT, "engine.log"));
@@ -141,6 +147,7 @@ async function main(): Promise<void> {
     engine: ENGINE_BIN,
     package: DRESS,
     boundMs: BOUND_MS,
+    preflightTimeoutMs: Number(process.env["NBE_PREFLIGHT_TIMEOUT_MS"]),
     startedAt: new Date().toISOString(),
     loadAtStart: loadavg(),
   };
