@@ -71,7 +71,12 @@ pub enum RecordMsg {
     /// record frames simply never reach the encoder, so the take's timeline
     /// stays continuous — and continuous against the audio timeline, which
     /// counts retained packets the same way.
-    Frame { rgba: Vec<u8> },
+    Frame {
+        rgba: Vec<u8>,
+        /// The master frame the View drew, when the loop knows it (the record
+        /// trace's join; `None` from callers that do not).
+        frame: Option<u64>,
+    },
     /// A shared IOSurface the compositor drew into, handed over WITHOUT a
     /// copy (ZERO-COPY Phase 3b). The `Arc` is the pool's loan: dropping it
     /// here is what returns the surface to the free list, so the encoder
@@ -79,6 +84,11 @@ pub enum RecordMsg {
     /// allowed to draw the next one into it.
     Surface {
         surface: Arc<nbe_decode::zerocopy::SharedSurface>,
+        /// R31: the View draw into `surface`. The thread waits on it before
+        /// the encoder reads the surface.
+        drawn: crate::record::DrawDone,
+        /// The master frame the View drew (the record trace's join).
+        frame: u64,
     },
     /// A pre-encoded unit (TEST SEAM ONLY): feeds the writer without hardware
     /// video, so finish/sidecar/stop paths stay hermetic where VideoToolbox is
@@ -169,6 +179,54 @@ struct Drive {
     writer: Option<RecordingWriter>,
     video_units: u64,
     keyframe_seen: bool,
+    /// `NBE_RECORD_TRACE`: one line per handed-off frame (R31's probe).
+    trace: Option<RecordTrace>,
+}
+
+/// The record trace (`NBE_RECORD_TRACE=<file>`, a measurement knob, off by
+/// default): one line per frame the loop handed off, naming the master frame
+/// the View drew, the path, whether the draw's completion was awaited, whether
+/// the encoder took the frame, and the encoder's submit count after it. The
+/// record path's PTS is that count (`frame_index / fps`), so every frame in the
+/// recording joins to the master frame it was drawn at. R31's probe reads it.
+struct RecordTrace {
+    out: std::io::BufWriter<std::fs::File>,
+}
+
+impl RecordTrace {
+    fn from_env() -> Option<Self> {
+        let path = std::env::var_os("NBE_RECORD_TRACE")?;
+        match std::fs::File::create(&path) {
+            Ok(f) => Some(Self {
+                out: std::io::BufWriter::new(f),
+            }),
+            Err(e) => {
+                tracing::warn!(err = %e, "NBE_RECORD_TRACE: cannot create the trace file; no trace");
+                None
+            }
+        }
+    }
+
+    fn line(
+        &mut self,
+        kind: &str,
+        frame: Option<u64>,
+        waited: &str,
+        submitted: bool,
+        submits: u64,
+    ) {
+        use std::io::Write;
+        let frame = frame.map(|f| f.to_string()).unwrap_or_else(|| "-".into());
+        let _ = writeln!(
+            self.out,
+            "{kind} frame={frame} waited={waited} submitted={submitted} submits={submits}"
+        );
+    }
+
+    fn flush(&mut self) {
+        use std::io::Write;
+        let _ = self.out.flush();
+    }
 }
 
 fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
@@ -197,6 +255,7 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
         writer: None,
         video_units: 0,
         keyframe_seen: false,
+        trace: RecordTrace::from_env(),
     };
     // Eager open, off the loop: a missing encoder is known before the first
     // frame rather than discovered mid-take. The forced-unavailable seam
@@ -266,14 +325,18 @@ impl Drive {
 
     fn handle_msg(&mut self, msg: RecordMsg) -> Result<(), SessionError> {
         match msg {
-            RecordMsg::Frame { rgba } => {
+            RecordMsg::Frame { rgba, frame } => {
                 let Some(enc) = self.encoder.as_mut() else {
                     // No encoder (failed open): shed the frame, count it, keep
                     // the take alive for `Unit`s / a loud stop.
                     self.count_skip();
                     return Ok(());
                 };
-                match enc.encode_rgba(&rgba) {
+                let encoded = enc.encode_rgba(&rgba);
+                if let Some(t) = self.trace.as_mut() {
+                    t.line("frame", frame, "-", encoded.is_ok(), enc.submitted_frames());
+                }
+                match encoded {
                     Ok(units) => {
                         self.capture_sets();
                         for u in &units {
@@ -288,7 +351,11 @@ impl Drive {
                     }
                 }
             }
-            RecordMsg::Surface { surface } => {
+            RecordMsg::Surface {
+                surface,
+                drawn,
+                frame,
+            } => {
                 let Some(enc) = self.encoder.as_mut() else {
                     self.count_skip();
                     return Ok(());
@@ -298,7 +365,34 @@ impl Drive {
                 // row-by-row swizzle. Everything after — parameter-set capture,
                 // the push, the shed-on-refusal policy — is identical, because
                 // the path a frame took must not change what the take is.
-                match enc.encode_pixel_buffer(surface.pixel_buffer()) {
+                //
+                // R31: and it reads it only once the GPU has finished drawing
+                // into it. A draw the GPU had not finished recorded the picture
+                // the surface held before. A draw that does not finish within
+                // DRAW_WAIT is a skip, never an encode.
+                let encoded = crate::record::encode_after_draw(&drawn, || {
+                    enc.encode_pixel_buffer(surface.pixel_buffer())
+                });
+                if let Some(t) = self.trace.as_mut() {
+                    let waited = if encoded.is_some() { "ok" } else { "timeout" };
+                    let submitted = matches!(encoded, Some(Ok(_)));
+                    t.line(
+                        "surface",
+                        Some(frame),
+                        waited,
+                        submitted,
+                        enc.submitted_frames(),
+                    );
+                }
+                let Some(encoded) = encoded else {
+                    tracing::warn!(
+                        frame,
+                        "record: the View's draw did not finish within DRAW_WAIT; frame skipped"
+                    );
+                    self.count_skip();
+                    return Ok(());
+                };
+                match encoded {
                     Ok(units) => {
                         self.capture_sets();
                         for u in &units {
@@ -401,6 +495,9 @@ impl Drive {
     /// Graceful finish: snapshot markers, finalize file + always-sidecar (or
     /// fail loudly), clear the take's markers, report.
     fn finish_take(&mut self) -> SessionResult {
+        if let Some(t) = self.trace.as_mut() {
+            t.flush();
+        }
         // Drain the tail audio the take actually captured before finalizing.
         if let Some(w) = self.writer.as_mut() {
             let drained = self.tap.drain();
@@ -439,6 +536,9 @@ impl Drive {
     /// Immediate end (`force=true`): no finish, no sidecar — the file keeps
     /// whatever fragments flushed, as-is. The take still ends (markers out).
     fn abandon_take(&mut self) -> SessionResult {
+        if let Some(t) = self.trace.as_mut() {
+            t.flush();
+        }
         crate::record::markers::clear();
         Ok(self.output_path.clone())
     }

@@ -385,12 +385,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=12 exercised>=4)"
-          if [ "$ran" -lt 12 ]; then
-            echo "FAIL zerocopy_tap: expected at least 12 tests to run, got $ran"; exit 1
+          echo "zerocopy_tap: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=15 exercised>=7)"
+          if [ "$ran" -lt 15 ]; then
+            echo "FAIL zerocopy_tap: expected at least 15 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 4 ]; then
-            echo "FAIL zerocopy_tap: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 7 ]; then
+            echo "FAIL zerocopy_tap: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
           if [ "$skipped" -gt 0 ]; then
             echo "============================================================"

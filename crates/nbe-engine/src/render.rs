@@ -304,6 +304,10 @@ pub struct RenderLoop {
     /// starts N+1. The pool supersedes that phrasing, so the retarget is per
     /// frame and this field is set and cleared around each one.
     view_surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
+    /// R31: this frame's View draw, as the GPU will report it done. Set by the
+    /// View's submit and cleared at the start of every frame, so a View that
+    /// failed to draw hands on no index from an earlier frame.
+    view_submission: Option<wgpu::SubmissionIndex>,
 }
 
 impl RenderLoop {
@@ -378,6 +382,7 @@ impl RenderLoop {
             late_at_rung1: 0,
             view_failing: false,
             view_surface: None,
+            view_submission: None,
         };
         me.sync_package();
         Ok(me)
@@ -802,6 +807,7 @@ impl RenderLoop {
     /// The View renders unconditionally — including while the clock is
     /// STOPPED, where the engine still owes the operator a picture.
     pub fn render_frame(&mut self, frame: u64, deadline: Option<Duration>) -> FrameReport {
+        self.view_submission = None;
         self.sync_package();
 
         let rung = self.state.rung();
@@ -844,7 +850,8 @@ impl RenderLoop {
             std::thread::sleep(d);
         }
         match self.render_bus(Bus::View, frame) {
-            Ok(()) => {
+            Ok(submission) => {
+                self.view_submission = Some(submission);
                 // Recovery is worth exactly one line too.
                 if self.view_failing {
                     tracing::info!(frame, "view render recovered");
@@ -1012,6 +1019,14 @@ impl RenderLoop {
         }
     }
 
+    /// R31: the submission that drew this frame's View, when it drew. The
+    /// zero-copy tap waits on it before the encoder reads the surface: the
+    /// GPU completes a submission after `submit` returns, and an encoder that
+    /// reads first records the picture the surface held before.
+    pub fn view_submission(&self) -> Option<wgpu::SubmissionIndex> {
+        self.view_submission.clone()
+    }
+
     /// Point the View at a shared surface for the next frame, or back at the
     /// built-in target with `None`.
     ///
@@ -1039,7 +1054,7 @@ impl RenderLoop {
         Ok(())
     }
 
-    fn render_bus(&self, bus: Bus, frame: u64) -> anyhow::Result<()> {
+    fn render_bus(&self, bus: Bus, frame: u64) -> anyhow::Result<wgpu::SubmissionIndex> {
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
         }
@@ -1156,8 +1171,7 @@ impl RenderLoop {
                 pass.draw(0..6, 0..1);
             }
         }
-        self.gpu.queue.submit([enc.finish()]);
-        Ok(())
+        Ok(self.gpu.queue.submit([enc.finish()]))
     }
 
     fn draw_for(
