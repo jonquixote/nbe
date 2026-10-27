@@ -107,6 +107,15 @@ impl DrawDone {
     pub fn new(device: wgpu::Device, submission: wgpu::SubmissionIndex) -> Self {
         Self { device, submission }
     }
+
+    /// This frame's View draw, to wait on before an encoder reads the surface
+    /// it drew into: `None` when the View did not draw this frame. The record
+    /// loan (R31) and the stream handoff (R35) both take it from here.
+    pub fn of_view(render: &crate::render::RenderLoop) -> Option<Self> {
+        render
+            .view_submission()
+            .map(|s| Self::new(render.gpu.device.clone(), s))
+    }
 }
 
 impl AwaitDraw for DrawDone {
@@ -273,9 +282,7 @@ impl TapLoan {
     pub fn mark_drawn(&mut self, render: &crate::render::RenderLoop, frame: u64) {
         self.frame = Some(frame);
         if self.surface.is_some() {
-            self.drawn = render
-                .view_submission()
-                .map(|s| DrawDone::new(render.gpu.device.clone(), s));
+            self.drawn = DrawDone::of_view(render);
         }
     }
 

@@ -11,7 +11,7 @@
 //! ```text
 //! loop:    draw → hand_off_stream_surface (try_send Arc, never waits) ──╮
 //!                                                                      ▼
-//! thread:  Surface → encode_pixel_buffer_at (VideoToolbox, zero-copy) → FLV ─┐
+//! thread:  Surface → (its draw done) → encode_pixel_buffer_at (VT, zero-copy) → FLV ─┐
 //!          tap.drain() → AacEncoder → FLV ───────────────────────────────────┤
 //!                                                                            ▼
 //! task:                                          PublisherHandle (RTMP, tokio)
@@ -83,7 +83,7 @@ use super::rtmp::{
     AUDIO_BITRATE_BPS, VIDEO_BITRATE_BPS,
 };
 use crate::record::tap_path::Selection;
-use crate::record::AudioTap;
+use crate::record::{encode_after_draw, AudioTap, AwaitDraw, DrawDone};
 
 /// Frames in flight between the loop and the stream thread (the record
 /// `RECORD_CHANNEL_BOUND` shape). Beyond it the handoff sheds and counts a
@@ -306,10 +306,12 @@ impl StreamParams {
 /// One unit of stream work from the loop.
 #[derive(Debug)]
 pub enum StreamMsg {
-    /// A surface the compositor drew, loaned without a copy, with the master
-    /// frame it was drawn for (the stream's video timeline).
+    /// A surface the compositor drew, loaned without a copy, with the draw
+    /// to wait on before the encoder reads it (R35) and the master frame it
+    /// was drawn for (the stream's video timeline).
     Surface {
         surface: Arc<SharedSurface>,
+        drawn: DrawDone,
         frame: u64,
     },
 }
@@ -808,20 +810,34 @@ fn maybe_spawn_publisher(endpoint: &str, envelope_bps: u64) -> Option<PublisherH
 }
 
 /// The loop's whole stream cost: one bounded `try_send` of the drawn
-/// surface's `Arc`. Never waits, never encodes.
+/// surface's `Arc`, with the draw the stream thread waits on. Never waits,
+/// never encodes.
 ///
 /// A full channel is a stream drop — counted on `skipped_stream_frames`,
 /// never a record skip or a View drop (G1); the `Arc` is dropped here, which
 /// is the frame given up. A disconnected channel means the stream thread
 /// already stopped (a `stream.stop` landed mid-tick): the stream is over, not
 /// dropping frames, so nothing is counted. Returns whether the frame went.
+///
+/// R35: a surface with no draw to wait on (the View did not draw this frame)
+/// is never handed off, so no encoder can read a surface nothing finished
+/// drawing into: a stream drop, counted.
 pub fn hand_off_stream_surface(
     tx: &SyncSender<StreamMsg>,
     surface: Arc<SharedSurface>,
+    drawn: Option<DrawDone>,
     frame: u64,
     skipped: &AtomicU64,
 ) -> bool {
-    match tx.try_send(StreamMsg::Surface { surface, frame }) {
+    let Some(drawn) = drawn else {
+        skipped.fetch_add(1, Ordering::SeqCst);
+        return false;
+    };
+    match tx.try_send(StreamMsg::Surface {
+        surface,
+        drawn,
+        frame,
+    }) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             skipped.fetch_add(1, Ordering::SeqCst);
@@ -829,6 +845,29 @@ pub fn hand_off_stream_surface(
         }
         Err(TrySendError::Disconnected(_)) => false,
     }
+}
+
+/// The stream thread's encode, only once the View's draw into the surface is
+/// done (R35, on R31's mechanics): the encoder never reads a surface the GPU
+/// has not finished drawing into. A draw that does not finish within
+/// [`DRAW_WAIT`](crate::record::DRAW_WAIT) is a stream drop, counted, never an
+/// encode. The wait is the stream thread's: the View never waits, and a late
+/// GPU delays the encode only.
+fn encode_when_drawn<R>(
+    drawn: &dyn AwaitDraw,
+    skipped: &AtomicU64,
+    frame: u64,
+    encode: impl FnOnce() -> R,
+) -> Option<R> {
+    let encoded = encode_after_draw(drawn, encode);
+    if encoded.is_none() {
+        tracing::warn!(
+            frame,
+            "stream thread: the View's draw did not finish in time; frame dropped"
+        );
+        skipped.fetch_add(1, Ordering::SeqCst);
+    }
+    encoded
 }
 
 // ---------------------------------------------------------------------------
@@ -959,7 +998,11 @@ impl StreamThread {
                 Err(TryRecvError::Empty) => {}
             }
             match a.frame_rx.recv_timeout(AUDIO_POLL) {
-                Ok(StreamMsg::Surface { surface, frame }) => self.encode_video(a, surface, frame),
+                Ok(StreamMsg::Surface {
+                    surface,
+                    drawn,
+                    frame,
+                }) => self.encode_video(a, surface, &drawn, frame),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -971,7 +1014,13 @@ impl StreamThread {
         a.skipped.fetch_add(n, Ordering::SeqCst);
     }
 
-    fn encode_video(&mut self, a: &StreamThreadArgs, surface: Arc<SharedSurface>, frame: u64) {
+    fn encode_video(
+        &mut self,
+        a: &StreamThreadArgs,
+        surface: Arc<SharedSurface>,
+        drawn: &dyn AwaitDraw,
+        frame: u64,
+    ) {
         let Some(enc) = self.encoder.as_mut() else {
             Self::drop_frame(a, 1);
             return;
@@ -981,15 +1030,21 @@ impl StreamThread {
             Self::drop_frame(a, 1);
             return;
         };
-        let started = Instant::now();
-        let result = enc.encode_pixel_buffer_at(surface.pixel_buffer(), pts_index);
-        a.stats
-            .encode_us_total
-            .fetch_add(started.elapsed().as_micros() as u64, Ordering::SeqCst);
+        let encoded = encode_when_drawn(drawn, &a.skipped, frame, || {
+            let started = Instant::now();
+            let result = enc.encode_pixel_buffer_at(surface.pixel_buffer(), pts_index);
+            a.stats
+                .encode_us_total
+                .fetch_add(started.elapsed().as_micros() as u64, Ordering::SeqCst);
+            result
+        });
         // Our hold ends here, before publishing. VideoToolbox may still hold
         // the buffer; the pool's free rule waits for that release, so this
         // drop is the Rust half of the loan's return, not the whole of it.
         drop(surface);
+        let Some(result) = encoded else {
+            return;
+        };
         let units = match result {
             Ok(units) => units,
             Err(e) => {
@@ -1447,5 +1502,68 @@ mod tests {
         assert_eq!(&flv_video_tag(&key)[..5], &[0x17, 0x01, 0x00, 0x00, 0x00]);
         assert_eq!(&flv_video_tag(&inter)[..5], &[0x27, 0x01, 0x00, 0x00, 0x00]);
         assert_eq!(&flv_video_tag(&key)[5..], &[0x01, 0x02]);
+    }
+
+    /// R35's stand-in for the View's draw: logs each wait, and reports
+    /// whether the draw finished.
+    struct FakeDraw<'a> {
+        done: bool,
+        log: &'a std::cell::RefCell<Vec<String>>,
+    }
+
+    impl AwaitDraw for FakeDraw<'_> {
+        fn wait(&self, timeout: Duration) -> bool {
+            self.log.borrow_mut().push(format!("wait {timeout:?}"));
+            self.done
+        }
+    }
+
+    #[test]
+    fn the_stream_encoder_reads_a_surface_only_after_its_draw_completes() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let skipped = AtomicU64::new(0);
+        let drawn = FakeDraw {
+            done: true,
+            log: &log,
+        };
+        let out = encode_when_drawn(&drawn, &skipped, 42, || {
+            log.borrow_mut().push("encode".into());
+            7
+        });
+        assert_eq!(out, Some(7));
+        assert_eq!(
+            *log.borrow(),
+            vec![format!("wait {:?}", crate::record::DRAW_WAIT), "encode".to_string()],
+            "R35: the stream thread waits on the View's draw first, bounded by DRAW_WAIT, then encodes"
+        );
+        assert_eq!(
+            skipped.load(Ordering::SeqCst),
+            0,
+            "a finished draw is no stream drop"
+        );
+    }
+
+    #[test]
+    fn a_stream_draw_that_never_completes_is_a_counted_drop_never_an_encode() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let skipped = AtomicU64::new(0);
+        let drawn = FakeDraw {
+            done: false,
+            log: &log,
+        };
+        let out = encode_when_drawn(&drawn, &skipped, 42, || {
+            log.borrow_mut().push("encode".into());
+        });
+        assert_eq!(out, None, "an unfinished draw is no encode");
+        assert_eq!(
+            *log.borrow(),
+            vec![format!("wait {:?}", crate::record::DRAW_WAIT)],
+            "R35: a surface the GPU has not finished drawing is never encoded"
+        );
+        assert_eq!(
+            skipped.load(Ordering::SeqCst),
+            1,
+            "R35: the frame given up is a stream drop, counted"
+        );
     }
 }

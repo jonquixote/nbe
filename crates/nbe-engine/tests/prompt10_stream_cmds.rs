@@ -999,7 +999,13 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
 
     // Dirty the stream counters through the loop's own handoff (no state
     // writes): three surfaces offered to a channel with no room are three
-    // stream drops on the live stream's counter.
+    // stream drops on the live stream's counter. Each carries a real draw
+    // (R35), so the channel is what drops them.
+    let mut render = RenderLoop::new(state.clone())
+        .await
+        .expect("a render loop on the chain");
+    let _ = render.render_frame(0, None);
+    let drawn = nbe_engine::record::DrawDone::of_view(&render).expect("the View drew frame 0");
     {
         let guard = state.stream_session.lock().unwrap();
         let sess = guard.as_ref().expect("stream session must be live");
@@ -1013,6 +1019,7 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
             assert!(!stream_glue::hand_off_stream_surface(
                 &full,
                 surface.clone(),
+                Some(drawn.clone()),
                 frame,
                 &state.skipped_stream_frames,
             ));
