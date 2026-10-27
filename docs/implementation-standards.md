@@ -235,6 +235,12 @@ job id and the original `started_at` and log; it is not a run.
   normative:'` carries the pattern, so a plain count of `SKIP normative:`
   read 9 where the tests printed 8. Count the tests' lines, never the
   script's. A count gate is unaffected: it counts tests, not these lines.
+- **A reading reports the kept summary's printed figure** (the user's
+  rulings of 2026-10-26, on #74's two-key pass and its bookend: the 1 ms in
+  a median is convention). The R32 reproducer prints the upper of the two
+  middle values as its median (3870 over 50 runs); a figure the reading
+  re-derives (3869, the middle pair's mean rounded half up) is noted as
+  re-derived.
 
 ## 2c. Records and mandated text
 
