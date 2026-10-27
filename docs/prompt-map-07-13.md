@@ -788,6 +788,12 @@ adopt and record).
   | `40266562638`, main at `0421933` (PR #68's merge), green (549/0/4) | the workspace tests: the test build finished at 03:58:52.58 (`Finished` in 53.08 s); the post line at 04:00:07 | whole step 4.46–9.68 (pre, 13 samples, post). While building: 9.68 (the pre line, load1 29.05), 8.38, 7.50, 7.42, 7.10, 6.74. While the tests ran: 5.86, 5.24, 4.56, 4.46, 4.87, 4.96, 4.89, then the post line's 5.38, so 4.46–5.86. The R10 test passed at 03:59:22.91, between 4.56 and 4.46. The 59th |
   | `40284114106`, PR #70 at `52371e8` (its head), green (580/0/5) | the workspace tests: the test build finished at 07:15:08.79 (`Finished` in 2m 54s: #70 changed `Cargo.lock`, so rust-cache missed); the post line at 07:16:36 | whole step 2.48–8.08 (pre, 26 samples, post). While building: 2.48, 3.35, 4.42, 4.74, 4.14, 4.41, 3.91, 4.02, 4.19, 3.83, 3.42, 3.05, 3.56, 4.41, 5.19, 6.56, 7.47, 8.02. While the tests ran: 8.08, 7.88, 7.35, 6.46, 6.52, 5.91, 6.01, 5.56, then the post line's 5.57, so 5.56–8.08. The R10 test passed at 07:15:44.95, between 7.35 and 6.46. The 60th |
   | `40293707305`, main at `0132d07` (PR #70's merge); the workspace step green (580/0/5), the run red on control-plane (R32's sighting 2) | the workspace tests: the test build finished at 08:42:23.90 (`Finished` in 1m 49s); the post line at 08:43:23 | whole step 2.68–4.57 (pre, 17 samples, post). While building: 4.57 (the pre line, load1 13.71), 4.51, 3.99, 3.59, 3.23, 3.00, 3.06, 2.95, 2.73, 2.94, 3.91. While the tests ran: 3.96, 3.38, 3.70, 3.29, 3.01, 2.87, then the post line's 2.68, so 2.68–3.96. The R10 test passed at 08:42:49.47, between 3.70 and 3.29. The 61st |
+  | `40299126313`, PR #71 at `9965d1e` (its head), green (580/0/5) | the workspace tests: the test build finished at 09:29:22.25 (`Finished` in 33.77 s); the post line at 09:30:23 | whole step 3.91–7.47 (pre, 10 samples, post). While building: 7.47 (the pre line, load1 22.40), 6.52, 6.27, 6.24. While the tests ran: 5.40, 5.45, 5.30, 5.18, 4.59, 3.96, then the post line's 3.91, so 3.91–5.45. The R10 test passed at 09:29:49.60, between 5.30 and 5.18. The 62nd |
+  | `40351769240`, PR #71 at `ba68033` (its head), green (580/0/5) | the workspace tests: the test build finished at 15:53:21.02 (`Finished` in 48.54 s); the post line at 15:54:30 | whole step 4.06–7.78 (pre, 12 samples, post). While building: 7.12 (the pre line, load1 21.37), 6.31, 7.04, 7.07, 7.52. While the tests ran: 7.78, 6.69, 5.76, 4.93, 4.30, 4.44, 4.21, then the post line's 4.06, so 4.06–7.78. The R10 test passed at 15:53:51.34, between 5.76 and 4.93. The 63rd |
+  | `40441808488`, main at `ab0304a` (PR #71's merge), green (580/0/5) | the workspace tests: the test build finished at 03:03:10.08 (`Finished` in 55.65 s); the post line at 03:04:29 | whole step 4.79–8.12 (pre, 14 samples, post). While building: 7.43 (the pre line, load1 22.29), 6.57, 6.01, 7.34, 7.51, 8.12. While the tests ran: 7.91, 7.14, 6.87, 6.45, 5.90, 5.82, 5.39, 4.79, then the post line's 4.97, so 4.79–7.91. The R10 test passed at 03:03:41.39, between 6.87 and 6.45. The 64th |
+  | `40374926189`, PR #73 at `5a65e59` (its head before the rebase), green (585/0/5) | the workspace tests: the test build finished at 18:09:14.20 (`Finished` in 1m 00s); the post line at 18:10:35 | whole step 4.14–7.62 (pre, 14 samples, post). While building: 7.62 (the pre line, load1 22.87), 6.71, 7.01, 6.86, 6.83, 6.76, 6.33. While the tests ran: 5.64, 5.25, 5.34, 5.44, 5.00, 4.74, 4.14, then the post line's 4.22, so 4.14–5.64. The R10 test passed at 18:09:45.36, between 5.34 and 5.44. The 65th |
+  | `40442304083`, PR #73 at `7c215c7` (its rebased head), green (585/0/5) | the workspace tests: the test build finished at 03:08:11.70 (`Finished` in 56.41 s); the post line at 03:09:33 | whole step 2.24–7.59 (pre, 14 samples, post). While building: 2.24 (the pre line, load1 6.73), 2.47, 3.27, 4.95, 6.21, 7.09. While the tests ran: 7.59, 6.74, 5.76, 5.49, 5.59, 5.70, 5.14, 4.48, then the post line's 4.25, so 4.25–7.59. The R10 test passed at 03:08:44.52, between 5.76 and 5.49. The 66th |
+  | `40448236533`, main at `27368f2` (PR #73's merge); the workspace step green (585/0/5), the run red on dress (R21's sighting 2) | the workspace tests: the test build finished at 04:11:51.72 (`Finished` in 48.04 s); the post line at 04:13:09 | whole step 2.42–5.61 (pre, 13 samples, post). While building: 2.54 (the pre line, load1 7.61), 2.42, 3.77, 5.04, 5.48. While the tests ran: 5.40, 5.24, 5.61, 5.10, 4.69, 5.15, 5.31, 5.06, then the post line's 5.14, so 4.69–5.61. The R10 test passed at 04:12:24.30, between 5.10 and 4.69. The 67th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -1004,6 +1010,10 @@ runs; rows 60 and 61 peaked at 8.08 and 4.57, under the 15.31 maximum). Row
 60's build ran 2m 54s on a rust-cache miss (#70 changed `Cargo.lock`); its
 peak, 8.08, is the first sample after the build. R10 was silent in both.
 
+**The ceiling through #71 and #73, their heads and merges: holds at 19.13
+per CPU** (67 green runs; rows 62–67 peaked at 7.47, 7.78, 8.12, 7.62, 7.59
+and 5.61, under the 15.31 maximum). R10 was silent in all six.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1037,6 +1047,12 @@ A `three_frames…` failure in that step is read against it.
 | G15 | `40266562638` attempt 1, rust job `121390146285`, main at `0421933` (PR #68's merge), green (`prompt04` 19) | 5.32 | 5.32 (pre, 1 sample, post; 04:00:07–04:00:12Z) | 5.32 |
 | G16 | `40284114106` attempt 1, rust job `121443674416`, PR #70 at `52371e8`, green (`prompt04` 19) | 5.28 | 5.28–5.39 (pre, 1 sample, post; 07:16:36–07:16:42Z) | 5.39 |
 | G17 | `40293707305` attempt 1, rust job `121474548526`, main at `0132d07` (PR #70's merge; the rust job green, `prompt04` 19; the run red on control-plane, R32's sighting 2) | 2.68 | 2.68 (pre, 1 sample, post; 08:43:23–08:43:26Z) | 2.68 |
+| G18 | `40299126313` attempt 1, rust job `121492392391`, PR #71 at `9965d1e`, green (`prompt04` 19) | 3.91 | 3.70–3.91 (pre, 1 sample, post; 09:30:23–09:30:27Z) | 3.70 |
+| G19 | `40351769240` attempt 1, rust job `121673431674`, PR #71 at `ba68033`, green (`prompt04` 19) | 4.06 | 3.94–4.06 (pre, 1 sample, post; 15:54:30–15:54:34Z) | 3.94 |
+| G20 | `40441808488` attempt 1, rust job `121983656691`, main at `ab0304a` (PR #71's merge), green (`prompt04` 19) | 4.97 | 4.60–4.97 (pre, 1 sample, post; 03:04:29–03:04:34Z) | 4.60 |
+| G21 | `40374926189` attempt 1, rust job `121755258657`, PR #73 at `5a65e59`, green (`prompt04` 19) | 4.22 | 4.22–4.60 (pre, 1 sample, post; 18:10:35–18:10:40Z) | 4.60 |
+| G22 | `40442304083` attempt 1, rust job `121985247669`, PR #73 at `7c215c7`, green (`prompt04` 19) | 4.25 | 3.94–4.25 (pre, 1 sample, post; 03:09:33–03:09:39Z) | 3.94 |
+| G23 | `40448236533` attempt 1, rust job `122004538883`, main at `27368f2` (PR #73's merge; the rust job green, `prompt04` 19; the run red on dress, R21's sighting 2) | 5.14 | 4.86–5.14 (pre, 1 sample, post; 04:13:09–04:13:13Z) | 4.86 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1058,6 +1074,10 @@ so **the ceiling is 1.25 × 5.97 = 7.46 per CPU** (load1 22.4). G14 (4.28) and
 G15 (5.32) peaked under it, and `three_frames…` passed the GPU step in all
 five. G16 (#70 at `52371e8`, 5.39) and G17 (main `0132d07`, 2.68) peaked under
 it too, and `three_frames…` passed the GPU step in both.
+G18–G23 peaked under it too: 3.91 and 4.06 (#71 at `9965d1e` and
+`ba68033`), 4.97 (main `ab0304a`), 4.60 and 4.25 (#73 at `5a65e59` and
+`7c215c7`), 5.14 (main `27368f2`); `three_frames…` passed the GPU step in
+all six.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1078,6 +1098,12 @@ proof was, and its bracket held a failed floor step (a mixed step).
 | F2 | `40266562638` attempt 1, rust job `121390146285`, main at `0421933` (PR #68's merge), green (33/33 floor lines) | **5.32** | 3.94–**5.32** (pre, 7 samples, post; 04:00:12–04:01:13Z) | 3.94 |
 | F3 | `40284114106` attempt 1, rust job `121443674416`, PR #70 at `52371e8`, green (34/34 floor lines) | 5.39 | 4.93–**8.01** (pre, 15 samples, post; 07:16:43–07:19:15Z) | 5.99 |
 | F4 | `40293707305` attempt 1, rust job `121474548526`, main at `0132d07` (PR #70's merge; the rust job green, 34/34 floor lines; the run red on control-plane, R32's sighting 2) | 2.52 | 1.90–3.52 (pre, 10 samples, post; 08:43:26–08:45:01Z) | 3.52 |
+| F5 | `40299126313` attempt 1, rust job `121492392391`, PR #71 at `9965d1e`, green (34/34 floor lines) | 3.70 | 1.89–3.70 (pre, 6 samples, post; 09:30:27–09:31:25Z) | 1.89 |
+| F6 | `40351769240` attempt 1, rust job `121673431674`, PR #71 at `ba68033`, green (34/34 floor lines) | 3.94 | 3.19–3.94 (pre, 7 samples, post; 15:54:34–15:55:40Z) | 3.21 |
+| F7 | `40441808488` attempt 1, rust job `121983656691`, main at `ab0304a` (PR #71's merge), green (34/34 floor lines) | 4.60 | 3.47–4.60 (pre, 7 samples, post; 03:04:34–03:05:44Z) | 3.89 |
+| F8 | `40374926189` attempt 1, rust job `121755258657`, PR #73 at `5a65e59`, green (34/34 floor lines) | 4.60 | 2.48–4.60 (pre, 9 samples, post; 18:10:41–18:12:04Z) | 2.48 |
+| F9 | `40442304083` attempt 1, rust job `121985247669`, PR #73 at `7c215c7`, green (34/34 floor lines) | 3.94 | 3.53–4.26 (pre, 10 samples, post; 03:09:39–03:11:15Z) | 3.53 |
+| F10 | `40448236533` attempt 1, rust job `122004538883`, main at `27368f2` (PR #73's merge; the rust job green, 34/34 floor lines; the run red on dress, R21's sighting 2) | 4.86 | 2.85–4.86 (pre, 8 samples, post; 04:13:14–04:14:34Z) | 3.67 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
@@ -1098,6 +1124,64 @@ compile. F4's peak is the window's end (the 08:44:57Z sample and the post
 line, load1 10.57), during the `automation_rules` floor step. The user's
 ruling of 2026-10-26 accepted the row as read: it says what the log says,
 not what was expected.
+
+**F5–F10 peaked under it:** 3.70 and 3.94 (#71 at `9965d1e` and
+`ba68033`), 4.60 (main `ab0304a`), 4.60 and 4.26 (#73 at `5a65e59` and
+`7c215c7`), 4.86 (main `27368f2`), at 10 green runs.
+
+**The control-plane bracket envelope** (the user's ruling of 2026-10-26 on
+R32, (a); the fourth envelope). From `ab0304a`, `cp-pre`, `cp-sample` and
+`cp-post` bracket every test step of the control-plane job (named steps 7
+and 20, the 12 test steps between them, `npm test` through the
+operator-signals end to end), after a 60-second settle (the user's ruling of
+2026-10-26 on CP1). Its rule is the pinned one:
+- the maximum per-CPU anywhere in the bracket's window (`cp-pre`, the
+  samples, `cp-post`);
+- green runs only (a green job in a red run counts: steps count);
+- a ceiling of 1.25× that maximum.
+
+A control-plane sighting is read against it (R32's included). Not counted:
+`9965d1e`'s window (4.49–10.59), whose readings carried the engine build's
+load-average tail (the ruling: the settle, not the count), and #72's
+(`dc38d76`), red by design, as #69's was.
+
+| CP row | Run | cp-pre | Whole bracket | cp-post |
+|---|---|---|---|---|
+| CP1 | `40351769240` attempt 1, control-plane job `121673432156`, PR #71 at `ba68033` (the settle head), green (`npm test` 205/205, package-reconcile 4/4) | 4.52 | 2.33–**4.94** (pre, 21 samples, post; 15:43:56–15:47:19Z) | 4.94 |
+| CP2 | `40441808488` attempt 1, control-plane job `121983656950`, main at `ab0304a` (PR #71's merge), green (`npm test` 205/205, package-reconcile 4/4) | **6.77** | 3.23–**6.77** (pre, 20 samples, post; 03:08:05–03:11:26Z) | 4.62 |
+| CP3 | `40442304083` attempt 1, control-plane job `121985247728`, PR #73 at `7c215c7`, green (`npm test` 205/205, package-reconcile 4/4) | 3.40 | 2.32–4.98 (pre, 20 samples, post; 03:08:45–03:12:06Z) | 4.98 |
+| CP4 | `40448236533` attempt 1, control-plane job `122004538970`, main at `27368f2` (PR #73's merge; the control-plane job green, `npm test` 205/205, package-reconcile 4/4; the run red on dress, R21's sighting 2) | 2.39 | 2.15–5.01 (pre, 20 samples, post; 04:12:32–04:15:53Z) | 4.74 |
+
+**CP1 seeds it:** the maximum is 4.94 (load1 14.82, the last sample at
+15:47:18Z and `cp-post` at 15:47:19Z, during the operator-signals end to
+end: test load), and the ceiling 1.25 × 14.82/3 = 6.18 per CPU. **The
+settle's evidence** (the user's ruling of 2026-10-26, on #71's two-key
+pass): `cp-pre` read 10.59 per CPU at `9965d1e`, 0.26 s after the engine
+build, and 4.52 at `ba68033`, after the settle; the samples then fell to
+2.33 (15:45:16Z) before the end-to-end steps raised them.
+
+**CP2 moves the maximum to 6.77**, counted by the user's ruling of
+2026-10-26 on #71's bookend (the pinned rule, on F3's precedent), its cause
+named: `cp-pre` read load1 20.31 at 03:08:05Z, then 5.83, 5.03 and 4.33 per
+CPU over 31 s, the engine build's tail. Main's rust-cache missed for the
+control-plane job ("full match: false"; `0132d07`'s control-plane job
+failed, R32's sighting 2, and saved nothing), so the engine built for 2m
+23s, finishing at 03:07:05Z, and its tail outlasted the 60 s settle (at
+`ba68033` the build took 21.70 s). So **the ceiling is 1.25 × 20.31/3 = 8.46
+per CPU** (load1 25.39), carried as derived from a cold-build CP2: the next
+normal reading shows whether 8.46 was weather, and if it was, the lane
+corrects downward per the standing rule. Logged as a row, not gated.
+**CP3 (4.98) and CP4 (5.01)**, the next readings, were warm (the engine
+built in 14.97 s and 15.55 s, full cache matches; `cp-pre` 3.40 and 2.39),
+their peaks at the window's end, test load.
+
+**The ceiling stays 8.46 per CPU** (the user's ruling of 2026-10-26, on
+#73's bookend): the pinned number, recorded per the readings; no downward
+rule exists. CP3 and CP4 are weather-confirming. **Queued, a proposed
+downward rule** (the same ruling; proposed, not in force): after three
+consecutive readings under 50% of a ceiling raised by a single
+weather-flagged reading, the ceiling re-derives from the highest
+non-weather reading.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -9078,7 +9162,10 @@ item):
     (08:38:49Z and 08:39:22Z), and each was read job-exact. **Red on
     control-plane alone.**
     - **rust** (job `121474548526`): 580/0/5 (the step's `TOTAL` line),
-      34/34 floor lines, the 4 count gates, 9 `SKIP normative:` lines; R10's
+      34/34 floor lines, the 4 count gates, ~~9~~ 8 `SKIP normative:` lines
+      *(§2c, the user's ruling of 2026-10-26 on #71's bookend: the 9th was
+      the `prompt11_watchdog` floor's own `grep -vc '^SKIP normative:'`
+      line; the builder's slip)*; R10's
       drain tests `ok` in both runs of the suite; `three_frames…` `ok` in
       both steps.
     - **control-plane** (job `121474548893`): red at named step 15 (UI 23),
@@ -9116,6 +9203,7 @@ item):
 
   The queue: R32's bracket PR, then R31's probe, then the era's ledger
   closes. AC-5 soaks last, per the era's order.
+
   **R31's 12c probe, its sighting, the hunt, and the fix** (branch
   `r31-zero-copy-fence`, off `0132d07`; the user's specification of
   2026-10-26 for the probe, its go of the same day, and the rulings of
@@ -9242,6 +9330,251 @@ item):
       this PR's (the engine byte-identical to `af83c3c`'s 29/29); not R13 (a
       late rise that always came); #70 changed that path. Put to the user to
       file.
+
+  **R32's control-plane capture, PR #71** (branch `r32-cp-capture`, off
+  `0132d07`; the user's ruling of 2026-10-26, (a); workflow-only, with #70's
+  records in its first commit, `f003fa2`).
+  - **The bracket** (`9965d1e`): named steps 7 and 20 of the control-plane
+    job, the 12 test steps between them (`npm test` through the
+    operator-signals end to end); `cp-pre`, a `cp-sample` every 10 s,
+    `cp-post` and every sample, printed even when a step fails; every
+    command `|| true`, the sampler detached, both steps continue-on-error.
+    The engine's release build (named step 6) moved ahead of the bracket.
+  - **The settle** (`ba68033`; the user's ruling of 2026-10-26 on CP1): the
+    pre step waits 60 s before `cp-pre`, so the build's load-average tail
+    stays out of the window's readings.
+  - **Falsified:** locally, both step bodies exit 0 under `bash -e` and
+    `bash -eo pipefail` (normally, `RUNNER_TEMP` unset, unwritable, the post
+    step without the pre), at `9965d1e` and again at `ba68033` (14 of 14
+    exits 0, the sampler stopped). On CI, throwaway draft PR #72
+    (`dc38d76`, run `40299155992`) forced package-reconcile (named step 16)
+    to exit 1: the job failed on that step alone, and the post step printed
+    `cp-post` and all 8 samples after the failure. #72 was closed unmerged;
+    its branch, `r32-cp-falsify-ci-temp`, is the user's to delete.
+  - **CI at `9965d1e`:** run `40299126313`, attempt 1, every job executed,
+    each read job-exact: rust 580/0/5, 34/34 floor lines, the 4 count gates;
+    control-plane every step green, `npm test` 205/205, package-reconcile
+    4/4; dress 29/29, 0 drops. Rows: R10's 62, G18, F5. Its `cp-*` window
+    (4.49–10.59, the build's tail) seeds nothing, by the ruling.
+  - **CI at `ba68033`:** run `40351769240`, attempt 1, every job executed,
+    each read job-exact: rust 580/0/5, 34/34 floor lines, the 4 count gates,
+    R10's drain tests `ok` in both runs of their suite, `three_frames…` `ok`
+    in both steps; control-plane every step green, `npm test` 205/205,
+    package-reconcile 4/4, the refused start `ok`; `sleep 60`
+    15:42:56–15:43:56Z, then `cp-pre`; dress 29/29, 0 drops. Rows: R10's 63,
+    G19, F6, and CP1, the fourth envelope's seed.
+
+  **The two-key pass on PR #71** (independent; relayed by the user,
+  2026-10-26) HOLDS on 1–9. Its three disputes were ruled. The builder's
+  record:
+  1. **The prompt04-comment claim is not in the diff** (upheld).
+     `0132d07..ba68033` touches no `prompt04` step and no `prompt04`
+     comment; its only `prompt04` text is in envelope rows and R15's row.
+     Its origin, searched: no #71 artifact the builder wrote carries it
+     (the PR body and its three edits, the three commit messages, the diff,
+     the staged records, the builder's reports). The only prompt04-comment
+     claim the builder has written is `e7600aa`'s message (#67), and that
+     diff carries it (`ci.yml:152–154`).
+  2. **CP1's row and the 6.18 ceiling** were in the PR body only at the
+     reviewed head; they landed at the bookend (Finding R10's control-plane
+     table), with the settle's evidence: `cp-pre` read 10.59 per CPU at
+     `9965d1e` (load1 31.77 at 09:34:48Z, 0.26 s after the engine build
+     finished) and 4.52 at `ba68033` (load1 13.56 at 15:43:56Z, after the
+     60 s settle). The throwaway #72 (`dc38d76`), also before the settle,
+     read 10.22 at `cp-pre` (load1 30.66 at 09:30:07Z). *(§2c: the ruling's
+     relay gave "10.22 → 4.52" for `9965d1e` → `ba68033`; 10.22 is #72's
+     `cp-pre`, and `9965d1e`'s is 10.59, both in the kept logs.)*
+  3. **The throwaway's branch**, `r32-cp-falsify-ci-temp`, is the user's to
+     delete.
+
+  **Merged: PR #71 is `ab0304a`** (the bookend), on the user's word.
+  - **The merge:** a squash at 2026-10-27T03:01:22Z, matched to `ba68033`,
+    with the staged subject and body (byte-identical). Its one parent is
+    `0132d07`.
+  - **The tree is identical to the reviewed head's:** `ab0304a^{tree}` =
+    `ba68033^{tree}` = `b2a78b6`.
+  - **Main's CI:** run `40441808488` (push), attempt 1. Every job executed
+    (each started 03:01:27Z), and each was read job-exact (`gh api
+    --allow-escape-sequences …/actions/jobs/<id>/logs`). **Green.**
+    - **rust** (job `121983656691`): 580/0/5 (the step's `TOTAL` line),
+      34/34 floor lines, the 4 count gates, 8 `SKIP normative:` lines; R10's
+      drain tests `ok` in both runs of the suite; `three_frames…` `ok` in
+      both steps.
+    - **control-plane** (job `121983656950`): every step green, `npm test`
+      205/205, package-reconcile 4/4, the refused start `ok` (2022 ms); the
+      bracket live on main: `sleep 60`, `cp-pre`, 20 samples, `cp-post`.
+    - **dress** (job `121983657034`): 29/29, 12c `ok`; drops 0, underruns
+      217, watchdog trips 0.
+  - **The cache:** the control-plane job restored from a restore key ("full
+    match: false"): main's `0132d07` control-plane job failed (R32's
+    sighting 2) and saved nothing, so both release builds compiled for
+    about 2m 20s.
+  - **The envelopes** (Finding R10's tables): R10 row 64 (19.13 holds), G20
+    (7.46 holds), F7 (10.02 holds), and CP2, above CP1's ceiling (the
+    build's tail outlasted the settle), counted by the ruling below. **R10's
+    and R15's watches** note the run (their rows).
+
+  **The user's rulings of 2026-10-26, on #71's bookend:**
+  1. **#71's bookend confirmed:** the merge is byte-identical,
+     single-parent, tree-correct; all holds.
+  2. **CP2's 6.77 > 6.18: COUNTED** per the pinned rule, on F3's precedent.
+     The reading lands on the row with its cause (the cold engine build, 2m
+     23s, outlasted the settle after `0132d07`'s cache save was lost), and
+     the ceiling moves to 8.46, carried as derived from a cold-build CP2.
+     The next normal reading shows whether 8.46 was weather; if it was, the
+     lane corrects downward per the standing rule. Logged as a row, not
+     gated.
+  3. **The `SKIP normative:` 9 → 8 §2c strike lands.** The miscount was the
+     floor script's own grep-pattern line in the output; the count gate is
+     unaffected (it counts tests, not these lines). The reading template
+     gains a line (`docs/implementation-standards.md` §2b): when counting a
+     pattern's occurrences in a log, exclude the floor script's own echo of
+     it. This map's #70 bookend line gets its strike note.
+
+  The blank line the rebase of #73 lost before R31's block (its first
+  paragraph ran on from #71's queue paragraph) is restored here, as ruled.
+
+  **#73's rebase** (onto `ab0304a`, #71's merge): commits 1–8 replayed
+  patch-identical (`git patch-id --stable`; `git range-diff` marks each
+  `=`), and the branch's non-docs change is identical; the records commit
+  re-anchored after #71's records, `docs/prompt-map-07-13.md` the only
+  conflict (`soak-protocol.md` merged clean), its added and removed lines
+  the same bar one blank line (restored above). Old → new: `f9fa430` →
+  `d7ce311`, `485aaa3` → `ea8955b`, `3e949a7` → `b272d32`, `635601b` →
+  `d16c1a7`, `c15c4de` → `1fa7cf9`, `1226a94` → `f6eb251`, `af83c3c` →
+  `f331e9c`, `89d272a` → `4f6731f`; the records `5a65e59` → `7c215c7`.
+  *(§2c: R31's falsification, battery and gate, above, ran at the
+  pre-rebase SHAs; commits 1–8 replayed patch-identical; CI at `7c215c7` is
+  the fresh witness.)*
+  - **CI at `5a65e59`:** run `40374926189`, attempt 1, every job executed,
+    each read job-exact: rust 585/0/5, 34/34 floor lines (`zerocopy_tap`
+    ran 15, exercised 14), the 4 count gates; control-plane every step
+    green, `npm test` 205/205, package-reconcile 4/4; dress 29/29, 0 drops,
+    step 6's sfx rise 2968 ms. Rows: R10's 65, G21, F8 (no `cp-*` bracket:
+    that head predated #71).
+  - **CI at `7c215c7`** (the fresh witness): run `40442304083`, attempt 1,
+    every job executed, each read job-exact: rust 585/0/5, 34/34 floor
+    lines (`zerocopy_tap` 15/14), `record::feed`'s 2 unit tests and the 3
+    new `zerocopy_tap` tests `ok`, the 4 count gates, R10's drain tests `ok`
+    in both runs of their suite, `three_frames…` `ok` in both steps;
+    control-plane every step green, `npm test` 205/205, package-reconcile
+    4/4, the refused start `ok` (2027 ms); dress 29/29, 0 drops, step 6's
+    sfx rise 2021 ms, step 4's clip rise 5012 ms (the latest logged since
+    R13's gate, inside the 10 s backstop; R13 is closed and its rises are
+    logged, not gated). Rows: R10's 66, G22, F9, CP3.
+
+  **The two-key pass on PR #73** (independent; relayed by the user,
+  2026-10-26) HOLDS at `7c215c7`. The builder concurs with each ruling.
+  - **§2c, the dispatch's R35 claim** (the user's ruling of 2026-10-26, on
+    #73's bookend): written by the user in the #73 two-key dispatch
+    (2026-10-26), nowhere else: ~~"Claims: … R35 (stream's same-shaped
+    handoff) same fix, own red/green, both GPUs."~~ The claim was the
+    relay's; it converted a pending user ruling into a builder's claim.
+  - **The oversight note** (the same ruling): "The #73 two-key dispatch
+    described R35 and R34 as claims to test when both were open questions
+    awaiting the user's ruling. The pass's disputes 1 and 3 correctly
+    identified the mismatch. The rulings of 2026-10-26 resolved both by
+    filing."
+
+  **The user's rulings of 2026-10-26, on #73's two-key pass:**
+  1. **R35** (the stream's zero-copy handoff, R31's shape): FILED, its own
+     PR after #73, the same fix mechanics (a recording-side wait on the GPU
+     work ID), its own red/green, both GPUs. #73 merges without it; the
+     body's open question is resolved by the filing.
+  2. **The dress sfx sighting is FILED as R34:** "the soundboard stab never
+     reached the sfx bus". Its row carries the question of why no alert
+     fired (the lane doesn't read sfx state) and the candidate line on
+     `sfx.overload` in the lane. Falsification plan: the dress's sfx step
+     asserts an audible onset, or its absence is explained.
+  3. **The body's falsification table keeps the old → new SHA map** with
+     the patch-id proof; one §2c note added (above); CI at `7c215c7` is the
+     fresh witness.
+  4. **The pass's voids stand** (its disk full, load 3.01): the interleave
+     re-runs and the mutant spot-kills rest on the builder's figures as
+     claims, CI as witness, recorded as such on R31's row.
+
+  **Merged: PR #73 is `27368f2`** (the bookend), on the user's word.
+  - **The merge:** a squash at 2026-10-27T04:10:06Z, matched to `7c215c7`,
+    with the staged subject and body (byte-identical). Its one parent is
+    `ab0304a`.
+  - **The tree is identical to the reviewed head's:** `27368f2^{tree}` =
+    `7c215c7^{tree}` = `ca14134`.
+  - **Main's CI:** run `40448236533` (push), attempt 1. Every job executed
+    (each started 04:10:14–04:10:15Z), and each was read job-exact. **Red
+    on dress alone.**
+    - **rust** (job `122004538883`): 585/0/5 (the step's `TOTAL` line),
+      34/34 floor lines (`zerocopy_tap` 15/14), the 4 count gates, 8 `SKIP
+      normative:` lines; R10's drain tests `ok` in both runs of the suite;
+      `three_frames…` `ok` in both steps.
+    - **control-plane** (job `122004538970`): every step green, `npm test`
+      205/205, package-reconcile 4/4, the refused start `ok` (2022 ms);
+      warm builds (full cache matches), the bracket's window CP4.
+    - **dress** (job `122004538655`): **28/29, R21's sighting 2** (its
+      row): `not ok 6 - [RI-1] step 5: a 15-frame mix drops no frames`, "a
+      mix must not drop frames: 0 -> 1". The run's artifact was downloaded
+      before any rerun (`.git/nbe-staged/pr73-bookend/artifact/`). Not
+      rerun. Every other step `ok`; step 4's rise 1997 ms, step 6's 2981 ms.
+  - **R31 is FIXED by `27368f2`** (its row), the probe the permanent guard;
+    **R33's row landed** with the merge; **R34 and R35 are filed** (their
+    rows, with these records).
+  - **The envelopes** (Finding R10's tables): R10 row 67 (19.13 holds), G23
+    (7.46 holds), F10 (10.02 holds), CP4 (8.46 holds). **R15's watch**
+    notes the run (its row).
+
+  **The user's rulings of 2026-10-26, on #73's bookend:**
+  1. **R31's record completion:** the §2c strike of the dispatch's false R35
+     claim and the pass-dispatch-oversight note land here (#73's two-key
+     pass, above), with R34's and R35's rows, the voids note, the blank
+     line, and both bookends.
+  2. **R21's sighting 2:** the row updates as drafted; OPEN struck, LOGGED
+     kept; the dress job's missing load capture is the standing question
+     (the same blind admission as R32's sighting 2, twice now). The
+     artifact in `.git/nbe-staged/pr73-bookend/artifact/` is kept. The
+     dress step-5 CI backstop moves from R21's row to the infrastructure
+     list (`docs/soak-protocol.md` §5). ~~The ruling also stated a
+     cold-runner correlation, with a cold-cache dress variant as the
+     falsification plan.~~ *(§2c, ruling 4 below.)*
+  3. **The ceiling stays 8.46** as the pinned number: no downward rule
+     exists; recorded per the readings, CP3 and CP4 noted as
+     weather-confirming. A proposed downward rule joins the queue (Finding
+     R10's control-plane table).
+  4. **The builder's dispute on ruling 2 is upheld** (the user's ruling of
+     2026-10-26). The cold-runner correlation is struck §2c, the builder's
+     cache table the refuting evidence: the dress job at `27368f2` was a
+     full rust-cache match, its builds as warm as both green runs', on the
+     same image; the cold build was CP2's, in the control-plane job, a
+     different job and runner.
+
+     | dress job | rust-cache | builds (dev / release / dev) | step 5 |
+     |---|---|---|---|
+     | main `27368f2` (R21's sighting 2) | full match | 20.16 / 8.38 / 5.17 s | 1 drop |
+     | main `ab0304a` | full match | 24.27 / 9.76 / 6.48 s | `ok` |
+     | #73 `7c215c7` | full match | 19.47 / 8.15 / 5.16 s | `ok` |
+
+     All three on `macos-14-arm64` 20260831.0302.1. **R21's falsification
+     plan:** the logged normative-run attempts stand; add a step-5 mix
+     variant under induced load (the R32 reproducer's pattern), run once
+     the dress job has load capture. The plan depends on the standing
+     question by design, and the row says so until then; the standing
+     question itself is unchanged.
+  5. **The infrastructure list's row** (the user's rulings of 2026-10-26,
+     the builder's check upheld): the item stays R21's, "Wanted by R21
+     (step 5 is its home step; both sightings live there)". ~~And R32 (both
+     sightings surfaced in dress artifacts by eye; a CI frame-drop backstop
+     would have raised them at the time, artifacts attached).~~ *(§2c, the
+     relay's error: the row meant was R31, misattributed; R32's sightings
+     are control-plane package-reconcile failures, and its wants are
+     already met, #71's bracket and #74's reload log.)* The builder's check
+     on the corrected entry is upheld: R31's sighting was raised by the
+     dress's own step-12c frame-order check ("1 went backwards"), not by
+     eye; R21's both failed step 5's zero-drop assertion; the item is an
+     R12-style backstop, which relaxes CI from zero to a bound while zero
+     stays normative; and R31's class cannot run on a runner with no
+     hardware encoder. So the item keeps its name (a frame-integrity rename
+     was proposed and dropped), and **R31 is not named**: it has its
+     permanent guard in the probe, and a CI check that requires an
+     encoder-equipped runner is speculative infrastructure, not a
+     row-backed want. If it ever earns a row, it earns the item then.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
