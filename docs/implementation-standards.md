@@ -229,6 +229,12 @@ job id and the original `started_at` and log; it is not a run.
 - The workspace `TOTAL` line is a summary, not a gate.
 - A floor or a count gate **moves when its threshold in `ci.yml` changes**,
   not when a count changes.
+- **A pattern counted in a log excludes the floor script's own echo of it**
+  (the user's ruling of 2026-10-26, on #71's bookend). The
+  `prompt11_watchdog` floor prints its script, whose `grep -vc '^SKIP
+  normative:'` carries the pattern, so a plain count of `SKIP normative:`
+  read 9 where the tests printed 8. Count the tests' lines, never the
+  script's. A count gate is unaffected: it counts tests, not these lines.
 
 ## 2c. Records and mandated text
 
