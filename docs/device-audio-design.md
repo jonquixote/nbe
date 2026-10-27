@@ -9,7 +9,7 @@ filings made (§7)** (§2c). **The build sequence:**
 2. **then the device-audio build** per this record *(built on branch
    `device-audio`, 2026-10-26; SPEC v0.4.8 row 15. Where the build departs
    from a ruling's wording, the departure is stated at the ruling, marked "As
-   built", and put to the user with the build)*.
+   built", and put to the user with the build; merged as `0132d07`, #70)*.
 
 Each is DO NOT MERGE until its two-key pass and the user's word. The record
 itself is docs only: no production code, no dependency added. Drafted 2026-10-21 by the builder, on
@@ -864,6 +864,15 @@ ruling stands. Each ruling is quoted, followed by what it requires.
     ways; the slip residual measured and bounded (D2's addition).
 - **D3: approved.** "no live-path resampler; pin the load-time converter's
   quality; add the 44.1 kHz fixture."
+  - *Status (§2c, #70's two-key pass):* the ruling's premise did not hold.
+    `AVAssetReaderTrackOutput` does not take
+    `AVSampleRateConverterAudioQualityKey` (`AVAssetReaderOutput.h`, SDK
+    26.2: "AVSampleRateConverterAudioQualityKey is not supported"); set
+    anyway, it raised an Objective-C exception that aborted the process. No
+    pin is kept. The guard is the measured bound (D3's As-built note:
+    `nbe-decode/tests/audio.rs`, the residual under -95 dB, measured
+    -100.9). The second key's verification of the premise is void, as
+    declared: the evidence is the header and the builder's run.
 - **D4: approved.** "the true limiter is built FIRST, as its own PR within
   this item (§8.2's MUST is currently faked by .clamp at audio.rs:676–677 — a
   live lie); then every audible element plays its declared bus at its gainDb,
