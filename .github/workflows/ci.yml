@@ -448,10 +448,13 @@ jobs:
         # On the production seams since the PR #30 repair round: the real GPU
         # SurfacePool, a real RenderLoop drawing through record's
         # begin/end_tap_frame, the real stream handoff. The runner has a
-        # zero-copy chain (Metal + IOSurface) and no encoder, so three of the
-        # four run here and the VideoToolbox retain guard skips loudly. The
-        # exercised floor is the chain: if the runner ever loses it, this step
-        # fails instead of going green on skips.
+        # zero-copy chain (Metal + IOSurface) and no encoder, so ~~three of the
+        # four~~ five of the six run here (§2c, R35: its two handoff guards,
+        # a drawn surface carries its draw and a View that did not draw hands
+        # the stream nothing, need the chain and no encoder) and the
+        # VideoToolbox retain guard skips loudly. The exercised floor is the
+        # chain: if the runner ever loses it, this step fails instead of going
+        # green on skips.
         # ~~Hermetic by design (Arc slots under the pool's free rule, no GPU):
         # all 3 run everywhere~~ — PR #30's guard modelled the pool with
         # SharedPool<()> and could not see the rule or the sizing it was
@@ -467,12 +470,12 @@ jobs:
           skipped=$(echo "$out" | grep -c '^SKIP' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
-          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=4 exercised>=3)"
-          if [ "$ran" -lt 4 ]; then
-            echo "FAIL zerocopy_g1: expected at least 4 tests to run, got $ran"; exit 1
+          echo "zerocopy_g1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=5)"
+          if [ "$ran" -lt 6 ]; then
+            echo "FAIL zerocopy_g1: expected at least 6 tests to run, got $ran"; exit 1
           fi
-          if [ "$exercised" -lt 3 ]; then
-            echo "FAIL zerocopy_g1: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
+          if [ "$exercised" -lt 5 ]; then
+            echo "FAIL zerocopy_g1: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
       - name: the tapPath override suite actually ran (Prompt 10 WU2)
         # Same two-floor shape. Three of the five tests open a take and gate on
