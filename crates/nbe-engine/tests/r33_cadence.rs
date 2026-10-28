@@ -277,3 +277,39 @@ async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts(
         "ticks ran back to back after the stall: {gaps:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    state.clock.lock().unwrap().start();
+    let mut reports = Vec::new();
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        if reports.len() == 10 {
+            std::thread::sleep(budget() * 7 / 2);
+        }
+        reports.len() < 20
+    })
+    .await;
+    let (frames, _, _) = read(&reports);
+    let gap = frames
+        .windows(2)
+        .find(|w| w[1] > w[0] + 1)
+        .unwrap_or_else(|| panic!("the stall skipped nothing: {frames:?}"));
+    let expected = format!(
+        "R33: master frames {}..={} were never drawn",
+        gap[0] + 1,
+        gap[1] - 1
+    );
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains(&expected), "no line `{expected}` in:\n{log}");
+}
