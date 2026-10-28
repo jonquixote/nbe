@@ -68,11 +68,21 @@ impl MasterClock {
 
     /// Current master frame; None while STOPPED.
     pub fn frame(&self) -> Option<u64> {
+        self.frame_at(Instant::now())
+    }
+
+    /// The master frame at `now`, `floor(elapsed × rate)` in whole
+    /// nanoseconds; None while STOPPED. Integer arithmetic, exact: the
+    /// floating-point form read 28 at the instant frame 29 begins at 25 fps
+    /// (1.16 × 25 = 28.999…), so it disagreed with [`boundary`](Self::boundary)
+    /// for that nanosecond (R33's fix, 2026-10-28).
+    fn frame_at(&self, now: Instant) -> Option<u64> {
         match self.state {
             ClockState::Stopped => None,
             ClockState::Running => {
-                let elapsed = self.epoch?.elapsed();
-                Some((elapsed.as_secs_f64() * self.house_rate as f64).floor() as u64)
+                let elapsed = now.saturating_duration_since(self.epoch?);
+                let frames = elapsed.as_nanos() * u128::from(self.house_rate) / 1_000_000_000;
+                u64::try_from(frames).ok()
             }
         }
     }
@@ -112,6 +122,30 @@ mod tests {
             None,
             "STOPPED has no boundaries"
         );
+    }
+
+    #[test]
+    fn the_clock_names_each_frame_from_its_boundary_on_and_never_before() {
+        // The render loop sleeps to `boundary(f)` and draws what the clock
+        // names (R33): the two must agree at every boundary, or a wake there
+        // would name the frame already drawn. Ten hours at each rate.
+        let epoch = Instant::now();
+        for rate in [24, 25, 30, 50, 60] {
+            let c = MasterClock::new(rate).with_epoch(epoch, ClockState::Running);
+            for f in 1..(10 * 3600 * u64::from(rate)) {
+                let b = c.boundary(f).unwrap();
+                assert_eq!(
+                    c.frame_at(b),
+                    Some(f),
+                    "rate {rate}: frame {f} at its boundary"
+                );
+                assert_eq!(
+                    c.frame_at(b - Duration::from_nanos(1)),
+                    Some(f - 1),
+                    "rate {rate}: frame {f} a nanosecond early"
+                );
+            }
+        }
     }
 
     #[test]

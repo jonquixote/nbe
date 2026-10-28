@@ -448,16 +448,13 @@ pub async fn run_loop(
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
         let reading = state.clock_reading();
-        match (reading, drawn) {
-            // The clock still names a frame already drawn (a wake inside the
-            // boundary's rounding): sleep again rather than draw it twice.
-            (Some((epoch, f)), Some((drawn_epoch, last))) if epoch == drawn_epoch && f <= last => {
-                continue
+        // A wake at or after `boundary(last + 1)` reads `last + 1` or later:
+        // the clock's arithmetic is exact (clock.rs pins the agreement), and a
+        // sleep never ends before its deadline.
+        if let (Some((epoch, _)), Some((drawn_epoch, _))) = (reading, drawn) {
+            if epoch != drawn_epoch {
+                cadence.new_run(state);
             }
-            (Some((epoch, _)), Some((drawn_epoch, _))) if epoch != drawn_epoch => {
-                cadence.new_run(state)
-            }
-            _ => {}
         }
         drawn = reading;
         let master = reading.map(|(_, f)| f);
