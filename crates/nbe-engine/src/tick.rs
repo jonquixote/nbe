@@ -173,6 +173,9 @@ struct Cadence {
     run: Option<Span>,
     take: Option<Span>,
     lines: LineBudget,
+    /// How long the last tick ran (its timed region), so a skip's line says
+    /// whether the tick before it overran or the wake came late.
+    last_tick: Duration,
 }
 
 impl Cadence {
@@ -224,6 +227,8 @@ impl Cadence {
                     tracing::warn!(
                         master_frame = f,
                         skipped,
+                        previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
+                        woke_late_ms = woke_late.as_secs_f64() * 1000.0,
                         suppressed,
                         "R33: master frames {}..={} were never drawn",
                         prev + 1,
@@ -239,6 +244,11 @@ impl Cadence {
             span.ticks += 1;
             span.wake.add(woke_late, budget);
         }
+    }
+
+    /// The tick just run took `total` (its timed region).
+    fn ticked(&mut self, total: Duration) {
+        self.last_tick = total;
     }
 
     /// The clock restarted between two ticks (a new epoch): the run so far
@@ -473,6 +483,7 @@ pub async fn run_loop(
         let mut report = run_tick(render, state, frame, deadline).await;
         report.master_frame = master;
         report.woke_late = woke_late;
+        cadence.ticked(report.total);
         if !on_tick(&report) {
             cadence.end(state);
             return;

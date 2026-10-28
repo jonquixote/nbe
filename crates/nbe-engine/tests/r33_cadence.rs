@@ -324,4 +324,9 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
     );
     let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     assert!(log.contains(&expected), "no line `{expected}` in:\n{log}");
+    let line = log.lines().find(|l| l.contains(&expected)).unwrap();
+    assert!(
+        line.contains("previous_tick_ms=") && line.contains("woke_late_ms="),
+        "the skip's line says neither how long the tick before it ran nor how late the wake came: {line}"
+    );
 }
