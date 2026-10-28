@@ -177,3 +177,103 @@ async fn a_record_take_and_a_run_each_end_with_one_summary_line() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loop_asked_to_tick_faster_than_the_clock_draws_each_master_frame_once() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    state.clock.lock().unwrap().start();
+    let mut reports = Vec::new();
+    // A 60 Hz loop against the 30 fps clock: a loop that ticks on its own
+    // grid reads every master frame twice.
+    run_loop(&mut render, &state, RATE * 2, |r| {
+        reports.push(*r);
+        reports.len() < 90
+    })
+    .await;
+    let (frames, repeats, skips) = read(&reports);
+    eprintln!(
+        "r33 faster loop: {} ticks, repeats {repeats}, skips {skips}",
+        frames.len()
+    );
+    assert_eq!(repeats, 0, "a master frame was drawn twice: {frames:?}");
+    assert!(
+        frames.windows(2).all(|w| w[1] > w[0]),
+        "out of order: {frames:?}"
+    );
+    assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 0);
+    assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loop_started_just_ahead_of_a_clock_boundary_never_draws_a_master_frame_twice() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    // R33's phase: the loop's start sits 150 µs before a clock boundary, so
+    // any wake later than that reads the next frame on a loop that reads the
+    // clock wherever it wakes.
+    start_clock_phased(&state, Duration::from_micros(150));
+    let mut reports = Vec::new();
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        reports.len() < 150
+    })
+    .await;
+    let (frames, repeats, skips) = read(&reports);
+    let late: Vec<u128> = reports.iter().map(|r| r.woke_late.as_micros()).collect();
+    let mut sorted = late.clone();
+    sorted.sort_unstable();
+    eprintln!(
+        "r33 phased: {} ticks, repeats {repeats}, skips {skips}; woke late p50 {} µs, p99 {} µs, max {} µs",
+        frames.len(),
+        sorted[sorted.len() / 2],
+        sorted[sorted.len() * 99 / 100],
+        sorted[sorted.len() - 1]
+    );
+    assert_eq!(repeats, 0, "a master frame was drawn twice: {frames:?}");
+    assert!(
+        frames.windows(2).all(|w| w[1] > w[0]),
+        "out of order: {frames:?}"
+    );
+    assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    state.clock.lock().unwrap().start();
+    let mut reports = Vec::new();
+    let mut at = Vec::new();
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        at.push(Instant::now());
+        if reports.len() == 30 {
+            std::thread::sleep(budget() * 7 / 2);
+        }
+        reports.len() < 60
+    })
+    .await;
+    let (frames, repeats, skips) = read(&reports);
+    let before = frames[29];
+    let after = frames[30];
+    // Stalled 3.5 frames past tick 30's draw: the next tick draws the frame
+    // the clock names then, three or four on, never the one after `before`.
+    assert!(
+        after >= before + 3,
+        "the loop caught up instead of drawing the clock's frame: {frames:?}"
+    );
+    assert_eq!(repeats, 0, "{frames:?}");
+    assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
+    assert!(skips >= 2, "{frames:?}");
+    // No burst: the ten ticks after the stall are each a frame apart, give or
+    // take the timer, never drawn back to back to make the frames up.
+    let gaps: Vec<Duration> = at[31..41].windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(
+        gaps.iter().all(|g| *g >= budget() / 2),
+        "ticks ran back to back after the stall: {gaps:?}"
+    );
+}

@@ -467,6 +467,19 @@ impl EngineState {
         self.clock.lock().unwrap().frame()
     }
 
+    /// The running clock's epoch and current master frame, read under one
+    /// lock so they belong to the same run; None while STOPPED (R33).
+    pub fn clock_reading(&self) -> Option<(std::time::Instant, u64)> {
+        let clock = self.clock.lock().unwrap();
+        Some((clock.epoch()?, clock.frame()?))
+    }
+
+    /// The instant master frame `frame` begins on the running clock; None
+    /// while STOPPED (R33).
+    pub fn frame_boundary(&self, frame: u64) -> Option<std::time::Instant> {
+        self.clock.lock().unwrap().boundary(frame)
+    }
+
     /// Seconds since engine boot — used by telemetry so a control plane can
     /// detect an engine that stopped reporting (engineConnected staleness).
     pub fn uptime_secs(&self) -> f64 {

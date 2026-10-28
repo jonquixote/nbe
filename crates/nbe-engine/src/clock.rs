@@ -55,6 +55,17 @@ impl MasterClock {
         }
     }
 
+    /// The instant master frame `frame` begins, `epoch + frame / rate`: the
+    /// inverse of [`frame`](Self::frame), rounded up to the nanosecond so the
+    /// clock reads `frame` from it on. None while STOPPED. Arithmetic on the
+    /// epoch alone, so the render loop can sleep to the clock's own boundary
+    /// on any OS (R33).
+    pub fn boundary(&self, frame: u64) -> Option<Instant> {
+        let rate = u128::from(self.house_rate.max(1));
+        let nanos = (u128::from(frame) * 1_000_000_000).div_ceil(rate);
+        Some(self.epoch()? + std::time::Duration::from_nanos(u64::try_from(nanos).ok()?))
+    }
+
     /// Current master frame; None while STOPPED.
     pub fn frame(&self) -> Option<u64> {
         match self.state {
@@ -79,6 +90,29 @@ impl MasterClock {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_boundary_is_the_epoch_plus_its_frames_rounded_up_to_the_nanosecond() {
+        let epoch = Instant::now() - Duration::from_secs(10);
+        let c = MasterClock::new(30).with_epoch(epoch, ClockState::Running);
+        assert_eq!(c.boundary(0), Some(epoch));
+        assert_eq!(
+            c.boundary(1),
+            Some(epoch + Duration::from_nanos(33_333_334))
+        );
+        assert_eq!(c.boundary(30), Some(epoch + Duration::from_secs(1)));
+        assert_eq!(c.boundary(300), Some(epoch + Duration::from_secs(10)));
+        // The frame the clock reads now began at or before now, and the next
+        // one begins after it.
+        let f = c.frame().unwrap();
+        let now = Instant::now();
+        assert!(c.boundary(f).unwrap() <= now && now < c.boundary(f + 1).unwrap());
+        assert_eq!(
+            MasterClock::new(30).boundary(5),
+            None,
+            "STOPPED has no boundaries"
+        );
+    }
 
     #[test]
     fn stopped_clock_never_advances() {

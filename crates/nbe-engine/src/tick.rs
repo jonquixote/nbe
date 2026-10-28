@@ -241,6 +241,15 @@ impl Cadence {
         }
     }
 
+    /// The clock restarted between two ticks (a new epoch): the run so far
+    /// ends, and the next frame starts the new run's count.
+    fn new_run(&mut self, state: &EngineState) {
+        if let Some(run) = self.run.take() {
+            tracing::info!("{}", run.summary("run", state));
+        }
+        self.last = None;
+    }
+
     /// The loop is returning: close whatever span is open.
     fn end(&mut self, state: &EngineState) {
         if let Some(take) = self.take.take() {
@@ -401,6 +410,17 @@ pub async fn run_tick(
 /// returns `false` (the binary never stops it). Renders even while the clock
 /// is STOPPED so the operator always has a picture; a missed deadline is only
 /// meaningful — and only counted — while a show clock runs.
+///
+/// **R33: the clock names the frame, once, in order.** While the clock runs,
+/// the loop sleeps to the clock's own boundary for the frame after the last
+/// one it drew, then draws the frame the clock names. A timer wakes late, by
+/// an amount that differs by OS, and a late wake still names the frame it
+/// slept for; a wake more than a frame late names a later one, and the frames
+/// passed over are skips, counted. A frame already drawn is never drawn
+/// again, and frames passed over are never drawn to catch up. STOPPED keeps
+/// the loop's own grid. The loop used to sleep to its own grid and read the
+/// clock wherever it woke, so a grid near a clock boundary drew one frame
+/// twice and never the next (630, 630, 632).
 pub async fn run_loop(
     render: &mut RenderLoop,
     state: &EngineState,
@@ -411,14 +431,36 @@ pub async fn run_loop(
     let mut next_boundary = Instant::now();
     let mut stopped_frame: u64 = 0;
     let mut cadence = Cadence::default();
+    // The running clock's epoch and the master frame last drawn on it.
+    let mut drawn: Option<(Instant, u64)> = None;
     loop {
+        let intended = match (state.clock_reading(), drawn) {
+            (Some((epoch, _)), Some((drawn_epoch, last))) if epoch == drawn_epoch => {
+                state.frame_boundary(last + 1).unwrap_or(next_boundary)
+            }
+            // The clock's first running tick, or a new run: draw now.
+            (Some(_), _) => Instant::now(),
+            (None, _) => next_boundary,
+        };
         let now = Instant::now();
-        let intended = next_boundary;
-        if next_boundary > now {
-            tokio::time::sleep(next_boundary - now).await;
+        if intended > now {
+            tokio::time::sleep(intended - now).await;
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
-        let master = state.master_frame();
+        let reading = state.clock_reading();
+        match (reading, drawn) {
+            // The clock still names a frame already drawn (a wake inside the
+            // boundary's rounding): sleep again rather than draw it twice.
+            (Some((epoch, f)), Some((drawn_epoch, last))) if epoch == drawn_epoch && f <= last => {
+                continue
+            }
+            (Some((epoch, _)), Some((drawn_epoch, _))) if epoch != drawn_epoch => {
+                cadence.new_run(state)
+            }
+            _ => {}
+        }
+        drawn = reading;
+        let master = reading.map(|(_, f)| f);
         let (frame, deadline) = match master {
             // RUNNING: the master clock owns the frame number and the
             // deadline is real.
