@@ -131,6 +131,12 @@ pub async fn run_tick(
     // wait on before the encoder reads the surface (the render thread never
     // waits on it).
     loan.mark_drawn(render, frame);
+    // R35: the same draw, for the stream thread to wait on before its encoder
+    // reads whichever surface the stream takes (the record loan's or its own).
+    let stream_drawn = match stream_tx {
+        Some(_) => crate::record::DrawDone::of_view(render),
+        None => None,
+    };
     if own_surface.is_some() {
         let _ = render.set_view_surface(None);
     }
@@ -173,6 +179,7 @@ pub async fn run_tick(
             report.stream_sent = crate::record::stream::hand_off_stream_surface(
                 &tx,
                 surface,
+                stream_drawn,
                 frame,
                 &state.skipped_stream_frames,
             );

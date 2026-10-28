@@ -178,6 +178,7 @@ async fn a_stalled_stream_costs_record_nothing() {
         nbe_engine::record::restore_view(&mut render, &loan);
         loan.mark_drawn(&render, frame);
         let shared = loan.surface();
+        let drawn = nbe_engine::record::DrawDone::of_view(&render);
         let _ = nbe_engine::record::end_tap_frame(
             loan,
             render_elapsed,
@@ -190,7 +191,7 @@ async fn a_stalled_stream_costs_record_nothing() {
         .await;
         if let Some(surface) = shared {
             let t = std::time::Instant::now();
-            hand_off_stream_surface(&stream_tx, surface, frame, &stream_skips);
+            hand_off_stream_surface(&stream_tx, surface, drawn, frame, &stream_skips);
             worst_handoff = worst_handoff.max(t.elapsed());
         }
         record.tick();
@@ -291,4 +292,67 @@ async fn the_pool_never_hands_out_a_surface_videotoolbox_still_reads() {
         handed_out_while_held, 0,
         "the pool must never hand out a surface VideoToolbox still reads"
     );
+}
+
+// ---------------------------------------------------------------------------
+// R35 — the stream thread's encoder reads a surface only after its draw.
+// ---------------------------------------------------------------------------
+
+/// One frame of the stream path as `tick::run_tick` composes it, stream-only:
+/// the View drawn into a pool surface, then the handoff with that frame's own
+/// draw (`DrawDone::of_view`). The channel's message, if any, and the drops
+/// counted.
+fn stream_one(render: &mut RenderLoop, pool: &SurfacePool, frame: u64) -> (Option<StreamMsg>, u64) {
+    let surface = pool.acquire().expect("a fresh pool has a free surface");
+    render
+        .set_view_surface(Some(surface.clone()))
+        .expect("the View takes the stream's surface");
+    let _ = render.render_frame(frame, None);
+    let _ = render.set_view_surface(None);
+    let drawn = nbe_engine::record::DrawDone::of_view(render);
+    let (tx, rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
+    let skipped = AtomicU64::new(0);
+    hand_off_stream_surface(&tx, surface, drawn, frame, &skipped);
+    (rx.try_recv().ok(), skipped.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn a_drawn_stream_surface_reaches_the_stream_thread_with_its_draw_and_its_frame() {
+    let Some((_state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    let (msg, skipped) = stream_one(&mut render, &pool, 7);
+    assert_eq!(skipped, 0, "a drawn surface is no stream drop");
+    let Some(StreamMsg::Surface { drawn, frame, .. }) = msg else {
+        panic!("R35: a drawn surface must reach the stream thread, got {msg:?}");
+    };
+    assert_eq!(
+        frame, 7,
+        "the handoff carries the master frame it was drawn for"
+    );
+    use nbe_engine::record::AwaitDraw;
+    assert!(
+        drawn.wait(nbe_engine::record::DRAW_WAIT),
+        "the handoff carries the View's own draw, which the GPU completes"
+    );
+}
+
+#[tokio::test]
+async fn a_view_that_did_not_draw_hands_the_stream_nothing() {
+    let Some((_state, mut render, pool)) = chain_or_skip().await else {
+        return;
+    };
+    // A good frame first, so a submission from the frame before is there to
+    // be wrongly handed on: the View's draw must be this frame's or none.
+    let (good, _) = stream_one(&mut render, &pool, 6);
+    assert!(good.is_some(), "the frame before draws and hands off");
+    // The View's draw fails (the injection seam): this frame has no draw to
+    // wait on, and the surface holds whatever it held before.
+    render.fail_view = true;
+    let (msg, skipped) = stream_one(&mut render, &pool, 7);
+    assert!(
+        msg.is_none(),
+        "R35: a surface the View did not draw into must never reach the stream's encoder, got {msg:?}"
+    );
+    assert_eq!(skipped, 1, "the frame is a counted stream drop");
 }

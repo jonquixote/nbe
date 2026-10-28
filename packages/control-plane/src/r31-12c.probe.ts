@@ -9,6 +9,7 @@
 //!   npm run probe:r31 -- --analyse <run directory>    # re-read a kept run
 //!   npm run probe:r31 -- --state ambient --tap cpu    # the A/B: CPU readback
 //!   npm run probe:r31 -- --state ambient --gpu low    # the integrated GPU
+//!   npm run probe:r31 -- --state ambient --path stream # R35: the stream path
 //!
 //! R31's sighting 1 was the dress's step 12c reading frame 41's picture in
 //! frame 43's slot, and its recording was lost with the temp directory it was
@@ -53,6 +54,15 @@
 //! read without a trace (an older run) falls back to clause 1 and 2 read by
 //! index alone, and reports repeats as HELD.
 //!
+//! `--path stream` (R35, the user's ruling of 2026-10-26): the same takes on
+//! the stream path instead, stream-only, so the View draws into the stream's
+//! own pool surface and the stream thread encodes it (R31's shape). A local
+//! ffmpeg RTMP listener receives the stream into the run's directory, and the
+//! received frames are read as the recording is. No trace is needed: the
+//! stream thread's PTS index is the master frame less the stream's first, so
+//! each received frame's timestamp names the frame its tick drew, and the
+//! constant cancels in each take's offset.
+//!
 //! Counted per run: the read-ahead's misses, the View's dropped frames, the
 //! machine's swap-ins and swap-outs (and the swap in use), and the load
 //! average, sampled every 10 s.
@@ -67,6 +77,7 @@ import { WebSocket } from "ws";
 import { AuditLog } from "./audit.js";
 import { loadComplete, residency } from "./load-residency.js";
 import { R20_FRAMES, R20_ITEM, r20Classify } from "./r20-counter.js";
+import { startFlvReceiver, type FlvReceiver } from "./rtmp-flv-receiver.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
 
@@ -175,6 +186,8 @@ interface Take {
 }
 
 interface Analysis {
+  /** Which path was read: the recording, or the stream as received (R35). */
+  path: "record" | "stream";
   recording: string;
   recordedFrames: number;
   takesRead: number;
@@ -221,10 +234,15 @@ function analyse(out: string): Analysis {
   const ffmpeg = resolveTool("ffmpeg", FFMPEG_FALLBACKS);
   const ffprobe = ffmpeg?.replace(/ffmpeg$/, "ffprobe") ?? null;
   if (ffmpeg === null || ffprobe === null) throw new Error("ffmpeg and ffprobe are required to read the recording");
-  const recordDir = join(out, "record");
-  const mp4s = readdirSync(recordDir).filter((f) => f.endsWith(".mp4"));
-  if (mp4s.length !== 1 || mp4s[0] === undefined) throw new Error(`expected one recording in ${recordDir}, saw ${JSON.stringify(mp4s)}`);
-  const recording = join(recordDir, mp4s[0]);
+  const received = join(out, "stream", "stream.flv");
+  const streamed = existsSync(received);
+  let recording = received;
+  if (!streamed) {
+    const recordDir = join(out, "record");
+    const mp4s = readdirSync(recordDir).filter((f) => f.endsWith(".mp4"));
+    if (mp4s.length !== 1 || mp4s[0] === undefined) throw new Error(`expected one recording in ${recordDir}, saw ${JSON.stringify(mp4s)}`);
+    recording = join(recordDir, mp4s[0]);
+  }
   // Step 12c's read: each recorded frame's centre pixel, in presentation order.
   const px = spawnSync(
     ffmpeg,
@@ -247,8 +265,11 @@ function analyse(out: string): Analysis {
     k: r20Classify([bytes[3 * i] as number, bytes[3 * i + 1] as number, bytes[3 * i + 2] as number]),
   }));
   writeFileSync(join(out, "sequence.txt"), frames.map((f) => `${f.t.toFixed(3)}:${f.k}`).join("\n") + "\n");
-  const trace = readTrace(out);
-  const tickFrame = (t: number): number | undefined => trace?.get(Math.round(t * HOUSE_RATE));
+  const trace = streamed ? null : readTrace(out);
+  // The stream's own join (R35): its PTS index is the master frame less the
+  // stream's first, so the timestamp names the tick, up to a constant.
+  const tickFrame = (t: number): number | undefined =>
+    streamed ? Math.round(t * HOUSE_RATE) : trace?.get(Math.round(t * HOUSE_RATE));
 
   // Split into takes at each separator: a run of SEPARATOR_FRAMES black frames
   // or more. A shorter black run inside a take is step 12c's black on air.
@@ -275,6 +296,7 @@ function analyse(out: string): Analysis {
   }
 
   const result: Analysis = {
+    path: streamed ? "stream" : "record",
     recording,
     recordedFrames: frames.length,
     takesRead: takes.length,
@@ -286,12 +308,12 @@ function analyse(out: string): Analysis {
     shortTakes: [],
     other: 0,
     blackInside: 0,
-    traced: trace !== null,
-    untraced: trace === null ? frames.length : frames.filter((f) => tickFrame(f.t) === undefined).length,
+    traced: streamed || trace !== null,
+    untraced: streamed || trace !== null ? frames.filter((f) => tickFrame(f.t) === undefined).length : frames.length,
     stale: [],
     r33: { repeats: 0, skips: 0 },
   };
-  if (trace !== null) {
+  if (result.traced) {
     // R33, over every recorded frame in submit order: the ticks' master frames.
     let prevF: number | undefined;
     for (const f of frames) {
@@ -351,12 +373,14 @@ async function run(
   stateLabel: string,
   tap: "zeroCopy" | "cpuReadback",
   gpu: "high" | "low",
+  path: "record" | "stream",
 ): Promise<Record<string, unknown>> {
   if (!existsSync(ENGINE_BIN)) throw new Error(`the engine binary must be built first: ${ENGINE_BIN} (cargo build -p nbe-engine)`);
   mkdirSync(out, { recursive: true });
   const { pkgDir } = stagePackage(out, tap);
   const meta: Record<string, unknown> = {
-    probe: "R31 12c",
+    probe: path === "stream" ? "R35 stream (12c's takes)" : "R31 12c",
+    path,
     state: stateLabel,
     minutes,
     tap,
@@ -472,6 +496,9 @@ async function run(
     }
   };
 
+  // The stream's receiver (R35): what arrives, written with its timestamps
+  // into the run's directory.
+  let receiver: FlvReceiver | null = null;
   try {
     await until("the engine's registration", () => server.wsBridge.renderNodeCount() === 1, 30_000);
     await applied("show.load", { packagePath: pkgDir }, LOAD_MS, "the probe package's load");
@@ -483,11 +510,22 @@ async function run(
     keepInMemory = false;
     engineLog = [];
     await applied("show.start", { startClock: true }, COMMAND_MS, "show.start");
-    await applied("record.start", { outputId: "r31probe" }, COMMAND_MS, "record.start (no hardware encoder?)");
-    await sleep(2000);
-    const tapPath = tick()["recordTapPath"];
-    meta["recordTapPath"] = tapPath;
-    if (tapPath !== tap) throw new Error(`the probe asked for the ${tap} tap; the tick reads recordTapPath ${JSON.stringify(tapPath)}`);
+    if (path === "stream") {
+      mkdirSync(join(out, "stream"), { recursive: true });
+      receiver = await startFlvReceiver(join(out, "stream", "stream.flv"));
+      const streamUrl = `rtmp://127.0.0.1:${receiver.port}/live/r35probe`;
+      meta["streamUrl"] = streamUrl;
+      await applied("stream.start", { url: streamUrl }, COMMAND_MS, "stream.start (no hardware encoder?)");
+      await sleep(2000);
+      meta["streamTransportState"] = tick()["streamTransportState"];
+      if (tick()["streamState"] !== "live") throw new Error(`stream.start applied; the tick reads streamState ${JSON.stringify(tick()["streamState"])}`);
+    } else {
+      await applied("record.start", { outputId: "r31probe" }, COMMAND_MS, "record.start (no hardware encoder?)");
+      await sleep(2000);
+      const tapPath = tick()["recordTapPath"];
+      meta["recordTapPath"] = tapPath;
+      if (tapPath !== tap) throw new Error(`the probe asked for the ${tap} tap; the tick reads recordTapPath ${JSON.stringify(tapPath)}`);
+    }
     const before = { ...tick() };
 
     // A timed item ends DONE, and a DONE item takes again only after
@@ -512,17 +550,26 @@ async function run(
       cycles += 1;
     }
     const after = { ...tick() };
-    await applied("record.stop", {}, RECORD_STOP_MS, "record.stop");
+    if (path === "stream") {
+      await applied("stream.stop", {}, COMMAND_MS, "stream.stop");
+      meta["streamVideoMessages"] = receiver?.videoMessages();
+      meta["streamParseError"] = receiver?.parseError();
+    } else {
+      await applied("record.stop", {}, RECORD_STOP_MS, "record.stop");
+    }
     const delta = (k: string): number => ((after[k] ?? 0) as number) - ((before[k] ?? 0) as number);
     Object.assign(meta, {
       cycles,
       readAheadMisses: delta("readAheadMissesTotal"),
       droppedFrames: delta("droppedFramesTotal"),
       watchdogTrips: delta("watchdogTripsTotal"),
-      recordTapPathAtEnd: after["recordTapPath"],
+      ...(path === "stream"
+        ? { streamTransportStateAtEnd: after["streamTransportState"], streamBufferMsAtEnd: after["streamBufferMs"] }
+        : { recordTapPathAtEnd: after["recordTapPath"] }),
     });
   } finally {
     clearInterval(sampler);
+    await receiver?.close();
     const end = machine();
     line(machineLog, end);
     const start = meta["machineAtStart"] as Record<string, number | null>;
@@ -553,10 +600,12 @@ async function main(): Promise<void> {
   if (again === undefined) {
     const minutes = Number(arg("minutes") ?? 30);
     const tap = arg("tap") === "cpu" ? "cpuReadback" : "zeroCopy";
-    const meta = await run(out, minutes, arg("state") ?? "unlabelled", tap, arg("gpu") === "low" ? "low" : "high");
-    console.log(`R31 PROBE RUN: ${JSON.stringify(meta)}`);
+    const path = arg("path") === "stream" ? "stream" : "record";
+    const meta = await run(out, minutes, arg("state") ?? "unlabelled", tap, arg("gpu") === "low" ? "low" : "high", path);
+    console.log(`${path === "stream" ? "R35" : "R31"} PROBE RUN: ${JSON.stringify(meta)}`);
   }
   const a = analyse(out);
+  const name = a.path === "stream" ? "R35 PROBE (stream)" : "R31 PROBE";
   // Traced: clause 2 is exact, and every repeat is attributed (R33's, or
   // stale). Untraced (an older run): clause 2 by index alone, repeats HELD.
   const sighting = a.traced
@@ -565,23 +614,23 @@ async function main(): Promise<void> {
   const verdict = sighting ? "SIGHTING" : !a.traced && a.repeats > 0 ? "HELD" : "CLEAN";
   writeFileSync(join(out, "result.json"), JSON.stringify({ ...a, verdict }, null, 2));
   console.log(
-    `R31 PROBE READ: ${a.recordedFrames} recorded frames, ${a.takesRead} takes of the counter; ` +
+    `${name} READ: ${a.recordedFrames} recorded frames, ${a.takesRead} takes of the counter; ` +
       `backwards ${a.backwards.length}, earlier ${a.earlier.length}; repeats ${a.repeats}, skips ${a.skips}, ` +
       `short takes ${a.shortTakes.length}, other ${a.other}, black inside ${a.blackInside}`,
   );
   if (a.traced) {
     console.log(
-      `R31 PROBE TRACE: stale ${a.stale.length} (clause 2, exact); untraced frames ${a.untraced}; ` +
+      `${name} TRACE: stale ${a.stale.length} (clause 2, exact); untraced frames ${a.untraced}; ` +
         `R33: ${a.r33.repeats} repeated master frames, ${a.r33.skips} skipped`,
     );
   }
   if (sighting) {
-    console.log(`R31 PROBE: SIGHTING. First: ${JSON.stringify(a.stale[0] ?? a.backwards[0] ?? a.earlier[0])}. Kept in ${out}`);
+    console.log(`${name}: SIGHTING. First: ${JSON.stringify(a.stale[0] ?? a.backwards[0] ?? a.earlier[0])}. Kept in ${out}`);
     process.exitCode = 1;
   } else if (verdict === "HELD") {
-    console.log(`R31 PROBE: HELD. No frame went backwards; ${a.repeats} frame(s) held (the slot reading of clause 2, the user's to rule). Kept in ${out}`);
+    console.log(`${name}: HELD. No frame went backwards; ${a.repeats} frame(s) held (the slot reading of clause 2, the user's to rule). Kept in ${out}`);
   } else {
-    console.log(`R31 PROBE: CLEAN. Kept in ${out}`);
+    console.log(`${name}: CLEAN. Kept in ${out}`);
   }
 }
 

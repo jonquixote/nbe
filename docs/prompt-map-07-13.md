@@ -798,6 +798,8 @@ adopt and record).
   | `40450166227`, PR #74 at `527c065` (an intermediate head of its rebase), green (585/0/5) | the workspace tests: the test build finished at 04:32:48.45 (`Finished` in 52.43 s); the post line at 04:34:07 | whole step 4.42–7.33 (pre, 13 samples, post). While building: 7.20 (the pre line, load1 21.60), 6.30, 5.97, 6.94, 7.16, 7.33. While the tests ran: 7.00, 6.80, 6.47, 6.14, 5.25, 5.29, 4.91, then the post line's 4.42, so 4.42–7.00. The R10 test passed at 04:33:19.18, between 6.47 and 6.14. The 69th |
   | `40451987570`, PR #74 at `ae709db` (its final head), green (585/0/5) | the workspace tests: the test build finished at 04:53:04.13 (`Finished` in 59.52 s); the post line at 04:54:28 | whole step 3.34–5.81 (pre, 15 samples, post). While building: 5.40 (the pre line, load1 16.21), 4.85, 4.97, 5.14, 5.44, 5.81. While the tests ran: 5.64, 5.08, 4.89, 4.19, 3.60, 4.08, 4.26, 3.73, 3.61, then the post line's 3.34, so 3.34–5.64. The R10 test passed at 04:53:38.15, between 4.19 and 3.60. The 70th |
   | `40455238385`, main at `4bef9ed` (PR #74's merge), green (585/0/5) | the workspace tests: the test build finished at 05:26:59.38 (`Finished` in 46.00 s); the post line at 05:28:17 | whole step 1.93–6.32 (pre, 13 samples, post). While building: 2.05 (the pre line, load1 6.15), 1.93, 2.50, 4.77, 6.15. While the tests ran: 6.32, 6.17, 5.43, 4.78, 4.18, 3.71, 3.78, 3.57, then the post line's 3.34, so 3.34–6.32. The R10 test passed at 05:27:34.37, between 4.78 and 4.18. The 71st |
+  | `40458035715`, PR #75 at `e048917` (its head), green (585/0/5) | the workspace tests: the test build finished at 05:56:36.43 (`Finished` in 47.45 s); the post line at 05:58:00 | whole step 2.27–4.78 (pre, 13 samples, post). While building: 2.41 (the pre line, load1 7.23), 2.27, 2.76, 3.81, 4.72. While the tests ran: 4.69, 4.02, 4.12, 3.61, 3.70, 3.81, 4.39, 4.78, then the post line's 4.35, so 3.61–4.78. The R10 test passed at 05:57:10.32, between 3.61 and 3.70. The 72nd |
+  | `40460725223`, main at `6bb8019` (PR #75's merge), green (585/0/5) | the workspace tests: the test build finished at 06:24:14.41 (`Finished` in 54.48 s); the post line at 06:25:35 | whole step 4.14–8.50 (pre, 14 samples, post). While building: 8.50 (the pre line, load1 25.49), 7.42, 7.06, 6.76, 6.39, 6.32. While the tests ran: 5.95, 5.24, 4.64, 4.75, 4.74, 4.71, 4.47, 4.30, then the post line's 4.14, so 4.14–5.95. The R10 test passed at 06:24:46.40, between 4.64 and 4.75. The 73rd |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -1022,6 +1024,10 @@ and 5.61, under the 15.31 maximum). R10 was silent in all six.
 (71 green runs; rows 68–71 peaked at 9.28, 7.33, 5.81 and 6.32, under the
 15.31 maximum). R10 was silent in all four.
 
+**The ceiling through #75 and its merge: holds at 19.13 per CPU** (73 green
+runs; rows 72 and 73 peaked at 4.78 and 8.50, under the 15.31 maximum). R10
+was silent in both.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1065,6 +1071,8 @@ A `three_frames…` failure in that step is read against it.
 | G25 | `40450166227` attempt 1, rust job `122010764931`, PR #74 at `527c065`, green (`prompt04` 19) | 4.42 | 4.42–4.60 (pre, 1 sample, post; 04:34:07–04:34:13Z) | 4.60 |
 | G26 | `40451987570` attempt 1, rust job `122016602116`, PR #74 at `ae709db`, green (`prompt04` 19) | 3.34 | 3.34 (pre, 1 sample, post; 04:54:28–04:54:35Z) | 3.34 |
 | G27 | `40455238385` attempt 1, rust job `122026909134`, main at `4bef9ed` (PR #74's merge), green (`prompt04` 19) | 3.34 | 3.34–3.36 (pre, 1 sample, post; 05:28:17–05:28:22Z) | 3.36 |
+| G28 | `40458035715` attempt 1, rust job `122035836637`, PR #75 at `e048917`, green (`prompt04` 19) | 4.35 | 4.03–4.35 (pre, 1 sample, post; 05:58:00–05:58:06Z) | 4.03 |
+| G29 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (`prompt04` 19) | 4.14 | 3.86–4.14 (pre, 1 sample, post; 06:25:35–06:25:41Z) | 3.86 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1093,6 +1101,8 @@ all six.
 G24–G27 peaked under it too: 4.77, 4.60 and 3.34 (#74 at `9dfd84b`,
 `527c065` and `ae709db`), 3.36 (main `4bef9ed`); `three_frames…` passed the
 GPU step in all four.
+G28 and G29 peaked under it too: 4.35 (#75 at `e048917`) and 4.14 (main
+`6bb8019`); `three_frames…` passed the GPU step in both.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1123,6 +1133,8 @@ proof was, and its bracket held a failed floor step (a mixed step).
 | F12 | `40450166227` attempt 1, rust job `122010764931`, PR #74 at `527c065`, green (34/34 floor lines) | 4.60 | 2.88–4.60 (pre, 9 samples, post; 04:34:13–04:35:41Z) | 3.01 |
 | F13 | `40451987570` attempt 1, rust job `122016602116`, PR #74 at `ae709db`, green (34/34 floor lines) | 3.34 | 3.34–4.29 (pre, 10 samples, post; 04:54:35–04:56:13Z) | 3.38 |
 | F14 | `40455238385` attempt 1, rust job `122026909134`, main at `4bef9ed` (PR #74's merge), green (34/34 floor lines) | 3.36 | 2.50–3.71 (pre, 9 samples, post; 05:28:22–05:29:43Z) | 3.71 |
+| F15 | `40458035715` attempt 1, rust job `122035836637`, PR #75 at `e048917`, green (34/34 floor lines) | 4.03 | 2.50–4.03 (pre, 9 samples, post; 05:58:06–05:59:32Z) | 2.50 |
+| F16 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (34/34 floor lines) | 3.86 | 2.56–3.98 (pre, 9 samples, post; 06:25:41–06:27:10Z) | 3.07 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
@@ -1149,6 +1161,8 @@ not what was expected.
 `7c215c7`), 4.86 (main `27368f2`), at 10 green runs.
 **F11–F14 peaked under it too:** 4.12, 4.60 and 4.29 (#74 at `9dfd84b`,
 `527c065` and `ae709db`), 3.71 (main `4bef9ed`), at 14 green runs.
+**F15 and F16 peaked under it too:** 4.03 (#75 at `e048917`) and 3.98
+(main `6bb8019`), at 16 green runs.
 
 **The control-plane bracket envelope** (the user's ruling of 2026-10-26 on
 R32, (a); the fourth envelope). From `ab0304a`, `cp-pre`, `cp-sample` and
@@ -1175,6 +1189,8 @@ load-average tail (the ruling: the settle, not the count), and #72's
 | CP5 | `40450166227` attempt 1, control-plane job `122010765314`, PR #74 at `527c065`, green (`npm test` 205/205, package-reconcile 4/4) | 3.14 | 3.01–4.56 (pre, 21 samples, post; 04:33:35–04:37:06Z) | 4.56 |
 | CP6 | `40451987570` attempt 1, control-plane job `122016602551`, PR #74 at `ae709db`, green (`npm test` 205/205, package-reconcile 4/4) | 3.70 | 2.48–4.62 (pre, 21 samples, post; 04:53:47–04:57:12Z) | 4.37 |
 | CP7 | `40455238385` attempt 1, control-plane job `122026909528`, main at `4bef9ed` (PR #74's merge), green (`npm test` 205/205, package-reconcile 4/4) | 4.72 | 3.46–4.72 (pre, 21 samples, post; 05:28:25–05:31:49Z) | 4.69 |
+| CP8 | `40458035715` attempt 1, control-plane job `122035836675`, PR #75 at `e048917`, green (`npm test` 205/205, package-reconcile 4/4) | 1.92 | 1.88–5.15 (pre, 21 samples, post; 05:57:45–06:01:14Z) | 4.76 |
+| CP9 | `40460725223` attempt 1, control-plane job `122044419247`, main at `6bb8019` (PR #75's merge), green (`npm test` 205/205, package-reconcile 4/4) | 4.50 | 2.76–5.28 (pre, 21 samples, post; 06:25:34–06:29:03Z) | 4.64 |
 
 **CP1 seeds it:** the maximum is 4.94 (load1 14.82, the last sample at
 15:47:18Z and `cp-post` at 15:47:19Z, during the operator-signals end to
@@ -1212,6 +1228,12 @@ non-weather reading.
 proposal's 50% line (4.23). CP7's peak is `cp-pre` (load1 14.17 at
 05:28:25Z), 60 s after a warm 23.04 s engine build; its first readings held
 flat (4.72, 4.65, 4.61, 4.67) rather than decaying as CP2's build tail did.
+
+**CP8 and CP9, warm, under 8.46:** 5.15 (#75 at `e048917`, a late sample
+during the operator-signals end to end, load1 15.45 at 06:01:07Z) and 5.28
+(main `6bb8019`, a mid-window sample, load1 15.83 at 06:27:06Z), the highest
+warm readings yet, at 9 green runs; neither is under the queued proposal's
+50% line (4.23).
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -9713,6 +9735,143 @@ item):
 
   **The arc's ledger closes** (the user's ruling of 2026-10-26): R31 FIXED
   (`27368f2`), R32 on watch, R33, R34 and R35 filed.
+
+  **#74's records, PR #75** (branch `records-after-74`, off `4bef9ed`;
+  docs-only, one commit `e048917`).
+  - **CI at `e048917`:** run `40458035715`, attempt 1, every job executed,
+    each read job-exact: rust 585/0/5, 34/34 floor lines, the 4 count gates,
+    R10's drain tests `ok` in both runs of their suite, `three_frames…` `ok`
+    in both steps; control-plane every step green, `npm test` 205/205,
+    package-reconcile 4/4, the refused start `ok` (2027 ms); dress 29/29, 0
+    drops. Rows: R10's 72, G28, F15, CP8.
+  - **The two-key once-over** (independent; relayed by the user, 2026-10-26)
+    HOLDS at `e048917`: no disputes, no voids.
+  - **Merged: PR #75 is `6bb8019`** (the bookend), on the user's word.
+    - **The merge:** a squash at 2026-10-27T06:22:32Z, matched to `e048917`,
+      with the staged subject and body (byte-identical). Its one parent is
+      `4bef9ed`.
+    - **The tree is identical to the reviewed head's:** `6bb8019^{tree}` =
+      `e048917^{tree}` = `e654b8b`.
+    - **Main's CI:** run `40460725223` (push), attempt 1. Every job executed
+      (each started 06:22:37–06:22:38Z), and each was read job-exact.
+      **Green.** rust 585/0/5, 34/34 floor lines, the 4 count gates, R10's
+      drain tests `ok` in both runs of their suite, `three_frames…` `ok` in
+      both steps; control-plane every step green, `npm test` 205/205,
+      package-reconcile 4/4, the refused start `ok` (2028 ms); dress 29/29,
+      0 drops, steps 5, 6 and 12c `ok` (step 4's rise 4036 ms, logged,
+      inside the 10 s backstop).
+    - **The envelopes:** R10 row 73 (19.13 holds), G29 (7.46 holds), F16
+      (10.02 holds), CP9 (8.46 holds).
+  - **The R31–R35 arc is closed** (the user's ruling of 2026-10-26): R31
+    FIXED (`27368f2`) with its permanent probe; R32 on watch with two
+    instruments (the control-plane bracket, the reload log); R33, R34 and
+    R35 filed; R21 LOGGED, its sighting 2's artifact saved; four envelopes
+    live (R10's workspace, R15's GPU step, the floor bracket, the
+    control-plane bracket).
+  - **Standing items after the arc:** R35's fix PR next (its row's
+    addresses: `record/stream.rs:818` → `:962`); the ceiling-downward
+    proposal already on this map as queued, not in force (it landed with
+    `4bef9ed`); the dress step-5 backstop on the infrastructure list, wanted
+    by R21; `r32-cp-falsify-ci-temp`'s local branch the user's to delete
+    (its remote is gone).
+
+  **The user's rulings of 2026-10-27, on the morning's maintenance and R35's
+  plan:**
+  1. About 8 GB free, enough for R35's builds and recordings. The 36 local
+     branches' prune and a `cargo sweep` of `target/` go on the maintenance
+     list; `git branch -D r32-cp-falsify-ci-temp` stays the user's.
+  2. **R35's plan is approved as designed.** The red-first gate is mandatory,
+     and its clean outcome was ruled in advance: 0 stale frames on main's
+     code on both GPUs stops the work before building, the falsification
+     void, the fix landing as guarding a latent defect (filed as latent, no
+     falsification, permanence by the probe), and the row saying so.
+  3. **The counter-proof on Intel only:** one demonstration of the class
+     returning, R31's battery convention.
+
+  **The user's rulings of 2026-10-27, on R35's red:**
+  1. **Proceed to R35's fix.** The kept 10-minute Intel window is sufficient
+     red; no further AMD red is required before implementation.
+  2. **The evidence boundaries:** Intel is the kept red. The 30-minute AMD
+     window is VOID: its artifacts and observations kept, not counted as
+     normative red. The end-sample correction is recorded: the probe's
+     actual stream-end sample was 3.61; the runner's later 2.82 was read
+     after the analysis. The background load's cause remains unknown, and
+     the R31 comparison does not establish that the probe contributed
+     nothing. The refill-point clustering is a correlation, not a proven
+     cause.
+  3. **The fix:** the draw-completion handoff and the stream-thread wait;
+     the View never waits, the wait is bounded, a skip is counted.
+  4. **The verification:** the fixed code in a kept 30-minute AMD window
+     and a kept 10-minute Intel window, targeting zero stale pictures; the
+     counter-proof on Intel, the wait removed, the class returning in a kept
+     window; the unit and GPU guards and the CI gates.
+  5. **The load rule is not relaxed** to obtain a kept result: a void
+     window is preserved, its reason named, reported as void.
+  6. **The red's exact source state is preserved** before the engine
+     changes (main's SHA, the probe and receiver or their snapshot, the
+     invocation, the evidence paths). The new receiver and the stream
+     classifier are part of the measurement surface, in review with the
+     frame-to-tick basis.
+  7. **R35's row distinguishes** the kept Intel red, the attempted but void
+     AMD red, and the fixed-code and counter-proof results.
+  8. The PR is held DO NOT MERGE for its two-key review and the user's word.
+
+  **R35's fix PR** (branch `r35-stream-fence`, off `6bb8019`).
+  - **The measurement surface** (`3418075`, the red's source): the 12c
+    probe's `--path stream` (stream-only, the View drawing into the stream's
+    own pool surface) and `src/rtmp-flv-receiver.ts`, which answers the
+    engine's three RTMP commands (ffmpeg's `-listen` refuses its publisher)
+    and writes each video message whole, with its timestamp, into the run's
+    FLV. **The frame-to-tick basis:** the stream thread's PTS index is the
+    master frame less the stream's first; the receiver keeps each message's
+    timestamp; the analysis rounds `pts_time × 30`; the constant cancels in
+    each take's offset. The red's source is kept in
+    `.git/nbe-staged/r35/red-source/` (both files with their sha256, the
+    probe's diff, the invocation); the engine was main's `6bb8019`.
+  - **The red** (main's code; `red.sh`, `red.log`, `red-reading.md`):
+
+    | window | adapter | frames | stale | the window |
+    |---|---|---|---|---|
+    | 10 min | Intel UHD 630 | 18,303 | **16**, each the previous frame's; 14 at clip frame 87 | **KEPT** (admitted 2.19; its own ends 2.38 and 2.35) |
+    | 30 min | AMD Radeon Pro 555X | 54,144 | 9 observed (8 one back, 1 two back) | **VOID**: its own stream-end sample 3.61; at or above 3.0 in 117 of 184 samples, max 6.31; the cause unknown. *(§2c: the runner's 2.82 was read after the analysis, the builder's slip in where the end was read.)* |
+
+    A 1-minute dry run (not counted) had shown one: slots 88, 89, **89**, 91
+    at contiguous timestamps.
+  - **The fix** (`7989f5a`): `DrawDone::of_view`, this frame's View draw or
+    none, shared by the record loan's `mark_drawn` and the stream; the tick
+    hands the stream that draw with whichever surface it takes (the record
+    loan's or its own); a surface with no draw to wait on is never handed
+    off, a stream drop, counted; the stream thread encodes through
+    `encode_when_drawn` (R31's `encode_after_draw`: a zero-timeout poll every
+    500 µs up to 1 s), the View never waiting, an unfinished draw a counted
+    drop, never an encode.
+  - **Guards:** `record::stream` 2 unit tests (the wait precedes the encode,
+    bounded by `DRAW_WAIT`; an unfinished draw is a counted drop, never an
+    encode); `zerocopy_g1` +2 GPU tests (a drawn stream surface reaches the
+    stream thread with its draw and its frame; a View that did not draw,
+    after one that did, hands the stream nothing), its CI floors 4/3 → 6/5
+    (`d4edfc8`); `prompt10_stream_cmds`' channel-full check offers a real
+    draw.
+  - **Verified as ruled** (`green.sh`, `green.log`; each window admitted
+    under 2.6 and kept on its own first and last samples, both under 3.0):
+
+    | window | code | frames | stale | ends (max) |
+    |---|---|---|---|---|
+    | AMD (normative), 30 min | `d4edfc8` | 54,323 | **0** | 2.08 / 2.04 (6.55) |
+    | Intel, 10 min | `d4edfc8` | 18,324 | **0** | 2.13 / 2.60 (3.32) |
+    | Intel, 10 min, the wait removed | `d4edfc8` mutated | 18,283 | **3**, each the previous frame's, at clip frame 87 | 2.13 / 2.05 (3.60) |
+
+    The fixed runs' draw wait never timed out (no "did not finish" line);
+    every window read 0 View drops, 0 read-ahead misses, 0 watchdog trips.
+    The mutation (`encode_after_draw(drawn, encode)` → `Some(encode())`) is
+    kept with its run; the tree was restored and the engine rebuilt from
+    HEAD.
+  - **The gate** (`gate/plan.py`, `hygiene/fx.py`, at `d4edfc8`): the
+    workspace **589/0/5** (585 + the 2 unit tests + the 2 GPU tests), kept on
+    its third window (two voids, named: 2.57 → 4.21, WindowServer 5.2%,
+    bun, bluetoothd; 2.46 → 3.13, WindowServer, locationd, opendirectoryd);
+    `npm test` 205/205; e2e 28 + 1 skip (the refused start: this machine's
+    encoder acknowledges); the dress 29/29, 0 drops.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
