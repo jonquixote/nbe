@@ -211,33 +211,45 @@ async fn a_loop_started_just_ahead_of_a_clock_boundary_never_draws_a_master_fram
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    // R33's phase: the loop's start sits 150 µs before a clock boundary, so
-    // any wake later than that reads the next frame on a loop that reads the
-    // clock wherever it wakes.
-    start_clock_phased(&state, Duration::from_micros(150));
-    let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
-        reports.push(*r);
-        reports.len() < 150
-    })
-    .await;
-    let (frames, repeats, skips) = read(&reports);
-    let late: Vec<u128> = reports.iter().map(|r| r.woke_late.as_micros()).collect();
-    let mut sorted = late.clone();
-    sorted.sort_unstable();
-    eprintln!(
-        "r33 phased: {} ticks, repeats {repeats}, skips {skips}; woke late p50 {} µs, p99 {} µs, max {} µs",
-        frames.len(),
-        sorted[sorted.len() / 2],
-        sorted[sorted.len() * 99 / 100],
-        sorted[sorted.len() - 1]
+    // R33's phase: the loop's start sits `lead` before a clock boundary. A
+    // loop that reads the clock wherever it wakes then reads the next frame on
+    // any wake later than `lead`, and the same frame on an earlier one, so it
+    // repeats where `lead` sits inside the timer's lateness. That lateness
+    // differs by machine and OS (about 2 ms in a debug test on the reference
+    // machine, 2026-10-28), so the leads sweep it.
+    let mut all = Vec::new();
+    for lead_us in [500, 1_000, 1_500, 2_000, 2_500, 3_000, 4_000] {
+        state.clock.lock().unwrap().stop();
+        start_clock_phased(&state, Duration::from_micros(lead_us));
+        let mut reports = Vec::new();
+        run_loop(&mut render, &state, RATE, |r| {
+            reports.push(*r);
+            reports.len() < 45
+        })
+        .await;
+        let (frames, repeats, skips) = read(&reports);
+        let mut late: Vec<u128> = reports.iter().map(|r| r.woke_late.as_micros()).collect();
+        late.sort_unstable();
+        eprintln!(
+            "r33 phased, lead {lead_us} µs: repeats {repeats}, skips {skips}; woke late p50 {} µs, max {} µs",
+            late[late.len() / 2],
+            late[late.len() - 1]
+        );
+        assert_eq!(
+            repeats, 0,
+            "lead {lead_us} µs: a master frame was drawn twice: {frames:?}"
+        );
+        assert!(
+            frames.windows(2).all(|w| w[1] > w[0]),
+            "lead {lead_us} µs: out of order: {frames:?}"
+        );
+        all.push(skips);
+    }
+    assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        state.skipped_master_frames.load(Ordering::SeqCst),
+        all.iter().sum::<u64>()
     );
-    assert_eq!(repeats, 0, "a master frame was drawn twice: {frames:?}");
-    assert!(
-        frames.windows(2).all(|w| w[1] > w[0]),
-        "out of order: {frames:?}"
-    );
-    assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
