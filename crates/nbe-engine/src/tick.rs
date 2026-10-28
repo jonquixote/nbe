@@ -44,6 +44,212 @@ pub struct TickReport {
     pub total: Duration,
     /// The stream handed this frame to its thread.
     pub stream_sent: bool,
+    /// The master frame this tick drew; `None` while the clock is STOPPED
+    /// (the loop's own frame number then, which nothing counts).
+    pub master_frame: Option<u64>,
+    /// How late the loop woke against the instant it slept for: the timer's
+    /// granularity and the scheduler's, which differ by OS (R33).
+    pub woke_late: Duration,
+}
+
+/// Wake-lateness buckets' upper edges, in microseconds; past the last edge a
+/// wake falls in "within one frame" or "over one frame".
+const WAKE_EDGES_US: [u64; 7] = [100, 250, 500, 1_000, 2_000, 5_000, 10_000];
+
+/// How late the loop woke, over a span of ticks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WakeStats {
+    pub ticks: u64,
+    pub total: Duration,
+    pub max: Duration,
+    /// Wakes at or under each of [`WAKE_EDGES_US`], then within one frame,
+    /// then over one frame.
+    pub buckets: [u64; 9],
+}
+
+impl WakeStats {
+    fn add(&mut self, late: Duration, budget: Duration) {
+        self.ticks += 1;
+        self.total += late;
+        self.max = self.max.max(late);
+        let us = late.as_micros() as u64;
+        let i = match WAKE_EDGES_US.iter().position(|&edge| us <= edge) {
+            Some(i) => i,
+            None if late <= budget => 7,
+            None => 8,
+        };
+        self.buckets[i] += 1;
+    }
+
+    fn line(&self) -> String {
+        let mean_us = match self.ticks {
+            0 => 0,
+            n => self.total.as_micros() as u64 / n,
+        };
+        let b = &self.buckets;
+        format!(
+            "woke late mean {mean_us} µs, max {:.2} ms; ≤0.1 ms {}, ≤0.25 {}, ≤0.5 {}, ≤1 {}, ≤2 {}, ≤5 {}, ≤10 {}, ≤1 frame {}, >1 frame {}",
+            self.max.as_secs_f64() * 1000.0,
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]
+        )
+    }
+}
+
+/// R33 lines allowed per second; the rest are counted and reported with the
+/// next line let through.
+const R33_LINES_PER_SECOND: u32 = 5;
+
+#[derive(Default)]
+struct LineBudget {
+    window: Option<Instant>,
+    used: u32,
+    suppressed: u64,
+}
+
+impl LineBudget {
+    /// `Some(lines suppressed since the last one let through)` when a line
+    /// may go now.
+    fn take(&mut self, now: Instant) -> Option<u64> {
+        match self.window {
+            Some(w) if now.duration_since(w) < Duration::from_secs(1) => {}
+            _ => {
+                self.window = Some(now);
+                self.used = 0;
+            }
+        }
+        if self.used < R33_LINES_PER_SECOND {
+            self.used += 1;
+            Some(std::mem::take(&mut self.suppressed))
+        } else {
+            self.suppressed += 1;
+            None
+        }
+    }
+}
+
+/// The counters at a span's start, and the span's own ticks and wakes.
+#[derive(Clone, Copy)]
+struct Span {
+    ticks: u64,
+    repeated: u64,
+    skipped: u64,
+    dropped: u64,
+    wake: WakeStats,
+}
+
+impl Span {
+    fn open(state: &EngineState) -> Self {
+        Self {
+            ticks: 0,
+            repeated: state.repeated_master_frames.load(Ordering::SeqCst),
+            skipped: state.skipped_master_frames.load(Ordering::SeqCst),
+            dropped: state.dropped_frames_total.load(Ordering::SeqCst),
+            wake: WakeStats::default(),
+        }
+    }
+
+    fn summary(&self, what: &str, state: &EngineState) -> String {
+        format!(
+            "cadence: {what} ended after {} ticks: repeats {}, skips {}, drops {}; {}",
+            self.ticks,
+            state.repeated_master_frames.load(Ordering::SeqCst) - self.repeated,
+            state.skipped_master_frames.load(Ordering::SeqCst) - self.skipped,
+            state.dropped_frames_total.load(Ordering::SeqCst) - self.dropped,
+            self.wake.line()
+        )
+    }
+}
+
+/// R33's accounting, kept by the loop: a running tick that draws the master
+/// frame the tick before it drew is a repeat, and a master frame no running
+/// tick drew is a skip. Each is logged with its master frame (rate-limited),
+/// and a run (the clock RUNNING) or a record take ends with a one-line
+/// summary of its repeats, skips, drops and wakes. Internal and logged; the
+/// counters never reach the wire (the user's ruling of 2026-10-28).
+#[derive(Default)]
+struct Cadence {
+    /// The master frame the last running tick drew.
+    last: Option<u64>,
+    run: Option<Span>,
+    take: Option<Span>,
+    lines: LineBudget,
+}
+
+impl Cadence {
+    fn tick(
+        &mut self,
+        state: &EngineState,
+        master: Option<u64>,
+        recording: bool,
+        woke_late: Duration,
+        budget: Duration,
+    ) {
+        // A span closes before this tick is counted and opens at it.
+        let restarted = matches!((master, self.last), (Some(f), Some(prev)) if f < prev);
+        if master.is_none() || restarted {
+            if let Some(run) = self.run.take() {
+                tracing::info!("{}", run.summary("run", state));
+            }
+            self.last = None;
+        }
+        if master.is_some() && self.run.is_none() {
+            self.run = Some(Span::open(state));
+        }
+        match (recording, self.take.is_some()) {
+            (false, true) => {
+                if let Some(take) = self.take.take() {
+                    tracing::info!("{}", take.summary("record take", state));
+                }
+            }
+            (true, false) => self.take = Some(Span::open(state)),
+            _ => {}
+        }
+
+        if let (Some(f), Some(prev)) = (master, self.last) {
+            if f == prev {
+                state.repeated_master_frames.fetch_add(1, Ordering::SeqCst);
+                if let Some(suppressed) = self.lines.take(Instant::now()) {
+                    tracing::warn!(
+                        master_frame = f,
+                        suppressed,
+                        "R33: the tick drew master frame {f} again"
+                    );
+                }
+            } else if f > prev + 1 {
+                let skipped = f - prev - 1;
+                state
+                    .skipped_master_frames
+                    .fetch_add(skipped, Ordering::SeqCst);
+                if let Some(suppressed) = self.lines.take(Instant::now()) {
+                    tracing::warn!(
+                        master_frame = f,
+                        skipped,
+                        suppressed,
+                        "R33: master frames {}..={} were never drawn",
+                        prev + 1,
+                        f - 1
+                    );
+                }
+            }
+        }
+        if master.is_some() {
+            self.last = master;
+        }
+        for span in [&mut self.run, &mut self.take].into_iter().flatten() {
+            span.ticks += 1;
+            span.wake.add(woke_late, budget);
+        }
+    }
+
+    /// The loop is returning: close whatever span is open.
+    fn end(&mut self, state: &EngineState) {
+        if let Some(take) = self.take.take() {
+            tracing::info!("{}", take.summary("record take", state));
+        }
+        if let Some(run) = self.run.take() {
+            tracing::info!("{}", run.summary("run", state));
+        }
+    }
 }
 
 /// Draw frame `frame` and feed the live outputs. See the module docs.
@@ -204,12 +410,16 @@ pub async fn run_loop(
     let frame_budget = Duration::from_secs_f64(1.0 / house_rate.max(1) as f64);
     let mut next_boundary = Instant::now();
     let mut stopped_frame: u64 = 0;
+    let mut cadence = Cadence::default();
     loop {
         let now = Instant::now();
+        let intended = next_boundary;
         if next_boundary > now {
             tokio::time::sleep(next_boundary - now).await;
         }
-        let (frame, deadline) = match state.master_frame() {
+        let woke_late = Instant::now().saturating_duration_since(intended);
+        let master = state.master_frame();
+        let (frame, deadline) = match master {
             // RUNNING: the master clock owns the frame number and the
             // deadline is real.
             Some(f) => (f, Some(frame_budget)),
@@ -219,8 +429,13 @@ pub async fn run_loop(
                 (stopped_frame, None)
             }
         };
-        let report = run_tick(render, state, frame, deadline).await;
+        let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
+        cadence.tick(state, master, recording, woke_late, frame_budget);
+        let mut report = run_tick(render, state, frame, deadline).await;
+        report.master_frame = master;
+        report.woke_late = woke_late;
         if !on_tick(&report) {
+            cadence.end(state);
             return;
         }
         next_boundary += frame_budget;
@@ -229,5 +444,106 @@ pub async fn run_loop(
         if next_boundary < now {
             next_boundary = now + frame_budget;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUDGET: Duration = Duration::from_nanos(33_333_333);
+
+    fn feed(cadence: &mut Cadence, state: &EngineState, frames: &[Option<u64>]) {
+        for &f in frames {
+            cadence.tick(state, f, false, Duration::ZERO, BUDGET);
+        }
+    }
+
+    #[test]
+    fn a_repeated_master_frame_is_counted_once_per_repeat() {
+        let state = EngineState::new(30);
+        let mut cadence = Cadence::default();
+        feed(
+            &mut cadence,
+            &state,
+            &[
+                Some(629),
+                Some(630),
+                Some(630),
+                Some(631),
+                Some(631),
+                Some(631),
+            ],
+        );
+        assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 3);
+        assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_skipped_master_frame_counts_every_frame_never_drawn() {
+        // R33's own example: 630, 630, then 632 never draws 631.
+        let state = EngineState::new(30);
+        let mut cadence = Cadence::default();
+        feed(
+            &mut cadence,
+            &state,
+            &[Some(630), Some(630), Some(632), Some(636)],
+        );
+        assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 1);
+        assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), 1 + 3);
+    }
+
+    #[test]
+    fn a_stopped_clock_or_a_restart_is_neither_a_repeat_nor_a_skip() {
+        let state = EngineState::new(30);
+        let mut cadence = Cadence::default();
+        // Running, stopped (nothing counted), running again from a new epoch,
+        // then a restart between two ticks (the frame goes backwards).
+        feed(
+            &mut cadence,
+            &state,
+            &[
+                Some(10),
+                Some(11),
+                None,
+                None,
+                Some(0),
+                Some(1),
+                Some(0),
+                Some(1),
+            ],
+        );
+        assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 0);
+        assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_span_summarises_its_own_repeats_skips_drops_and_wakes() {
+        let state = EngineState::new(30);
+        state.repeated_master_frames.store(7, Ordering::SeqCst);
+        state.dropped_frames_total.store(2, Ordering::SeqCst);
+        let mut cadence = Cadence::default();
+        cadence.tick(&state, Some(100), true, Duration::from_micros(80), BUDGET);
+        cadence.tick(&state, Some(100), true, Duration::from_micros(900), BUDGET);
+        cadence.tick(&state, Some(103), true, Duration::from_millis(40), BUDGET);
+        state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
+        let take = cadence.take.expect("a recording tick opens the take");
+        assert_eq!(
+            take.summary("record take", &state),
+            "cadence: record take ended after 3 ticks: repeats 1, skips 2, drops 1; \
+             woke late mean 13660 µs, max 40.00 ms; ≤0.1 ms 1, ≤0.25 0, ≤0.5 0, ≤1 1, ≤2 0, ≤5 0, ≤10 0, ≤1 frame 0, >1 frame 1"
+        );
+    }
+
+    #[test]
+    fn r33_lines_are_rate_limited_and_the_suppressed_are_reported() {
+        let mut lines = LineBudget::default();
+        let t0 = Instant::now();
+        let let_through: Vec<_> = (0..8).map(|_| lines.take(t0)).collect();
+        assert_eq!(
+            let_through.iter().filter(|l| l.is_some()).count(),
+            R33_LINES_PER_SECOND as usize
+        );
+        assert_eq!(lines.take(t0 + Duration::from_secs(1)), Some(3));
     }
 }
