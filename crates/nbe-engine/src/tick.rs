@@ -265,6 +265,31 @@ impl Cadence {
         self.last = None;
     }
 
+    /// R33's run edge: master frames `first..=last` the clock passed at a
+    /// run's start before the loop's first tick on it, or at its stop after
+    /// the loop's last (#77's precision note 1). Each is a master frame never
+    /// drawn, so a dropped frame (§10.2, ruled 2026-10-28), counted with the
+    /// skips. A stop's edge lands in the run it ends, a start's in the run
+    /// it begins.
+    fn edge(&mut self, state: &EngineState, first: u64, last: u64, at: &str, woke_late: Duration) {
+        let skipped = last - first + 1;
+        state
+            .skipped_master_frames
+            .fetch_add(skipped, Ordering::SeqCst);
+        state
+            .dropped_frames_total
+            .fetch_add(skipped, Ordering::SeqCst);
+        if let Some(suppressed) = self.lines.take(Instant::now()) {
+            tracing::warn!(
+                skipped,
+                previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
+                woke_late_ms = woke_late.as_secs_f64() * 1000.0,
+                suppressed,
+                "R33: master frames {first}..={last} were never drawn {at}"
+            );
+        }
+    }
+
     /// The loop is returning: close whatever span is open.
     fn end(&mut self, state: &EngineState) {
         if let Some(take) = self.take.take() {
@@ -459,6 +484,9 @@ pub async fn run_loop(
     let mut cadence = Cadence::default();
     // The running clock's epoch and the master frame last drawn on it.
     let mut drawn: Option<(Instant, u64)> = None;
+    // Whether the loop has ticked yet: the frames a clock passed before the
+    // loop existed are not the loop's to count.
+    let mut ticked = false;
     loop {
         let intended = match (state.clock_reading(), drawn) {
             (Some((epoch, _)), Some((drawn_epoch, last))) if epoch == drawn_epoch => {
@@ -474,6 +502,29 @@ pub async fn run_loop(
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
         let reading = state.clock_reading();
+        // R33's run edges. The run drawn last ended since the last tick
+        // (stopped, or restarted on a new epoch): the frames its clock passed
+        // after the last one drawn were never drawn. The frame the clock
+        // stopped in is not among them: the clock never reached its
+        // successor's boundary. And a run this tick is the first on: the
+        // frames before the one it reads were never drawn. Both are normally
+        // none; a stall across the edge is what they count.
+        let now_epoch = reading.map(|(epoch, _)| epoch);
+        let stop_edge = drawn
+            .filter(|(epoch, _)| now_epoch != Some(*epoch))
+            .and_then(|(epoch, last)| {
+                let (stopped, at_stop) = state.last_stopped_run()?;
+                (stopped == epoch && at_stop > last + 1).then_some((last + 1, at_stop - 1))
+            });
+        let start_edge = match reading {
+            Some((epoch, first)) if ticked && first > 0 && drawn.map(|(e, _)| e) != Some(epoch) => {
+                Some((0, first - 1))
+            }
+            _ => None,
+        };
+        if let Some((first, last)) = stop_edge {
+            cadence.edge(state, first, last, "before the clock stopped", woke_late);
+        }
         // A wake at or after `boundary(last + 1)` reads `last + 1` or later:
         // the clock's arithmetic is exact (clock.rs pins the agreement), and a
         // sleep never ends before its deadline.
@@ -496,6 +547,10 @@ pub async fn run_loop(
         };
         let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
         cadence.tick(state, master, recording, woke_late, frame_budget);
+        if let Some((first, last)) = start_edge {
+            cadence.edge(state, first, last, "at the run's start", woke_late);
+        }
+        ticked = true;
         let mut report = run_tick(render, state, frame, deadline).await;
         report.master_frame = master;
         report.woke_late = woke_late;
