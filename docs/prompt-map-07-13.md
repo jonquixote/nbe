@@ -10108,6 +10108,98 @@ item):
     late wakes). With the conformed counter, that is one drop per stopped
     take.
 
+  **The user's rulings of 2026-10-28, on the PR's opening:**
+  1. Open the PR now, DO NOT MERGE. Its body adds:
+     - the two modified tests, originals beside the new, with a mutation
+       showing the original guard is not weakened;
+     - the integer clock reaching every `frame()` caller;
+     - `record.stop`'s one-frame cost as a counted drop.
+  2. The `both_live_stream_shares_the_record_composite` sighting is
+     registered as a watch entry (R38). Not blocking.
+  3. `record.stop` blocking the render thread is a new finding (R37), not in
+     this PR. A command-to-dropped-frames table is wanted.
+  4. R36's follow-up, measurement only: `df` itself, or the process spawn?
+     If the spawn, propose a statvfs-style replacement as its own later
+     hygiene PR.
+  5. A release-build CPU reading of main, like for like.
+  6. Go on to Step 3. The remaining single late wakes stay watched through
+     the new logs.
+
+  **PR #77** (opened at `8bd7f8f`).
+  - **CI at `8bd7f8f`:** run `40811185186`, attempt 1. Every job executed,
+    each read job-exact.
+    - **rust:** 604/0/5; 36 floor lines (`r33_cadence` 6/6 and
+      `r36_record_space` 2/2, new); the 4 count gates; R10's drain tests and
+      `three_frames…` `ok` in both runs.
+    - **control-plane:** every step green; `npm test` 205/205.
+    - **dress:** 29/29, **0 drops on the conformed counter**, underruns 205.
+    - **Windows:** workspace 4.84–13.61, GPU step 4.84–4.85, floor bracket
+      3.93–5.63, control-plane bracket 2.83–5.93. Every ceiling holds. The
+      rows are staged for #77's bookend.
+  - **The two modified tests' original guards are not weakened**
+    (`r33/battery/battery6*.log`):
+    - M17 (the watchdog never hears a late frame) fails the same 3 tests at
+      the parent `e9f3c03` and at `8bd7f8f`;
+    - M18 (the degradation rung frozen) fails the same 1 at both.
+  - **CPU, like for like** (release builds, record path, AMD, 10 min, each
+    window kept on its own ends):
+
+    | | main `5f0c93b` | `12d383b` |
+    |---|---|---|
+    | engine | 19.9% of one core | 20.9% |
+    | the tick's thread | 3.14% | 3.38% |
+    | `nbe-audio` / `nbe-record` | 1.2% / 2.5% | 1.2% / 2.6% |
+    | repeats per 10 min | 99 | **0** |
+    | skipped master frames per 10 min | ≤ 170 trace gaps (not counted on main) | **1** |
+
+    - The fix costs about 1.0 point of one core in the engine and 0.24 on the
+      tick's thread.
+    - Main's window was not quiet throughout: 4 of 64 samples at or above
+      3.0, max 3.80.
+  - **R37's command table** (`r37/commands-*`; the final code's release build;
+    each command once, the clock running, 3 s settles; admitted at 2.47,
+    ended at 2.36):
+
+    | command | applied in | drops | skipped master frames |
+    |---|---|---|---|
+    | `preview.set` | 2 ms | 0 | 0 |
+    | `view.take` (cut) | 3 ms | 0 | 0 |
+    | `overlay.show` / `overlay.hide` | 3 / 2 ms | 0 / 0 | 0 / 0 |
+    | `soundboard.play` | 2 ms | 0 | 0 |
+    | `record.start` | 5 ms | 0 | 0 |
+    | `record.stop` (after a ~20 s take) | 44 ms | 0 | 0 |
+    | `stream.start` / `stream.stop` | 4 / 39 ms | 0 / 0 | 0 / 0 |
+    | `show.stop`, `show.load` (reload), `show.start` | 2 ms, 2,560 ms, 1 ms | — | — |
+
+    - **What one run can say:**
+      - The probes' stops after 1- to 30-minute takes woke the loop
+        55–65 ms late and skipped a frame each time. This 44 ms stop did
+        not cross a boundary. One run cannot give a rate.
+      - A package cannot load while the View is live (`E_FORBIDDEN_STATE`).
+        The reload was measured stopped, where no frame is counted by
+        definition; whether its 2.56 s holds the stopped clock's picture is
+        not measured.
+      - The overlay was added to the staged copy of the dress package only.
+  - **R36's follow-up: the spawn.** Measured inside the engine with a
+    diagnostic build of `12d383b` (debug, never committed), timed in
+    `df_available_mib`:
+    - spawning `/usr/bin/true`: **p50 1,878 ms, max 2,978 ms**, recording;
+      **p50 1,874 ms**, streaming (not recording);
+    - `df -k`: p50 3,120 ms in both;
+    - from outside the engine, `df` takes about 10 ms.
+    - **So the cost is the engine's own process spawn**, with `df` adding
+      about 1.2 s on top.
+    - **Not established:** whether it is because of the GPU mappings (not
+      tested); and why the stream path, which did run `df` before the fix
+      (`recordSpaceMib` measured in 300 of 303 ticks), never stalled.
+    - The recording diagnostic's window was VOID on its end (3.35); the
+      streaming one was kept. Both read the same.
+    - **Proposed** (the user's to rule; its own later hygiene PR): read free
+      space with a statvfs-style call instead of a process. `statvfs` on
+      macOS and Linux, `GetDiskFreeSpaceExW` on Windows, where `df` does not
+      exist. Through a maintained crate (for example `fs4`'s
+      `available_space`), so `nbe-engine` keeps no `unsafe`.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
