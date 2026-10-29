@@ -802,6 +802,9 @@ adopt and record).
   | `40460725223`, main at `6bb8019` (PR #75's merge), green (585/0/5) | the workspace tests: the test build finished at 06:24:14.41 (`Finished` in 54.48 s); the post line at 06:25:35 | whole step 4.14–8.50 (pre, 14 samples, post). While building: 8.50 (the pre line, load1 25.49), 7.42, 7.06, 6.76, 6.39, 6.32. While the tests ran: 5.95, 5.24, 4.64, 4.75, 4.74, 4.71, 4.47, 4.30, then the post line's 4.14, so 4.14–5.95. The R10 test passed at 06:24:46.40, between 4.64 and 4.75. The 73rd |
   | `40502533800`, PR #76 at `419392c` (its head), green (589/0/5) | the workspace tests: the test build finished at 12:19:03.87 (`Finished` in 55.95 s); the post line at 12:20:20 | whole step 4.11–9.83 (pre, 14 samples, post). While building: 9.83 (the pre line, load1 29.48), 8.52, 7.60, 7.44, 6.99, 6.73. While the tests ran: 6.09, 5.56, 4.78, 4.15, 4.51, 4.58, 4.91, 4.21, then the post line's 4.11, so 4.11–6.09. The R10 test passed at 12:19:36.04, between 4.78 and 4.15. The 74th |
   | `40640917579`, main at `5f0c93b` (PR #76's merge), green (589/0/5) | the workspace tests: the test build finished at 05:58:09.87 (`Finished` in 33.89 s); the post line at 05:59:09 | whole step 4.96–8.21 (pre, 10 samples, post). While building: 6.88 (the pre line, load1 20.64), 6.61, 7.19, 8.21. While the tests ran: 8.08, 7.53, 7.04, 6.46, 6.21, 5.36, then the post line's 4.96, so 4.96–8.08. The R10 test passed at 05:58:36.42, between 7.04 and 6.46. The 75th |
+  | `40811185186`, PR #77 at `8bd7f8f` (its head when opened), green (604/0/5) | the workspace tests: the test build finished at 03:18:19.70 (`Finished` in 1m 10s); the post line at 03:19:59 | whole step 4.84–13.61 (pre, 17 samples, post). While building: 6.32 (the pre line, load1 18.95), 5.61, 6.57, 8.43, 10.31, 11.83, 13.12, 13.61 (its sample at 03:18:19, the build's last second). While the tests ran: 13.41, 12.06, 10.56, 9.04, 7.70, 7.41, 6.86, 6.42, 5.66, then the post line's 4.84, so 4.84–13.41. The R10 test passed at 03:18:53.48, between 10.56 and 9.04. The 76th |
+  | `40814388110`, PR #77 at `ecc73b3` (its final head, the reviewed one), green (604/0/5) | the workspace tests: the test build finished at 03:52:24.30 (`Finished` in 1m 03s); the post line at 03:53:58 | whole step 3.48–7.58 (pre, 16 samples, post). While building: 7.58 (the pre line, load1 22.73), 6.57, 6.05, 6.15, 6.14, 5.85, 5.49. While the tests ran: 5.06, 4.36, 4.01, 4.12, 4.27, 4.43, 4.04, 3.48, 3.77, then the post line's 3.49, so 3.48–5.06. The R10 test passed at 03:52:55.44, between 4.01 and 4.12. The 77th |
+  | `40841314150`, main at `c6dedb5` (PR #77's merge), green (604/0/5) | the workspace tests: the test build finished at 08:26:25.13 (`Finished` in 58.74 s); the post line at 08:27:55 | whole step 3.15–9.51 (pre, 15 samples, post). While building: 9.51 (the pre line, load1 28.53), 8.20, 7.12, 6.65, 6.36, 6.05. While the tests ran: 5.33, 4.76, 4.77, 4.31, 4.96, 4.44, 4.09, 3.56, 3.31, then the post line's 3.15, so 3.15–5.33. The R10 test passed at 08:26:55.86, between 4.77 and 4.31. The 78th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -1034,6 +1037,10 @@ was silent in both.
 runs; rows 74 and 75 peaked at 9.83 and 8.21, under the 15.31 maximum). R10
 was silent in both.
 
+**The ceiling through #77 and its merge: holds at 19.13 per CPU** (78 green
+runs; rows 76, 77 and 78 peaked at 13.61, 7.58 and 9.51, under the 15.31
+maximum). R10 was silent in all three.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1081,6 +1088,9 @@ A `three_frames…` failure in that step is read against it.
 | G29 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (`prompt04` 19) | 4.14 | 3.86–4.14 (pre, 1 sample, post; 06:25:35–06:25:41Z) | 3.86 |
 | G30 | `40502533800` attempt 1, rust job `122183523940`, PR #76 at `419392c`, green (`prompt04` 19) | 4.11 | 4.11–4.50 (pre, 1 sample, post; 12:20:20–12:20:25Z) | 4.50 |
 | G31 | `40640917579` attempt 1, rust job `122658595226`, main at `5f0c93b` (PR #76's merge), green (`prompt04` 19) | 4.96 | 4.96–4.96 (pre, 1 sample, post; 05:59:09–05:59:12Z) | 4.96 |
+| G32 | `40811185186` attempt 1, rust job `123241612015`, PR #77 at `8bd7f8f`, green (`prompt04` 19) | 4.84 | 4.84–4.85 (pre, 1 sample, post; 03:19:59–03:20:06Z) | 4.85 |
+| G33 | `40814388110` attempt 1, rust job `123251938976`, PR #77 at `ecc73b3`, green (`prompt04` 19) | 3.49 | 3.27–3.49 (pre, 1 sample, post; 03:53:58–03:54:03Z) | 3.27 |
+| G34 | `40841314150` attempt 1, rust job `123338105592`, main at `c6dedb5` (PR #77's merge), green (`prompt04` 19) | 3.15 | 2.98–3.15 (pre, 1 sample, post; 08:27:55–08:28:00Z) | 2.98 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1113,6 +1123,9 @@ G28 and G29 peaked under it too: 4.35 (#75 at `e048917`) and 4.14 (main
 `6bb8019`); `three_frames…` passed the GPU step in both.
 G30 and G31 peaked under it too: 4.50 (#76 at `419392c`) and 4.96 (main
 `5f0c93b`); `three_frames…` passed the GPU step in both.
+G32–G34 peaked under it too: 4.85 and 3.49 (#77 at `8bd7f8f` and
+`ecc73b3`), 3.15 (main `c6dedb5`); `three_frames…` passed the GPU step in
+all three.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1147,6 +1160,9 @@ proof was, and its bracket held a failed floor step (a mixed step).
 | F16 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (34/34 floor lines) | 3.86 | 2.56–3.98 (pre, 9 samples, post; 06:25:41–06:27:10Z) | 3.07 |
 | F17 | `40502533800` attempt 1, rust job `122183523940`, PR #76 at `419392c`, green (34/34 floor lines) | 4.50 | 2.30–4.50 (pre, 9 samples, post; 12:20:25–12:21:48Z) | 3.39 |
 | F18 | `40640917579` attempt 1, rust job `122658595226`, main at `5f0c93b` (PR #76's merge), green (34/34 floor lines) | 4.96 | 3.56–4.96 (pre, 6 samples, post; 05:59:12–06:00:10Z) | 3.67 |
+| F19 | `40811185186` attempt 1, rust job `123241612015`, PR #77 at `8bd7f8f`, green (36/36 floor lines) | 4.85 | 3.93–5.63 (pre, 11 samples, post; 03:20:06–03:21:56Z) | 3.93 |
+| F20 | `40814388110` attempt 1, rust job `123251938976`, PR #77 at `ecc73b3`, green (36/36 floor lines) | 3.27 | 2.58–4.25 (pre, 11 samples, post; 03:54:03–03:55:53Z) | 3.90 |
+| F21 | `40841314150` attempt 1, rust job `123338105592`, main at `c6dedb5` (PR #77's merge), green (36/36 floor lines) | 2.98 | 2.70–3.49 (pre, 10 samples, post; 08:28:00–08:29:31Z) | 3.49 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
@@ -1177,6 +1193,9 @@ not what was expected.
 (main `6bb8019`), at 16 green runs.
 **F17 and F18 peaked under it too:** 4.50 (#76 at `419392c`) and 4.96
 (main `5f0c93b`), at 18 green runs.
+**F19–F21 peaked under it too:** 5.63 and 4.25 (#77 at `8bd7f8f` and
+`ecc73b3`), 3.49 (main `c6dedb5`), at 21 green runs. From #77 the bracket
+reads 36 floor lines (`r33_cadence` and `r36_record_space` added).
 
 **The control-plane bracket envelope** (the user's ruling of 2026-10-26 on
 R32, (a); the fourth envelope). From `ab0304a`, `cp-pre`, `cp-sample` and
@@ -1207,6 +1226,9 @@ load-average tail (the ruling: the settle, not the count), and #72's
 | CP9 | `40460725223` attempt 1, control-plane job `122044419247`, main at `6bb8019` (PR #75's merge), green (`npm test` 205/205, package-reconcile 4/4) | 4.50 | 2.76–5.28 (pre, 21 samples, post; 06:25:34–06:29:03Z) | 4.64 |
 | CP10 | `40502533800` attempt 1, control-plane job `122183524300`, PR #76 at `419392c`, green (`npm test` 205/205, package-reconcile 4/4) | 4.54 | 2.53–4.54 (pre, 21 samples, post; 12:19:50–12:23:23Z) | 3.52 |
 | CP11 | `40640917579` attempt 1, control-plane job `122658595487`, main at `5f0c93b` (PR #76's merge), green (`npm test` 205/205, package-reconcile 4/4) | 3.48 | 1.25–4.23 (pre, 18 samples, post; 05:59:05–06:02:07Z) | 4.23 |
+| CP12 | `40811185186` attempt 1, control-plane job `123241611695`, PR #77 at `8bd7f8f`, green (`npm test` 205/205, package-reconcile 4/4) | 3.47 | 2.83–5.93 (pre, 20 samples, post; 03:18:56–03:22:17Z) | 3.71 |
+| CP13 | `40814388110` attempt 1, control-plane job `123251938750`, PR #77 at `ecc73b3`, green (`npm test` 205/205, package-reconcile 4/4) | 3.39 | 2.29–4.16 (pre, 21 samples, post; 03:53:20–03:56:49Z) | 3.96 |
+| CP14 | `40841314150` attempt 1, control-plane job `123338105392`, main at `c6dedb5` (PR #77's merge), green (`npm test` 205/205, package-reconcile 4/4) | 3.40 | 2.45–5.25 (pre, 21 samples, post; 08:23:07–08:26:35Z) | 3.03 |
 
 **CP1 seeds it:** the maximum is 4.94 (load1 14.82, the last sample at
 15:47:18Z and `cp-post` at 15:47:19Z, during the operator-signals end to
@@ -1256,6 +1278,13 @@ and 4.23 (main `5f0c93b`, its `cp-post`, load1 12.69 at 06:02:07Z, after a
 trough of 1.25 at 06:00:56Z), at 11 green runs. CP11's peak is exactly the
 queued proposal's 50% line (4.23: 12.69 over 3 CPUs), at it, not under it;
 CP10 is above it. The proposal is not in force either way.
+
+**CP12–CP14, warm, under 8.46:** 5.93 (#77 at `8bd7f8f`, a sample, load1
+17.8 at 03:21:18Z), the highest warm reading yet; 4.16 (#77 at `ecc73b3`, a
+sample, load1 12.49 at 03:55:42Z); 5.25 (main `c6dedb5`, a sample, load1
+15.75 at 08:25:09Z); at 14 green runs. CP13's peak is the first under the
+queued proposal's 50% line (4.23); CP12 and CP14 are above it. The proposal
+is not in force either way.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -10134,8 +10163,9 @@ item):
     - **control-plane:** every step green; `npm test` 205/205.
     - **dress:** 29/29, **0 drops on the conformed counter**, underruns 205.
     - **Windows:** workspace 4.84–13.61, GPU step 4.84–4.85, floor bracket
-      3.93–5.63, control-plane bracket 2.83–5.93. Every ceiling holds. The
-      rows are staged for #77's bookend.
+      3.93–5.63, control-plane bracket 2.83–5.93. Every ceiling holds. ~~The
+      rows are staged for #77's bookend.~~ The rows: R10's 76, G32, F19,
+      CP12 (written at #77's bookend, §2c).
   - **The two modified tests' original guards are not weakened**
     (`r33/battery/battery6*.log`):
     - M17 (the watchdog never hears a late frame) fails the same 3 tests at
@@ -10199,6 +10229,239 @@ item):
       macOS and Linux, `GetDiskFreeSpaceExW` on Windows, where `df` does not
       exist. Through a maintained crate (for example `fs4`'s
       `available_space`), so `nbe-engine` keeps no `unsafe`.
+
+  - **CI at `ecc73b3`** (its final head, a docs commit on `8bd7f8f`; the
+    fresh witness): run `40814388110`, attempt 1. Every job executed, each
+    read job-exact.
+    - **rust:** 604/0/5; 36 floor lines; every step green; R10's drain
+      tests and `three_frames…` `ok` in both runs.
+    - **control-plane:** every step green; `npm test` 205/205,
+      package-reconcile 4/4, the refused start `ok` (2029 ms).
+    - **dress:** 29/29, 0 drops, underruns 219.
+    - **Rows:** R10's 77, G33, F20, CP13. Every ceiling holds.
+
+  **The two-key pass on PR #77** (independent; relayed by the user)
+  **HOLDS at `ecc73b3`**: every mutation killed, both controls green, no
+  zero-match filters; M14 still fails under `>=`. The pass as it was: a
+  reading plus an in-clone falsification battery, not a timing rerun, at
+  load 3.0–4.6, its controls green.
+
+  **The user's word, on the pass:** merge #77, with the squash message
+  staged byte for byte: what it carries, the evidence, the independent
+  review as it was, and four precision notes (the run's edge frames
+  uncounted, the fix riding R37; the `f480f5a` window's provenance with the
+  kept binary's sha256; the 2-second margin, whose cause the statvfs PR
+  removes; the relaxed stall guard). After the merge: the bookend, then the
+  records on the next PR; the statvfs hygiene PR with its spawn audit
+  first, R37 and the run-edge fix after it; the unattended timing pass once
+  the bookend is read.
+
+  **Merged: PR #77 is `c6dedb5`** (the bookend), on the user's word.
+  - **The merge:** a squash at 2026-10-29T08:19:28Z, matched to `ecc73b3`;
+    its one parent is `5f0c93b`. **The merged message is the user's and is
+    canonical.** Diffed against the staged files, it differs in three
+    places and only there: "181 stalls" is removed; precision note 1 adds
+    "Normally zero; a start or stop stall undercounts by the stall's
+    frames."; precision note 3 is rewritten.
+  - **The tree is identical to the reviewed head's:** `c6dedb5^{tree}` =
+    `ecc73b3^{tree}` = `ea72732`.
+  - **Main's CI:** run `40841314150` (push), attempt 1. Every job executed,
+    each checked out `c6dedb5`, and each was read job-exact. **Green.**
+    - **rust** (job `123338105592`): 604/0/5 (the step's `TOTAL` line), 36
+      floor lines (`r33_cadence` 6/6, `r36_record_space` 2/2), every step
+      green; R10's drain tests `ok` in both runs of the suite;
+      `three_frames…` `ok` in both steps.
+    - **control-plane** (job `123338105392`): every step green, `npm test`
+      205/205, package-reconcile 4/4, the refused start `ok` (2027 ms);
+      warm builds (the cache restored); the bracket's window CP14.
+    - **dress** (job `123338105845`): 29/29; **drops 1** (the sighting
+      below), underruns 173; rises 2016 and 2011 ms.
+  - **A sighting on the conformed counter** (main's dress; kept:
+    `.git/nbe-staged/pr77-bookend/dress-artifact/`). `droppedFramesTotal`
+    read 1 from master frame 22, inside the first second after
+    `show.start`. That run's summary: `run ended after 479 ticks: repeats
+    0, skips 0, drops 1; woke late mean 3209 µs, max 16.70 ms`. So a frame
+    was drawn, and submitted after the next boundary; it was not a skip. A
+    later run in the same dress logged an R33 skip at its start: `master
+    frames 3..=3 were never drawn master_frame=4 skipped=1
+    previous_tick_ms=65.709292 woke_late_ms=38.318375`. Both fell in a
+    run's first second. **The cause is not established** (a candidate: a
+    run's first ticks run cold). The dress passed (its backstop is 20
+    drops); #77's two PR runs read 0. It is read again with R37's PR, which
+    counts a run's edge frames.
+  - **The envelopes** (Finding R10's tables): R10 rows 76–78 (19.13
+    holds), G32–G34 (7.46 holds), F19–F21 (10.02 holds), CP12–CP14 (8.46
+    holds). **R15's watch** notes the three runs (its row).
+
+  **The ledger:** R33 FIXED (`c6dedb5`), R36 FIXED (`c6dedb5`); R37 open,
+  its PR next with the run-edge fix; R38 on watch.
+
+  **Step 3, the format bake-off, and the carpet** (measurement only;
+  nothing under `crates/`; `carpet/` never committed, excluded through
+  `.git/info/exclude`; kept: `.git/nbe-staged/step3/`, `carpet/` and
+  `reel0/`).
+  - **The charts** (one kept window, admitted 2.57, ended 2.61; the
+    engine's own decode, through an out-of-tree harness):
+    - an untagged H.264 chart decodes within L1 4 (AVFoundation reads
+      untagged HD as 709);
+    - raw VP9 WebM is refused, `failed to decode: no video track`, a
+      message that misreads a file with a VP9 track;
+    - HEVC with alpha (`hevc_videotoolbox`, `-alpha_quality 0.75`, `hvc1`)
+      decodes with its alpha and passes preflight with `format` omitted
+      (the schema's enum has no `hevc`);
+    - `has_alpha` reads the first frame only (`nbe-decode/src/lib.rs:544`),
+      so an alphaVideo whose first frame is opaque is refused.
+  - **`nbe-normalize.sh`** (never committed, the user's rule). Six
+    findings against the script as it was:
+    1. `cmd_alpha` converted to RGBA before the scale that carries
+       `in_color_matrix`, so alpha mode read untagged HD as 601 (L1 37);
+    2. `IN_MATRIX=auto` read untagged HD as 601 at any size (L1 36);
+    3. `verify` passed an all-transparent clip;
+    4. `verify` fails an opaque ProRes 4444 ("no transparent pixels"), a
+       rule for the user;
+    5. `-bufsize` assumes `MAXRATE` ends in `M`;
+    6. the alpha path's transparent fraction read 0.8298 against the drawn
+       0.8333; the cause is not established.
+
+    The user's saved replacement (2026-10-28) converts after the scale,
+    reads untagged sources of 720 lines or more as 709, requires an opaque
+    pixel in `verify`, and documents `MAXRATE` in whole megabits. (4) and
+    (6) stand. Every carpet candidate ran through it: every `verify` PASS,
+    nothing broke.
+  - **The carpet is portrait, 1080×1920.** *(§2c, the builder's slip: the
+    first comparison treated it as 1920×1080. Its ProRes figures and the
+    derived foreground truth were void, and were redone at native geometry
+    inside the window.)* The engine refuses QuickTime Animation (qtrle),
+    the carpet's lossless MOVs (`decode failed`), as it refuses WebM. HAP
+    Alpha was skipped (no encoder in this Mac's ffmpeg; the user's ruling).
+  - **Loop verdicts** (preflight, ProRes 4444):
+    - 720p × 90: refused at the default budget (72 of 90 held), air-ready
+      at `vramBudgetMib` 512, one loop and two together (U9);
+    - 1080p × 45: air-ready at 512;
+    - 1080p × 90: refused at any declaration (64 of 90 held, the 512
+      ceiling).
+  - **The placement window** (2026-10-29, 07:28:18–07:29:13Z; the reviewer
+    and the user off the Mac). The whole carpet, fitted into 1920×1080 by
+    the saved script (PASS), as HEVC alpha 6 Mb/s and as ProRes 4444 q6.
+    Preflight, both formats alike:
+    - **A** (a one-shot clip): exit 0;
+    - **B** (a 45-frame `videoLoop`, 1080p): refused at the default budget
+      (holds 32), exit 0 at `vramBudgetMib` 512;
+    - **C** (a 90-frame `videoLoop`, a 720p house): exit 0 at 512.
+
+    **A's alpha draws** through the production record path (the release
+    build of `12d383b`). Frame 45 of the recording reads the background
+    (27,58,92) as (30,59,90) in both pillars and in the sky above the
+    carpet, and the carpet as (138,108,95). The take: 121 ticks, 0
+    repeats, 0 skips, 0 drops, wakes at most 3.92 ms late. **A is
+    air-ready.** The recording: `~/nbe-evidence/reel0-placementA.mp4`
+    (H.264 1920×1080, 30 fps, 4.05 s).
+  - **The deferred timing pass** (unattended, 2026-10-29, the machine idle
+    by agreement; **KEPT**, admitted at 1.41, ended at 1.61). The fitted
+    carpet's 90 frames, three runs of each, through the engine's decode
+    path:
+
+    | | HEVC alpha 6 Mb/s | ProRes 4444 q6 |
+    |---|---|---|
+    | load (open and 90 frames) | 953–968 ms | 828–838 ms |
+    | `next_frame`, mean per frame | 10.26–10.40 ms | 9.01–9.13 ms |
+    | `next_frame_meta` (no pixel copy), mean per frame | 4.41–5.42 ms | 2.00–2.04 ms |
+    | the copy's cost (the difference) | 4.97–5.85 ms | 7.01–7.09 ms |
+
+    The bake-off's first timing part (2026-10-28) was VOID (2.45 → 3.43:
+    its own decodes and VLC). This pass replaces it.
+
+  **The user's rulings on the bake-off** (2026-10-28 and 2026-10-29):
+  1. **The alpha mezzanine:** HEVC with alpha at 6 Mb/s, for the library
+     and Reel 0. The user compared the stills (lossless, ProRes 4444 q6,
+     HEVC 6 Mb/s) and could not tell them apart. ProRes 4444 q6 stays the
+     schema-valid fallback.
+  2. **`hevcAlpha`:** a schema row is drafted, not applied
+     (`.git/nbe-staged/drafts/hevcAlpha-schema-row.md`). It decodes only
+     on Apple hardware. It stays a draft until Reel 0 proves the path; a
+     non-Apple target is refused in both preflight and the engine at load;
+     plain HEVC is not in the row.
+  3. **The show is landscape, 1920×1080.** The carpet ("Around the World
+     in 60 Seconds") is the whole-carpet WebM, fitted by `nbe-normalize.sh
+     alpha` without cropping, as one asset. Placement A is preferred if it
+     is air-ready and its alpha draws; it is, and it does.
+  4. **The View size: candidate (a).** The View renders at 1920×1080;
+     `show.video` declares the authoring size; preflight warns on a
+     difference (`.git/nbe-staged/drafts/view-size-assessment.md`). The
+     spec text waits for a spec-revision PR.
+  5. **Two unbuilt MUSTs registered** (U8 and U9 below), not fixed:
+     §7.11's chroma key, and §12.4's total short-loop budget, applied per
+     loop only. Preflight should report the true total. There is no
+     greenscreen keying in the engine for Reel 0: its presenter comes
+     pre-keyed with alpha.
+  6. **Dropped:** the 720×1280 preflight and the ProRes-from-lossless
+     test.
+  7. **Reel 0 waits on the user's footage.** Its package skeleton and
+     cue-sheet template are built (`.git/nbe-staged/reel0/`); the package
+     is not.
+
+  **The fixed 1080p View, a spec gap** (read-only, 2026-10-28). The engine
+  renders at a fixed 1920×1080 whatever the house format says (`render.rs`,
+  `VIEW_W` and `VIEW_H`), and the record path records the View
+  (`MAX_RECORD_*`, 1920×1080). Only preflight reads `show.video.width` and
+  `height`, checking assets against them. The spec enforces the house frame
+  rate (§7.15) and says nothing of rendering at the house resolution: a
+  spec gap, not an unbuilt MUST. A 720p30 or a portrait house format still
+  airs and records 1920×1080. The schema accepts a 720×1280 `show.video`
+  only with `aspectRatio` omitted (it is optional, and when present it is
+  the constant "16:9"). Ruled (a), above.
+
+  **The user's work order of 2026-10-29.** #77 is merged. The user is
+  asleep and the reviewer is finished. Until 08:00 PDT the machine is idle
+  by agreement (VLC closed, no apps), so every load-gated window opens
+  without announcement; each is still admitted under 2.6 and kept on its
+  own ends, with no tool calls inside it. The order:
+  - the bookend (above), and the deferred timing pass (above);
+  - **PR A**, the statvfs hygiene PR, with a read-only spawn audit; these
+    records ride it as their own docs commit;
+  - **PR B**, R37 and the run-edge fix;
+  - R22's check, read-only.
+
+  Reel 0 waits on the user's footage. R34's lifecycle trace, R21's
+  backstop, the shell's presentation design note, the chroma keyer, the
+  format ladder and Windows/Linux decode wait for the user's ruling.
+
+  **PR A, the statvfs hygiene PR** (branch `statvfs-free-space`, off
+  `c6dedb5`; R36's follow-up, approved as its own hygiene PR by the user's
+  ruling 5 of 2026-10-28).
+  - **The change** (`3cbb84a`): `RecordSpace` and record.start's `E_DISK`
+    check read free space with one `fs4::available_space` call instead of
+    spawning `df -k`. That is statvfs's `f_bavail × f_frsize` on Unix (df's
+    Available) and `GetDiskFreeSpaceExW` on Windows, where `df` does not
+    exist. The caches, the writability probe and every message are
+    unchanged; `RecordSpace` keeps its own thread.
+  - **The dependency:** `fs4` 1.1.0, MIT OR Apache-2.0, released
+    2026-04-28, the maintained fork of `fs2` (whose 0.4.3 is from 2018).
+    Default features are off (`sync` only). It requires `rustix` (Unix,
+    already in the lockfile) and `windows-sys`. Compared: `sysinfo` (a
+    whole system inventory for one call); `nix` or `rustix` directly (Unix
+    only, so the Windows path would be ours). No new `unsafe` in
+    `nbe-engine`: `unsafe_code = "deny"` holds.
+  - **Hygiene (Standards §4):** behaviour-preserving; every existing test
+    unchanged. `prompt09_telemetry` still compares the reading with `df`'s
+    (the test's own spawn, not the engine's).
+  - **The guard** (`tests/free_space_no_spawn.rs`): the test re-runs itself
+    as a child with `PATH` empty and reads free space there. A read that
+    spawns a program by name fails; one that spawns by absolute path would
+    not be caught. **Falsified** (at `abf6040`, this commit before its cache
+    comments were corrected and its private query renamed; the code is
+    otherwise the same): with the `df` body restored, the guard
+    fails ("with PATH empty the free-space read failed, so it spawns a
+    process") and `prompt09_telemetry` stays green. Restored by `git reset
+    --hard`, rebuilt; green. **Again at `3cbb84a`** (load-gated, each
+    window kept): the head green (the engine's lib 68, the guard 1,
+    `prompt09_telemetry` 4, `r36_record_space` 2); the `df` body restored,
+    the guard fails the same way (cargo stops at that binary); restored
+    from `HEAD`, rebuilt, the three suites green.
+  - **The spawn audit** (read-only; the PR body has it in full). After
+    `3cbb84a`, no engine crate spawns a process outside its tests. The
+    control plane spawns one, `nbe-preflight`, from `show.load` and
+    `show.preflight`.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
@@ -10784,6 +11047,8 @@ register was opened with one entry; the spec has not been swept for others.
 | U5 | §8.10: "Device loss: `E_AUDIO`; attempt reopen with backoff; never block the render loop" (`docs/spec.v0.4.md:2053`) | ~~there is no device sink today.~~ *(§2c, the device-audio build:)* The device sink opens at engine start and does not reopen. A lost device (reported, or 1 s without a callback) leaves the engine silent on the null sink's cadence, the tick reading `lost`, and the lane raises `audio.device`, critical. What stands in: D5's `audio.device` alert, the interim surface (the user's ruling D8 of 2026-10-21) | a later device-audio PR (`docs/device-audio-design.md`, D8) |
 | U6 | §8.2 #1: "The master bus MUST have: 1. compressor" | no compressor exists. The master stage is the master gain, then the limiter (SPEC v0.4.8 row 14) | a later audio PR, its parameters ruled first (the user's ruling L6 of 2026-10-21) |
 | U7 | §8.2 #3: "loudness-safe output", against `show.audio.loudnessTargetLufs` (−16 LUFS by default), with §8.2 #4's peak metering folded in (the user's ruling L6) | nothing measures or normalises the master's loudness. The master meter (`Bus::observe`) reads sample peak and RMS, not true peak or LUFS. The limiter (row 14) bounds the true peak, which is all of loudness safety the tree builds | a later audio PR (L6) |
+| U8 | §7.11: "The chroma key effect MUST be GPU-shader-based"; "The keyer MUST support a garbage matte"; "Chroma key MUST run in real time at 1080p30 on Tier-1 hardware" (`docs/spec.v0.4.md:1626`, `:1640`, `:1642`) | `nbe-core`'s manifest model parses `chromaKey` (`manifest.rs:483`, `:656`) and nothing in the engine or preflight reads it (a read-only audit, 2026-10-29; found by the carpet bake-off, not by a sweep). What stands in: footage pre-keyed with alpha (Reel 0's presenter, the user's ruling 5 of 2026-10-28) | unassigned; the keyer waits for the user's ruling |
+| U9 | §12.4: "A loop is VRAM-resident only if … `totalShortLoopCache <= totalBudget`" (`docs/spec.v0.4.md:3246`; the total 512 MiB by default) | `nbe_core::loop_cache::CacheBudget` applies the 512 only as a per-loop ceiling (`effective_mib`, the lesser of the per-loop and the total); nothing sums the resident loops against it. Two 720p × 90 loops (316 MiB each, 632 together) are air-ready in preflight (the carpet bake-off, 2026-10-28). Only §12.11's package `vramDemandMib` sums, against the reference machine. Preflight should report the true total (the user's ruling 6 of 2026-10-28) | unassigned |
 
 ### The overlay level's four questions answered (recorded 2026-09-09, step 5)
 
