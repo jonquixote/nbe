@@ -162,11 +162,12 @@ pub struct RecordParams {
 /// `recordSpaceMib` reports free space; `E_DISK` on an unwritable target).
 ///
 /// Space-check helper ONLY — the writer is untouched. Reads the real target
-/// volume via `df -k <dir>` (pure std: no new dep, no `unsafe`, so the
-/// workspace `unsafe_code = "deny"` lint stays green on macOS + Linux).
-/// A file where the directory should be, a missing path, an unwritable
-/// directory, or an unreadable `df` result all refuse as
-/// [`RecordError::Disk`] (`E_DISK`), never panic.
+/// volume with one statvfs-style call (`fs4::available_space`; no process
+/// spawned, no `unsafe` here, so the workspace `unsafe_code = "deny"` lint
+/// stays green). It forked `df -k <dir>` until R36's follow-up measured a
+/// spawn from inside the engine at 1.9-3.1 s. A file where the directory
+/// should be, a missing path, an unwritable directory, or a failed query all
+/// refuse as [`RecordError::Disk`] (`E_DISK`), never panic.
 ///
 /// Writability is a real probe, not permission bits: a zero-byte file is
 /// created inside the directory and removed again. Bits lie — root bypasses
@@ -174,12 +175,10 @@ pub struct RecordParams {
 /// the same refusal the recording itself would hit.
 ///
 /// Cost control: successes are cached per directory for [`SPACE_CACHE_TTL`],
-/// so the 1 Hz telemetry tick does not fork `df` every second; failures of
-/// the `df` fork itself are cached for [`SPACE_CACHE_NEG_TTL`] (a sick disk
-/// must not cost a fork per tick either); the probe still runs on every call
-/// (one file create+remove, no fork). The `df` `Available` column is located
-/// by header index, not by a fixed ordinal, so macOS (`Available`) and GNU
-/// (`Available` or `Avail`) headers both parse. Both caches are bounded to
+/// so the 1 Hz telemetry tick does not query every second; failures of the
+/// query itself are cached for [`SPACE_CACHE_NEG_TTL`] (a sick disk must not
+/// cost a query per tick either); the probe still runs on every call (one
+/// file create+remove). Both caches are bounded to
 /// [`SPACE_CACHE_MAX_ENTRIES`] entries (oldest evicted), so a control plane
 /// cycling directories cannot grow them without limit. Telemetry degrades any
 /// refusal to `0.0` via [`crate::telemetry::record_space_mib_for`].
@@ -199,14 +198,14 @@ pub fn available_space_mib(dir: &Path) -> Result<f64, RecordError> {
     if let Some(err) = space_neg_cache_get(dir) {
         return Err(RecordError::Disk(err));
     }
-    match df_available_mib(dir) {
+    match query_available_mib(dir) {
         Ok(mib) => {
             space_cache_put(dir, mib);
             Ok(mib)
         }
         Err(e) => {
-            // Cache the fork failure itself (backoff): the message is the
-            // refusal a tick would otherwise re-fork to rediscover.
+            // Cache the query's failure itself (backoff): the message is the
+            // refusal a tick would otherwise re-query to rediscover.
             space_neg_cache_put(dir, e.to_string());
             Err(e)
         }
@@ -214,12 +213,12 @@ pub fn available_space_mib(dir: &Path) -> Result<f64, RecordError> {
 }
 
 /// TTL for the [`available_space_mib`] success cache: long enough that the
-/// telemetry tick never forks `df` more than ~once per interval, short enough
+/// telemetry tick never queries more than ~once per interval, short enough
 /// that a filling disk shows up while it still matters.
 const SPACE_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// TTL for the `df`-failure backoff: a sick disk reports its cached refusal
-/// instead of paying a fork per tick. Same order as the success TTL so a
+/// TTL for the query-failure backoff: a sick disk reports its cached refusal
+/// instead of paying a query per tick. Same order as the success TTL so a
 /// recovered disk shows up just as fast.
 const SPACE_CACHE_NEG_TTL: Duration = Duration::from_secs(5);
 
@@ -298,53 +297,15 @@ fn probe_writable(dir: &Path) -> Result<(), RecordError> {
     Ok(())
 }
 
-/// Parse the `Available` column (1K blocks) out of `df -k <dir>`, locating
-/// the column by header name rather than ordinal.
-fn df_available_mib(dir: &Path) -> Result<f64, RecordError> {
-    let out = std::process::Command::new("df")
-        .arg("-k")
-        .arg(dir)
-        .output()
+/// The space available to this user on `dir`'s volume, in MiB: one
+/// statvfs-style call (`fs4::available_space`: statvfs's `f_bavail x f_frsize`
+/// on Unix, the `Available` column `df` printed; `GetDiskFreeSpaceExW` on
+/// Windows). No process is spawned: forking `df` from inside the engine took
+/// 1.9-3.1 s (R36's follow-up), and `df` does not exist on Windows.
+fn query_available_mib(dir: &Path) -> Result<f64, RecordError> {
+    let bytes = fs4::available_space(dir)
         .map_err(|e| RecordError::Disk(format!("free-space query failed: {e}")))?;
-    if !out.status.success() {
-        return Err(RecordError::Disk(format!(
-            "free-space query refused: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
-    let header = lines
-        .next()
-        .ok_or_else(|| RecordError::Disk("free-space query returned no output".to_string()))?;
-    let header_cols: Vec<&str> = header.split_whitespace().collect();
-    let avail_idx = header_cols
-        .iter()
-        .position(|c| *c == "Available" || *c == "Avail")
-        .ok_or_else(|| {
-            RecordError::Disk(format!(
-                "free-space header has no Available column: {header}"
-            ))
-        })?;
-    let last = lines
-        .last()
-        .ok_or_else(|| RecordError::Disk("free-space query returned no data line".to_string()))?;
-    // The data line can carry fewer columns than the header when a mount
-    // point contains whitespace; the Available value sits at the same offset
-    // from the END in that case. Prefer the header index, fall back to the
-    // from-the-end position.
-    let cols: Vec<&str> = last.split_whitespace().collect();
-    let avail = cols
-        .get(avail_idx)
-        .or_else(|| {
-            let from_end = header_cols.len().checked_sub(avail_idx)?;
-            cols.len().checked_sub(from_end).and_then(|i| cols.get(i))
-        })
-        .ok_or_else(|| RecordError::Disk(format!("free-space query unparseable: {last}")))?;
-    let avail_kib: f64 = avail
-        .parse()
-        .map_err(|_| RecordError::Disk(format!("free-space query unparseable: {last}")))?;
-    Ok(avail_kib / 1024.0)
+    Ok(bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// Keep `[A-Za-z0-9._-]`; everything else becomes `_`, so a show title can

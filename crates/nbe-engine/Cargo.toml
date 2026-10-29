@@ -26,6 +26,16 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 # `swash` is the rasterizer; `std` is the allocator. No fontconfig, no
 # fontdb source-loading of system directories.
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
+# Free space on the record target (recordSpaceMib, record.start's E_DISK check)
+# through one statvfs-style call instead of forking `df` (R36's follow-up: a
+# process spawn from inside the engine measured 1.9-3.1 s). fs4 is the
+# maintained fork of fs2 (fs2 0.4.3 is from 2018), MIT OR Apache-2.0; its
+# `available_space` is statvfs's f_bavail x f_frsize on Unix (df's Available)
+# and GetDiskFreeSpaceExW on Windows, where `df` does not exist. It requires only
+# rustix (Unix; already in the lockfile) and windows-sys (Windows). Default
+# features are off: no async runtimes, no fs-err. Its unsafe stays in fs4, so
+# this crate's `unsafe_code = "deny"` holds.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 # Device audio (the device-audio design record, D1 and D7): program audio to
 # the default output device, macOS only. cpal is safe over coreaudio-rs and
