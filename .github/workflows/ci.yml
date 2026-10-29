@@ -547,10 +547,11 @@ jobs:
         # and a drain loop on one device) needs it too. If the runner
         # loses its adapter, this step fails instead of going green on skips.
         # R37 (record.stop never holds the loop's thread) rides the same step:
-        # r37_record_stop's 1 needs AudioToolbox AAC, not the adapter.
+        # r37_record_stop's 1 needs AudioToolbox AAC, not the adapter. R33's
+        # run edges (run_edges) are the loop's too: all 3 need the adapter.
         run: |
           set -u
-          for spec in "r33_cadence 8 8" "r36_record_space 2 2" "r42_two_pollers 1 1" "r37_record_stop 1 1"; do
+          for spec in "r33_cadence 8 8" "r36_record_space 2 2" "r42_two_pollers 1 1" "r37_record_stop 1 1" "run_edges 3 3"; do
             set -- $spec
             out=$(cargo test -p nbe-engine --test "$1" -- --nocapture 2>&1) && rc=0 || rc=$?
             echo "$out"

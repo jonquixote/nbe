@@ -485,6 +485,12 @@ impl EngineState {
         self.clock.lock().unwrap().frame_at(t)
     }
 
+    /// The run that last stopped: its epoch and the master frame it read at
+    /// its stop (R33's run edge).
+    pub fn last_stopped_run(&self) -> Option<(std::time::Instant, u64)> {
+        self.clock.lock().unwrap().last_run()
+    }
+
     /// The instant master frame `frame` begins on the running clock; None
     /// while STOPPED (R33).
     pub fn frame_boundary(&self, frame: u64) -> Option<std::time::Instant> {

@@ -15,6 +15,9 @@ pub struct MasterClock {
     house_rate: u32,
     state: ClockState,
     epoch: Option<Instant>,
+    /// The run that last stopped: its epoch and the master frame it read at
+    /// its stop (R33's run edge).
+    last_run: Option<(Instant, u64)>,
 }
 
 impl MasterClock {
@@ -23,6 +26,7 @@ impl MasterClock {
             house_rate,
             state: ClockState::Stopped,
             epoch: None,
+            last_run: None,
         }
     }
 
@@ -42,8 +46,19 @@ impl MasterClock {
     }
 
     pub fn stop(&mut self) {
+        if let (ClockState::Running, Some(epoch)) = (self.state, self.epoch) {
+            self.last_run = self.frame_at(Instant::now()).map(|f| (epoch, f));
+        }
         self.state = ClockState::Stopped;
         self.epoch = None;
+    }
+
+    /// The run that last stopped: its epoch and the master frame the clock
+    /// read at its stop. The render loop counts the frames a wake past the
+    /// stop never drew against it (R33's run edge). It outlives a restart; the
+    /// epoch says which run it was.
+    pub fn last_run(&self) -> Option<(Instant, u64)> {
+        self.last_run
     }
 
     /// The instant master frame 0 began; None while STOPPED. A device sink
