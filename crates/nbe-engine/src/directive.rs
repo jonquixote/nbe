@@ -130,7 +130,7 @@ impl DirectiveHandler {
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
             "record.start" => self.on_record_start(d)?,
-            "record.stop" => self.on_record_stop(d)?,
+            "record.stop" => self.on_record_stop(d).await?,
             "stream.start" => self.on_stream_start(d)?,
             "stream.stop" => self.on_stream_stop(d).await?,
             "marker.add" => self.on_marker_add(d)?,
@@ -1057,29 +1057,47 @@ impl DirectiveHandler {
     /// directive stream) and starts/stops are sequential. What IS
     /// deterministic — a session-less stop preserves markers — is pinned by
     /// test; the rest is documented here.
-    fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
+    ///
+    /// **The wait runs on the blocking pool (R37).** `main` drives the
+    /// directive path and the render loop on one thread (one `LocalSet`), so
+    /// a stop that waited here held the loop: after a long take the finish
+    /// took 55–65 ms and a master frame was never drawn. The handler awaits
+    /// the finish instead, and the thread draws while the file is written.
+    /// The ack still follows the finish: `apply()` returns only once the file
+    /// and its sidecar are complete, and the directive stream stays in order
+    /// (the next directive is applied after this one returns).
+    async fn on_record_stop(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
         // Hold the session guard across the state check + take: one
         // acquisition, so a concurrent stop cannot interleave between them.
-        // The guard is dropped before the blocking wait below.
-        let mut session_guard = self.state.record_session.lock().unwrap();
-        if *self.state.record_state.lock().unwrap() != RecordState::Recording {
-            return Err(DirectiveError::ForbiddenState(
-                "record.stop requires an active recording".into(),
-            ));
-        }
-        // Detach the driver first: the thread keeps its own Arc for the tail
-        // drain, and no new live mix enters the take after this point.
-        *self.state.record_tap.lock().unwrap() = None;
-        // Taken, not borrowed: the wait runs without holding any state lock.
-        let mut session = session_guard.take();
-        drop(session_guard);
+        // The guard is dropped before the wait below.
+        let session = {
+            let mut session_guard = self.state.record_session.lock().unwrap();
+            if *self.state.record_state.lock().unwrap() != RecordState::Recording {
+                return Err(DirectiveError::ForbiddenState(
+                    "record.stop requires an active recording".into(),
+                ));
+            }
+            // Detach the driver first: the thread keeps its own Arc for the
+            // tail drain, and no new live mix enters the take after this point.
+            *self.state.record_tap.lock().unwrap() = None;
+            // Taken, not borrowed: the wait runs without holding any state lock.
+            session_guard.take()
+        };
         // Ownership decides clearing: only the session owner clears markers.
         let owned = session.is_some();
-        let result = match session.as_mut() {
-            Some(s) => s
-                .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
-                .map(|_| ())
-                .map_err(session_err),
+        let result = match session {
+            Some(mut s) => match tokio::task::spawn_blocking(move || {
+                s.stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
+                    .map(|_| ())
+            })
+            .await
+            {
+                Ok(finished) => finished.map_err(session_err),
+                // The take still ends below: no pipeline remains to continue with.
+                Err(e) => Err(DirectiveError::Invalid(format!(
+                    "record.stop: the finish panicked: {e}"
+                ))),
+            },
             // No session to own the take: flip to Idle, clear nothing. Only
             // the session owner clears markers (thread finish/abandon paths,
             // successful stop below); the next start/load clears anyway.
