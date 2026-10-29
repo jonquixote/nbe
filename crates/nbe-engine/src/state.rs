@@ -118,6 +118,8 @@ pub struct EngineState {
     /// drew. Internal and logged, never on the wire: a §10.1 field is a spec
     /// change (the user's ruling of 2026-10-28).
     pub repeated_master_frames: AtomicU64,
+    /// `recordSpaceMib`, measured off the async runtime (R36).
+    pub record_space: crate::telemetry::RecordSpace,
     /// R33: master frames no running tick drew (a jump from 630 to 633
     /// counts 2). Internal and logged, like `repeated_master_frames`.
     pub skipped_master_frames: AtomicU64,
@@ -284,6 +286,7 @@ impl EngineState {
             dropped_frames_total: AtomicU64::new(0),
             repeated_master_frames: AtomicU64::new(0),
             skipped_master_frames: AtomicU64::new(0),
+            record_space: Default::default(),
             preview_missed: AtomicU64::new(0),
             audio_underruns_total: AtomicU64::new(0),
             decode_failures_total: AtomicU64::new(0),
