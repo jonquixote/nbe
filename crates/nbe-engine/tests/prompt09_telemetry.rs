@@ -112,11 +112,14 @@ fn telemetry_tick_carries_record_space_without_touching_frame_path() {
     let state = EngineState::new(30);
     let dir = tempfile::tempdir().expect("tempdir must succeed");
 
-    let frame = nbe_engine::telemetry::build_tick_for_dir(&state, Some(dir.path()));
-    let space = match frame {
-        EngineFrame::EngineTelemetry { fields, .. } => fields.record_space_mib,
-        other => panic!("expected engineTelemetry, got {other:?}"),
-    };
+    // Measured off the runtime (R36): the tick carries the measurement once
+    // it lands, and never waits on it.
+    let space = until_measured(|| {
+        match nbe_engine::telemetry::build_tick_for_dir(&state, Some(dir.path())) {
+            EngineFrame::EngineTelemetry { fields, .. } => fields.record_space_mib,
+            other => panic!("expected engineTelemetry, got {other:?}"),
+        }
+    });
     assert!(space > 0.0, "tick must carry measured space, got {space}");
 
     // No target configured: field present, zero — shape stays complete.
@@ -200,12 +203,25 @@ async fn show_load_wires_record_dir_into_the_pump_tick() {
         *state.record_dir.lock().unwrap(),
         Some(rec.path().to_path_buf())
     );
-    let space = match nbe_engine::channel::pump_tick(&state) {
+    let space = until_measured(|| match nbe_engine::channel::pump_tick(&state) {
         EngineFrame::EngineTelemetry { fields, .. } => fields.record_space_mib,
         other => panic!("expected engineTelemetry, got {other:?}"),
-    };
+    });
     assert!(
         space > 0.0,
         "wired pump tick must report measured space, got {space}"
     );
+}
+
+/// `recordSpaceMib` once its first measurement lands (R36: measured off the
+/// runtime, within moments of the target being set), or 0.0 after 2 s.
+fn until_measured(read: impl Fn() -> f64) -> f64 {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let v = read();
+        if v > 0.0 || std::time::Instant::now() >= end {
+            return v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

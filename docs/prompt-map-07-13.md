@@ -800,6 +800,8 @@ adopt and record).
   | `40455238385`, main at `4bef9ed` (PR #74's merge), green (585/0/5) | the workspace tests: the test build finished at 05:26:59.38 (`Finished` in 46.00 s); the post line at 05:28:17 | whole step 1.93–6.32 (pre, 13 samples, post). While building: 2.05 (the pre line, load1 6.15), 1.93, 2.50, 4.77, 6.15. While the tests ran: 6.32, 6.17, 5.43, 4.78, 4.18, 3.71, 3.78, 3.57, then the post line's 3.34, so 3.34–6.32. The R10 test passed at 05:27:34.37, between 4.78 and 4.18. The 71st |
   | `40458035715`, PR #75 at `e048917` (its head), green (585/0/5) | the workspace tests: the test build finished at 05:56:36.43 (`Finished` in 47.45 s); the post line at 05:58:00 | whole step 2.27–4.78 (pre, 13 samples, post). While building: 2.41 (the pre line, load1 7.23), 2.27, 2.76, 3.81, 4.72. While the tests ran: 4.69, 4.02, 4.12, 3.61, 3.70, 3.81, 4.39, 4.78, then the post line's 4.35, so 3.61–4.78. The R10 test passed at 05:57:10.32, between 3.61 and 3.70. The 72nd |
   | `40460725223`, main at `6bb8019` (PR #75's merge), green (585/0/5) | the workspace tests: the test build finished at 06:24:14.41 (`Finished` in 54.48 s); the post line at 06:25:35 | whole step 4.14–8.50 (pre, 14 samples, post). While building: 8.50 (the pre line, load1 25.49), 7.42, 7.06, 6.76, 6.39, 6.32. While the tests ran: 5.95, 5.24, 4.64, 4.75, 4.74, 4.71, 4.47, 4.30, then the post line's 4.14, so 4.14–5.95. The R10 test passed at 06:24:46.40, between 4.64 and 4.75. The 73rd |
+  | `40502533800`, PR #76 at `419392c` (its head), green (589/0/5) | the workspace tests: the test build finished at 12:19:03.87 (`Finished` in 55.95 s); the post line at 12:20:20 | whole step 4.11–9.83 (pre, 14 samples, post). While building: 9.83 (the pre line, load1 29.48), 8.52, 7.60, 7.44, 6.99, 6.73. While the tests ran: 6.09, 5.56, 4.78, 4.15, 4.51, 4.58, 4.91, 4.21, then the post line's 4.11, so 4.11–6.09. The R10 test passed at 12:19:36.04, between 4.78 and 4.15. The 74th |
+  | `40640917579`, main at `5f0c93b` (PR #76's merge), green (589/0/5) | the workspace tests: the test build finished at 05:58:09.87 (`Finished` in 33.89 s); the post line at 05:59:09 | whole step 4.96–8.21 (pre, 10 samples, post). While building: 6.88 (the pre line, load1 20.64), 6.61, 7.19, 8.21. While the tests ran: 8.08, 7.53, 7.04, 6.46, 6.21, 5.36, then the post line's 4.96, so 4.96–8.08. The R10 test passed at 05:58:36.42, between 7.04 and 6.46. The 75th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -1028,6 +1030,10 @@ and 5.61, under the 15.31 maximum). R10 was silent in all six.
 runs; rows 72 and 73 peaked at 4.78 and 8.50, under the 15.31 maximum). R10
 was silent in both.
 
+**The ceiling through #76 and its merge: holds at 19.13 per CPU** (75 green
+runs; rows 74 and 75 peaked at 9.83 and 8.21, under the 15.31 maximum). R10
+was silent in both.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1073,6 +1079,8 @@ A `three_frames…` failure in that step is read against it.
 | G27 | `40455238385` attempt 1, rust job `122026909134`, main at `4bef9ed` (PR #74's merge), green (`prompt04` 19) | 3.34 | 3.34–3.36 (pre, 1 sample, post; 05:28:17–05:28:22Z) | 3.36 |
 | G28 | `40458035715` attempt 1, rust job `122035836637`, PR #75 at `e048917`, green (`prompt04` 19) | 4.35 | 4.03–4.35 (pre, 1 sample, post; 05:58:00–05:58:06Z) | 4.03 |
 | G29 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (`prompt04` 19) | 4.14 | 3.86–4.14 (pre, 1 sample, post; 06:25:35–06:25:41Z) | 3.86 |
+| G30 | `40502533800` attempt 1, rust job `122183523940`, PR #76 at `419392c`, green (`prompt04` 19) | 4.11 | 4.11–4.50 (pre, 1 sample, post; 12:20:20–12:20:25Z) | 4.50 |
+| G31 | `40640917579` attempt 1, rust job `122658595226`, main at `5f0c93b` (PR #76's merge), green (`prompt04` 19) | 4.96 | 4.96–4.96 (pre, 1 sample, post; 05:59:09–05:59:12Z) | 4.96 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1103,6 +1111,8 @@ G24–G27 peaked under it too: 4.77, 4.60 and 3.34 (#74 at `9dfd84b`,
 GPU step in all four.
 G28 and G29 peaked under it too: 4.35 (#75 at `e048917`) and 4.14 (main
 `6bb8019`); `three_frames…` passed the GPU step in both.
+G30 and G31 peaked under it too: 4.50 (#76 at `419392c`) and 4.96 (main
+`5f0c93b`); `three_frames…` passed the GPU step in both.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1135,6 +1145,8 @@ proof was, and its bracket held a failed floor step (a mixed step).
 | F14 | `40455238385` attempt 1, rust job `122026909134`, main at `4bef9ed` (PR #74's merge), green (34/34 floor lines) | 3.36 | 2.50–3.71 (pre, 9 samples, post; 05:28:22–05:29:43Z) | 3.71 |
 | F15 | `40458035715` attempt 1, rust job `122035836637`, PR #75 at `e048917`, green (34/34 floor lines) | 4.03 | 2.50–4.03 (pre, 9 samples, post; 05:58:06–05:59:32Z) | 2.50 |
 | F16 | `40460725223` attempt 1, rust job `122044419319`, main at `6bb8019` (PR #75's merge), green (34/34 floor lines) | 3.86 | 2.56–3.98 (pre, 9 samples, post; 06:25:41–06:27:10Z) | 3.07 |
+| F17 | `40502533800` attempt 1, rust job `122183523940`, PR #76 at `419392c`, green (34/34 floor lines) | 4.50 | 2.30–4.50 (pre, 9 samples, post; 12:20:25–12:21:48Z) | 3.39 |
+| F18 | `40640917579` attempt 1, rust job `122658595226`, main at `5f0c93b` (PR #76's merge), green (34/34 floor lines) | 4.96 | 3.56–4.96 (pre, 6 samples, post; 05:59:12–06:00:10Z) | 3.67 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
@@ -1163,6 +1175,8 @@ not what was expected.
 `527c065` and `ae709db`), 3.71 (main `4bef9ed`), at 14 green runs.
 **F15 and F16 peaked under it too:** 4.03 (#75 at `e048917`) and 3.98
 (main `6bb8019`), at 16 green runs.
+**F17 and F18 peaked under it too:** 4.50 (#76 at `419392c`) and 4.96
+(main `5f0c93b`), at 18 green runs.
 
 **The control-plane bracket envelope** (the user's ruling of 2026-10-26 on
 R32, (a); the fourth envelope). From `ab0304a`, `cp-pre`, `cp-sample` and
@@ -1191,6 +1205,8 @@ load-average tail (the ruling: the settle, not the count), and #72's
 | CP7 | `40455238385` attempt 1, control-plane job `122026909528`, main at `4bef9ed` (PR #74's merge), green (`npm test` 205/205, package-reconcile 4/4) | 4.72 | 3.46–4.72 (pre, 21 samples, post; 05:28:25–05:31:49Z) | 4.69 |
 | CP8 | `40458035715` attempt 1, control-plane job `122035836675`, PR #75 at `e048917`, green (`npm test` 205/205, package-reconcile 4/4) | 1.92 | 1.88–5.15 (pre, 21 samples, post; 05:57:45–06:01:14Z) | 4.76 |
 | CP9 | `40460725223` attempt 1, control-plane job `122044419247`, main at `6bb8019` (PR #75's merge), green (`npm test` 205/205, package-reconcile 4/4) | 4.50 | 2.76–5.28 (pre, 21 samples, post; 06:25:34–06:29:03Z) | 4.64 |
+| CP10 | `40502533800` attempt 1, control-plane job `122183524300`, PR #76 at `419392c`, green (`npm test` 205/205, package-reconcile 4/4) | 4.54 | 2.53–4.54 (pre, 21 samples, post; 12:19:50–12:23:23Z) | 3.52 |
+| CP11 | `40640917579` attempt 1, control-plane job `122658595487`, main at `5f0c93b` (PR #76's merge), green (`npm test` 205/205, package-reconcile 4/4) | 3.48 | 1.25–4.23 (pre, 18 samples, post; 05:59:05–06:02:07Z) | 4.23 |
 
 **CP1 seeds it:** the maximum is 4.94 (load1 14.82, the last sample at
 15:47:18Z and `cp-post` at 15:47:19Z, during the operator-signals end to
@@ -1234,6 +1250,12 @@ during the operator-signals end to end, load1 15.45 at 06:01:07Z) and 5.28
 (main `6bb8019`, a mid-window sample, load1 15.83 at 06:27:06Z), the highest
 warm readings yet, at 9 green runs; neither is under the queued proposal's
 50% line (4.23).
+
+**CP10 and CP11, warm, under 8.46:** 4.54 (#76 at `419392c`, its `cp-pre`)
+and 4.23 (main `5f0c93b`, its `cp-post`, load1 12.69 at 06:02:07Z, after a
+trough of 1.25 at 06:00:56Z), at 11 green runs. CP11's peak is exactly the
+queued proposal's 50% line (4.23: 12.69 over 3 CPUs), at it, not under it;
+CP10 is above it. The proposal is not in force either way.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -9872,6 +9894,311 @@ item):
     bun, bluetoothd; 2.46 → 3.13, WindowServer, locationd, opendirectoryd);
     `npm test` 205/205; e2e 28 + 1 skip (the refused start: this machine's
     encoder acknowledges); the dress 29/29, 0 drops.
+
+  **R35's fix PR, its two-key pass and CI** (PR #76).
+  - **CI at `419392c`:** run `40502533800`, attempt 1, every job executed,
+    each read job-exact: rust 589/0/5, 34/34 floor lines, `zerocopy_g1` ran 6
+    / skipped 1 / exercised 5 (its new floors met), R35's 2 unit tests and 2
+    GPU guards `ok`, the 4 count gates, R10's drain tests `ok` in both runs of
+    their suite, `three_frames…` `ok` in both steps; control-plane every step
+    green, `npm test` 205/205, package-reconcile 4/4, the refused start `ok`
+    (2019 ms); dress 29/29, 0 drops. Rows: R10's 74, G30, F17, CP10.
+  - **The two-key pass on PR #76** (independent; relayed by the user,
+    2026-10-27) HOLDS at `419392c`, with no blocking disputes. No further
+    acceptance run is required under the agreed dispatch.
+  - **The independent review, as it was** (the user's ruling of 2026-10-27):
+    all five kept FLVs were freshly re-analysed, reproducing 16 / 9 / 0 / 0 /
+    3 (the Intel red, the AMD red, the fixed AMD, the fixed Intel, the wait
+    removed). It was not an independent engine rerun: the reviewer's engine
+    rerun was void, not attempted under ambient load 3.84, with 6.0 GB of
+    disk free.
+  - **The precision notes** (the same ruling):
+    1. **The receiver's accounting** is one video message per frame plus the
+       AVC sequence header: every kept run reads messages = frames + 1 (the
+       Intel fixed run's FLV: 1 sequence header, 620 keyframes, 17,704 inter
+       frames, 18,324 frames).
+    2. **The fixed AMD window was kept under the endpoint rule** (its own
+       ends 2.08 and 2.04), not quiet throughout: 57 of its 184 samples at or
+       above 3.0, peak 6.55.
+    3. **The Intel red's admission, first sample and `machineAtStart` are
+       distinct readings:** 2.19 at 09:50:52Z (the runner's admission),
+       2.63 at 09:51:05Z (`machineAtStart`, written before the engine
+       started), 2.38 at 09:51:14Z (the first 10 s sample); all under 3.0.
+    4. **The join's limits stand:** it is arithmetic, not traced (a frame's
+       master frame is `round(pts_time × 30)`, known only up to the stream's
+       first frame, which cancels in each take's offset); the offset is the
+       mode of index minus picture, so it presumes most of a take's pictures
+       are current; the clip's held last frame (index 149) is excluded; a
+       timestamp gap does not tell a stream drop from a skipped master frame.
+  - **Merged: PR #76 is `5f0c93b`** (the bookend), on the user's word.
+    - **The merge:** a squash at 2026-10-28T05:56:53Z, matched to `419392c`,
+      with the staged subject and body (byte-identical, 4,507 bytes). Its one
+      parent is `6bb8019`.
+    - **The tree is identical to the reviewed head's:** `5f0c93b^{tree}` =
+      `419392c^{tree}` = `ac7e86b`.
+    - **Main's CI:** run `40640917579` (push), attempt 1. Every job executed
+      (each started 05:56:58–05:56:59Z, each checked out `5f0c93b`), and each
+      was read job-exact. **Green.** rust 589/0/5, 34/34 floor lines,
+      `zerocopy_g1` ran 6 / skipped 1 / exercised 5 (its floors 6/5 met),
+      R35's 2 unit tests `ok`, its 2 GPU guards `ok` in both of their runs,
+      the 4 count gates, R10's drain tests `ok` in both runs of their suite,
+      `three_frames…` `ok` in both steps; control-plane every step green,
+      `npm test` 205/205, package-reconcile 4/4, the refused start `ok`
+      (2016 ms); dress 29/29, 0 drops, steps 5, 6 and 12c `ok` (step 4's
+      rise 1965 ms, logged, inside the 10 s backstop).
+    - **The envelopes:** R10 row 75 (19.13 holds), G31 (7.46 holds), F18
+      (10.02 holds), CP11 (8.46 holds).
+    - **R35 is FIXED by `5f0c93b`**, its kept/void distinctions, its
+      counter-proof, its guards and its measurement's limits standing with it
+      (the register).
+
+  **The user's rulings of 2026-10-28, on #76's bookend:** accepted as
+  reported.
+  1. Records ride the next PR. `0b9f743` was pushed as the branch
+     `records-after-76` with no PR, and is this PR's first commit.
+  2. `r35-stream-fence` stays on origin. The local branch cleanup and the
+     `.git/nbe-staged/` allow-list are the user's.
+  3. The readings stand:
+     - CP11, exactly on the queued proposal's 50% line, is not counted
+       toward it.
+     - The dress run's underruns at `5f0c93b` (run `40640917579`) are noted,
+       not a sighting: **247**, against kept runs' 209–245. The figure is
+       recorded here so a trend would show.
+
+  **The user's work order of 2026-10-28:**
+  - **The milestone (context, not a scope change):** a watchable, operable
+    show with attached evidence. A first diagnostic reel from the production
+    engine comes first, then a minimal native operator shell. R21, R32, R33
+    and R34 stay accountable inside it, none deferred.
+  - **R33 first.** STOP 1, a note, before the fix.
+  - `gameplan.md` and `nbe-normalize.sh` are proposals for comment, not
+    committed. The user rules on the gameplan items separately.
+  - **Step 0:**
+    - disk 18.49 GiB free; `target/` 8.75 GiB; `./scripts/clean-stale.sh`
+      reclaimed 0 MiB;
+    - `.git/nbe-staged` is 1.20 GiB. It was tarred outside the repo with a
+      sha256 manifest of 1,078 files and 1 symlink, for the user to copy
+      durably.
+    - The work order's premise was corrected: the kept FLVs were not the
+      only engine video. 23 R31 record-path MP4s and a 1-minute dry FLV were
+      there too.
+
+  **The user's rulings of 2026-10-28, ahead of STOP 1:**
+  1. **`droppedFramesTotal` conforms to SPEC §10.2.** A master frame never
+     drawn counts. It is its own commit with its own guard and falsification,
+     and no wire or schema change. The repeat and skip counters stay
+     internal. Each repeat and skip is logged (rate-limited), and each take
+     and run ends with a one-line summary.
+  2. A blast-radius note before the counter changes.
+  3. **Efficiency × capability.** The fix stays portable: clock arithmetic,
+     no Apple-only call, no new `unsafe`. No timing assumption that holds
+     only on macOS. CPU is reported before and after, and a spin cannot pass
+     as a fix.
+  4. **The PR's acceptance lens:** skipped master frames per 10 minutes at a
+     stated load and quality profile, with the CPU cost beside it.
+  5. Baselines from the running red where they do not perturb it.
+
+  **The user's rulings of 2026-10-28, on the blast-radius note:**
+  1. Find and fix the stall first, then conform. No threshold is
+     re-baselined, and conformance lands only when the fixed engine reads
+     green on the gates.
+  2. The stall is its own finding, **R36**, cross-referenced to R33, fixed in
+     this PR if it falls out quickly.
+  3. **The deadline:** a frame is dropped if the clock reaches the next
+     frame's boundary before it was submitted, each master frame once,
+     whether skipped or over budget. The §10.3 watchdog stays as it is.
+  4. Two bisection rounds as the timebox.
+
+  **R33's fix PR** (branch `r33-cadence`, off `0b9f743`).
+  - **The red** (`r33/red.sh`, `red.log`; main's engine, `5f0c93b`'s code,
+    debug; R31's traced 12c probe, record path, zero-copy; each window
+    admitted under 2.6 and kept on its own ends):
+
+    | window | adapter | frames | repeats (exact) | trace gaps (≤ skips) | stale | drops | the window |
+    |---|---|---|---|---|---|---|---|
+    | 30 min | AMD Radeon Pro 555X | 44,995 | **669** | 867 | 0 | **0** | KEPT: ends 2.32 / 2.49; 38 of 184 samples ≥ 3.0, max 3.86 |
+    | 10 min | Intel UHD 630 | 16,356 | **224** | 289 | 0 | **0** | KEPT: ends 2.22 / 1.88; max 2.82 |
+
+    - *(§2c, the builder's slip: 21 of the AMD window's 38 high samples
+      coincide with the builder's own tool calls during it. From then on, no
+      tool call inside a timing window.)*
+    - CPU from the red itself (`proc_pidinfo`, debug): engine 39.2% / 39.5%
+      of one core, the tick's thread 6.6% / 7.3%.
+    - The stream path cannot see a repeat: R35's five windows read 0 each.
+  - **The cause:** `run_loop` slept to its own `Instant` grid and then read
+    the clock wherever it woke. The grid's phase against the clock's
+    boundaries is arbitrary, and the timer only wakes late. Near a boundary,
+    wakes alternate between the same frame and the next.
+  - **Built:**
+    - `f480f5a`: the accounting, on the unfixed loop. Repeats and skips are
+      internal counters, logged per frame and rate-limited; a run and a take
+      each end with a summary.
+    - `f2db18e`: the loop sleeps to the master clock's boundary for the frame
+      after the last one drawn, then draws the frame the clock names. Each
+      master frame is drawn once and in order; a skip is counted and never
+      caught up.
+    - `dee7ed7`: the clock reads `floor(elapsed × rate)` in integer
+      nanoseconds. The floating form read 28 at the instant frame 29 begins
+      at 25 fps. Every clock reader is unchanged outside a boundary's own
+      nanosecond.
+    - `e9f3c03`: R36's fix (its row).
+    - `cd18d00`: `droppedFramesTotal` conformed to §10.2 as ruled. Tests
+      changed with it, disclosed: prompt04's loop test now runs the loop; R15's
+      `late_frames` helper asserts a render alone counts no drop, its
+      watchdog assertions unchanged.
+    - Guards: `da2d11c`, `a969111`, `8458255`, `12d383b` (CI floors
+      `r33_cadence` 6/6, `r36_record_space` 2/2).
+  - **Falsified** (`r33/battery/`; each in place, `git reset --hard HEAD`,
+    rebuilt):
+
+    | Behaviour removed | Tests that failed |
+    |---|---|
+    | M1 the clock-boundary cadence (the loop's own grid) | `a_loop_asked_to_tick_faster_than_the_clock_draws_each_master_frame_once`; `a_loop_started_just_ahead_of_a_clock_boundary_never_draws_a_master_frame_twice` (3 of 3 runs; at 150 µs it had passed with the fix removed, §2c, so it now sweeps 0.5–4 ms) |
+    | M2 no catch-up | the skip-line, stall and counting tests (3) |
+    | M3 the clock's exact arithmetic | `the_clock_names_each_frame_from_its_boundary_on_and_never_before` |
+    | M4 the repeat counter | tick.rs's repeat, skip and summary tests (3) |
+    | M5 the skip counter | tick.rs's skip and summary tests; the stall and counting tests |
+    | M6, M7 the take's and the run's summary lines | `a_record_take_and_a_run_each_end_with_one_summary_line` |
+    | M8 the per-frame skip line | `a_skip_is_logged_with_the_master_frames_never_drawn` (its first mutation did not compile, §2c; rerun) |
+    | M9 the wake stats; M10 the rate limit | the summary test; the rate-limit test |
+    | M11, M12 the skip line's tick and wake fields | the skip-line test |
+    | M13 R36: the tick measures the volume itself | both of `r36_record_space` |
+    | M14 a frame never drawn not a drop | tick.rs's 2; the stall test; prompt04's loop test |
+    | M15 a frame drawn after the next boundary not a drop | prompt04's loop test |
+    | M16 the render's own duration counts again | prompt04's loop test and R15's three watchdog guards |
+  - **Measured** (`r33/green.sh`; each window kept on its own ends):
+
+    | engine | path, adapter | repeats | skipped master frames | stale |
+    |---|---|---|---|---|
+    | `f480f5a` (the unfixed loop) | record, AMD, 10 min | 70 | 2,028 (61 R36 stalls) | 0 |
+    | `a969111` (fixed, before R36) | record, AMD, 30 min | **0** | 5,981 (181 R36 stalls) | 0 |
+    | `a969111` | record, Intel, 10 min | **0** | 1,964 (61 R36 stalls) | 0 |
+    | `a969111` | stream, AMD / Intel, 10 min | 0 / 0 | 3 / 0 | **0 / 0** |
+    | `12d383b` release (final) | record, AMD, 10 min | **0** | **3** (two late wakes, 75 and 59 ms) | 0 |
+    | `12d383b` release | stream, AMD, 10 min | 0 | 2 | **0** |
+    | `12d383b` release | record, AMD, 10 min (the CPU window) | **0** | **1** | 0 |
+
+    - **CPU after** (the final code, release, the CPU window): engine 20.9%
+      of one core; tick thread 3.38%; `nbe-audio` 1.2%; `nbe-record` 2.6%;
+      `nbe-record-space` 0.11%. The before figures are a debug build, so the
+      two are not comparable as they stand.
+    - *(§2c, the builder's slips: the sampler matched only `target/debug`
+      and recorded nothing in the green session, then matched `npm run` in
+      the first final session. It now matches the engine's executable path.)*
+  - **Wake lateness** (the take summaries; this machine, macOS, tokio's
+    timer): away from R36's stalls, 99.6% of wakes were at most 5 ms late,
+    mostly 2–5 ms (debug and release alike), never more than one frame. The
+    clock-boundary cadence makes that lateness cost nothing. Another OS's
+    timer is not measured.
+  - **The gate at `12d383b`** (`r33/gate/`; each window under 2.6, kept with
+    both ends under 3.0):
+    - the workspace **604/0/5**, kept on the second window of its second
+      run. Four voids, named: PhotoLibraryServices, `dasd`, Comet;
+      MediaAnalysis 207%, `powerd`; CleanMyMac HealthMonitor,
+      SafariSafeBrowsing; MediaAnalysis.
+    - `npm test` 205/205; e2e 28 + 1 skip; the dress **29/29**, with the
+      conformed counter, steps 5 and 6 drop-free.
+  - **Sighting, named:** `prompt10_rtmp::both_live_stream_shares_the_record_composite`
+    failed once, in the first void workspace window (load 2.26 → 5.99): "a
+    live stream never costs record a frame", record skips 1. It did not
+    reproduce under six busy loops, 0 of 15 on `12d383b` and 0 of 15 with
+    the old cadence. The cause is unknown.
+  - **Observed, not fixed:** `record.stop` waits on the loop's own thread for
+    the record thread to finish the file, and costs about one frame (55–65 ms
+    late wakes). With the conformed counter, that is one drop per stopped
+    take.
+
+  **The user's rulings of 2026-10-28, on the PR's opening:**
+  1. Open the PR now, DO NOT MERGE. Its body adds:
+     - the two modified tests, originals beside the new, with a mutation
+       showing the original guard is not weakened;
+     - the integer clock reaching every `frame()` caller;
+     - `record.stop`'s one-frame cost as a counted drop.
+  2. The `both_live_stream_shares_the_record_composite` sighting is
+     registered as a watch entry (R38). Not blocking.
+  3. `record.stop` blocking the render thread is a new finding (R37), not in
+     this PR. A command-to-dropped-frames table is wanted.
+  4. R36's follow-up, measurement only: `df` itself, or the process spawn?
+     If the spawn, propose a statvfs-style replacement as its own later
+     hygiene PR.
+  5. A release-build CPU reading of main, like for like.
+  6. Go on to Step 3. The remaining single late wakes stay watched through
+     the new logs.
+
+  **PR #77** (opened at `8bd7f8f`).
+  - **CI at `8bd7f8f`:** run `40811185186`, attempt 1. Every job executed,
+    each read job-exact.
+    - **rust:** 604/0/5; 36 floor lines (`r33_cadence` 6/6 and
+      `r36_record_space` 2/2, new); the 4 count gates; R10's drain tests and
+      `three_frames…` `ok` in both runs.
+    - **control-plane:** every step green; `npm test` 205/205.
+    - **dress:** 29/29, **0 drops on the conformed counter**, underruns 205.
+    - **Windows:** workspace 4.84–13.61, GPU step 4.84–4.85, floor bracket
+      3.93–5.63, control-plane bracket 2.83–5.93. Every ceiling holds. The
+      rows are staged for #77's bookend.
+  - **The two modified tests' original guards are not weakened**
+    (`r33/battery/battery6*.log`):
+    - M17 (the watchdog never hears a late frame) fails the same 3 tests at
+      the parent `e9f3c03` and at `8bd7f8f`;
+    - M18 (the degradation rung frozen) fails the same 1 at both.
+  - **CPU, like for like** (release builds, record path, AMD, 10 min, each
+    window kept on its own ends):
+
+    | | main `5f0c93b` | `12d383b` |
+    |---|---|---|
+    | engine | 19.9% of one core | 20.9% |
+    | the tick's thread | 3.14% | 3.38% |
+    | `nbe-audio` / `nbe-record` | 1.2% / 2.5% | 1.2% / 2.6% |
+    | repeats per 10 min | 99 | **0** |
+    | skipped master frames per 10 min | ≤ 170 trace gaps (not counted on main) | **1** |
+
+    - The fix costs about 1.0 point of one core in the engine and 0.24 on the
+      tick's thread.
+    - Main's window was not quiet throughout: 4 of 64 samples at or above
+      3.0, max 3.80.
+  - **R37's command table** (`r37/commands-*`; the final code's release build;
+    each command once, the clock running, 3 s settles; admitted at 2.47,
+    ended at 2.36):
+
+    | command | applied in | drops | skipped master frames |
+    |---|---|---|---|
+    | `preview.set` | 2 ms | 0 | 0 |
+    | `view.take` (cut) | 3 ms | 0 | 0 |
+    | `overlay.show` / `overlay.hide` | 3 / 2 ms | 0 / 0 | 0 / 0 |
+    | `soundboard.play` | 2 ms | 0 | 0 |
+    | `record.start` | 5 ms | 0 | 0 |
+    | `record.stop` (after a ~20 s take) | 44 ms | 0 | 0 |
+    | `stream.start` / `stream.stop` | 4 / 39 ms | 0 / 0 | 0 / 0 |
+    | `show.stop`, `show.load` (reload), `show.start` | 2 ms, 2,560 ms, 1 ms | — | — |
+
+    - **What one run can say:**
+      - The probes' stops after 1- to 30-minute takes woke the loop
+        55–65 ms late and skipped a frame each time. This 44 ms stop did
+        not cross a boundary. One run cannot give a rate.
+      - A package cannot load while the View is live (`E_FORBIDDEN_STATE`).
+        The reload was measured stopped, where no frame is counted by
+        definition; whether its 2.56 s holds the stopped clock's picture is
+        not measured.
+      - The overlay was added to the staged copy of the dress package only.
+  - **R36's follow-up: the spawn.** Measured inside the engine with a
+    diagnostic build of `12d383b` (debug, never committed), timed in
+    `df_available_mib`:
+    - spawning `/usr/bin/true`: **p50 1,878 ms, max 2,978 ms**, recording;
+      **p50 1,874 ms**, streaming (not recording);
+    - `df -k`: p50 3,120 ms in both;
+    - from outside the engine, `df` takes about 10 ms.
+    - **So the cost is the engine's own process spawn**, with `df` adding
+      about 1.2 s on top.
+    - **Not established:** whether it is because of the GPU mappings (not
+      tested); and why the stream path, which did run `df` before the fix
+      (`recordSpaceMib` measured in 300 of 303 ticks), never stalled.
+    - The recording diagnostic's window was VOID on its end (3.35); the
+      streaming one was kept. Both read the same.
+    - **Proposed** (the user's to rule; its own later hygiene PR): read free
+      space with a statvfs-style call instead of a process. `statvfs` on
+      macOS and Linux, `GetDiskFreeSpaceExW` on Windows, where `df` does not
+      exist. Through a maintained crate (for example `fs4`'s
+      `available_space`), so `nbe-engine` keeps no `unsafe`.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):

@@ -871,14 +871,12 @@ impl RenderLoop {
         }
         let elapsed = started.elapsed();
 
-        // Step 3: a View frame not submitted by its deadline is a dropped
-        // frame, and the watchdog hears the measured lateness — never a
-        // constant.
+        // Step 3: the watchdog hears the measured lateness — never a
+        // constant (§10.3, unchanged). A dropped frame is the loop's to count
+        // against the master clock, not this render's duration (§10.2, the
+        // user's ruling of 2026-10-28: `tick.rs`).
         let view_late_by = match deadline {
             Some(budget) if elapsed > budget => {
-                self.state
-                    .dropped_frames_total
-                    .fetch_add(1, Ordering::SeqCst);
                 let late = elapsed - budget;
                 let frames_missed = (late.as_secs_f64() / budget.as_secs_f64()).ceil() as u64;
                 self.watchdog.report_frame(frames_missed.max(1));

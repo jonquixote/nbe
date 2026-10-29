@@ -5,7 +5,9 @@
 
 use crate::state::EngineState;
 use nbe_protocol::{EngineFrame, EngineTelemetry};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::Duration;
 
 /// Free space on the record target's volume, in MiB (SPEC §10.1).
 ///
@@ -19,8 +21,102 @@ pub fn record_space_mib_for(dir: Option<&Path>) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Build one engine-owned telemetry frame, measuring `recordSpaceMib`
-/// against the real target volume when `record_dir` is `Some`.
+/// How often [`RecordSpace`] measures the record target: the TTL
+/// `available_space_mib` already caches a measurement for.
+const SPACE_REFRESH: Duration = Duration::from_secs(5);
+
+/// `recordSpaceMib`, measured off the async runtime (R36, 2026-10-28).
+///
+/// The telemetry tick runs on a tokio worker, and measuring free space forks
+/// `df`. While a take recorded, that fork blocked the worker for one to two
+/// seconds, and the render loop's sleep — a tokio timer the workers service —
+/// ended that late: 28–63 master frames never drawn, about once per ten
+/// seconds, on both GPUs (R33's measurement session; the fork removed, the
+/// stalls went with it). A dedicated thread now measures the target the tick
+/// last asked about, at once when the target changes and every
+/// [`SPACE_REFRESH`] after; the tick reads its latest result and never waits
+/// on a measurement.
+pub struct RecordSpace {
+    shared: Arc<(Mutex<SpaceSlot>, Condvar)>,
+    probe: fn(&Path) -> f64,
+}
+
+#[derive(Default)]
+struct SpaceSlot {
+    /// The target the tick last asked about.
+    want: Option<PathBuf>,
+    /// The latest measurement, and the target it measured.
+    have: Option<(PathBuf, f64)>,
+    running: bool,
+}
+
+impl Default for RecordSpace {
+    fn default() -> Self {
+        Self::with_probe(|dir| record_space_mib_for(Some(dir)))
+    }
+}
+
+impl RecordSpace {
+    /// A measurer whose measurement is `probe` (the test seam: a slow volume).
+    pub fn with_probe(probe: fn(&Path) -> f64) -> Self {
+        Self {
+            shared: Arc::new((Mutex::new(SpaceSlot::default()), Condvar::new())),
+            probe,
+        }
+    }
+
+    /// The latest free space measured on `dir`'s volume: `0.0` with no target,
+    /// and until the first measurement of a new target lands.
+    pub fn read(&self, dir: Option<&Path>) -> f64 {
+        let Some(dir) = dir else { return 0.0 };
+        let (slot, wake) = &*self.shared;
+        let mut s = slot.lock().unwrap();
+        if s.want.as_deref() != Some(dir) {
+            s.want = Some(dir.to_path_buf());
+            wake.notify_one();
+        }
+        if !s.running {
+            s.running = true;
+            let shared = Arc::downgrade(&self.shared);
+            let probe = self.probe;
+            std::thread::Builder::new()
+                .name("nbe-record-space".into())
+                .spawn(move || measure(shared, probe))
+                .expect("spawn the record-space thread");
+        }
+        match &s.have {
+            Some((measured, mib)) if measured == dir => *mib,
+            _ => 0.0,
+        }
+    }
+}
+
+/// [`RecordSpace`]'s thread: measure the wanted target without holding the
+/// slot, publish, then wait for the refresh or a new target. It ends with its
+/// `RecordSpace`.
+fn measure(shared: Weak<(Mutex<SpaceSlot>, Condvar)>, probe: fn(&Path) -> f64) {
+    loop {
+        let Some(want) = shared.upgrade().map(|s| s.0.lock().unwrap().want.clone()) else {
+            return;
+        };
+        let measured = want.as_deref().map(probe);
+        let Some(strong) = shared.upgrade() else {
+            return;
+        };
+        let (slot, wake) = &*strong;
+        let mut s = slot.lock().unwrap();
+        if let (Some(dir), Some(mib)) = (&want, measured) {
+            s.have = Some((dir.clone(), mib));
+        }
+        let _unchanged = wake
+            .wait_timeout_while(s, SPACE_REFRESH, |s| s.want == want)
+            .unwrap();
+    }
+}
+
+/// Build one engine-owned telemetry frame, reading `recordSpaceMib` for the
+/// target volume when `record_dir` is `Some` (measured off the runtime by
+/// [`RecordSpace`]; the tick never waits on it).
 pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> EngineFrame {
     // Read the tap selection ONCE, before the struct literal. Locking twice
     // inside it deadlocks: struct-literal temporaries live until the end of the
@@ -88,7 +184,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         vram_used_mib: 0.0,
         texture_cache_used_mib: 0.0,
         stream_buffer_ms,
-        record_space_mib: record_space_mib_for(record_dir),
+        record_space_mib: state.record_space.read(record_dir),
         master_clock_drift_ms: 0.0,
         fallback_active: state.fallback_active(),
         degradation_rung: state.degradation_rung(),

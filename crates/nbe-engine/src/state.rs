@@ -114,6 +114,15 @@ pub struct EngineState {
     pub sessions: crate::video::SessionPool,
     /// View frames not submitted by their deadline (SPEC §10.2).
     pub dropped_frames_total: AtomicU64,
+    /// R33: running ticks that drew the master frame the tick before them
+    /// drew. Internal and logged, never on the wire: a §10.1 field is a spec
+    /// change (the user's ruling of 2026-10-28).
+    pub repeated_master_frames: AtomicU64,
+    /// `recordSpaceMib`, measured off the async runtime (R36).
+    pub record_space: crate::telemetry::RecordSpace,
+    /// R33: master frames no running tick drew (a jump from 630 to 633
+    /// counts 2). Internal and logged, like `repeated_master_frames`.
+    pub skipped_master_frames: AtomicU64,
     /// Preview misses: logged, never counted as dropped frames.
     pub preview_missed: AtomicU64,
     /// Audio callbacks the graph could not fill in time (SPEC §8.10).
@@ -275,6 +284,9 @@ impl EngineState {
             video: Mutex::new(crate::video::VideoLibrary::default()),
             sessions: crate::video::SessionPool::new(),
             dropped_frames_total: AtomicU64::new(0),
+            repeated_master_frames: AtomicU64::new(0),
+            skipped_master_frames: AtomicU64::new(0),
+            record_space: Default::default(),
             preview_missed: AtomicU64::new(0),
             audio_underruns_total: AtomicU64::new(0),
             decode_failures_total: AtomicU64::new(0),
@@ -456,6 +468,19 @@ impl EngineState {
 
     pub fn master_frame(&self) -> Option<u64> {
         self.clock.lock().unwrap().frame()
+    }
+
+    /// The running clock's epoch and current master frame, read under one
+    /// lock so they belong to the same run; None while STOPPED (R33).
+    pub fn clock_reading(&self) -> Option<(std::time::Instant, u64)> {
+        let clock = self.clock.lock().unwrap();
+        Some((clock.epoch()?, clock.frame()?))
+    }
+
+    /// The instant master frame `frame` begins on the running clock; None
+    /// while STOPPED (R33).
+    pub fn frame_boundary(&self, frame: u64) -> Option<std::time::Instant> {
+        self.clock.lock().unwrap().boundary(frame)
     }
 
     /// Seconds since engine boot — used by telemetry so a control plane can

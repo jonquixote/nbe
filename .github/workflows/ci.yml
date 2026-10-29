@@ -477,6 +477,30 @@ jobs:
           if [ "$exercised" -lt 5 ]; then
             echo "FAIL zerocopy_g1: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+      - name: R33's and R36's cadence guards actually ran
+        # R33 (the loop draws the master clock's frame, once, in order) and R36
+        # (a slow free-space measurement never stalls the loop's timer) are
+        # guarded on the real loop and a real RenderLoop, which skips loudly
+        # without an adapter. The same two-floor shape: r33_cadence's 6 all
+        # need the adapter; r36_record_space's 2, one of them. If the runner
+        # loses its adapter, this step fails instead of going green on skips.
+        run: |
+          set -u
+          for spec in "r33_cadence 6 6" "r36_record_space 2 2"; do
+            set -- $spec
+            out=$(cargo test -p nbe-engine --test "$1" -- --nocapture 2>&1) && rc=0 || rc=$?
+            echo "$out"
+            if [ "$rc" -ne 0 ]; then echo "FAIL $1: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+            line=$(echo "$out" | grep "test result: ok" || true)
+            ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+            case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+            skipped=$(echo "$out" | grep -c '^SKIP' || true)
+            case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+            exercised=$((ran - skipped))
+            echo "$1: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=$2 exercised>=$3)"
+            if [ "$ran" -lt "$2" ]; then echo "FAIL $1: expected at least $2 tests to run, got $ran"; exit 1; fi
+            if [ "$exercised" -lt "$3" ]; then echo "FAIL $1: expected at least $3 tests to actually execute rather than skip, got $exercised"; exit 1; fi
+          done
       - name: the tapPath override suite actually ran (Prompt 10 WU2)
         # Same two-floor shape. Three of the five tests open a take and gate on
         # the hardware encoder (loud SKIP without one); the other two

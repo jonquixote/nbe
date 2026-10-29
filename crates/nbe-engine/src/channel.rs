@@ -383,9 +383,13 @@ mod tests {
         // A loaded package's record target: the pump measures the real volume.
         let dir = tempfile::tempdir().expect("tempdir must succeed");
         *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
-        assert!(
-            tick_space(&pump_tick(&state)) > 0.0,
-            "wired pump state must report measured space"
-        );
+        // Measured off the runtime (R36): within moments, never on the tick.
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut space = tick_space(&pump_tick(&state));
+        while space == 0.0 && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            space = tick_space(&pump_tick(&state));
+        }
+        assert!(space > 0.0, "wired pump state must report measured space");
     }
 }
