@@ -17,8 +17,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-const FRAME_30: Duration = Duration::from_millis(33);
-
 async fn gpu_or_fail() -> Gpu {
     match Gpu::init().await {
         Ok(g) => g,
@@ -256,7 +254,8 @@ async fn mix_interpolates_across_its_duration_and_never_mid_frame() {
 
 // ---------------------------------------------------------------------------
 // Step 3 — deadline accounting, watchdog, preview isolation.
-// Path: render_frame's deadline arm → dropped_frames_total + report_frame.
+// Path: the loop counts dropped frames against the master clock (§10.2, the
+// user's ruling of 2026-10-28); render_frame's deadline arm → report_frame.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -266,18 +265,28 @@ async fn a_late_view_frame_counts_and_trips_the_watchdog_via_the_loop() {
     let (state, _h, mut render) = loaded_engine(dir.path()).await;
     *state.view_item.lock().unwrap() = Some("A1".into());
 
-    // A frame that cannot meet its deadline. The loop measures the lateness
-    // itself; nothing hand-pokes the watchdog.
+    // Frames that cannot meet their deadline, through the loop itself with
+    // the clock running: it measures the lateness, nothing hand-pokes the
+    // watchdog or the counter.
     render.injected_view_delay = Some(Duration::from_millis(60));
-    for f in 0..3 {
-        let report = render.render_frame(f, Some(FRAME_30));
-        assert!(report.view_late_by.is_some(), "frame {f} should be late");
-    }
+    state.clock.lock().unwrap().start();
+    let mut frames = Vec::new();
+    nbe_engine::tick::run_loop(&mut render, &state, 30, |r| {
+        frames.push(r.master_frame.expect("the clock runs"));
+        frames.len() < 3
+    })
+    .await;
 
+    // §10.2 (the user's ruling of 2026-10-28): a View frame is dropped when
+    // the clock reaches the next frame's boundary before it was submitted, and
+    // each master frame counts once, drawn late or never drawn. Every frame
+    // here is 60 ms of work against 33 ms, so every master frame from the
+    // first drawn to the last is dropped.
+    let span = frames.last().unwrap() - frames.first().unwrap() + 1;
     assert_eq!(
         state.dropped_frames_total.load(Ordering::SeqCst),
-        3,
-        "every late View frame is a dropped frame (SPEC §10.2)"
+        span,
+        "every master frame in {frames:?} is one dropped frame (SPEC §10.2)"
     );
     assert!(
         state.fallback_active(),
@@ -354,9 +363,10 @@ fn frames_late(late: Duration, budget: Duration) -> u64 {
 /// Frames 1, 2, … each with its injected View work, after a warm-up frame.
 /// For each frame, in order, it asserts what holds whatever the wall clock
 /// did: the loop drew the frame asked for; the frame is late, because `sleep`
-/// sleeps at least as long as asked and every delay exceeds the budget; it is
-/// one more dropped frame (§10.2); and the slate is up exactly when the frames
-/// counted so far exceed 2 (§10.3). Returns each frame's count, and prints
+/// sleeps at least as long as asked and every delay exceeds the budget; the
+/// render alone counts no dropped frame (§10.2 is the loop's, against the
+/// running clock, ruled 2026-10-28; this clock is stopped); and the slate is
+/// up exactly when the frames counted so far exceed 2 (§10.3). Returns each frame's count, and prints
 /// them (`R15-COUNTS`) so a stall stays visible in a green run's log.
 fn late_frames(
     render: &mut RenderLoop,
@@ -380,8 +390,8 @@ fn late_frames(
         });
         assert_eq!(
             state.dropped_frames_total.load(Ordering::SeqCst),
-            frame,
-            "every late View frame is one dropped frame, in order (SPEC §10.2): frame {frame}"
+            0,
+            "a render alone counts no dropped frame; the loop counts them against the clock (SPEC §10.2): frame {frame}"
         );
         counts.push(frames_late(late, budget));
         let sum: u64 = counts.iter().sum();

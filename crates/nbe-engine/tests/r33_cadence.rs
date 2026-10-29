@@ -281,6 +281,14 @@ async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts(
     assert_eq!(repeats, 0, "{frames:?}");
     assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
     assert!(skips >= 2, "{frames:?}");
+    // §10.2 (the user's ruling of 2026-10-28): each master frame the stall
+    // passed over was never submitted by its deadline, so each is one dropped
+    // frame; the frames drawn were on time, so nothing else is.
+    assert_eq!(
+        state.dropped_frames_total.load(Ordering::SeqCst),
+        skips,
+        "the frames never drawn are the dropped frames, each once: {frames:?}"
+    );
     // No burst: the ten ticks after the stall are each a frame apart, give or
     // take the timer, never drawn back to back to make the frames up.
     let gaps: Vec<Duration> = at[31..41].windows(2).map(|w| w[1] - w[0]).collect();

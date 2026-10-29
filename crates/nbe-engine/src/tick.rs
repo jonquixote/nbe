@@ -223,6 +223,11 @@ impl Cadence {
                 state
                     .skipped_master_frames
                     .fetch_add(skipped, Ordering::SeqCst);
+                // A master frame never drawn was never submitted by its
+                // deadline: each is a dropped frame (§10.2, ruled 2026-10-28).
+                state
+                    .dropped_frames_total
+                    .fetch_add(skipped, Ordering::SeqCst);
                 if let Some(suppressed) = self.lines.take(Instant::now()) {
                     tracing::warn!(
                         master_frame = f,
@@ -348,6 +353,17 @@ pub async fn run_tick(
     let render_started = Instant::now();
     let _ = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
+    // SPEC §10.2, as the user ruled on 2026-10-28: a View frame is dropped
+    // when the master clock reaches the next frame's boundary before it was
+    // submitted. Counted only while the clock runs, once per master frame: a
+    // frame never drawn is counted by the loop's cadence instead.
+    if deadline.is_some()
+        && state
+            .frame_boundary(frame + 1)
+            .is_some_and(|next| Instant::now() >= next)
+    {
+        state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
+    }
     // Back to the built-in target the moment the draw is done: a retarget
     // left in place would composite the NEXT frame into a surface nobody
     // is holding.
@@ -541,6 +557,9 @@ mod tests {
         );
         assert_eq!(state.repeated_master_frames.load(Ordering::SeqCst), 1);
         assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), 1 + 3);
+        // Each master frame never drawn is a dropped frame (§10.2, ruled
+        // 2026-10-28); a repeat is not.
+        assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 1 + 3);
     }
 
     #[test]
@@ -576,11 +595,12 @@ mod tests {
         cadence.tick(&state, Some(100), true, Duration::from_micros(80), BUDGET);
         cadence.tick(&state, Some(100), true, Duration::from_micros(900), BUDGET);
         cadence.tick(&state, Some(103), true, Duration::from_millis(40), BUDGET);
+        // One drawn frame late by the clock, beside the 2 never drawn.
         state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
         let take = cadence.take.expect("a recording tick opens the take");
         assert_eq!(
             take.summary("record take", &state),
-            "cadence: record take ended after 3 ticks: repeats 1, skips 2, drops 1; \
+            "cadence: record take ended after 3 ticks: repeats 1, skips 2, drops 3; \
              woke late mean 13660 µs, max 40.00 ms; ≤0.1 ms 1, ≤0.25 0, ≤0.5 0, ≤1 1, ≤2 0, ≤5 0, ≤10 0, ≤1 frame 0, >1 frame 1"
         );
     }
