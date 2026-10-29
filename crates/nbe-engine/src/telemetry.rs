@@ -27,7 +27,7 @@ const SPACE_REFRESH: Duration = Duration::from_secs(5);
 
 /// `recordSpaceMib`, measured off the async runtime (R36, 2026-10-28).
 ///
-/// The telemetry tick runs on a tokio worker, and measuring free space forks
+/// The telemetry tick runs on a tokio worker, and measuring free space forked
 /// `df`. While a take recorded, that fork blocked the worker for one to two
 /// seconds, and the render loop's sleep — a tokio timer the workers service —
 /// ended that late: 28–63 master frames never drawn, about once per ten
@@ -35,7 +35,9 @@ const SPACE_REFRESH: Duration = Duration::from_secs(5);
 /// stalls went with it). A dedicated thread now measures the target the tick
 /// last asked about, at once when the target changes and every
 /// [`SPACE_REFRESH`] after; the tick reads its latest result and never waits
-/// on a measurement.
+/// on a measurement. The measurement itself is now one statvfs-style call, no
+/// process (`record::available_space_mib`); the thread stays, so the tick
+/// never waits on any filesystem query.
 pub struct RecordSpace {
     shared: Arc<(Mutex<SpaceSlot>, Condvar)>,
     probe: fn(&Path) -> f64,
