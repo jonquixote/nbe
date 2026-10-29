@@ -9952,6 +9952,162 @@ item):
       counter-proof, its guards and its measurement's limits standing with it
       (the register).
 
+  **The user's rulings of 2026-10-28, on #76's bookend:** accepted as
+  reported.
+  1. Records ride the next PR. `0b9f743` was pushed as the branch
+     `records-after-76` with no PR, and is this PR's first commit.
+  2. `r35-stream-fence` stays on origin. The local branch cleanup and the
+     `.git/nbe-staged/` allow-list are the user's.
+  3. The readings stand:
+     - CP11, exactly on the queued proposal's 50% line, is not counted
+       toward it.
+     - The dress run's underruns at `5f0c93b` (run `40640917579`) are noted,
+       not a sighting: **247**, against kept runs' 209–245. The figure is
+       recorded here so a trend would show.
+
+  **The user's work order of 2026-10-28:**
+  - **The milestone (context, not a scope change):** a watchable, operable
+    show with attached evidence. A first diagnostic reel from the production
+    engine comes first, then a minimal native operator shell. R21, R32, R33
+    and R34 stay accountable inside it, none deferred.
+  - **R33 first.** STOP 1, a note, before the fix.
+  - `gameplan.md` and `nbe-normalize.sh` are proposals for comment, not
+    committed. The user rules on the gameplan items separately.
+  - **Step 0:**
+    - disk 18.49 GiB free; `target/` 8.75 GiB; `./scripts/clean-stale.sh`
+      reclaimed 0 MiB;
+    - `.git/nbe-staged` is 1.20 GiB. It was tarred outside the repo with a
+      sha256 manifest of 1,078 files and 1 symlink, for the user to copy
+      durably.
+    - The work order's premise was corrected: the kept FLVs were not the
+      only engine video. 23 R31 record-path MP4s and a 1-minute dry FLV were
+      there too.
+
+  **The user's rulings of 2026-10-28, ahead of STOP 1:**
+  1. **`droppedFramesTotal` conforms to SPEC §10.2.** A master frame never
+     drawn counts. It is its own commit with its own guard and falsification,
+     and no wire or schema change. The repeat and skip counters stay
+     internal. Each repeat and skip is logged (rate-limited), and each take
+     and run ends with a one-line summary.
+  2. A blast-radius note before the counter changes.
+  3. **Efficiency × capability.** The fix stays portable: clock arithmetic,
+     no Apple-only call, no new `unsafe`. No timing assumption that holds
+     only on macOS. CPU is reported before and after, and a spin cannot pass
+     as a fix.
+  4. **The PR's acceptance lens:** skipped master frames per 10 minutes at a
+     stated load and quality profile, with the CPU cost beside it.
+  5. Baselines from the running red where they do not perturb it.
+
+  **The user's rulings of 2026-10-28, on the blast-radius note:**
+  1. Find and fix the stall first, then conform. No threshold is
+     re-baselined, and conformance lands only when the fixed engine reads
+     green on the gates.
+  2. The stall is its own finding, **R36**, cross-referenced to R33, fixed in
+     this PR if it falls out quickly.
+  3. **The deadline:** a frame is dropped if the clock reaches the next
+     frame's boundary before it was submitted, each master frame once,
+     whether skipped or over budget. The §10.3 watchdog stays as it is.
+  4. Two bisection rounds as the timebox.
+
+  **R33's fix PR** (branch `r33-cadence`, off `0b9f743`).
+  - **The red** (`r33/red.sh`, `red.log`; main's engine, `5f0c93b`'s code,
+    debug; R31's traced 12c probe, record path, zero-copy; each window
+    admitted under 2.6 and kept on its own ends):
+
+    | window | adapter | frames | repeats (exact) | trace gaps (≤ skips) | stale | drops | the window |
+    |---|---|---|---|---|---|---|---|
+    | 30 min | AMD Radeon Pro 555X | 44,995 | **669** | 867 | 0 | **0** | KEPT: ends 2.32 / 2.49; 38 of 184 samples ≥ 3.0, max 3.86 |
+    | 10 min | Intel UHD 630 | 16,356 | **224** | 289 | 0 | **0** | KEPT: ends 2.22 / 1.88; max 2.82 |
+
+    - *(§2c, the builder's slip: 21 of the AMD window's 38 high samples
+      coincide with the builder's own tool calls during it. From then on, no
+      tool call inside a timing window.)*
+    - CPU from the red itself (`proc_pidinfo`, debug): engine 39.2% / 39.5%
+      of one core, the tick's thread 6.6% / 7.3%.
+    - The stream path cannot see a repeat: R35's five windows read 0 each.
+  - **The cause:** `run_loop` slept to its own `Instant` grid and then read
+    the clock wherever it woke. The grid's phase against the clock's
+    boundaries is arbitrary, and the timer only wakes late. Near a boundary,
+    wakes alternate between the same frame and the next.
+  - **Built:**
+    - `f480f5a`: the accounting, on the unfixed loop. Repeats and skips are
+      internal counters, logged per frame and rate-limited; a run and a take
+      each end with a summary.
+    - `f2db18e`: the loop sleeps to the master clock's boundary for the frame
+      after the last one drawn, then draws the frame the clock names. Each
+      master frame is drawn once and in order; a skip is counted and never
+      caught up.
+    - `dee7ed7`: the clock reads `floor(elapsed × rate)` in integer
+      nanoseconds. The floating form read 28 at the instant frame 29 begins
+      at 25 fps. Every clock reader is unchanged outside a boundary's own
+      nanosecond.
+    - `e9f3c03`: R36's fix (its row).
+    - `cd18d00`: `droppedFramesTotal` conformed to §10.2 as ruled. Tests
+      changed with it, disclosed: prompt04's loop test now runs the loop; R15's
+      `late_frames` helper asserts a render alone counts no drop, its
+      watchdog assertions unchanged.
+    - Guards: `da2d11c`, `a969111`, `8458255`, `12d383b` (CI floors
+      `r33_cadence` 6/6, `r36_record_space` 2/2).
+  - **Falsified** (`r33/battery/`; each in place, `git reset --hard HEAD`,
+    rebuilt):
+
+    | Behaviour removed | Tests that failed |
+    |---|---|
+    | M1 the clock-boundary cadence (the loop's own grid) | `a_loop_asked_to_tick_faster_than_the_clock_draws_each_master_frame_once`; `a_loop_started_just_ahead_of_a_clock_boundary_never_draws_a_master_frame_twice` (3 of 3 runs; at 150 µs it had passed with the fix removed, §2c, so it now sweeps 0.5–4 ms) |
+    | M2 no catch-up | the skip-line, stall and counting tests (3) |
+    | M3 the clock's exact arithmetic | `the_clock_names_each_frame_from_its_boundary_on_and_never_before` |
+    | M4 the repeat counter | tick.rs's repeat, skip and summary tests (3) |
+    | M5 the skip counter | tick.rs's skip and summary tests; the stall and counting tests |
+    | M6, M7 the take's and the run's summary lines | `a_record_take_and_a_run_each_end_with_one_summary_line` |
+    | M8 the per-frame skip line | `a_skip_is_logged_with_the_master_frames_never_drawn` (its first mutation did not compile, §2c; rerun) |
+    | M9 the wake stats; M10 the rate limit | the summary test; the rate-limit test |
+    | M11, M12 the skip line's tick and wake fields | the skip-line test |
+    | M13 R36: the tick measures the volume itself | both of `r36_record_space` |
+    | M14 a frame never drawn not a drop | tick.rs's 2; the stall test; prompt04's loop test |
+    | M15 a frame drawn after the next boundary not a drop | prompt04's loop test |
+    | M16 the render's own duration counts again | prompt04's loop test and R15's three watchdog guards |
+  - **Measured** (`r33/green.sh`; each window kept on its own ends):
+
+    | engine | path, adapter | repeats | skipped master frames | stale |
+    |---|---|---|---|---|
+    | `f480f5a` (the unfixed loop) | record, AMD, 10 min | 70 | 2,028 (61 R36 stalls) | 0 |
+    | `a969111` (fixed, before R36) | record, AMD, 30 min | **0** | 5,981 (181 R36 stalls) | 0 |
+    | `a969111` | record, Intel, 10 min | **0** | 1,964 (61 R36 stalls) | 0 |
+    | `a969111` | stream, AMD / Intel, 10 min | 0 / 0 | 3 / 0 | **0 / 0** |
+    | `12d383b` release (final) | record, AMD, 10 min | **0** | **3** (two late wakes, 75 and 59 ms) | 0 |
+    | `12d383b` release | stream, AMD, 10 min | 0 | 2 | **0** |
+    | `12d383b` release | record, AMD, 10 min (the CPU window) | **0** | **1** | 0 |
+
+    - **CPU after** (the final code, release, the CPU window): engine 20.9%
+      of one core; tick thread 3.38%; `nbe-audio` 1.2%; `nbe-record` 2.6%;
+      `nbe-record-space` 0.11%. The before figures are a debug build, so the
+      two are not comparable as they stand.
+    - *(§2c, the builder's slips: the sampler matched only `target/debug`
+      and recorded nothing in the green session, then matched `npm run` in
+      the first final session. It now matches the engine's executable path.)*
+  - **Wake lateness** (the take summaries; this machine, macOS, tokio's
+    timer): away from R36's stalls, 99.6% of wakes were at most 5 ms late,
+    mostly 2–5 ms (debug and release alike), never more than one frame. The
+    clock-boundary cadence makes that lateness cost nothing. Another OS's
+    timer is not measured.
+  - **The gate at `12d383b`** (`r33/gate/`; each window under 2.6, kept with
+    both ends under 3.0):
+    - the workspace **604/0/5**, kept on the second window of its second
+      run. Four voids, named: PhotoLibraryServices, `dasd`, Comet;
+      MediaAnalysis 207%, `powerd`; CleanMyMac HealthMonitor,
+      SafariSafeBrowsing; MediaAnalysis.
+    - `npm test` 205/205; e2e 28 + 1 skip; the dress **29/29**, with the
+      conformed counter, steps 5 and 6 drop-free.
+  - **Sighting, named:** `prompt10_rtmp::both_live_stream_shares_the_record_composite`
+    failed once, in the first void workspace window (load 2.26 → 5.99): "a
+    live stream never costs record a frame", record skips 1. It did not
+    reproduce under six busy loops, 0 of 15 on `12d383b` and 0 of 15 with
+    the old cadence. The cause is unknown.
+  - **Observed, not fixed:** `record.stop` waits on the loop's own thread for
+    the record thread to finish the file, and costs about one frame (55–65 ms
+    late wakes). With the conformed counter, that is one drop per stopped
+    take.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
