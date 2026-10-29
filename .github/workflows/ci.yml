@@ -484,9 +484,11 @@ jobs:
         # without an adapter. The same two-floor shape: r33_cadence's 6 all
         # need the adapter; r36_record_space's 2, one of them. If the runner
         # loses its adapter, this step fails instead of going green on skips.
+        # R37 (record.stop never holds the loop's thread) rides the same step:
+        # r37_record_stop's 1 needs AudioToolbox AAC, not the adapter.
         run: |
           set -u
-          for spec in "r33_cadence 6 6" "r36_record_space 2 2"; do
+          for spec in "r33_cadence 6 6" "r36_record_space 2 2" "r37_record_stop 1 1"; do
             set -- $spec
             out=$(cargo test -p nbe-engine --test "$1" -- --nocapture 2>&1) && rc=0 || rc=$?
             echo "$out"
