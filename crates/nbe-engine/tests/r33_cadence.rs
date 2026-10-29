@@ -282,12 +282,13 @@ async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts(
     assert_eq!(state.skipped_master_frames.load(Ordering::SeqCst), skips);
     assert!(skips >= 2, "{frames:?}");
     // §10.2 (the user's ruling of 2026-10-28): each master frame the stall
-    // passed over was never submitted by its deadline, so each is one dropped
-    // frame; the frames drawn were on time, so nothing else is.
-    assert_eq!(
-        state.dropped_frames_total.load(Ordering::SeqCst),
-        skips,
-        "the frames never drawn are the dropped frames, each once: {frames:?}"
+    // passed over was never submitted by its deadline, so each is a dropped
+    // frame. At least those: on a loaded machine a frame drawn after the next
+    // boundary is one more, rightly (the exact once-each count is tick.rs's).
+    let dropped = state.dropped_frames_total.load(Ordering::SeqCst);
+    assert!(
+        dropped >= skips,
+        "{dropped} dropped, but {skips} master frames were never drawn: {frames:?}"
     );
     // No burst: the ten ticks after the stall are each a frame apart, give or
     // take the timer, never drawn back to back to make the frames up.
