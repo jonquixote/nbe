@@ -137,17 +137,19 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
     let mut reports = Vec::new();
     run_loop(&mut render, &state, RATE, |r| {
         reports.push(*r);
-        if reports.len() == 20 {
+        if reports.len() == 5 {
             // The loop's thread is held three and a half frames, then the
-            // clock stops: the loop's next wake reads STOPPED.
+            // clock stops: the loop's next wake reads STOPPED. Early in the
+            // run, so that however the machine runs at most four skips come
+            // before the edge, and its line is inside the five a second.
             std::thread::sleep(budget() * 7 / 2);
             state.clock.lock().unwrap().stop();
         }
-        reports.len() < 30
+        reports.len() < 15
     })
     .await;
 
-    let last = reports[19].master_frame.expect("tick 20 ran on the clock");
+    let last = reports[4].master_frame.expect("tick 5 ran on the clock");
     let (_, at_stop) = state
         .last_stopped_run()
         .expect("the stopped run is remembered");
@@ -180,7 +182,7 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
     // The stop's edge lands in the run it ends.
     let run_line = log
         .lines()
-        .find(|l| l.contains("cadence: run ended after 20 ticks"))
+        .find(|l| l.contains("cadence: run ended after 5 ticks"))
         .unwrap_or_else(|| panic!("{log}"));
     assert!(
         run_line.contains(&format!("skips {}", in_run + edge)),
@@ -189,7 +191,7 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_start_and_a_stop_with_no_stall_count_nothing_at_the_edges() {
+async fn a_start_and_a_stop_count_at_their_edges_only_what_the_clock_passed() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
@@ -208,10 +210,19 @@ async fn a_start_and_a_stop_with_no_stall_count_nothing_at_the_edges() {
         .iter()
         .find_map(|r| r.master_frame)
         .expect("the clock ran");
-    assert_eq!(first, 0, "the run's first tick draws frame 0");
+    let last = reports[24].master_frame.expect("tick 25 ran on the clock");
+    let (_, at_stop) = state
+        .last_stopped_run()
+        .expect("the stopped run is remembered");
+    // No stall leaves both edges empty. A machine that stalls across one
+    // leaves frames there, and they are counted: by the clock, so that the two
+    // read alike (R39). A frame counted that the clock did not pass is a red.
+    let (start_edge, stop_edge) = (first, at_stop.saturating_sub(last + 1));
+    let in_run = in_run_skips(&reports);
+    eprintln!("run edges: {start_edge} at the start, {in_run} in the run, {stop_edge} at the stop");
     assert_eq!(
         state.skipped_master_frames.load(Ordering::SeqCst),
-        in_run_skips(&reports),
-        "a run with no stall at its edges counts nothing there"
+        start_edge + in_run + stop_edge,
+        "the edges count what the clock passed there and nothing else"
     );
 }

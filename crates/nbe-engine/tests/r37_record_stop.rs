@@ -10,7 +10,10 @@
 //! counts its own polls, the render loop's stand-in. A stop that holds the
 //! thread completes inside one poll, so the count cannot move while it runs;
 //! a stop that yields lets it move. No timing is read, so the guard holds on
-//! any machine. Hardware-free: the session is the synthetic-unit seam
+//! any machine: the runtime's one blocking thread is held until the stand-in
+//! has run with the stop under way, so a finish quick enough to beat the first
+//! poll cannot read as a stop that held the thread (R39). Hardware-free: the
+//! session is the synthetic-unit seam
 //! (`RecordSession::open_with_sets`), whose finish runs the real writer
 //! (AudioToolbox AAC).
 //!
@@ -21,21 +24,24 @@
 //! on `show.stop`, whose finish has had this window since it moved to the
 //! blocking pool). The two tick tests below pin that a take with no session is
 //! not a lost chain, and that a take which keeps its session and loses its
-//! pool still is. They read the real `run_tick` on a real `RenderLoop`.
+//! pool still is. They read the real `run_tick` on a real `RenderLoop`, in a
+//! window set by hand. A fourth runs the real `record.stop` beside the real
+//! `run_loop` on one thread, the finish held behind the pool so the window is
+//! there to draw in.
 
 use std::cell::Cell;
 use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use nbe_engine::directive::DirectiveHandler;
 use nbe_engine::record::session as session_glue;
 use nbe_engine::record::tap_path::{Reason, Selection, TapPath};
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, OutgoingQueue, RecordState};
-use nbe_engine::tick::run_tick;
+use nbe_engine::tick::{run_loop, run_tick};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
 
 fn directive(command: &str, sv: u64) -> DirectiveFrame {
@@ -48,6 +54,26 @@ fn directive(command: &str, sv: u64) -> DirectiveFrame {
         target: serde_json::json!({}),
         payload: serde_json::json!({}),
     }
+}
+
+/// One thread, as in `main`, and one blocking thread for [`hold_the_pool`].
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .expect("a test runtime")
+}
+
+/// Hold the blocking pool's one thread until the returned sender is dropped: a
+/// finish queued now cannot start before the test lets it. The bound turns a
+/// hang into a red and measures nothing.
+fn hold_the_pool() -> mpsc::Sender<()> {
+    let (release, held) = mpsc::channel::<()>();
+    tokio::task::spawn_blocking(move || {
+        let _ = held.recv_timeout(Duration::from_secs(30));
+    });
+    release
 }
 
 fn aac_or_skip() -> bool {
@@ -112,23 +138,13 @@ fn has_moov(path: &Path) -> bool {
     top.first().map(Vec::as_slice) == Some(b"ftyp") && top.iter().any(|k| k == b"moov")
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn record_stop_frees_the_thread_while_the_take_finishes_and_acks_after() {
-    if !aac_or_skip() {
-        return;
-    }
-    nbe_engine::record::markers::clear();
-    let state = Arc::new(EngineState::new(30));
-    let outgoing = Arc::new(OutgoingQueue::default());
-    let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
-    handler.apply(&directive("show.start", 1)).await.unwrap();
-
-    // A ten-second synthetic take through the real record thread.
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
+/// A synthetic take through the real record thread, `secs` long, open and
+/// recording on `state`. Returns where its file will land.
+fn open_a_take(state: &EngineState, dir: &Path, secs: u32) -> std::path::PathBuf {
     let tap = Arc::new(nbe_engine::record::AudioTap::new());
-    tap.push(&tone_secs(10));
+    tap.push(&tone_secs(secs));
     let session = session_glue::RecordSession::open_with_sets(
-        dir.path(),
+        dir,
         "demoshow",
         "ep01",
         "20261029T120000Z",
@@ -145,14 +161,34 @@ async fn record_stop_frees_the_thread_while_the_take_finishes_and_acks_after() {
     *state.record_tap.lock().unwrap() = Some(tap);
     *state.record_session.lock().unwrap() = Some(session);
     *state.record_state.lock().unwrap() = RecordState::Recording;
-    for n in 0..300 {
+    for n in 0..secs * 30 {
         tx.send(nbe_engine::record::thread::RecordMsg::Unit(fake_unit(
-            n as f64 / 30.0,
+            f64::from(n) / 30.0,
             n % 30 == 0,
         )))
         .expect("the record thread must accept units");
     }
-    drop(tx);
+    video_path
+}
+
+#[test]
+fn record_stop_frees_the_thread_while_the_take_finishes_and_acks_after() {
+    runtime().block_on(stop_beside_the_stand_in());
+}
+
+async fn stop_beside_the_stand_in() {
+    if !aac_or_skip() {
+        return;
+    }
+    nbe_engine::record::markers::clear();
+    let state = Arc::new(EngineState::new(30));
+    let outgoing = Arc::new(OutgoingQueue::default());
+    let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
+    handler.apply(&directive("show.start", 1)).await.unwrap();
+
+    // A ten-second synthetic take through the real record thread.
+    let dir = tempfile::tempdir().expect("tempdir must succeed");
+    let video_path = open_a_take(&state, dir.path(), 10);
 
     // The directive path and the loop's stand-in share one thread, as in
     // `main`: the stand-in only counts its own polls.
@@ -161,15 +197,21 @@ async fn record_stop_frees_the_thread_while_the_take_finishes_and_acks_after() {
         .run_until(async {
             let polls = Rc::new(Cell::new(0u64));
             let running = Rc::new(Cell::new(true));
-            let (p, r) = (polls.clone(), running.clone());
+            let stopping = Rc::new(Cell::new(false));
+            let (p, r, s) = (polls.clone(), running.clone(), stopping.clone());
+            let mut held = Some(hold_the_pool());
             let stand_in = tokio::task::spawn_local(async move {
                 while r.get() {
                     p.set(p.get() + 1);
+                    if s.get() {
+                        drop(held.take());
+                    }
                     tokio::task::yield_now().await;
                 }
             });
             tokio::task::yield_now().await;
             let before = polls.get();
+            stopping.set(true);
             let t0 = Instant::now();
             let result = handler.apply(&directive("record.stop", 2)).await;
             let stop_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -304,4 +346,75 @@ async fn a_take_that_keeps_its_session_and_loses_its_pool_still_ends_loudly() {
     let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     assert!(log.contains("chain lost"), "{log}");
     assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+}
+
+/// R37's first form end to end, as `main` runs it: the directive path and the
+/// render loop on one thread, a real `record.stop` and the real `run_loop`, on
+/// a take that claims zero-copy. The finish is held behind the pool so the loop
+/// draws in the window, and the guard reads that it did.
+#[test]
+fn a_real_stop_beside_the_real_loop_is_a_take_ending_not_a_lost_chain() {
+    runtime().block_on(stop_beside_the_loop());
+}
+
+async fn stop_beside_the_loop() {
+    if !aac_or_skip() {
+        return;
+    }
+    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+        return;
+    };
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    nbe_engine::record::markers::clear();
+    let outgoing = Arc::new(OutgoingQueue::default());
+    let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
+    handler.apply(&directive("show.start", 1)).await.unwrap();
+    let dir = tempfile::tempdir().expect("tempdir must succeed");
+    let video_path = open_a_take(&state, dir.path(), 1);
+
+    let local = tokio::task::LocalSet::new();
+    let (inside, result) = local
+        .run_until(async {
+            let mut held = Some(hold_the_pool());
+            let stop = tokio::task::spawn_local(async move {
+                handler.apply(&directive("record.stop", 2)).await
+            });
+            // Nothing ticks until the stop has taken its session: a tick
+            // before that sees a take with a session and no pool, which is a
+            // lost chain, rightly.
+            while state.record_session.lock().unwrap().is_some() {
+                tokio::task::yield_now().await;
+            }
+            let mut inside = 0;
+            run_loop(&mut render, &state, 30, |_| {
+                let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
+                inside += u32::from(recording);
+                if inside == 3 || !recording {
+                    drop(held.take());
+                }
+                !stop.is_finished()
+            })
+            .await;
+            (inside, stop.await.expect("the stop must not panic"))
+        })
+        .await;
+    result.expect("record.stop must finish the synthetic take");
+
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        !log.contains("chain lost"),
+        "a real stop's finish was reported as a lost chain: {log}"
+    );
+    assert!(
+        inside >= 3,
+        "the loop drew {inside} ticks inside the stop's finish"
+    );
+    assert!(has_moov(&video_path), "the file must be complete");
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
+    assert!(acked(&outgoing, 2), "the stop's ack must follow its finish");
+    nbe_engine::record::markers::clear();
 }
