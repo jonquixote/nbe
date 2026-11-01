@@ -325,11 +325,14 @@ pub async fn run_tick(
         false => (None, None),
     };
     // What the take CLAIMS, which is what makes a missing pool a chain loss
-    // rather than an ordinary CPU take.
+    // rather than an ordinary CPU take. Only a take with a session claims
+    // anything: a stop takes the session before the record thread finishes
+    // the file, and the loop draws while it does (R37; `show.stop`'s finish
+    // alike). That take is ending, and it has lost nothing.
     let claims_zero_copy = matches!(
         *state.record_tap_selection.lock().unwrap(),
         Some(sel) if sel.path == crate::record::tap_path::TapPath::ZeroCopy
-    ) && recording;
+    ) && endpoint.is_some();
     let mut loan = match crate::record::begin_tap_frame(
         render,
         pool.as_deref(),

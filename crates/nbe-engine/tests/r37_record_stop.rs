@@ -13,16 +13,29 @@
 //! any machine. Hardware-free: the session is the synthetic-unit seam
 //! (`RecordSession::open_with_sets`), whose finish runs the real writer
 //! (AudioToolbox AAC).
+//!
+//! The loop drawing during the finish opens a window R37's first form missed:
+//! the take is still `Recording` and its session is already gone. A tick
+//! there read a claimed zero-copy take with no pool as a lost chain, and ended
+//! the take with a false `E_NO_ZEROCOPY` error on every ordinary stop (and
+//! on `show.stop`, whose finish has had this window since it moved to the
+//! blocking pool). The two tick tests below pin that a take with no session is
+//! not a lost chain, and that a take which keeps its session and loses its
+//! pool still is. They read the real `run_tick` on a real `RenderLoop`.
 
 use std::cell::Cell;
+use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nbe_engine::directive::DirectiveHandler;
 use nbe_engine::record::session as session_glue;
+use nbe_engine::record::tap_path::{Reason, Selection, TapPath};
+use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, OutgoingQueue, RecordState};
+use nbe_engine::tick::run_tick;
 use nbe_protocol::{DirectiveFrame, DirectiveKind, EngineFrame, PROTOCOL_VERSION};
 
 fn directive(command: &str, sv: u64) -> DirectiveFrame {
@@ -190,4 +203,105 @@ async fn record_stop_frees_the_thread_while_the_take_finishes_and_acks_after() {
     assert_eq!(state.last_applied(), 2);
     assert!(acked(&outgoing, 2), "the stop's ack must follow its finish");
     nbe_engine::record::markers::clear();
+}
+
+/// Log lines captured from the tick's thread.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The engine state and its render loop, a take that claims zero-copy, and the
+/// captured log; or a loud skip without an adapter.
+async fn zero_copy_take_or_skip() -> Option<(Arc<EngineState>, RenderLoop, Captured)> {
+    let state = Arc::new(EngineState::new(30));
+    let render = match RenderLoop::new(state.clone()).await {
+        Ok(render) => render,
+        Err(e) => {
+            eprintln!("SKIP: no GPU adapter for the render loop ({e})");
+            return None;
+        }
+    };
+    *state.record_tap_selection.lock().unwrap() = Some(Selection {
+        path: TapPath::ZeroCopy,
+        reason: Reason::Table,
+    });
+    *state.record_state.lock().unwrap() = RecordState::Recording;
+    Some((state, render, Captured::default()))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tick_inside_a_stop_s_finish_is_a_take_ending_not_a_lost_chain() {
+    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+        return;
+    };
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // The window: `Recording`, the claim standing, the session already taken.
+    assert!(state.record_session.lock().unwrap().is_none());
+    run_tick(&mut render, &state, 0, None).await;
+
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        !log.contains("chain lost"),
+        "a stop's finish was reported as a lost chain: {log}"
+    );
+    assert_eq!(
+        *state.record_state.lock().unwrap(),
+        RecordState::Recording,
+        "the stop ends the take, once its file is complete; the tick does not"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_take_that_keeps_its_session_and_loses_its_pool_still_ends_loudly() {
+    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+        return;
+    };
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Option A's case: the session stands and its pool is gone.
+    let dir = tempfile::tempdir().expect("tempdir must succeed");
+    let session = session_glue::RecordSession::open_with_sets(
+        dir.path(),
+        "demoshow",
+        "ep01",
+        "20261029T120000Z",
+        640,
+        360,
+        30,
+        Arc::new(nbe_engine::record::AudioTap::new()),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        (vec![0x67, 0x64, 0x00, 0x1E, 0xAA], vec![0x68, 0x11, 0x22]),
+    )
+    .expect("test-seam open must succeed");
+    *state.record_session.lock().unwrap() = Some(session);
+    run_tick(&mut render, &state, 0, None).await;
+
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains("chain lost"), "{log}");
+    assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
 }
