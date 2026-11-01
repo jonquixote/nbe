@@ -114,8 +114,8 @@ mod tests {
         assert_eq!(c.boundary(300), Some(epoch + Duration::from_secs(10)));
         // The frame the clock reads now began at or before now, and the next
         // one begins after it.
-        let f = c.frame().unwrap();
         let now = Instant::now();
+        let f = c.frame_at(now).unwrap();
         assert!(c.boundary(f).unwrap() <= now && now < c.boundary(f + 1).unwrap());
         assert_eq!(
             MasterClock::new(30).boundary(5),
@@ -161,8 +161,9 @@ mod tests {
         let c =
             MasterClock::new(30).with_epoch(now - Duration::from_millis(1000), ClockState::Running);
         // At exactly 1.000 s elapsed at 30 fps: frame 30 (0..29 ticked).
-        let f = c.frame().unwrap();
-        assert!(f == 30 || f == 31, "frame {} not in [30,31]", f);
+        assert_eq!(c.frame_at(now), Some(30));
+        // A nanosecond short of it, still frame 29.
+        assert_eq!(c.frame_at(now - Duration::from_nanos(1)), Some(29));
     }
 
     #[test]
