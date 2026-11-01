@@ -490,7 +490,7 @@ jobs:
         # need the adapter.
         run: |
           set -u
-          for spec in "r33_cadence 6 6" "r36_record_space 2 2" "r37_record_stop 3 3" "run_edges 3 3"; do
+          for spec in "r33_cadence 6 6" "r36_record_space 2 2" "r37_record_stop 4 4" "run_edges 3 3"; do
             set -- $spec
             out=$(cargo test -p nbe-engine --test "$1" -- --nocapture 2>&1) && rc=0 || rc=$?
             echo "$out"
