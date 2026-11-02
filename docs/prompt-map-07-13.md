@@ -10233,7 +10233,8 @@ item):
   - **CI at `ecc73b3`** (its final head, a docs commit on `8bd7f8f`; the
     fresh witness): run `40814388110`, attempt 1. Every job executed, each
     read job-exact.
-    - **rust:** 604/0/5; 36 floor lines; every step green; R10's drain
+    - **rust:** 604/0/5; 36 floor lines; the 4 count gates (prompt04 19,
+      prompt07_overlay 13, prompt07b_graphics 14, bindings 3); R10's drain
       tests and `three_frames…` `ok` in both runs.
     - **control-plane:** every step green; `npm test` 205/205,
       package-reconcile 4/4, the refused start `ok` (2029 ms).
@@ -10262,14 +10263,18 @@ item):
     canonical.** Diffed against the staged files, it differs in three
     places and only there: "181 stalls" is removed; precision note 1 adds
     "Normally zero; a start or stop stall undercounts by the stall's
-    frames."; precision note 3 is rewritten.
+    frames."; precision note 3 is rewritten. *(Corrected, the user's ruling
+    4 of 2026-11-01: "normally zero" does not hold across a reload. Frame 0
+    went undrawn at the start of 2 of 3 dress runs, after stopped ticks of
+    1.4–3.4 s; R41 has the rate. The merged message stands as written.)*
   - **The tree is identical to the reviewed head's:** `c6dedb5^{tree}` =
     `ecc73b3^{tree}` = `ea72732`.
   - **Main's CI:** run `40841314150` (push), attempt 1. Every job executed,
     each checked out `c6dedb5`, and each was read job-exact. **Green.**
     - **rust** (job `123338105592`): 604/0/5 (the step's `TOTAL` line), 36
-      floor lines (`r33_cadence` 6/6, `r36_record_space` 2/2), every step
-      green; R10's drain tests `ok` in both runs of the suite;
+      floor lines (`r33_cadence` 6/6, `r36_record_space` 2/2), the 4 count
+      gates (prompt04 19, prompt07_overlay 13, prompt07b_graphics 14,
+      bindings 3); R10's drain tests `ok` in both runs of the suite;
       `three_frames…` `ok` in both steps.
     - **control-plane** (job `123338105392`): every step green, `npm test`
       205/205, package-reconcile 4/4, the refused start `ok` (2027 ms);
@@ -10462,6 +10467,72 @@ item):
     `3cbb84a`, no engine crate spawns a process outside its tests. The
     control plane spawns one, `nbe-preflight`, from `show.load` and
     `show.preflight`.
+
+  **The user's rulings of 2026-11-01, and what they found** (a continuous
+  window from 01:16 PST that day to 09:15 PST on 2026-11-02, each timing
+  window still admitted under 2.6 and kept on its own ends; the PR bodies
+  of #78 and #79 hold the detail, the evidence under `.git/nbe-staged/`).
+  - **R39, the complete answer** (its row): 1200 runs per suite before and
+    after, 48 of 48 windows kept. Before: 0 of 800 on the busy levels, 87
+    and 37 of 200 and 21 of 200 on the freeze levels. After: 0 of 1200.
+  - **R37's table** (its row): main's code 59 of 100 stops with a drop,
+    #79's head 0 of 100, 10 of 10 windows kept.
+  - **R41** (its row): frame 0 undrawn after a reload 63 of 100 before, 0
+    of 100 after, 8 of 8 windows kept; not closed on CI.
+  - **AC-5-style soak x3** (the user's ruling 3b; `f5cbd37` release, 30
+    minutes each, 3 of 3 kept, then main's code the same way, 3 of 3
+    kept). The dress package with 2 overlays, View, preview, record and
+    stream to a local receiver, a take every 20 s. No camera, no WHIP
+    guest, a near-static fixture: AC-5-style, not AC-5.
+
+    | Build | Run | Drops at last take / at stop | Record | Stream |
+    |---|---|---|---|---|
+    | `f5cbd37` | soak-1 | 0 (take line) / not read | **69.0 s of 1800** | 1800.2 s |
+    | `f5cbd37` | soak-2 | 0 / 0 | 1800.6 s | 1800.4 s |
+    | `f5cbd37` | soak-3 | 0 / 0 | 1800.4 s | **1162.6 s** |
+    | `12d383b` | main-1 | 0 / 1 | 1800.4 s | **483.2 s** |
+    | `12d383b` | main-2 | 0 / 0 | **499.0 s of 1800** | 1800.4 s |
+    | `12d383b` | main-3 | 0 / 2 | 1800.4 s | 1800.4 s |
+
+    Main's 1 and 2 are R37's, at the stop. **The lost outputs are not a
+    drop and no count reads them:** four encode threads panicked, each
+    inside wgpu's `device.poll` (proposed as a new row, the user's to
+    file; `.git/nbe-staged/after-pr79-records.md`). `.git/nbe-staged/ac5/table.md`.
+  - **The gate at #79's head `f5cbd37`** (every suite kept): workspace
+    615/0/5 (a1 VOID 2.12 → 5.28, a2 kept 2.54 → 2.60), `npm test` 205/205,
+    end-to-ends 28 + 1 skip (a1 VOID, `coreaudiod`, a2 kept), dress 29/29,
+    drops 0. One dress only.
+  - **CI, read per test, nothing rerun to green.** `macos-14` retires
+    around 2026-11-02 (actions/runner-images#13518); every job pins it,
+    and the brownout cancels a job at once with 0 steps. Moving the image
+    re-bases R10's and R15's envelopes and is the user's ruling.
+
+    | Head | Run | rust | control-plane | dress |
+    |---|---|---|---|---|
+    | #78 `f5f4854` | `41323043807` a2 | 605/0/5, 36 floors, gates 19/13/14/3 | 205/205 | **28/29**, step 6, drops 1 (R21's row) |
+    | #79 `6ff6d91` | `41364888204` | 611/0/5, 38 floors | 205/205 | 29/29, drops 0 |
+    | #79 `f5cbd37` | `41375661006` | 615/0/5, 39 floors | 205/205 | 29/29, drops 2 (R41's row) |
+
+    Attempt 1 of `41323043807` was the brownout's; attempt 2 was those
+    jobs' first execution, by `gh run rerun --failed`. Ruling 2 said to
+    rerun the control-plane job alone if it failed to start; all three
+    jobs had failed to start, so all three ran. Disclosed as a departure.
+  - **§2c, the slips:**
+    - R37's first form regressed `record.stop`, every suite green on it,
+      and its commit message cited `show.stop` as the pattern unchecked;
+      that path had the same bug on main (R40).
+    - #78's body claimed CI's `npm test` as its witness, and CI's job never
+      ran. It also read 2 ignored; the true count is 5.
+    - The morning report of 2026-10-29 came three days late.
+    - The proposed R39 said `repeats == 0` already pins "no catch-up". The
+      user's ruling rejected it: a burst draws distinct frames.
+    - M2b at `6e21427` proved nothing: its red came from `skips >= 2`, not
+      the new clock check. Fixed, amended to `f5f4854`, re-falsified.
+    - The AC-5 harness: a 1-minute smoke never reached a timed item's
+      second turn, so three soak attempts died 2:27 in on `item A1 is DONE`;
+      a window log read KEPT with rc 1. `window.sh` keeps on load only.
+    - A stray `cat > /tmp/x` hung on stdin for 400 s, and `table100.sh`
+      was not executable at its first launch. Neither touched a measurement.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
