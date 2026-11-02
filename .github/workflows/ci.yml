@@ -14,7 +14,7 @@ env:
 
 jobs:
   rust:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -1124,7 +1124,7 @@ jobs:
     # VideoToolbox, so it only builds on macOS. Stubbing decode on Linux would
     # mean the preflight gates silently checked less there, which is the kind
     # of gate Standards §2 forbids.
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # Standards §4: verify a build artifact before a later step consumes it.
       # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
@@ -1678,7 +1678,7 @@ jobs:
   # why a failure here is debuggable rather than merely red.
   dress-rehearsal:
     name: dress rehearsal
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # Standards §4: verify a build artifact before a later step consumes it.
       # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
