@@ -7,6 +7,7 @@ members = [
     "crates/nbe-preflight",
     "crates/nbe-protocol",
 ]
+exclude = ["vendor/wgpu-core"]
 
 [workspace.package]
 version = "0.2.0"
@@ -57,3 +58,12 @@ debug = "line-tables-only"
 # changes no behaviour, only its speed.
 [profile.dev.package.nbe-decode]
 opt-level = 3
+
+# R42 (docs/soak-protocol.md): two threads polling one submission can panic
+# `Device::maintain` in wgpu-core 30.0.1, and the panic kills an encode thread.
+# vendor/wgpu-core is 30.0.1 plus upstream's fix, gfx-rs/wgpu#9958, and nothing
+# else (vendor/wgpu-core/VENDORED.md). wgpu stays pinned at =30.0.1 so this
+# patch cannot silently fall out of the graph.
+# DROP THIS at wgpu 31: remove this table and vendor/, and loosen the pin.
+[patch.crates-io]
+wgpu-core = { path = "vendor/wgpu-core" }

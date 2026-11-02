@@ -30,7 +30,7 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
 # unconditional wgpu dependency would pull the entire GPU stack into a 13.5 MB
 # CLI binary that CI size-gates. `nbe-engine` turns it on; preflight's
 # dependency surface is unchanged.
-wgpu = { version = "30.0.1", optional = true }
+wgpu = { version = "=30.0.1", optional = true }
 objc2-io-surface = { version = "0.3.2", features = ["IOSurfaceRef", "IOSurfaceTypes"], optional = true }
 objc2-metal = { version = "0.3.2", features = ["MTLDevice", "MTLTexture", "MTLPixelFormat", "MTLResource", "MTLAllocation", "objc2-io-surface"], optional = true }
 
