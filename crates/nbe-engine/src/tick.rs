@@ -265,6 +265,31 @@ impl Cadence {
         self.last = None;
     }
 
+    /// R33's run edge: master frames `first..=last` the clock passed at a
+    /// run's start before the loop's first tick on it, or at its stop after
+    /// the loop's last (#77's precision note 1). Each is a master frame never
+    /// drawn, so a dropped frame (§10.2, ruled 2026-10-28), counted with the
+    /// skips. A stop's edge lands in the run it ends, a start's in the run
+    /// it begins.
+    fn edge(&mut self, state: &EngineState, first: u64, last: u64, at: &str, woke_late: Duration) {
+        let skipped = last - first + 1;
+        state
+            .skipped_master_frames
+            .fetch_add(skipped, Ordering::SeqCst);
+        state
+            .dropped_frames_total
+            .fetch_add(skipped, Ordering::SeqCst);
+        if let Some(suppressed) = self.lines.take(Instant::now()) {
+            tracing::warn!(
+                skipped,
+                previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
+                woke_late_ms = woke_late.as_secs_f64() * 1000.0,
+                suppressed,
+                "R33: master frames {first}..={last} were never drawn {at}"
+            );
+        }
+    }
+
     /// The loop is returning: close whatever span is open.
     fn end(&mut self, state: &EngineState) {
         if let Some(take) = self.take.take() {
@@ -300,11 +325,14 @@ pub async fn run_tick(
         false => (None, None),
     };
     // What the take CLAIMS, which is what makes a missing pool a chain loss
-    // rather than an ordinary CPU take.
+    // rather than an ordinary CPU take. Only a take with a session claims
+    // anything: a stop takes the session before the record thread finishes
+    // the file, and the loop draws while it does (R37; `show.stop`'s finish
+    // alike). That take is ending, and it has lost nothing.
     let claims_zero_copy = matches!(
         *state.record_tap_selection.lock().unwrap(),
         Some(sel) if sel.path == crate::record::tap_path::TapPath::ZeroCopy
-    ) && recording;
+    ) && endpoint.is_some();
     let mut loan = match crate::record::begin_tap_frame(
         render,
         pool.as_deref(),
@@ -447,6 +475,12 @@ pub async fn run_tick(
 /// the loop's own grid. The loop used to sleep to its own grid and read the
 /// clock wherever it woke, so a grid near a clock boundary drew one frame
 /// twice and never the next (630, 630, 632).
+///
+/// **R41: a start ends the stopped sleep.** The first tick of a run is drawn
+/// at the start. It used to wait for the stopped grid, up to a budget late and
+/// a whole one after a long stopped tick, whose start lands just behind it:
+/// the wake read frame 1 on 63 of 100 starts after a reload, and frame 0 was
+/// never drawn.
 pub async fn run_loop(
     render: &mut RenderLoop,
     state: &EngineState,
@@ -459,8 +493,12 @@ pub async fn run_loop(
     let mut cadence = Cadence::default();
     // The running clock's epoch and the master frame last drawn on it.
     let mut drawn: Option<(Instant, u64)> = None;
+    // Whether the loop has ticked yet: the frames a clock passed before the
+    // loop existed are not the loop's to count.
+    let mut ticked = false;
     loop {
-        let intended = match (state.clock_reading(), drawn) {
+        let running = state.clock_reading();
+        let intended = match (running, drawn) {
             (Some((epoch, _)), Some((drawn_epoch, last))) if epoch == drawn_epoch => {
                 state.frame_boundary(last + 1).unwrap_or(next_boundary)
             }
@@ -470,10 +508,40 @@ pub async fn run_loop(
         };
         let now = Instant::now();
         if intended > now {
-            tokio::time::sleep(intended - now).await;
+            if running.is_some() {
+                tokio::time::sleep(intended - now).await;
+            } else {
+                tokio::select! {
+                    _ = tokio::time::sleep(intended - now) => {}
+                    _ = state.clock_started.notified() => {}
+                }
+            }
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
         let reading = state.clock_reading();
+        // R33's run edges. The run drawn last ended since the last tick
+        // (stopped, or restarted on a new epoch): the frames its clock passed
+        // after the last one drawn were never drawn. The frame the clock
+        // stopped in is not among them: the clock never reached its
+        // successor's boundary. And a run this tick is the first on: the
+        // frames before the one it reads were never drawn. A stall across the
+        // edge is what they count.
+        let now_epoch = reading.map(|(epoch, _)| epoch);
+        let stop_edge = drawn
+            .filter(|(epoch, _)| now_epoch != Some(*epoch))
+            .and_then(|(epoch, last)| {
+                let (stopped, at_stop) = state.last_stopped_run()?;
+                (stopped == epoch && at_stop > last + 1).then_some((last + 1, at_stop - 1))
+            });
+        let start_edge = match reading {
+            Some((epoch, first)) if ticked && first > 0 && drawn.map(|(e, _)| e) != Some(epoch) => {
+                Some((0, first - 1))
+            }
+            _ => None,
+        };
+        if let Some((first, last)) = stop_edge {
+            cadence.edge(state, first, last, "before the clock stopped", woke_late);
+        }
         // A wake at or after `boundary(last + 1)` reads `last + 1` or later:
         // the clock's arithmetic is exact (clock.rs pins the agreement), and a
         // sleep never ends before its deadline.
@@ -496,6 +564,10 @@ pub async fn run_loop(
         };
         let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
         cadence.tick(state, master, recording, woke_late, frame_budget);
+        if let Some((first, last)) = start_edge {
+            cadence.edge(state, first, last, "at the run's start", woke_late);
+        }
+        ticked = true;
         let mut report = run_tick(render, state, frame, deadline).await;
         report.master_frame = master;
         report.woke_late = woke_late;
