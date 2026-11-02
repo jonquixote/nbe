@@ -411,7 +411,7 @@ impl DirectiveHandler {
     }
 
     fn on_show_start(&self, _d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        self.state.clock.lock().unwrap().start();
+        self.state.start_clock();
         Ok(())
     }
 
@@ -1530,7 +1530,7 @@ impl DirectiveHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("STOPPED");
         match show_state {
-            "RUNNING" => self.state.clock.lock().unwrap().start(),
+            "RUNNING" => self.state.start_clock(),
             _ => self.state.clock.lock().unwrap().stop(),
         }
         // The snapshot is the control plane's state, so it reconciles the flag

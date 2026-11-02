@@ -475,6 +475,12 @@ pub async fn run_tick(
 /// the loop's own grid. The loop used to sleep to its own grid and read the
 /// clock wherever it woke, so a grid near a clock boundary drew one frame
 /// twice and never the next (630, 630, 632).
+///
+/// **R41: a start ends the stopped sleep.** The first tick of a run is drawn
+/// at the start. It used to wait for the stopped grid, up to a budget late and
+/// a whole one after a long stopped tick, whose start lands just behind it:
+/// the wake read frame 1 on 63 of 100 starts after a reload, and frame 0 was
+/// never drawn.
 pub async fn run_loop(
     render: &mut RenderLoop,
     state: &EngineState,
@@ -491,7 +497,8 @@ pub async fn run_loop(
     // loop existed are not the loop's to count.
     let mut ticked = false;
     loop {
-        let intended = match (state.clock_reading(), drawn) {
+        let running = state.clock_reading();
+        let intended = match (running, drawn) {
             (Some((epoch, _)), Some((drawn_epoch, last))) if epoch == drawn_epoch => {
                 state.frame_boundary(last + 1).unwrap_or(next_boundary)
             }
@@ -501,7 +508,14 @@ pub async fn run_loop(
         };
         let now = Instant::now();
         if intended > now {
-            tokio::time::sleep(intended - now).await;
+            if running.is_some() {
+                tokio::time::sleep(intended - now).await;
+            } else {
+                tokio::select! {
+                    _ = tokio::time::sleep(intended - now) => {}
+                    _ = state.clock_started.notified() => {}
+                }
+            }
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
         let reading = state.clock_reading();
@@ -510,8 +524,8 @@ pub async fn run_loop(
         // after the last one drawn were never drawn. The frame the clock
         // stopped in is not among them: the clock never reached its
         // successor's boundary. And a run this tick is the first on: the
-        // frames before the one it reads were never drawn. Both are normally
-        // none; a stall across the edge is what they count.
+        // frames before the one it reads were never drawn. A stall across the
+        // edge is what they count.
         let now_epoch = reading.map(|(epoch, _)| epoch);
         let stop_edge = drawn
             .filter(|(epoch, _)| now_epoch != Some(*epoch))

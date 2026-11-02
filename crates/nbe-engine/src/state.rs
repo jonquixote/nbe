@@ -26,6 +26,8 @@ pub struct EngineState {
     /// The clock is locked because Rust's ownership doesn't allow &mut behind
     /// Arc; lock order is: clock before everything else.
     pub clock: Mutex<MasterClock>,
+    /// Ends the render loop's stopped sleep when the clock starts (R41).
+    pub clock_started: Notify,
     /// last applied stateVersion (what the control plane is signaling about)
     pub last_applied_state_version: AtomicU64,
     /// package path loaded by show.load (used by fallback residency check)
@@ -260,6 +262,7 @@ impl EngineState {
     pub fn new(house_rate: u32) -> Self {
         Self {
             clock: Mutex::new(MasterClock::new(house_rate)),
+            clock_started: Notify::new(),
             last_applied_state_version: AtomicU64::new(0),
             package_path: Mutex::new(None),
             fallback: Mutex::new(None),
@@ -468,6 +471,16 @@ impl EngineState {
 
     pub fn master_frame(&self) -> Option<u64> {
         self.clock.lock().unwrap().frame()
+    }
+
+    /// Start the master clock and end the render loop's stopped sleep, so the
+    /// run's first tick is drawn at its start and not at the next tick of the
+    /// stopped grid (R41). `Notify::notify_one` stores one permit: a start that
+    /// lands outside that sleep costs one early stopped tick, which counts
+    /// nothing.
+    pub fn start_clock(&self) {
+        self.clock.lock().unwrap().start();
+        self.clock_started.notify_one();
     }
 
     /// The running clock's epoch and current master frame, read under one
