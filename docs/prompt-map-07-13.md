@@ -805,6 +805,12 @@ adopt and record).
   | `40811185186`, PR #77 at `8bd7f8f` (its head when opened), green (604/0/5) | the workspace tests: the test build finished at 03:18:19.70 (`Finished` in 1m 10s); the post line at 03:19:59 | whole step 4.84–13.61 (pre, 17 samples, post). While building: 6.32 (the pre line, load1 18.95), 5.61, 6.57, 8.43, 10.31, 11.83, 13.12, 13.61 (its sample at 03:18:19, the build's last second). While the tests ran: 13.41, 12.06, 10.56, 9.04, 7.70, 7.41, 6.86, 6.42, 5.66, then the post line's 4.84, so 4.84–13.41. The R10 test passed at 03:18:53.48, between 10.56 and 9.04. The 76th |
   | `40814388110`, PR #77 at `ecc73b3` (its final head, the reviewed one), green (604/0/5) | the workspace tests: the test build finished at 03:52:24.30 (`Finished` in 1m 03s); the post line at 03:53:58 | whole step 3.48–7.58 (pre, 16 samples, post). While building: 7.58 (the pre line, load1 22.73), 6.57, 6.05, 6.15, 6.14, 5.85, 5.49. While the tests ran: 5.06, 4.36, 4.01, 4.12, 4.27, 4.43, 4.04, 3.48, 3.77, then the post line's 3.49, so 3.48–5.06. The R10 test passed at 03:52:55.44, between 4.01 and 4.12. The 77th |
   | `40841314150`, main at `c6dedb5` (PR #77's merge), green (604/0/5) | the workspace tests: the test build finished at 08:26:25.13 (`Finished` in 58.74 s); the post line at 08:27:55 | whole step 3.15–9.51 (pre, 15 samples, post). While building: 9.51 (the pre line, load1 28.53), 8.20, 7.12, 6.65, 6.36, 6.05. While the tests ran: 5.33, 4.76, 4.77, 4.31, 4.96, 4.44, 4.09, 3.56, 3.31, then the post line's 3.15, so 3.15–5.33. The R10 test passed at 08:26:55.86, between 4.77 and 4.31. The 78th |
+  | `40847489047`, #78 at `51dfe87`; the workspace step green (605/0/5), the job red at the cadence floor (R39), control-plane never started | the workspace tests: the test build finished at 09:16:55.29 (`Finished` in 1m 04s); the post line at 09:18:33 | whole step 3.47–7.57 (pre, 17 samples, post). While building: 7.57 (the pre line, load1 22.71), 6.66, 6.62, 7.10, 7.10, 7.31, 7.35. While the tests ran: 7.03, 6.83, 5.91, 5.60, 5.34, 5.17, 4.61, 4.44, 3.89, 3.47, then the post line's 3.47, so 3.47–7.03. The R10 test passed at 09:17:27.55, between 5.91 and 5.60. The 79th |
+  | `41289680930`, #79 at `6cb3738`; the workspace step green (610/0/5), the run red on dress (R21's sighting 3) | the workspace tests: the test build finished at 08:39:49.04 (`Finished` in 1m 04s); the post line at 08:41:19 | whole step 2.34–7.02 (pre, 16 samples, post). While building: 2.66 (the pre line, load1 7.99), 2.46, 2.34, 3.12, 5.13, 6.09, 7.02. While the tests ran: 6.51, 5.56, 4.79, 4.21, 4.03, 5.04, 4.71, 4.52, 4.00, then the post line's 4.19, so 4.00–6.51. The R10 test passed at 08:40:17.77, between 4.79 and 4.21. The 80th |
+  | `41323043807` attempt 2, #78 at `f5f4854`; the workspace step green (605/0/5), the run red on dress (step 6). Attempt 1 was the brownout and ran nothing | the workspace tests: the test build finished at 00:02:02.13 (`Finished` in 34.44 s); the post line at 00:03:18 | whole step 0.48–3.28 (pre, 11 samples, post). While building: 0.48 (the pre line, load1 1.45), 1.37, 2.41, 3.28. While the tests ran: 2.93, 2.65, 2.54, 2.23, 2.04, 1.78, 1.63, then the post line's 1.41, so 1.41–2.93. The R10 test passed at 00:02:31.83, between 2.54 and 2.23. The 81st |
+  | `41364888204`, #79 at `6ff6d91`, green (611/0/5) | the workspace tests: the test build finished at 00:02:19.21 (`Finished` in 41.39 s); the post line at 00:03:44 | whole step 0.84–3.04 (pre, 13 samples, post). While building: 0.84 (the pre line, load1 2.52), 0.86, 1.58, 2.26, 3.04. While the tests ran: 2.97, 2.73, 2.63, 2.36, 2.02, 2.04, 1.81, 1.53, then the post line's 1.49, so 1.49–2.97. The R10 test passed at 00:02:50.03, between 2.63 and 2.36. The 82nd |
+  | `41375661006`, #79 at `f5cbd37`, green (615/0/5) | the workspace tests: the test build finished at 02:05:22.86 (`Finished` in 58.64 s); the post line at 02:07:02 | whole step 1.29–5.68 (pre, 16 samples, post). While building: 1.34 (the pre line, load1 4.01), 1.29, 2.04, 3.11, 3.86, 4.78. While the tests ran: 5.68, 5.18, 4.51, 4.09, 3.64, 3.18, 2.77, 2.44, 2.09, 1.87, then the post line's 1.81, so 1.81–5.68. The R10 test passed at 02:05:58.36, between 4.09 and 3.64. The 83rd |
+  | `41438439490`, #78 at `a8e9245`, green (605/0/5) | the workspace tests: the test build finished at 11:40:01.39 (`Finished` in 37.11 s); the post line at 11:41:17 | whole step 3.79–8.50 (pre, 12 samples, post). While building: 8.18 (the pre line, load1 24.55), 7.26, 7.81, 8.50. While the tests ran: 8.32, 7.79, 7.31, 7.24, 6.26, 5.47, 4.71, 4.09, then the post line's 3.79, so 3.79–8.32. The R10 test passed at 11:40:28.77, between 7.31 and 7.24. The 84th |
 
   The ruling's ≈2.5–4.5 is the green run from its third sample on
   (02:28:40). The proof run ran no tests, so it is not a green test step;
@@ -1041,6 +1047,17 @@ was silent in both.
 runs; rows 76, 77 and 78 peaked at 13.61, 7.58 and 9.51, under the 15.31
 maximum). R10 was silent in all three.
 
+**The rows through #78 and #79** (the user's ruling of 2026-11-02, item 5: the
+standing rule. A green workspace step counts even when its job is red
+elsewhere; mixed steps are excluded; the dress step is not part of R10's
+envelope). **The ceiling holds at 19.13 per CPU** (84 green workspace steps;
+rows 79–84 peaked at 7.57, 7.02, 3.28, 3.04, 5.68 and 8.50, under the 15.31
+maximum). R10 was silent in all six. `51dfe87` counts here and in the GPU table
+because those steps were green; its floor bracket holds the step that failed,
+so it adds no F row, and its control-plane job never ran, so no CP row. Every
+one of these runs was on macos-14: a move of image starts a question these
+tables cannot answer, and the seeding is for ruling.
+
 **R10's envelope is workspace-step-only** (the user's ruling of 2026-10-21).
 "The rust step's window" in the pinned rule is the workspace test step's:
 its pre line, samples and post line. The GPU/render step's `gpu-*` lines,
@@ -1091,6 +1108,12 @@ A `three_frames…` failure in that step is read against it.
 | G32 | `40811185186` attempt 1, rust job `123241612015`, PR #77 at `8bd7f8f`, green (`prompt04` 19) | 4.84 | 4.84–4.85 (pre, 1 sample, post; 03:19:59–03:20:06Z) | 4.85 |
 | G33 | `40814388110` attempt 1, rust job `123251938976`, PR #77 at `ecc73b3`, green (`prompt04` 19) | 3.49 | 3.27–3.49 (pre, 1 sample, post; 03:53:58–03:54:03Z) | 3.27 |
 | G34 | `40841314150` attempt 1, rust job `123338105592`, main at `c6dedb5` (PR #77's merge), green (`prompt04` 19) | 3.15 | 2.98–3.15 (pre, 1 sample, post; 08:27:55–08:28:00Z) | 2.98 |
+| G35 | `40847489047` attempt 1, rust job `123358460946`, PR #78 at `51dfe87` (the GPU step green, `prompt04` 19; the job red at the cadence floor, R39) | 3.47 | 3.47–3.62 (pre, 1 sample, post; 09:18:33–09:18:39Z) | 3.62 |
+| G36 | `41289680930` attempt 1, rust job `124798123822`, PR #79 at `6cb3738` (green, `prompt04` 19; the run red on dress) | 4.19 | 4.19–4.57 (pre, 1 sample, post; 08:41:19–08:41:24Z) | 4.57 |
+| G37 | `41323043807` attempt 2, rust job `125022808429`, PR #78 at `f5f4854` (green, `prompt04` 19; the run red on dress) | 1.41 | 1.41–1.41 (pre, 1 sample, post; 00:03:18–00:03:21Z) | 1.41 |
+| G38 | `41364888204` attempt 1, rust job `125022831325`, PR #79 at `6ff6d91` (green, `prompt04` 19) | 1.49 | 1.39–1.49 (pre, 1 sample, post; 00:03:44–00:03:47Z) | 1.39 |
+| G39 | `41375661006` attempt 1, rust job `125055214028`, PR #79 at `f5cbd37` (green, `prompt04` 19) | 1.81 | 1.77–1.81 (pre, 1 sample, post; 02:07:02–02:07:07Z) | 1.77 |
+| G40 | `41438439490` attempt 1, rust job `125253981727`, PR #78 at `a8e9245` (green, `prompt04` 19) | 3.79 | 3.79–3.79 (pre, 1 sample, post; 11:41:17–11:41:20Z) | 3.79 |
 
 After G1 the maximum was 3.76 and the ceiling 4.70. **G2 moves the maximum to
 3.84** (load1 11.52 on 3 CPUs, the `gpu-pre` line), so **the ceiling is
@@ -1126,6 +1149,8 @@ G30 and G31 peaked under it too: 4.50 (#76 at `419392c`) and 4.96 (main
 G32–G34 peaked under it too: 4.85 and 3.49 (#77 at `8bd7f8f` and
 `ecc73b3`), 3.15 (main `c6dedb5`); `three_frames…` passed the GPU step in
 all three.
+G35–G40 peaked under it too: 3.62 (#78 at `51dfe87`), 4.57 (#79 at `6cb3738`), 1.41 (#78 at `f5f4854`), 1.49 (#79 at `6ff6d91`), 1.81 (#79 at `f5cbd37`) and 3.79 (#78 at `a8e9245`);
+`three_frames…` passed the GPU step in all six.
 
 **The floor-bracket envelope** (the user's ruling of 2026-10-26, on #68's
 two-key pass; the third envelope). From `0421933`, `floor-pre`, `floor-sample`
@@ -1163,6 +1188,11 @@ proof was, and its bracket held a failed floor step (a mixed step).
 | F19 | `40811185186` attempt 1, rust job `123241612015`, PR #77 at `8bd7f8f`, green (36/36 floor lines) | 4.85 | 3.93–5.63 (pre, 11 samples, post; 03:20:06–03:21:56Z) | 3.93 |
 | F20 | `40814388110` attempt 1, rust job `123251938976`, PR #77 at `ecc73b3`, green (36/36 floor lines) | 3.27 | 2.58–4.25 (pre, 11 samples, post; 03:54:03–03:55:53Z) | 3.90 |
 | F21 | `40841314150` attempt 1, rust job `123338105592`, main at `c6dedb5` (PR #77's merge), green (36/36 floor lines) | 2.98 | 2.70–3.49 (pre, 10 samples, post; 08:28:00–08:29:31Z) | 3.49 |
+| F22 | `41289680930` attempt 1, rust job `124798123822`, PR #79 at `6cb3738`, green (38/38 floor lines); the run red on dress | 4.57 | 4.08–5.40 (pre, 11 samples, post; 08:41:24–08:43:07Z) | 4.08 |
+| F23 | `41323043807` attempt 2, rust job `125022808429`, PR #78 at `f5f4854`, green (36/36 floor lines); the run red on dress | 1.43 | 0.98–1.43 (pre, 8 samples, post; 00:03:21–00:04:33Z) | 0.98 |
+| F24 | `41364888204` attempt 1, rust job `125022831325`, PR #79 at `6ff6d91`, green (38/38 floor lines) | 1.39 | 1.02–1.39 (pre, 9 samples, post; 00:03:47–00:05:10Z) | 1.10 |
+| F25 | `41375661006` attempt 1, rust job `125055214028`, PR #79 at `f5cbd37`, green (39/39 floor lines) | 1.77 | 0.94–1.77 (pre, 9 samples, post; 02:07:07–02:08:38Z) | 1.04 |
+| F26 | `41438439490` attempt 1, rust job `125253981727`, PR #78 at `a8e9245`, green (36/36 floor lines) | 3.79 | 2.33–3.79 (pre, 8 samples, post; 11:41:20–11:42:32Z) | 2.33 |
 
 **F1 seeds it:** the maximum is 4.72 (load1 14.15 at 03:08:14Z), and the
 ceiling 1.25 × 14.15/3 = 5.90. **F2 moves the maximum to 5.32** (load1 15.96,
@@ -1196,6 +1226,9 @@ not what was expected.
 **F19–F21 peaked under it too:** 5.63 and 4.25 (#77 at `8bd7f8f` and
 `ecc73b3`), 3.49 (main `c6dedb5`), at 21 green runs. From #77 the bracket
 reads 36 floor lines (`r33_cadence` and `r36_record_space` added).
+**F22–F26 peaked under it too:** 5.40 (#79 at `6cb3738`), 1.43 (#78 at `f5f4854`), 1.39 (#79 at `6ff6d91`), 1.77 (#79 at `f5cbd37`) and 3.79 (#78 at `a8e9245`), at 26 green
+runs. #79 reads 38 and then 39 floor lines (`r37_record_stop`, `run_edges`,
+`r41_run_start`).
 
 **The control-plane bracket envelope** (the user's ruling of 2026-10-26 on
 R32, (a); the fourth envelope). From `ab0304a`, `cp-pre`, `cp-sample` and
@@ -1229,6 +1262,11 @@ load-average tail (the ruling: the settle, not the count), and #72's
 | CP12 | `40811185186` attempt 1, control-plane job `123241611695`, PR #77 at `8bd7f8f`, green (`npm test` 205/205, package-reconcile 4/4) | 3.47 | 2.83–5.93 (pre, 20 samples, post; 03:18:56–03:22:17Z) | 3.71 |
 | CP13 | `40814388110` attempt 1, control-plane job `123251938750`, PR #77 at `ecc73b3`, green (`npm test` 205/205, package-reconcile 4/4) | 3.39 | 2.29–4.16 (pre, 21 samples, post; 03:53:20–03:56:49Z) | 3.96 |
 | CP14 | `40841314150` attempt 1, control-plane job `123338105392`, main at `c6dedb5` (PR #77's merge), green (`npm test` 205/205, package-reconcile 4/4) | 3.40 | 2.45–5.25 (pre, 21 samples, post; 08:23:07–08:26:35Z) | 3.03 |
+| CP15 | `41289680930` attempt 1, control-plane job `124798123879`, PR #79 at `6cb3738` (the control-plane job green, `npm test` 205/205, package-reconcile 4/4; the run red on dress) | 3.45 | 1.30–3.45 (pre, 21 samples, post; 08:40:37–08:44:04Z) | 1.33 |
+| CP16 | `41323043807` attempt 2, control-plane job `125022808750`, PR #78 at `f5f4854` (the control-plane job green, `npm test` 205/205, package-reconcile 4/4; the run red on dress) | 1.59 | 0.69–1.59 (pre, 20 samples, post; 00:03:22–00:06:43Z) | 1.04 |
+| CP17 | `41364888204` attempt 1, control-plane job `125022831200`, PR #79 at `6ff6d91`, green (`npm test` 205/205, package-reconcile 4/4) | 1.90 | 0.70–1.90 (pre, 20 samples, post; 00:03:27–00:06:43Z) | 0.70 |
+| CP18 | `41375661006` attempt 1, control-plane job `125055213695`, PR #79 at `f5cbd37`, green (`npm test` 205/205, package-reconcile 4/4) | 1.07 | 0.38–1.07 (pre, 19 samples, post; 02:05:56–02:09:07Z) | 0.40 |
+| CP19 | `41438439490` attempt 1, control-plane job `125253982045`, PR #78 at `a8e9245`, green (`npm test` 205/205, package-reconcile 4/4) | 4.99 | 2.01–4.99 (pre, 20 samples, post; 11:41:14–11:44:36Z) | 2.01 |
 
 **CP1 seeds it:** the maximum is 4.94 (load1 14.82, the last sample at
 15:47:18Z and `cp-post` at 15:47:19Z, during the operator-signals end to
@@ -1285,6 +1323,9 @@ sample, load1 12.49 at 03:55:42Z); 5.25 (main `c6dedb5`, a sample, load1
 15.75 at 08:25:09Z); at 14 green runs. CP13's peak is the first under the
 queued proposal's 50% line (4.23); CP12 and CP14 are above it. The proposal
 is not in force either way.
+
+**CP15–CP19 peaked under 8.46:** 3.45 (#79 at `6cb3738`), 1.59 (#78 at `f5f4854`), 1.90 (#79 at `6ff6d91`), 1.07 (#79 at `f5cbd37`) and 4.99 (#78 at `a8e9245`), at 19 green
+runs. Four of the five peaked at or below 3.45.
 
 **Merged: PR #49 is `ac99d49`** (the bookend, the standing pattern of §2c),
 on the user's word of 2026-10-16 (the CI-ceiling ruling's item 4): a squash at
@@ -10533,6 +10574,38 @@ item):
       a window log read KEPT with rc 1. `window.sh` keeps on load only.
     - A stray `cat > /tmp/x` hung on stdin for 400 s, and `table100.sh`
       was not executable at its first launch. Neither touched a measurement.
+
+  **The user's rulings of 2026-11-02, and where each stands** (on the morning
+  report; image upload `f1436724`):
+  - **R42 filed** first in the register, a release blocker for any zero-drop
+    claim. **R43 filed**, low priority: `record.start`'s admission.
+  - **R42's fix:** `vendor/wgpu-core`, 30.0.1 plus upstream's #9958, under
+    `[patch.crates-io]`, wgpu pinned at `=30.0.1`, dropped at wgpu 31, on its
+    own branch, `r42-two-pollers`. The guard, `r42_two_pollers`: two tight
+    pollers and a `Poll` drain loop. Stock read red 200 of 200 at 20,000
+    frames, by frame 122, median 10, each run the same assert; at the 5,000
+    frames kept, red 50 of 50. Vendored green 20 of 20 at about 4.7 s. No
+    timing is read, so this needed no window. R42 stays open until a longer
+    patched soak reads zero panics.
+  - **The silence:** drafted as a spec row, not applied, for ruling.
+  - **The runner:** a CI-only PR moves all three jobs to `macos-15`, pinned.
+    #78 and #79 take no more commits until it has a green run.
+  - **R10's tables:** rows 79–84, G35–G40, F22–F26, CP15–CP19, by the
+    standing rule, above.
+  - **Everything unmerged stays unmerged** until the second key has reviewed.
+
+  **What the long window added after `a8e9245`:**
+  - **The patched soak** (`ac5/table.md`): `f5cbd37` plus #9958's gate, built
+    outside the tree, 6 of 6 windows kept, 03:46 to 06:47 PST on 2026-11-02.
+    180 show-minutes, 0 panics, 0 drops at the last take and at the stop on
+    all 6, record 1800.4–1800.5 s, stream 1800.3–1800.4 s.
+  - **CI at `a8e9245`**, run `41438439490`, docs only, so the same code as
+    `f5f4854`: rust 605/0/5, 36 floors, gates 19/13/14/3; control-plane
+    205/205; dress 29/29, drops 0, underruns 187, rises 4005 and 4025 ms
+    (normative 3000, backstop 10000). The same code has now read 28/29 once
+    and 29/29 once. The green does not clear the red.
+  - **R41's guards at 12 and 24 busy**, 8 of 8 windows kept, 0 of 400 per
+    suite, which completes 0 of 1200 per suite over the six levels.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
