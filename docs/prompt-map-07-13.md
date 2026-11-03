@@ -10607,6 +10607,46 @@ item):
   - **R41's guards at 12 and 24 busy**, 8 of 8 windows kept, 0 of 400 per
     suite, which completes 0 of 1200 per suite over the six levels.
 
+  **The user's evening and night rulings of 2026-11-02** (image uploads
+  `d5953ea7`, `31499b98`):
+  - **#80** carries three commits: the runner move to `macos-15`; R42's fix,
+    which the user ruled onto it as a one-time exception, because the
+    hardware encoder on `macos-15` exposes R42 on CI; and `--no-fail-fast` on
+    the workspace step. #80's first run, `41553392985` at `fe71219`, was red
+    for two reasons. Both came from the hardware encoder: the dress's
+    `# RECORD PATH: zeroCopy (Table)` shows it, where `macos-14` refused.
+    rust red at R42's first CI sighting: `prompt10_rtmp`, "current
+    submission index (24) should be at least the wait submission index
+    (26)"; 33 of 61 binaries read. dress red 28/29 at RI-1, one drop at
+    master frame 297, woke late 34.94 ms.
+  - **Dress late wakes, interim rule:** a dress red whose only failure is a
+    drop attributed to a named late wake is recorded as an R21 sighting, and
+    may be rerun once, job-scoped, with both attempts recorded. #80's RI-1
+    red is such a sighting. It was not rerun, because its head was
+    superseded.
+  - **Dress late wakes, the lasting fix:** R21's backstop with attribution.
+    CI tolerates drops that a log line ties to a late wake over a threshold
+    derived from CI's envelope. The normative machine and the soak keep
+    strict zero. A log line is added for frames drawn but submitted late
+    (`tick.rs:388-394`), which today count with no line: 25 of 306 counted
+    drops at the `sp` stall level and 515 of 2004 at `s1`. Its own PR, after
+    #80.
+  - **The command-to-drops table** (window A, 5 of 5 kept,
+    `rate/table-windowA.txt`, `f5cbd37`): idle, dev and release, 0 drops in
+    600 trials each. Under freezes no command differs from control (Fisher
+    p ≥ 0.19). Steps 5 and 6 read as late wakes landing in the step, not a
+    cost of the command. Measured on this Mac, not on CI's VM.
+  - **The silence row:** read, and the four decisions approved. Before
+    ratification come (a) a take that ends by itself with a report, and (b)
+    one take at a time. Then a spec-revision PR, docs only.
+  - **R44 filed as a candidate:** the video tail shortfall, confirmed by
+    experiment before any fix.
+  - **The 600 show-minute soak runs last, on merged main.** There is no
+    patched side build.
+  - **Order:** #80, the rebases of #78 and #79 (shown by `git range-diff`
+    against the reviewed heads `a8e9245` and `f5cbd37`), the R21 backstop
+    PR, the silence spec PR, the tail fix, the soak.
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
