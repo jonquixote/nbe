@@ -100,7 +100,10 @@ jobs:
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |
           set -o pipefail
-          cargo test --workspace 2>&1 | tee /tmp/rust-test.log
+          # --no-fail-fast: one red binary must not hide the binaries after it.
+          # #80's first run stopped at the 33rd of 61 and read none of the rest
+          # (ruled 2026-11-02). The step still fails on any red.
+          cargo test --workspace --no-fail-fast 2>&1 | tee /tmp/rust-test.log
           echo "::group::Rust test summary"
           grep "^test result" /tmp/rust-test.log
           grep "^test result" /tmp/rust-test.log \
