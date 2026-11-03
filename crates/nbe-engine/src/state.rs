@@ -477,6 +477,12 @@ impl EngineState {
         Some((clock.epoch()?, clock.frame()?))
     }
 
+    /// The master frame at instant `t`; None while STOPPED. The null sink
+    /// renders each block at the frame due at its own deadline.
+    pub fn master_frame_at(&self, t: std::time::Instant) -> Option<u64> {
+        self.clock.lock().unwrap().frame_at(t)
+    }
+
     /// The instant master frame `frame` begins on the running clock; None
     /// while STOPPED (R33).
     pub fn frame_boundary(&self, frame: u64) -> Option<std::time::Instant> {

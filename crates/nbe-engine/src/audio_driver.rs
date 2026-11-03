@@ -95,6 +95,13 @@ pub const DEVICE_SILENT_LIMIT: Duration = Duration::from_millis(1000);
 /// first is logged (SPEC §8.10).
 pub const EPISODE_GAP: Duration = Duration::from_millis(1000);
 
+/// The cap on catch-up: the most overdue blocks one late null-sink wake
+/// renders after the block it woke for. A block is one house frame, so this is
+/// one second at 30 fps, inside the record and stream taps' 5 s rings. A wake
+/// later than this gives the rest up, logged, rather than burst minutes of
+/// audio after a sleep or a debugger.
+pub const MAX_CATCH_UP_BLOCKS: u32 = 30;
+
 /// The rate guard's decision (D1 a): the rate is the engine's explicit act,
 /// never cpal's side effect.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -796,17 +803,48 @@ fn spawn_driver(
     AudioThread { stop, handle }
 }
 
+/// The clock the cadence loop reads and the waits it takes: the wall clock in
+/// the engine ([`WallPace`]), a scripted one in the guard
+/// (tests/null_sink_catch_up.rs), which injects a late wake without a timer.
+pub trait Pace {
+    fn now(&mut self) -> std::time::Instant;
+    fn sleep(&mut self, d: Duration);
+}
+
+/// The wall clock and the thread's own sleep.
+pub struct WallPace;
+
+impl Pace for WallPace {
+    fn now(&mut self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    fn sleep(&mut self, d: Duration) {
+        std::thread::sleep(d);
+    }
+}
+
 /// The cadence loop, on its own thread.
 ///
 /// Identical timing to [`run`], which the tests drive; the only difference is
 /// which scheduler decides when it wakes.
 pub fn run_blocking(
-    mut driver: AudioDriver,
+    driver: AudioDriver,
     state: SharedEngineState,
     stop: &std::sync::atomic::AtomicBool,
 ) {
+    run_blocking_paced(driver, state, stop, &mut WallPace);
+}
+
+/// [`run_blocking`] on a given [`Pace`].
+pub fn run_blocking_paced(
+    mut driver: AudioDriver,
+    state: SharedEngineState,
+    stop: &std::sync::atomic::AtomicBool,
+    pace: &mut impl Pace,
+) {
     let block = driver.block_duration();
-    let mut next = std::time::Instant::now();
+    let mut next = pace.now();
     let mut logged_first = false;
     while !stop.load(Ordering::SeqCst) {
         if driver.is_device() {
@@ -822,17 +860,16 @@ pub fn run_blocking(
                     "audio driver cycling (device)"
                 );
             }
-            std::thread::sleep(DEVICE_POLL);
+            pace.sleep(DEVICE_POLL);
             // If the device is lost, the null cadence resumes from now.
-            next = std::time::Instant::now();
+            next = pace.now();
             continue;
         }
-        let now = std::time::Instant::now();
+        let now = pace.now();
         if next > now {
-            std::thread::sleep(next - now);
+            pace.sleep(next - now);
         }
-        let master_frame = state.master_frame().unwrap_or(0);
-        driver.cycle(master_frame);
+        render_due(&mut driver, &state, &mut next, block, pace.now());
         if !logged_first {
             logged_first = true;
             tracing::info!(
@@ -840,13 +877,58 @@ pub fn run_blocking(
                 "audio driver cycling"
             );
         }
-        next += block;
-        let now = std::time::Instant::now();
-        if next < now {
-            driver.graph.note_underrun();
-            next = now + block;
-        }
     }
+}
+
+/// Render every block due at `now`, oldest first, each at the master frame
+/// due at its own deadline, and advance `next` past them.
+///
+/// The cadence used to resynchronize on a late wake (`next = now + block`):
+/// the blocks it missed were never rendered, so the record and stream taps,
+/// which carry what renders, lost that much audio time with no line. CI's
+/// dress telemetry read the null sink rendering 27-47% of wall time on every
+/// run (the user's rulings of 2026-11-02, late, and 2026-11-03). A late wake
+/// still counts one underrun (SPEC §8.10: a missed deadline is one), as
+/// before. Past [`MAX_CATCH_UP_BLOCKS`] the rest is given up and logged, and
+/// the schedule keeps its phase.
+///
+/// `now` is the caller's reading, so what renders is a function of the two
+/// instants alone: the guard injects a late wake without a timer.
+pub fn render_due(
+    driver: &mut AudioDriver,
+    state: &crate::state::EngineState,
+    next: &mut std::time::Instant,
+    block: Duration,
+    now: std::time::Instant,
+) {
+    let due = blocks_due(*next, now, block);
+    let rendered = due.min(MAX_CATCH_UP_BLOCKS + 1);
+    for _ in 0..rendered {
+        driver.cycle(state.master_frame_at(*next).unwrap_or(0));
+        *next += block;
+    }
+    if due > 1 {
+        driver.graph.note_underrun();
+    }
+    if due > rendered {
+        let skipped = block * (due - rendered);
+        tracing::warn!(
+            skipped_ms = skipped.as_secs_f64() * 1e3,
+            caught_up = rendered - 1,
+            "null sink woke too late to catch up: the rest of the gap is not rendered"
+        );
+        *next += skipped;
+    }
+}
+
+/// The blocks due at `now` on a schedule whose next deadline is `next`: the
+/// one at `next`, and every later deadline already behind `now`. A wake on a
+/// deadline exactly leaves that deadline to the next pass, as the loop always
+/// has.
+fn blocks_due(next: std::time::Instant, now: std::time::Instant, block: Duration) -> u32 {
+    let late = now.saturating_duration_since(next).as_nanos();
+    let due = late.div_ceil(block.as_nanos().max(1)).max(1);
+    u32::try_from(due).unwrap_or(u32::MAX)
 }
 
 /// Run the driver until the process ends.
@@ -857,15 +939,29 @@ pub fn run_blocking(
 /// and a sink that stops being fed is a sink that underruns.
 pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
     let block = driver.block_duration();
-    let mut next = std::time::Instant::now();
+    // tokio's clock: the wall clock, unless a test pauses it (the guard drives
+    // this loop on a paused runtime and injects a late wake with `advance`).
+    let mut next = tokio::time::Instant::now().into_std();
     let mut logged_first = false;
     loop {
-        let now = std::time::Instant::now();
+        let now = tokio::time::Instant::now().into_std();
         if next > now {
             tokio::time::sleep(next - now).await;
+        } else {
+            // Behind, so no sleep, but still give the runtime back: with a
+            // sink slower than real time the loop never catches up, and on a
+            // current-thread runtime nothing else would ever run again.
+            tokio::task::yield_now().await;
         }
-        let master_frame = state.master_frame().unwrap_or(0);
-        driver.cycle(master_frame);
+        // Fell behind: render the missed blocks rather than skip them, and
+        // count the gap.
+        render_due(
+            &mut driver,
+            &state,
+            &mut next,
+            block,
+            tokio::time::Instant::now().into_std(),
+        );
 
         // An operational breadcrumb, not a gate. Three test gates were built
         // on log lines like this one and all three were defeated by writing
@@ -877,13 +973,6 @@ pub async fn run(mut driver: AudioDriver, state: SharedEngineState) {
                 rendered_samples = driver.graph.rendered_samples(),
                 "audio driver cycling"
             );
-        }
-        next += block;
-        // Fell behind: resynchronize rather than spiral, and count the gap.
-        let now = std::time::Instant::now();
-        if next < now {
-            driver.graph.note_underrun();
-            next = now + block;
         }
     }
 }
