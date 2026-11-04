@@ -19,7 +19,6 @@
 //! ([`thread`](crate::record::thread)) owns the encoder, the writer, and the
 //! tap drain. `record.stop` / `show.stop` quiescence ends the take there.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,6 +26,7 @@ use std::time::{Duration, Instant};
 use nbe_decode::zerocopy::{SharedSurface, SurfacePool};
 
 use crate::record::thread::RecordMsg;
+use crate::record::{CountSkip, SkipPath};
 
 /// What one record handoff did, for the loop's separate accounting and tests.
 #[derive(Debug)]
@@ -201,12 +201,12 @@ fn send_record_frame(
 /// comparison matters.
 pub fn acquire_record_surface(
     pool: &SurfacePool,
-    skipped: &AtomicU64,
+    skipped: &dyn CountSkip,
 ) -> Option<Arc<SharedSurface>> {
     match pool.acquire() {
         Some(s) => Some(s),
         None => {
-            skipped.fetch_add(1, Ordering::SeqCst);
+            skipped.count(SkipPath::NoSurface, 1);
             None
         }
     }
@@ -310,7 +310,7 @@ pub fn begin_tap_frame(
     render: &mut crate::render::RenderLoop,
     pool: Option<&SurfacePool>,
     claims_zero_copy: bool,
-    skipped: &AtomicU64,
+    skipped: &dyn CountSkip,
 ) -> Result<TapLoan, anyhow::Error> {
     let Some(pool) = pool else {
         if claims_zero_copy {
@@ -357,7 +357,7 @@ pub async fn end_tap_frame<F, Fut>(
     render_elapsed: Duration,
     budget: Option<Duration>,
     tx: &SyncSender<RecordMsg>,
-    skipped: &AtomicU64,
+    skipped: &dyn CountSkip,
     readback: F,
 ) -> f64
 where
@@ -371,7 +371,7 @@ where
         return 0.0;
     }
     if should_skip_record_frame(render_elapsed, budget) {
-        skipped.fetch_add(1, Ordering::SeqCst);
+        skipped.count(SkipPath::OverBudget, 1);
         return 0.0;
     }
     let outcome = match (loan.surface, loan.drawn) {
@@ -381,17 +381,17 @@ where
         // R31: a zero-copy surface with no draw to wait on (the View failed to
         // draw this frame, or the caller never marked it) is never handed to
         // the encoder: it would record whatever the surface held before.
-        (Some(_), None) => HandoffOutcome {
-            sent: false,
-            feed_ms: 0.0,
-        },
+        (Some(_), None) => {
+            skipped.count(SkipPath::NoDraw, 1);
+            return 0.0;
+        }
         (None, _) => {
             let (rgba, elapsed) = readback().await;
             send_record_frame(rgba, loan.frame, tx, elapsed)
         }
     };
     if !outcome.sent {
-        skipped.fetch_add(1, Ordering::SeqCst);
+        skipped.count(SkipPath::QueueFull, 1);
     }
     outcome.feed_ms
 }
@@ -491,5 +491,42 @@ mod tests {
             vec![format!("wait {DRAW_WAIT:?}")],
             "R31: a surface the GPU has not finished drawing is never encoded"
         );
+    }
+
+    const BUDGET: Duration = Duration::from_nanos(33_333_333);
+
+    #[tokio::test]
+    async fn a_draw_over_its_budget_is_counted_over_budget_and_never_read_back() {
+        let skips = crate::record::SkipCount::default();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(4);
+        let _ = end_tap_frame(
+            TapLoan::default(),
+            BUDGET,
+            Some(BUDGET),
+            &tx,
+            &skips,
+            || async { panic!("an over-budget frame is never read back") },
+        )
+        .await;
+        assert_eq!(skips.path(SkipPath::OverBudget), 1);
+        assert_eq!(skips.paths_total(), 1, "and under no other path (R46)");
+    }
+
+    #[tokio::test]
+    async fn a_full_record_queue_is_counted_queue_full() {
+        let skips = crate::record::SkipCount::default();
+        // No slot and no receiver waiting: every send finds the queue full.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(0);
+        let _ = end_tap_frame(
+            TapLoan::default(),
+            Duration::from_millis(1),
+            Some(BUDGET),
+            &tx,
+            &skips,
+            || async { (vec![0u8; 4], Duration::ZERO) },
+        )
+        .await;
+        assert_eq!(skips.path(SkipPath::QueueFull), 1);
+        assert_eq!(skips.paths_total(), 1, "and under no other path (R46)");
     }
 }

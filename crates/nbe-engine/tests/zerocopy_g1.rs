@@ -301,8 +301,12 @@ async fn the_pool_never_hands_out_a_surface_videotoolbox_still_reads() {
 /// One frame of the stream path as `tick::run_tick` composes it, stream-only:
 /// the View drawn into a pool surface, then the handoff with that frame's own
 /// draw (`DrawDone::of_view`). The channel's message, if any, and the drops
-/// counted.
-fn stream_one(render: &mut RenderLoop, pool: &SurfacePool, frame: u64) -> (Option<StreamMsg>, u64) {
+/// counted, with no draw to wait on (R46's path).
+fn stream_one(
+    render: &mut RenderLoop,
+    pool: &SurfacePool,
+    frame: u64,
+) -> (Option<StreamMsg>, u64, u64) {
     let surface = pool.acquire().expect("a fresh pool has a free surface");
     render
         .set_view_surface(Some(surface.clone()))
@@ -311,9 +315,13 @@ fn stream_one(render: &mut RenderLoop, pool: &SurfacePool, frame: u64) -> (Optio
     let _ = render.set_view_surface(None);
     let drawn = nbe_engine::record::DrawDone::of_view(render);
     let (tx, rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
-    let skipped = AtomicU64::new(0);
+    let skipped = nbe_engine::record::SkipCount::default();
     hand_off_stream_surface(&tx, surface, drawn, frame, &skipped);
-    (rx.try_recv().ok(), skipped.load(Ordering::SeqCst))
+    (
+        rx.try_recv().ok(),
+        skipped.load(Ordering::SeqCst),
+        skipped.path(nbe_engine::record::SkipPath::NoDraw),
+    )
 }
 
 #[tokio::test]
@@ -321,7 +329,7 @@ async fn a_drawn_stream_surface_reaches_the_stream_thread_with_its_draw_and_its_
     let Some((_state, mut render, pool)) = chain_or_skip().await else {
         return;
     };
-    let (msg, skipped) = stream_one(&mut render, &pool, 7);
+    let (msg, skipped, _) = stream_one(&mut render, &pool, 7);
     assert_eq!(skipped, 0, "a drawn surface is no stream drop");
     let Some(StreamMsg::Surface { drawn, frame, .. }) = msg else {
         panic!("R35: a drawn surface must reach the stream thread, got {msg:?}");
@@ -344,15 +352,16 @@ async fn a_view_that_did_not_draw_hands_the_stream_nothing() {
     };
     // A good frame first, so a submission from the frame before is there to
     // be wrongly handed on: the View's draw must be this frame's or none.
-    let (good, _) = stream_one(&mut render, &pool, 6);
+    let (good, _, _) = stream_one(&mut render, &pool, 6);
     assert!(good.is_some(), "the frame before draws and hands off");
     // The View's draw fails (the injection seam): this frame has no draw to
     // wait on, and the surface holds whatever it held before.
     render.fail_view = true;
-    let (msg, skipped) = stream_one(&mut render, &pool, 7);
+    let (msg, skipped, no_draw) = stream_one(&mut render, &pool, 7);
     assert!(
         msg.is_none(),
         "R35: a surface the View did not draw into must never reach the stream's encoder, got {msg:?}"
     );
     assert_eq!(skipped, 1, "the frame is a counted stream drop");
+    assert_eq!(no_draw, 1, "with no draw to wait on (R46)");
 }

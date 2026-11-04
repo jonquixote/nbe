@@ -173,7 +173,7 @@ impl RecordSession {
         height: u32,
         fps: u32,
         tap: Arc<AudioTap>,
-        skipped: Arc<std::sync::atomic::AtomicU64>,
+        skipped: Arc<dyn crate::record::CountSkip>,
     ) -> Result<Self, RecordError> {
         Self::open_inner(
             directory,
@@ -203,7 +203,7 @@ impl RecordSession {
         height: u32,
         fps: u32,
         tap: Arc<AudioTap>,
-        skipped: Arc<std::sync::atomic::AtomicU64>,
+        skipped: Arc<dyn crate::record::CountSkip>,
         sets: (Vec<u8>, Vec<u8>),
     ) -> Result<Self, RecordError> {
         Self::open_inner(
@@ -230,7 +230,7 @@ impl RecordSession {
         height: u32,
         fps: u32,
         tap: Arc<AudioTap>,
-        skipped: Arc<std::sync::atomic::AtomicU64>,
+        skipped: Arc<dyn crate::record::CountSkip>,
         initial_sets: Option<(Vec<u8>, Vec<u8>)>,
     ) -> Result<Self, RecordError> {
         std::fs::create_dir_all(directory).map_err(|e| RecordError::Disk(e.to_string()))?;

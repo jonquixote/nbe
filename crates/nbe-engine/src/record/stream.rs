@@ -83,7 +83,7 @@ use super::rtmp::{
     AUDIO_BITRATE_BPS, VIDEO_BITRATE_BPS,
 };
 use crate::record::tap_path::Selection;
-use crate::record::{encode_after_draw, AudioTap, AwaitDraw, DrawDone};
+use crate::record::{encode_after_draw, AudioTap, AwaitDraw, CountSkip, DrawDone, SkipPath};
 
 /// Frames in flight between the loop and the stream thread (the record
 /// `RECORD_CHANNEL_BOUND` shape). Beyond it the handoff sheds and counts a
@@ -528,7 +528,7 @@ impl StreamSession {
         endpoint: impl Into<String>,
         selection: Selection,
         params: StreamParams,
-        skipped: Arc<AtomicU64>,
+        skipped: Arc<dyn CountSkip>,
     ) -> Self {
         Self::open_inner(endpoint, selection, params, skipped, Duration::ZERO)
     }
@@ -542,7 +542,7 @@ impl StreamSession {
         endpoint: impl Into<String>,
         selection: Selection,
         params: StreamParams,
-        skipped: Arc<AtomicU64>,
+        skipped: Arc<dyn CountSkip>,
         exit_delay: Duration,
     ) -> Self {
         Self::open_inner(endpoint, selection, params, skipped, exit_delay)
@@ -552,7 +552,7 @@ impl StreamSession {
         endpoint: impl Into<String>,
         selection: Selection,
         params: StreamParams,
-        skipped: Arc<AtomicU64>,
+        skipped: Arc<dyn CountSkip>,
         exit_delay: Duration,
     ) -> Self {
         let endpoint = endpoint.into();
@@ -827,10 +827,10 @@ pub fn hand_off_stream_surface(
     surface: Arc<SharedSurface>,
     drawn: Option<DrawDone>,
     frame: u64,
-    skipped: &AtomicU64,
+    skipped: &dyn CountSkip,
 ) -> bool {
     let Some(drawn) = drawn else {
-        skipped.fetch_add(1, Ordering::SeqCst);
+        skipped.count(SkipPath::NoDraw, 1);
         return false;
     };
     match tx.try_send(StreamMsg::Surface {
@@ -840,7 +840,7 @@ pub fn hand_off_stream_surface(
     }) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
-            skipped.fetch_add(1, Ordering::SeqCst);
+            skipped.count(SkipPath::QueueFull, 1);
             false
         }
         Err(TrySendError::Disconnected(_)) => false,
@@ -855,7 +855,7 @@ pub fn hand_off_stream_surface(
 /// GPU delays the encode only.
 fn encode_when_drawn<R>(
     drawn: &dyn AwaitDraw,
-    skipped: &AtomicU64,
+    skipped: &dyn CountSkip,
     frame: u64,
     encode: impl FnOnce() -> R,
 ) -> Option<R> {
@@ -865,7 +865,7 @@ fn encode_when_drawn<R>(
             frame,
             "stream thread: the View's draw did not finish in time; frame dropped"
         );
-        skipped.fetch_add(1, Ordering::SeqCst);
+        skipped.count(SkipPath::DrawWait, 1);
     }
     encoded
 }
@@ -887,7 +887,7 @@ struct StreamThreadArgs {
     exit_delay: Duration,
     /// The engine-state `skipped_stream_frames`: thread-side drops (no
     /// encoder, refused encodes, publish sheds) land beside the loop's.
-    skipped: Arc<AtomicU64>,
+    skipped: Arc<dyn CountSkip>,
     stats: Arc<StreamStats>,
 }
 
@@ -1010,8 +1010,8 @@ impl StreamThread {
         }
     }
 
-    fn drop_frame(a: &StreamThreadArgs, n: u64) {
-        a.skipped.fetch_add(n, Ordering::SeqCst);
+    fn drop_frame(a: &StreamThreadArgs, path: SkipPath, n: u64) {
+        a.skipped.count(path, n);
     }
 
     fn encode_video(
@@ -1022,15 +1022,15 @@ impl StreamThread {
         frame: u64,
     ) {
         let Some(enc) = self.encoder.as_mut() else {
-            Self::drop_frame(a, 1);
+            Self::drop_frame(a, SkipPath::NoEncoder, 1);
             return;
         };
         let base = *self.base_frame.get_or_insert(frame);
         let Some(pts_index) = frame.checked_sub(base) else {
-            Self::drop_frame(a, 1);
+            Self::drop_frame(a, SkipPath::BeforeFirst, 1);
             return;
         };
-        let encoded = encode_when_drawn(drawn, &a.skipped, frame, || {
+        let encoded = encode_when_drawn(drawn, &*a.skipped, frame, || {
             let started = Instant::now();
             let result = enc.encode_pixel_buffer_at(surface.pixel_buffer(), pts_index);
             a.stats
@@ -1049,7 +1049,7 @@ impl StreamThread {
             Ok(units) => units,
             Err(e) => {
                 tracing::debug!(err = %e, frame, "stream thread: encode refused; frame dropped");
-                Self::drop_frame(a, 1);
+                Self::drop_frame(a, SkipPath::Refused, 1);
                 return;
             }
         };
@@ -1065,7 +1065,7 @@ impl StreamThread {
                 .parameter_sets()
                 .and_then(|(sps, pps)| avc_sequence_header(&sps, &pps));
             let Some(seq) = seq else {
-                Self::drop_frame(a, units.len() as u64);
+                Self::drop_frame(a, SkipPath::NoSequenceHeader, units.len() as u64);
                 return;
             };
             // Cached at send time even if shed, so a redial re-announces it.
@@ -1073,7 +1073,7 @@ impl StreamThread {
                 .publisher
                 .try_publish_video(seq, media_ts_ms(units[0].pts_seconds))
             {
-                Self::drop_frame(a, 1);
+                Self::drop_frame(a, SkipPath::Shed, 1);
             }
             self.seq_sent = true;
         }
@@ -1083,7 +1083,7 @@ impl StreamThread {
             {
                 a.stats.video_units_published.fetch_add(1, Ordering::SeqCst);
             } else {
-                Self::drop_frame(a, 1);
+                Self::drop_frame(a, SkipPath::Shed, 1);
             }
         }
     }
@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn a_stream_draw_that_never_completes_is_a_counted_drop_never_an_encode() {
         let log = std::cell::RefCell::new(Vec::new());
-        let skipped = AtomicU64::new(0);
+        let skipped = crate::record::SkipCount::default();
         let drawn = FakeDraw {
             done: false,
             log: &log,
@@ -1564,6 +1564,11 @@ mod tests {
             skipped.load(Ordering::SeqCst),
             1,
             "R35: the frame given up is a stream drop, counted"
+        );
+        assert_eq!(
+            skipped.path(SkipPath::DrawWait),
+            1,
+            "under the draw it waited on (R46)"
         );
     }
 }

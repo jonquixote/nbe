@@ -204,7 +204,8 @@ pub struct EngineState {
     /// Record frames skipped over budget or on a saturated handoff
     /// (loop-updated, observable to tests). `Arc` so the record thread can
     /// count its own sheds into the same counter — no skip is invisible.
-    pub skipped_record_frames: Arc<AtomicU64>,
+    /// Each skip is counted under the path that took it (R46).
+    pub skipped_record_frames: Arc<crate::record::SkipCount>,
     /// The loaded package's record target (`show.outputs.record.directory`,
     /// resolved against the package root). The channel telemetry pump reads
     /// this to measure `recordSpaceMib`; `None` when no package is loaded or
@@ -237,8 +238,9 @@ pub struct EngineState {
     /// drop-Arc discipline): the View drew regardless, the stream took the
     /// drawn surface or dropped it. Never moves `skipped_record_frames` nor
     /// `droppedFramesTotal` (AC-10 item 4). `Arc` so the loop hook counts
-    /// without holding state locks across GPU work.
-    pub skipped_stream_frames: Arc<AtomicU64>,
+    /// without holding state locks across GPU work. Each skip is counted
+    /// under the path that took it (R46).
+    pub skipped_stream_frames: Arc<crate::record::SkipCount>,
     /// Accumulated stream-feed cost in milliseconds (loop-updated, off the
     /// render budget by construction; observable to tests, no wire change
     /// beyond `streamBufferMs` which reads the transport counter).
@@ -309,13 +311,13 @@ impl EngineState {
             stream_tap: Mutex::new(None),
             record_tap_ms: Mutex::new(0.0),
             record_tap_selection: Mutex::new(None),
-            skipped_record_frames: Arc::new(AtomicU64::new(0)),
+            skipped_record_frames: Arc::default(),
             record_dir: Mutex::new(None),
             stream_state: Mutex::new(StreamState::Idle),
             stream_session: Mutex::new(None),
             stream_tap_selection: Mutex::new(None),
             stream_transport_opened: AtomicBool::new(false),
-            skipped_stream_frames: Arc::new(AtomicU64::new(0)),
+            skipped_stream_frames: Arc::default(),
             stream_tap_ms: Mutex::new(0.0),
             degradation_rung: AtomicU64::new(0),
             loops_shed_total: AtomicU64::new(0),

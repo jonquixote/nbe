@@ -1855,15 +1855,16 @@ async fn second_stream_emits_seq_header_first() {
 ///
 /// R46 (the user's ruling of 2026-11-04): on `macos-15` the strict count
 /// failed 9 of 10 runs alone and 8 of 20 in the workspace (the census, #83),
-/// on #80's head and #81's alike. A record frame is skipped for one of three
-/// reasons, all on one counter: no free record surface before the draw, the
-/// View's draw over its budget, or a full record queue. The first and the
-/// last are what a sharing stream could cost record; the second is the
-/// machine's own draw time (the degradation ladder: record yields, the View
-/// never waits). So every machine asserts that each record skip is an
-/// over-budget draw, read from the loop's own reports with the value the
-/// skip was decided on; the strict bound, no skip at all, is asserted on the
-/// normative machine and in the soak.
+/// on #80's head and #81's alike. Its first re-scope asserted that every
+/// record skip was an over-budget draw, and CI disproved it (#84's run
+/// `41893860656`: record skips 7, over-budget draws 0, stream skips 7, the
+/// stream's own pool untouched). The two counters total skips from several
+/// paths, the loop's and the outputs' threads', so each skip is now counted
+/// under its path (`record::SkipPath`, the user's ruling of the same day,
+/// item 1), and every machine asserts the accounting: the paths sum to each
+/// total, and the over-budget path is exactly the reports' over-budget draws
+/// (the same value decided both). The strict bound, no record skip at all,
+/// is asserted on the normative machine and in the soak.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_live_stream_shares_the_record_composite() {
     let _serial = SERIAL.lock().await;
@@ -1892,13 +1893,15 @@ async fn both_live_stream_shares_the_record_composite() {
         .unwrap()
         .surface_pool()
         .expect("the stream owns a pool");
+    let master_skips0 = state.skipped_master_frames.load(Ordering::SeqCst);
+    let dropped0 = dropped(&state);
     let reports = run_frames(&mut render, &state, 30, 60).await;
+    let master_skips = state.skipped_master_frames.load(Ordering::SeqCst) - master_skips0;
+    let drops = dropped(&state) - dropped0;
     let arrived = poll_until(Duration::from_secs(5), || {
         dbl.with(|r| r.video_media().len() >= 30)
     })
     .await;
-    let record_skips = state.skipped_record_frames.load(Ordering::SeqCst);
-    let stream_skips = state.skipped_stream_frames.load(Ordering::SeqCst);
     let own_taken = own_pool.acquisitions();
     handler
         .apply(&directive("stream.stop", 5, serde_json::json!({})))
@@ -1908,13 +1911,24 @@ async fn both_live_stream_shares_the_record_composite() {
         .apply(&directive("record.stop", 6, serde_json::json!({})))
         .await
         .expect("record.stop must succeed");
-    // Every tick here records, and the loop runs the clock, so each tick's
-    // draw was checked against one frame's budget.
+    // Read once both outputs' threads have stopped: their own skips are in,
+    // and nothing counts while the totals and paths are read.
+    let record = &state.skipped_record_frames;
+    let stream = &state.skipped_stream_frames;
+    let record_skips = record.load(Ordering::SeqCst);
+    let stream_skips = stream.load(Ordering::SeqCst);
+    // Every tick here records and the loop runs the clock, so each running
+    // tick's draw was checked against one frame's budget.
     let budget = Duration::from_secs_f64(1.0 / 30.0);
-    let over_budget = reports.iter().filter(|r| r.render >= budget).count() as u64;
+    let over_budget = reports
+        .iter()
+        .filter(|r| r.master_frame.is_some() && r.render >= budget)
+        .count() as u64;
     eprintln!(
-        "BOTH LIVE: {} ticks, record skips {record_skips}, over-budget draws {over_budget}, stream skips {stream_skips}, video {}",
+        "BOTH LIVE: {} ticks, record skips {record_skips} ({}), over-budget draws {over_budget}, stream skips {stream_skips} ({}), video {}, master frames never drawn {master_skips}, View drops {drops}",
         reports.len(),
+        record.by_path(),
+        stream.by_path(),
         dbl.with(|r| r.video_media().len())
     );
     assert!(
@@ -1925,16 +1939,30 @@ async fn both_live_stream_shares_the_record_composite() {
         own_taken, 0,
         "the stream's own pool is untouched while it shares: it handed out no surface"
     );
+    // R46's accounting: each skip under exactly one path, the paths summing
+    // to the total.
     assert_eq!(
-        record_skips, over_budget,
-        "every record skip is the View's own draw over its budget: the stream's share costs record nothing"
+        record.paths_total(),
+        record_skips,
+        "every record skip is counted under one path"
+    );
+    assert_eq!(
+        stream.paths_total(),
+        stream_skips,
+        "every stream skip is counted under one path"
+    );
+    assert_eq!(
+        record.path(nbe_engine::record::SkipPath::OverBudget),
+        over_budget,
+        "the over-budget path is exactly the loop's over-budget draws"
     );
     // The bound measures the machine (R46, R9's class).
     if on_the_normative_machine() {
         assert_eq!(record_skips, 0, "a live stream never costs record a frame");
     } else {
         eprintln!(
-            "SKIP normative: no record skip beside a live stream (record skips {record_skips}, each an over-budget draw) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+            "SKIP normative: no record skip beside a live stream (record skips {record_skips}: {}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)",
+            record.by_path()
         );
     }
 }

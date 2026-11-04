@@ -29,6 +29,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::record::{CountSkip, SkipPath};
 use crate::render::RenderLoop;
 use crate::state::{EngineState, RecordState, StreamState};
 
@@ -309,7 +310,7 @@ pub async fn run_tick(
         render,
         pool.as_deref(),
         claims_zero_copy,
-        &state.skipped_record_frames,
+        &*state.skipped_record_frames,
     ) {
         Ok(loan) => loan,
         // Option A: the take ends here, loudly. The View still goes on air.
@@ -344,7 +345,7 @@ pub async fn run_tick(
                 own_surface = Some(s);
             }
             _ => {
-                state.skipped_stream_frames.fetch_add(1, Ordering::SeqCst);
+                state.skipped_stream_frames.count(SkipPath::NoSurface, 1);
             }
         }
     }
@@ -393,7 +394,7 @@ pub async fn run_tick(
                 report.render,
                 deadline,
                 &tx,
-                &state.skipped_record_frames,
+                &*state.skipped_record_frames,
                 || async {
                     // Timed readback (the only await, and only on the CPU
                     // path): its cost belongs to the record counter.
@@ -422,7 +423,7 @@ pub async fn run_tick(
                 surface,
                 stream_drawn,
                 frame,
-                &state.skipped_stream_frames,
+                &*state.skipped_stream_frames,
             );
         }
         report.stream += handoff_started.elapsed();

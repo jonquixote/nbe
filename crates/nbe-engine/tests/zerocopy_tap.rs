@@ -213,7 +213,7 @@ fn an_exhausted_pool_skips_the_frame_before_the_draw_and_counts_it() {
     assert_eq!(pool.len(), pool_size());
     assert_eq!(pool.free(), pool_size(), "a fresh pool is entirely free");
 
-    let skipped = std::sync::atomic::AtomicU64::new(0);
+    let skipped = nbe_engine::record::SkipCount::default();
 
     // Hold every surface, as the encoder would while it works through a full
     // channel plus the frame in hand.
@@ -241,6 +241,11 @@ fn an_exhausted_pool_skips_the_frame_before_the_draw_and_counts_it() {
         1,
         "the refusal counts as a skipped record frame, the same counter the \
          budget skip and the shed handoff feed"
+    );
+    assert_eq!(
+        skipped.path(nbe_engine::record::SkipPath::NoSurface),
+        1,
+        "under the path that refused it (R46)"
     );
 
     // And the loan returns: the encoder finishing is the same event as the
@@ -509,8 +514,11 @@ async fn tap_one(
     pool: &nbe_decode::zerocopy::SurfacePool,
     frame: u64,
     mark: bool,
-) -> (Option<nbe_engine::record::thread::RecordMsg>, u64) {
-    let skipped = std::sync::atomic::AtomicU64::new(0);
+) -> (
+    Option<nbe_engine::record::thread::RecordMsg>,
+    nbe_engine::record::SkipCount,
+) {
+    let skipped = nbe_engine::record::SkipCount::default();
     let (tx, rx) = std::sync::mpsc::sync_channel(4);
     let mut loan = nbe_engine::record::begin_tap_frame(render, Some(pool), true, &skipped)
         .expect("the pool exists: no chain loss");
@@ -529,10 +537,7 @@ async fn tap_one(
         || async { panic!("a zero-copy take never reads back") },
     )
     .await;
-    (
-        rx.try_recv().ok(),
-        skipped.load(std::sync::atomic::Ordering::SeqCst),
-    )
+    (rx.try_recv().ok(), skipped)
 }
 
 #[tokio::test]
@@ -542,7 +547,8 @@ async fn a_drawn_surface_reaches_the_encoder_with_its_draw_and_its_frame() {
     };
     let (msg, skipped) = tap_one(&mut render, &pool, 5, true).await;
     assert_eq!(
-        skipped, 0,
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        0,
         "a drawn, marked frame is handed off, not skipped"
     );
     let Some(nbe_engine::record::thread::RecordMsg::Surface { drawn, frame, .. }) = msg else {
@@ -573,7 +579,16 @@ async fn a_view_that_did_not_draw_hands_its_surface_to_no_encoder() {
         msg.is_none(),
         "R31: a surface the View did not draw into must never reach the encoder, got {msg:?}"
     );
-    assert_eq!(skipped, 1, "the frame is a counted skip");
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the frame is a counted skip"
+    );
+    assert_eq!(
+        skipped.path(nbe_engine::record::SkipPath::NoDraw),
+        1,
+        "with no draw to wait on (R46)"
+    );
 }
 
 #[tokio::test]
@@ -586,7 +601,16 @@ async fn an_unmarked_surface_is_never_handed_off() {
         msg.is_none(),
         "R31: a zero-copy surface with no draw to wait on must never reach the encoder, got {msg:?}"
     );
-    assert_eq!(skipped, 1, "the frame is a counted skip");
+    assert_eq!(
+        skipped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the frame is a counted skip"
+    );
+    assert_eq!(
+        skipped.path(nbe_engine::record::SkipPath::NoDraw),
+        1,
+        "with no draw to wait on (R46)"
+    );
 }
 
 // ---------------------------------------------------------------------------
