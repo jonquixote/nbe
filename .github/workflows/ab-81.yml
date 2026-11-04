@@ -20,6 +20,9 @@ env:
   # What Swatinem/rust-cache sets in ci.yml's rust job, so the arms are built
   # the way CI builds them.
   CARGO_INCREMENTAL: "0"
+  # Plain text, so the `Executable` line parses (run 41839322119 died on the
+  # colour codes around it before any test ran).
+  CARGO_TERM_COLOR: never
   ARM_A: 74937d8dc2eb43667ab04380a155786618cd8838
   ARM_B: ccc4e444edf4ef9b72a3836d8a745644ab1c1949
   RUNS: "30"
@@ -56,6 +59,7 @@ jobs:
             ( cd "$wt" && cargo test -p nbe-engine --test prompt10_rtmp --no-run 2>&1 ) | tee "$RUNNER_TEMP/build-$arm.log"
             echo "arm $arm: built in $(( $(date +%s) - start )) s"
             exe=$(sed -nE 's/.*Executable tests\/prompt10_rtmp\.rs \((.*)\).*/\1/p' "$RUNNER_TEMP/build-$arm.log")
+            if [ -z "$exe" ] || [ ! -f "$wt/$exe" ]; then echo "FAIL: arm $arm's test binary not found in the build output"; exit 1; fi
             echo "arm $arm: binary $wt/$exe"
             shasum -a 256 "$wt/$exe"
             echo "$wt/$exe" > "$RUNNER_TEMP/exe-$arm"
@@ -82,7 +86,7 @@ jobs:
                 load1=$(sysctl -n vm.loadavg | awk '{print $2}')
                 start=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
                 ( cd "$RUNNER_TEMP/wt-$arm" && perl -e 'alarm shift; exec @ARGV' 300 \
-                    cargo test -p nbe-engine --test prompt10_rtmp -- --exact "$t" --nocapture ) > "$log" 2>&1 && rc=0 || rc=$?
+                    cargo test -p nbe-engine --test prompt10_rtmp -- --exact "$t" --nocapture --color never ) > "$log" 2>&1 && rc=0 || rc=$?
                 end=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
                 secs=$(echo "$end - $start" | bc)
                 # Rule 8: a run that skipped, or ran anything but this one
