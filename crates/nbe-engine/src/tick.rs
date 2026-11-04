@@ -235,15 +235,17 @@ impl Cadence {
                     .fetch_add(skipped, Ordering::SeqCst);
                 // A master frame never drawn was never submitted by its
                 // deadline: each is a dropped frame (§10.2, ruled 2026-10-28).
-                state
+                let dropped_total = state
                     .dropped_frames_total
-                    .fetch_add(skipped, Ordering::SeqCst);
+                    .fetch_add(skipped, Ordering::SeqCst)
+                    + skipped;
                 if let Some(suppressed) = self.lines.take(Instant::now()) {
                     tracing::warn!(
                         master_frame = f,
                         skipped,
                         previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
                         woke_late_ms = woke_late.as_secs_f64() * 1000.0,
+                        dropped_total,
                         suppressed,
                         "R33: master frames {}..={} were never drawn",
                         prev + 1,
@@ -271,7 +273,13 @@ impl Cadence {
     /// (rate-limited), with where the frame's time went: how late the wake
     /// came, the work before the draw, and the draw. A drop can then be tied
     /// to a late wake or to a slow draw.
-    fn submitted_late(&mut self, report: &TickReport) {
+    ///
+    /// Both drop lines carry `dropped_total`: `droppedFramesTotal` right after
+    /// the drops the line names were counted. Only the render thread moves
+    /// that counter, and nothing moves it between `run_tick`'s count and this
+    /// line, so a reader of the telemetry knows exactly which counts a line
+    /// explains (the dress's R21 backstop).
+    fn submitted_late(&mut self, state: &EngineState, report: &TickReport) {
         let (Some(f), Some(late)) = (report.master_frame, report.submitted_late) else {
             return;
         };
@@ -282,6 +290,7 @@ impl Cadence {
                 woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
                 before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
                 render_ms = report.render.as_secs_f64() * 1000.0,
+                dropped_total = state.dropped_frames_total.load(Ordering::SeqCst),
                 suppressed,
                 "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
                 f + 1
@@ -535,7 +544,7 @@ pub async fn run_loop(
         report.master_frame = master;
         report.woke_late = woke_late;
         cadence.ticked(report.total);
-        cadence.submitted_late(&report);
+        cadence.submitted_late(state, &report);
         if !on_tick(&report) {
             cadence.end(state);
             return;
@@ -641,8 +650,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_burst_of_skips_cannot_hide_a_late_submit() {
+    /// What `f` logged, as text.
+    fn captured(f: impl FnOnce()) -> String {
         #[derive(Clone, Default)]
         struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Log {
@@ -660,7 +669,14 @@ mod tests {
             .with_writer(move || writer.clone())
             .with_ansi(false)
             .finish();
-        tracing::subscriber::with_default(subscriber, || {
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = log.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn a_burst_of_skips_cannot_hide_a_late_submit() {
+        let text = captured(|| {
             let state = EngineState::new(30);
             let mut cadence = Cadence::default();
             // Every other frame skipped: more R33 lines than a second allows.
@@ -668,13 +684,15 @@ mod tests {
                 .map(|i| Some(2 * i))
                 .collect();
             feed(&mut cadence, &state, &frames);
-            cadence.submitted_late(&TickReport {
-                master_frame: Some(99),
-                submitted_late: Some(Duration::from_millis(3)),
-                ..Default::default()
-            });
+            cadence.submitted_late(
+                &state,
+                &TickReport {
+                    master_frame: Some(99),
+                    submitted_late: Some(Duration::from_millis(3)),
+                    ..Default::default()
+                },
+            );
         });
-        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
         assert!(
             text.matches("R33: ").count() >= R33_LINES_PER_SECOND as usize,
             "the skips used up R33's budget:\n{text}"
@@ -685,6 +703,38 @@ mod tests {
             ),
             "a late submit after R33's budget is spent still has its line:\n{text}"
         );
+    }
+
+    /// The R21 backstop's join: each drop line names the `droppedFramesTotal`
+    /// its own count reached, so the dress knows which counts it explains.
+    #[test]
+    fn each_drop_line_carries_the_dropped_total_its_own_count_reached() {
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            state.dropped_frames_total.store(5, Ordering::SeqCst);
+            let mut cadence = Cadence::default();
+            feed(&mut cadence, &state, &[Some(10), Some(13)]);
+            // `run_tick`'s count of frame 13's late submit, then its line.
+            state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
+            cadence.submitted_late(
+                &state,
+                &TickReport {
+                    master_frame: Some(13),
+                    submitted_late: Some(Duration::from_millis(3)),
+                    ..Default::default()
+                },
+            );
+            feed(&mut cadence, &state, &[Some(15)]);
+        });
+        let line = |what: &str| {
+            text.lines()
+                .find(|l| l.contains(what))
+                .unwrap_or_else(|| panic!("no line `{what}` in:\n{text}"))
+                .to_string()
+        };
+        assert!(line("R33: master frames 11..=12 were never drawn").contains("dropped_total=7"));
+        assert!(line("R21: master frame 13 was drawn").contains("dropped_total=8"));
+        assert!(line("R33: master frames 14..=14 were never drawn").contains("dropped_total=9"));
     }
 
     #[test]

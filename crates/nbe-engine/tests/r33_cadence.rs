@@ -342,6 +342,10 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
         line.contains("previous_tick_ms=") && line.contains("woke_late_ms="),
         "the skip's line says neither how long the tick before it ran nor how late the wake came: {line}"
     );
+    assert!(
+        line.contains("dropped_total="),
+        "the skip's line does not say which drop counts it explains (R21's backstop): {line}"
+    );
 }
 
 /// The log a run of the loop wrote, with every line a test's subscriber saw.
@@ -402,6 +406,11 @@ async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
     assert!(
         lines[0].contains(&expected),
         "no line `{expected}` in:\n{log}"
+    );
+    assert!(
+        lines[0].contains("dropped_total=1 "),
+        "the line names the drop count it explains, the first (R21's backstop): {}",
+        lines[0]
     );
     for field in ["late_ms=", "woke_late_ms=", "before_draw_ms=", "render_ms="] {
         assert!(

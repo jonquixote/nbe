@@ -255,6 +255,117 @@ function dropLines(mark: number): string[] {
 }
 
 /**
+ * R21's backstop (the user's ruling of 2026-11-04, third set, item 2). On the
+ * normative machine a step's drops are zero, strictly. On a GitHub Actions
+ * runner a drop is tolerated only when the engine's own line ties it to a late
+ * wake, and a show tolerates at most `TIED_DROPS_CAP` of them. Anywhere else
+ * the strict bound applies (fail-closed).
+ *
+ * Each R21 and R33 line carries `dropped_total`, the engine's
+ * `droppedFramesTotal` right after the drops it names were counted (one thread
+ * moves the counter). A step's drops are the counts in (before, after], and
+ * each count is matched to the line that explains it, with no time window to
+ * race:
+ * - an R21 line explains one count, tied to a late wake when
+ *   `woke_late_ms >= late_ms` (an on-time wake would have submitted it on time);
+ * - an R33 line explains `skipped` counts, tied to a late wake when
+ *   `woke_late_ms` covers the skipped span, `skipped` frames at the house rate.
+ * A count no line explains (the engine's rate limit suppressed it) is
+ * unattributed and fails, as does a count whose line does not tie it to a
+ * late wake.
+ */
+const TIED_DROPS_CAP = 8; // PROVISIONAL (the ruling): revisited after three green macos-15 runs.
+let tiedDrops = 0;
+
+/**
+ * A drop line's numeric fields, as tracing writes them: `key=value`, with the
+ * engine's colour codes around the key and the `=` stripped first, and a float
+ * in Rust's Debug form (`3.5456250000000002`, or `1e-6` when tiny).
+ */
+function lineFields(line: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
+  for (const m of plain.matchAll(/\b([a-z_]+)=(-?\d+(?:\.\d+)?(?:e-?\d+)?)\b/g)) {
+    out[m[1]!] = Number(m[2]);
+  }
+  return out;
+}
+
+interface DropAccount {
+  tied: number[];
+  untied: number[];
+  unexplained: number[];
+  lines: string[];
+}
+
+/** The counts in (before, after]: each tied to a late wake by its line, not tied, or explained by none. */
+function accountDrops(before: number, after: number): DropAccount {
+  const explains = new Map<number, { line: string; tied: boolean }>();
+  for (const line of dropLines(0)) {
+    const f = lineFields(line);
+    const r21 = line.includes("R21: master frame");
+    const n = r21 ? 1 : (f["skipped"] ?? Number.NaN);
+    const total = f["dropped_total"] ?? Number.NaN;
+    if (!Number.isInteger(n) || !Number.isInteger(total)) continue;
+    const late = f["woke_late_ms"] ?? Number.NaN;
+    const tied = r21 ? late >= (f["late_ms"] ?? Number.NaN) : late >= (n * 1000) / HOUSE_RATE;
+    for (let count = total - n + 1; count <= total; count++) explains.set(count, { line, tied });
+  }
+  const account: DropAccount = { tied: [], untied: [], unexplained: [], lines: [] };
+  for (let count = before + 1; count <= after; count++) {
+    const e = explains.get(count);
+    if (e === undefined) {
+      account.unexplained.push(count);
+      continue;
+    }
+    (e.tied ? account.tied : account.untied).push(count);
+    if (!account.lines.includes(e.line)) account.lines.push(e.line);
+  }
+  return account;
+}
+
+/** Wait, a telemetry tick at most, for the line of the count `after` to arrive. */
+async function dropLinesArrived(after: number): Promise<void> {
+  const deadline = Date.now() + TICK_MS;
+  const arrived = () => dropLines(0).some((l) => (lineFields(l)["dropped_total"] ?? 0) >= after);
+  while (!arrived() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+}
+
+/** A step's drops: none on the normative machine; on a runner, each tied to a late wake, within the show's cap. */
+async function noDropsOrTiedOnes(what: string, before: number, after: number, mark: number): Promise<void> {
+  if (whichMachine().kind !== "ci") {
+    assert.equal(
+      after,
+      before,
+      `${what}: ${before} -> ${after}; the engine's lines for them: ${JSON.stringify(dropLines(mark))}`,
+    );
+    return;
+  }
+  if (after === before) return;
+  await dropLinesArrived(after);
+  const a = accountDrops(before, after);
+  tiedDrops += a.tied.length;
+  console.log(
+    `R21-BACKSTOP ${JSON.stringify({ what, before, after, tied: a.tied, untied: a.untied, unexplained: a.unexplained, showTied: tiedDrops, cap: TIED_DROPS_CAP, provisional: true })}`,
+  );
+  const detail = `${before} -> ${after}; the engine's lines for them: ${JSON.stringify(a.lines)}`;
+  assert.deepEqual(
+    a.unexplained,
+    [],
+    `${what}: no engine line explains drop count(s) ${JSON.stringify(a.unexplained)} (unattributed); ${detail}`,
+  );
+  assert.deepEqual(
+    a.untied,
+    [],
+    `${what}: drop count(s) ${JSON.stringify(a.untied)} are not tied to a late wake; ${detail}`,
+  );
+  assert.ok(
+    tiedDrops <= TIED_DROPS_CAP,
+    `${what}: ${tiedDrops} drops tied to a late wake this show, over the provisional cap of ${TIED_DROPS_CAP}; ${detail}`,
+  );
+}
+
+/**
  * R29 (R25's construction, R5's class): wait for the load to complete on the
  * render thread, not only for the engine's acknowledgement of it.
  *
@@ -602,11 +713,7 @@ test("[RI-1] step 5: a 15-frame mix drops no frames", async () => {
   // Two ticks so the whole transition is inside the measured window.
   await new Promise((r) => setTimeout(r, RISE_MS));
   const after = droppedNow();
-  assert.equal(
-    after,
-    before,
-    `a mix must not drop frames: ${before} -> ${after}; the engine's lines for them: ${JSON.stringify(dropLines(mark))}`,
-  );
+  await noDropsOrTiedOnes("a mix must not drop frames", before, after, mark);
 });
 
 test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", async () => {
@@ -634,11 +741,7 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
   const sfx = peaks["sfx"] ?? -120;
   assert.ok(sfx > -60, `sfx bus should carry the stab: ${sfx} dBFS`);
   const after = droppedNow();
-  assert.equal(
-    after,
-    before,
-    `a soundboard trigger must not cost a frame: ${before} -> ${after}; the engine's lines for them: ${JSON.stringify(dropLines(mark))}`,
-  );
+  await noDropsOrTiedOnes("a soundboard trigger must not cost a frame", before, after, mark);
 });
 
 test("[RI-1] step 7: an audio.bus.set is accepted and the graph survives it", async () => {
@@ -699,6 +802,7 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
   // non-house-rate asset is in the package the rehearsal plays, it takes
   // without error, and it costs no dropped frames. Before this, no end-to-end
   // path touched a non-house-rate clip at all.
+  const mark = engineLogMark();
   const before = droppedNow();
   await ok("preview.set", { itemRef: "A3" });
   await ok("view.take", { transition: "cut" });
@@ -707,7 +811,7 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
     (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A3",
   );
   assert.equal((tick["data"] as Record<string, unknown>)["viewItem"], "A3");
-  assert.equal(droppedNow(), before, "taking a 12 fps source must not drop frames");
+  await noDropsOrTiedOnes("taking a 12 fps source must not drop frames", before, droppedNow(), mark);
 });
 
 // Step 8 rehearses `preview.set` mid-arc: the operator stages the next item
@@ -1215,6 +1319,9 @@ test("[RI-1] gate: the counts, logged for the trend (Findings R12, R13)", () => 
     watchdogTrips: g.watchdogTrips,
     step4RiseMs,
     step6RiseMs,
+    // R21's backstop: drops in steps 5-7 tied to a late wake, on a runner.
+    tiedDrops,
+    tiedDropsCap: { cap: TIED_DROPS_CAP, provisional: true },
     backstops: { ...BACKSTOP, riseMs: RISE_BACKSTOP_MS },
     normativeRiseMs: RISE_MS + TICK_MS,
   };
