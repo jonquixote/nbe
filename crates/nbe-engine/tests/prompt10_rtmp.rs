@@ -1899,7 +1899,7 @@ async fn both_live_stream_shares_the_record_composite() {
     .await;
     let record_skips = state.skipped_record_frames.load(Ordering::SeqCst);
     let stream_skips = state.skipped_stream_frames.load(Ordering::SeqCst);
-    let own_free = own_pool.free();
+    let own_taken = own_pool.acquisitions();
     handler
         .apply(&directive("stream.stop", 5, serde_json::json!({})))
         .await
@@ -1922,9 +1922,8 @@ async fn both_live_stream_shares_the_record_composite() {
         "the stream receives frames from the shared composite"
     );
     assert_eq!(
-        own_free,
-        own_pool.len(),
-        "the stream's own pool is untouched while it shares"
+        own_taken, 0,
+        "the stream's own pool is untouched while it shares: it handed out no surface"
     );
     assert_eq!(
         record_skips, over_budget,
