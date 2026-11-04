@@ -12,14 +12,24 @@ on:
 env:
   NBE_AUDIO_SINK: "null"
 
+# Every job and step carries timeout-minutes (the user's ruling of
+# 2026-11-04, item 2, after a test hung for 21.5 h on the reference
+# machine): about three times its longest run over seven runs
+# (40814388110 to 41795102544, macos-14 and macos-15, warm and cold
+# caches), and never under 5 minutes; a job's is rounded up to 5. A step
+# with no recorded run gets 10. A hung step fails loudly instead of
+# holding a runner for GitHub's 6 h default.
 jobs:
   rust:
     runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+        timeout-minutes: 5
       # Cargo cache. 438 s of cold release build on each job that shells
       # preflight, every run, was the tax for making that binary 8x faster —
       # this makes the warm case ~0.6 s and leaves the speed-up free.
@@ -32,7 +42,9 @@ jobs:
       # source — which is precisely the "stale binary looks fresh" failure this
       # project has already been bitten by once, in a falsification battery.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
       - run: cargo fmt --all -- --check
+        timeout-minutes: 5
       - name: the unsafe exception stays in crates/nbe-decode
         run: |
           # The workspace denies unsafe_code (root Cargo.toml). Exactly one
@@ -58,7 +70,9 @@ jobs:
             exit 1
           fi
           echo "unsafe exception confined to crates/nbe-decode/src"
+        timeout-minutes: 5
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        timeout-minutes: 9
       # R10's load capture (docs/prompt-map-07-13.md, Finding R10). A CI
       # sighting of `drained reads 0 on the tick` can reopen R10 only with the
       # machine's load recorded around the step it fails in, and its first two
@@ -97,6 +111,7 @@ jobs:
           { nohup bash -c 'while :; do bash "$0" sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
               > "$RUNNER_TEMP/ci-load-samples.log" 2>&1 < /dev/null & } || true
           echo "$!" > "$RUNNER_TEMP/ci-load-sampler.pid" || true
+        timeout-minutes: 5
       - name: cargo test --workspace (summary echoed for the audit trail)
         run: |
           set -o pipefail
@@ -109,6 +124,7 @@ jobs:
           grep "^test result" /tmp/rust-test.log \
             | awk '{p+=$4; f+=$6; i+=$8} END {printf "TOTAL: %d passed, %d failed, %d ignored\n", p, f, i}'
           echo "::endgroup::"
+        timeout-minutes: 28
       - name: "R10 load capture: after the workspace tests, every sample"
         if: always()
         continue-on-error: true
@@ -117,6 +133,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the samples, every 10 s from the line before the tests:" || true
           cat "$RUNNER_TEMP/ci-load-samples.log" 2>/dev/null || echo "[ci-load] no samples file" || true
+        timeout-minutes: 5
       # R15's load capture (docs/soak-protocol.md, R15). Two of R15's CI
       # failures (PR #61's run 39412596238, attempt 1, and the A/B's run
       # 39524813308, attempt 8) were in the GPU/render step, which runs after
@@ -137,6 +154,7 @@ jobs:
           { nohup bash -c 'while :; do bash "$0" gpu-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
               > "$RUNNER_TEMP/ci-load-gpu-samples.log" 2>&1 < /dev/null & } || true
           echo "$!" > "$RUNNER_TEMP/ci-load-gpu-sampler.pid" || true
+        timeout-minutes: 5
       - name: GPU/render tests actually ran (Prompt 04)
         # Runs the Prompt 04 render test suite headless on macos-14 (Metal).
         # If zero tests ran, the render gate is silently absent and CI passes
@@ -171,6 +189,7 @@ jobs:
             echo "expected at least one prompt04 test to run"; exit 1
           fi
           echo "prompt04 tests that ran: $ran"
+        timeout-minutes: 5
       - name: "R15 load capture: after the GPU/render tests, every sample"
         if: always()
         continue-on-error: true
@@ -179,6 +198,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-gpu-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the GPU/render samples, every 10 s from the line before its tests:" || true
           cat "$RUNNER_TEMP/ci-load-gpu-samples.log" 2>/dev/null || echo "[ci-load] no GPU/render samples file" || true
+        timeout-minutes: 5
       # R10's floor-step capture (docs/soak-protocol.md, R10, sighting 3).
       # Main's merge run 40250323983 failed R10's drain in the prompt10_rtmp
       # floor step, which runs after R15's post line, so the sighting carried
@@ -202,6 +222,7 @@ jobs:
           { nohup bash -c 'while :; do bash "$0" floor-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
               > "$RUNNER_TEMP/ci-load-floor-samples.log" 2>&1 < /dev/null & } || true
           echo "$!" > "$RUNNER_TEMP/ci-load-floor-sampler.pid" || true
+        timeout-minutes: 5
       - name: the midmix suite actually ran (TRANSITIONS step 3)
         # GAP-6 duration edges (default-15, zero, one, over-max/no-clamp) +
         # GAP-11 start+1 bisection live here alongside Step 1's continuity
@@ -242,6 +263,7 @@ jobs:
           if [ "$exercised" -lt 20 ]; then
             echo "expected at least 20 prompt04_midmix tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: overlay golden-frame tests actually ran (Prompt 07 step 5)
         # §7.10's suite is three levels in one target: index (2) + directive
         # (6, GPU-free) + render (5, headless wgpu golden frames, like
@@ -259,6 +281,7 @@ jobs:
             echo "expected at least 13 prompt07_overlay tests to run"; exit 1
           fi
           echo "prompt07_overlay tests that ran: $ran"
+        timeout-minutes: 5
       - name: the 07b graphics suite actually ran
         run: |
           out=$(cargo test -p nbe-engine --test prompt07b_graphics 2>&1) && rc=0 || rc=$?
@@ -276,6 +299,7 @@ jobs:
             echo "expected at least 14 prompt07b_graphics tests to run, got $ran"; exit 1
           fi
           echo "prompt07b_graphics tests that ran: $ran"
+        timeout-minutes: 5
       - name: the bindings suite actually ran
         # Prompt 08's preflight binding checks (unknown action, bad payload,
         # incomplete trigger). Floor, not a count, same shape as the
@@ -293,6 +317,7 @@ jobs:
             echo "expected at least 3 bindings tests to run, got $ran"; exit 1
           fi
           echo "bindings tests that ran: $ran"
+        timeout-minutes: 5
       - name: the 09 suites ran, and their runner-independent coverage is intact
         # TWO floors per suite, because one floor could not tell the difference
         # that matters.
@@ -357,6 +382,7 @@ jobs:
             echo "$target:$ran:$skipped:$exercised" >> /tmp/p09-coverage.txt
           done
           exit "$fail"
+        timeout-minutes: 5
       - name: the zero-copy tap suite ran, and its runner-independent part is intact
         # Same two-floor shape as the 09 gate, for the same reason. Eight of
         # this suite's twelve tests need a wgpu adapter and skip loudly without
@@ -407,6 +433,7 @@ jobs:
           else
             echo "No skips: this runner exercised the zero-copy chain itself."
           fi
+        timeout-minutes: 5
       - name: the zero-copy migration suite ran, and its runner-independent part is intact
         # ZERO-COPY Phase 3b step 5. Same two-floor shape, third instance.
         #
@@ -447,6 +474,7 @@ jobs:
           else
             echo "No skips: this runner ran a take on both frame paths."
           fi
+        timeout-minutes: 5
       - name: the G1 shared-pool suite actually ran (Prompt 10 WU1)
         # On the production seams since the PR #30 repair round: the real GPU
         # SurfacePool, a real RenderLoop drawing through record's
@@ -480,6 +508,7 @@ jobs:
           if [ "$exercised" -lt 5 ]; then
             echo "FAIL zerocopy_g1: expected at least 5 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: R33's and R36's cadence guards actually ran
         # R33 (the loop draws the master clock's frame, once, in order) and R36
         # (a slow free-space measurement never stalls the loop's timer) are
@@ -505,6 +534,7 @@ jobs:
             if [ "$ran" -lt "$2" ]; then echo "FAIL $1: expected at least $2 tests to run, got $ran"; exit 1; fi
             if [ "$exercised" -lt "$3" ]; then echo "FAIL $1: expected at least $3 tests to actually execute rather than skip, got $exercised"; exit 1; fi
           done
+        timeout-minutes: 5
       - name: the tapPath override suite actually ran (Prompt 10 WU2)
         # Same two-floor shape. Three of the five tests open a take and gate on
         # the hardware encoder (loud SKIP without one); the other two
@@ -528,6 +558,7 @@ jobs:
           if [ "$exercised" -lt 2 ]; then
             echo "FAIL zerocopy_override: expected at least 2 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the stream url precedence suite actually ran (Prompt 10 WU3)
         # Pure logic over resolve_stream_url (no engine state, no encoder):
         # all 15 run everywhere, floors equal, same reason as the G1 block.
@@ -551,6 +582,7 @@ jobs:
           if [ "$exercised" -lt 15 ]; then
             echo "FAIL stream_url_precedence: expected at least 15 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the stream commands suite actually ran (Prompt 10 WU4)
         # Twenty-one tests. Thirteen open a stream and gate on the hardware
         # encoder (loud SKIP without one). Eight run on this runner (a
@@ -584,6 +616,7 @@ jobs:
           if [ "$exercised" -lt 8 ]; then
             echo "FAIL prompt10_stream_cmds: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the RTMP transport suite actually ran (Prompt 10 WU5)
         # Two layers since the PR #30 repair round. Thirteen tests drive the
         # real transport (and, for audio and the stop path, the real stream
@@ -616,6 +649,7 @@ jobs:
           if [ "$exercised" -lt 13 ]; then
             echo "FAIL prompt10_rtmp: expected at least 13 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the stream telemetry suite actually ran (Prompt 10 WU6)
         # Same two-floor shape. Two of the five tests go live and gate on the
         # encoder + chain (loud SKIP without either); the other three
@@ -641,6 +675,7 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL prompt10_telemetry: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the audioLevel crossing suite actually ran (Prompt 11 B1)
         # Six tests on real metered levels (a tone on a graph bus, the graph's own
         # peak meter), one entering through show.load. No hardware: every test runs on
@@ -664,6 +699,7 @@ jobs:
           if [ "$exercised" -lt 6 ]; then
             echo "FAIL prompt11_audio_level: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the degradation ladder's rung 2 suite actually ran (Prompt 11 WU6)
         # Four tests on a real render loop with two decoded loops: the ladder's
         # order, off-air shedding and re-acquire on take, and the View-continuity
@@ -689,6 +725,7 @@ jobs:
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL prompt11_ladder: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the watchdog recovery suite actually ran (Prompt 11 WU8)
         # Four tests on a real render loop: a tripped slate clears after K
         # on-time frames; trips and clears are counted once each and ride the
@@ -718,6 +755,7 @@ jobs:
           if [ "$exercised" -lt 4 ]; then
             echo "FAIL prompt11_watchdog: expected at least 4 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the slate-release suite actually ran (PR #34 fix round)"
         # Seven tests on a real render loop: view.fallback then take (View
         # pixels, the slate bit and the tick together); the engine's view.cut
@@ -745,6 +783,7 @@ jobs:
           if [ "$exercised" -lt 7 ]; then
             echo "FAIL prompt11_slate: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the take-duration suite actually ran (SPEC v0.4.8 row 2)"
         # Eight tests on the directive handler alone (no GPU, no capability
         # gate, so no SKIP). A cut and a mix each end a timed item at the
@@ -772,6 +811,7 @@ jobs:
           if [ "$exercised" -lt 9 ]; then
             echo "FAIL take_duration: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the R20 clip read-ahead suite actually ran (SPEC v0.4.8 row 12)"
         # Two floors, rule 8. The falsification battery written before the fix
         # (the weaker form on A1, the stronger form on counter_60, the fixture
@@ -801,6 +841,7 @@ jobs:
           if [ "$exercised" -lt 9 ]; then
             echo "FAIL r20_clip: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the loop residency suite actually ran (SPEC v0.4.8 row 13)"
         # Two floors, rule 8. What the engine holds for a declared loop,
         # measured on a real decode of counter_60 (60 1080p frames): a loop
@@ -827,6 +868,7 @@ jobs:
           if [ "$exercised" -lt 3 ]; then
             echo "FAIL loop_residency: expected at least 3 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the master limiter suite actually ran (SPEC v0.4.8 row 14)"
         # Two floors, rule 8. The §8.2 limiter that replaced the master clamp
         # (R26), measured over offline renders: no device, no GPU, no
@@ -854,6 +896,7 @@ jobs:
           if [ "$exercised" -lt 9 ]; then
             echo "FAIL limiter: expected at least 9 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the resync-end suite actually ran (SPEC v0.4.8 row 3)"
         # Seven tests on the directive handler alone (no GPU, no capability
         # gate, so no SKIP). A restarted engine ends the timed item at its
@@ -881,6 +924,7 @@ jobs:
           if [ "$exercised" -lt 7 ]; then
             echo "FAIL resync_end: expected at least 7 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the package-reconcile suite actually ran (SPEC v0.4.8 row 5)"
         # Eight tests through the real render loop (GPU required, as in
         # prompt13_recall; no adapter fails loudly, no SKIP). A restarted
@@ -914,6 +958,7 @@ jobs:
           if [ "$exercised" -lt 10 ]; then
             echo "FAIL package_reconcile: expected at least 10 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the protocol mirror actually ran (the wire audit, SPEC v0.4.8 row 2's trio)"
         # The mirror holds Rust, TypeScript and the spec to one wire. It had no
         # floor of its own; v0.4.8 row 2 adds two of its tests as the take
@@ -944,6 +989,7 @@ jobs:
           if [ "$exercised" -lt 24 ]; then
             echo "FAIL mirror: expected at least 24 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the recall suite actually ran (Prompt 13 re-plan P1, the recall leg)"
         # Six tests on a real render loop: a recall puts the recalled item on
         # air (View pixels, the slate bit and the tick together — the split
@@ -972,6 +1018,7 @@ jobs:
           if [ "$exercised" -lt 6 ]; then
             echo "FAIL prompt13_recall: expected at least 6 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the preflight automation suite actually ran (Prompt 11 B1, WU1, WU5, PR #34 fix round, SPEC v0.4.8 rows 1 and 9)"
         # Preflight refuses a rule it cannot evaluate by name (B1: audioLevel;
         # WU1: every trigger kind, conditions, the action; WU5: a rule cycle, named);
@@ -998,6 +1045,7 @@ jobs:
           if [ "$exercised" -lt 8 ]; then
             echo "FAIL preflight automation: expected at least 8 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: the automation params contract's shared verdicts actually ran (Prompt 11 WU1)
         # nbe-core's reading of every trigger kind, held to the fixture the
         # control plane's reading also reads (tests/fixtures/automation_rules.json).
@@ -1020,6 +1068,7 @@ jobs:
           if [ "$exercised" -lt 1 ]; then
             echo "FAIL automation_rules: expected at least 1 test to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "the device-audio suite actually ran (the device-audio design record, D1, D2, D7)"
         # The CI surface D7 rules: the ring, the callback's copy-out (no
         # allocation), the slip holding ±1 ms over a simulated 30 minutes at
@@ -1046,6 +1095,7 @@ jobs:
           if [ "$exercised" -lt 20 ]; then
             echo "FAIL device_audio: expected at least 20 tests to actually execute rather than skip, got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: "R10 load capture: after the floor steps, every sample"
         if: always()
         continue-on-error: true
@@ -1054,6 +1104,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-floor-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the floor-step samples, every 10 s from the line before the first floor step:" || true
           cat "$RUNNER_TEMP/ci-load-floor-samples.log" 2>/dev/null || echo "[ci-load] no floor-step samples file" || true
+        timeout-minutes: 5
       - name: audio devices on this runner (OBSERVATIONAL - reports, does not gate)
         # The device-audio design record's §5 unknown: whether a macos-14
         # runner has an output device at all, and what cpal sees there. Lists
@@ -1063,6 +1114,7 @@ jobs:
         run: |
           system_profiler SPAudioDataType 2>&1 || true
           cargo test -p nbe-engine --test device_audio_hw -- --nocapture 2>&1 || true
+        timeout-minutes: 5
       - name: 09 recording coverage on this runner (OBSERVATIONAL - reports, does not gate)
         # A REPORT, and its name says so, because macos-14 has no hardware H.264
         # encoder and the recording contract cannot be gated here at all. Exits
@@ -1107,14 +1159,17 @@ jobs:
           else
             echo "No skips: this runner exercised the full recording contract."
           fi
+        timeout-minutes: 5
       - name: overlay_show fixture passes (four overlay kinds)
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/overlay_show
           grep -q '"airReady": true' tests/fixtures/overlay_show/preflight_report.json
+        timeout-minutes: 5
       - name: v0.3 fixture passes
         run: |
           cargo run -p nbe-preflight -- --package-path tests/fixtures/valid_show_v0.3
           grep -q '"airReady": true' tests/fixtures/valid_show_v0.3/preflight_report.json
+        timeout-minutes: 5
       - name: v0.2 fixture is rejected (migration gate)
         run: |
           code=0
@@ -1122,6 +1177,7 @@ jobs:
           if [ "$code" -ne 2 ]; then echo "expected exit 2, got $code"; exit 1; fi
           grep -q 'migrationRequired' tests/fixtures/valid_show/preflight_report.json
           grep -q 'nbe-migrate' tests/fixtures/valid_show/preflight_report.json
+        timeout-minutes: 5
   control-plane:
     # macOS, not ubuntu: this job builds `nbe-preflight`, which since Prompt 05
     # depends on `nbe-decode` for the SPEC §19 decode checks — and that is
@@ -1129,6 +1185,7 @@ jobs:
     # mean the preflight gates silently checked less there, which is the kind
     # of gate Standards §2 forbids.
     runs-on: macos-15
+    timeout-minutes: 40
     env:
       # Standards §4: verify a build artifact before a later step consumes it.
       # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
@@ -1143,10 +1200,13 @@ jobs:
         working-directory: packages/control-plane
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
       # Cargo cache. 438 s of cold release build on each job that shells
       # preflight, every run, was the tax for making that binary 8x faster —
       # this makes the warm case ~0.6 s and leaves the speed-up free.
@@ -1159,6 +1219,7 @@ jobs:
       # source — which is precisely the "stale binary looks fresh" failure this
       # project has already been bitten by once, in a falsification battery.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
       # Release, deliberately: the control plane shells this binary out of
       # `show.load`, and the debug build decodes at 130 ms/frame against
       # release's 16.7 — an 8x difference that decides whether an ordinary
@@ -1166,6 +1227,7 @@ jobs:
       # `target/release` for the same reason.
       - run: cargo build -p nbe-preflight --release
         working-directory: .
+        timeout-minutes: 10
       - name: the release binary is real, not a truncated write
         working-directory: .
         run: |
@@ -1180,6 +1242,7 @@ jobs:
           # A size floor catches truncation; executing it catches a binary that
           # is the right size and still will not run.
           "$bin" --version
+        timeout-minutes: 5
       # DIAGNOSTIC (work order PREFLIGHT-BOUND-2 §4). Times the streaming probe
       # on the runner, because whether a fixture gate may exercise the bound path
       # depends on the runner's spread, not on the dev machine's. Informational
@@ -1195,7 +1258,9 @@ jobs:
             e=$(python3 -c 'import time;print(int(time.time()*1000))')
             echo "  run $i: $((e - s)) ms"
           done
+        timeout-minutes: 5
       - run: npm ci
+        timeout-minutes: 5
       # The bound is enforced in the control plane, not in the binary, so a gate
       # that shells `nbe-preflight` directly proves the binary works and says
       # nothing about `show.load`. That gap is how a bound that killed a valid
@@ -1236,11 +1301,14 @@ jobs:
           cp /tmp/bound-gate.ts ./bound-gate.ts
           node --import tsx ./bound-gate.ts
           rm -f ./bound-gate.ts
+        timeout-minutes: 5
       - run: npx tsc --noEmit
+        timeout-minutes: 5
       - name: generated manifest types match the schema
         run: |
           npm run gen:manifest-types
           git diff --exit-code src/generated
+        timeout-minutes: 5
       - name: vocabulary discipline (program/layer only in the alias table)
         working-directory: .
         run: |
@@ -1250,6 +1318,7 @@ jobs:
             | grep -v "\.test\.ts" \
             | grep -v "^\s*//" || true)
           if [ -n "$hits" ]; then echo "vocabulary violation:"; echo "$hits"; exit 1; fi
+        timeout-minutes: 5
       # PR #34's fix round: the operator's slate, end to end — the real engine
       # binary under the real control plane, asserting the engine's report and
       # the control plane's state together after a take and after a cut. Not in
@@ -1261,6 +1330,7 @@ jobs:
       - name: "build the engine for the slate-release end-to-end (PR #34)"
         working-directory: .
         run: cargo build -p nbe-engine --release
+        timeout-minutes: 12
       # R32's load capture (docs/soak-protocol.md, R32; the user's ruling of
       # 2026-10-26, (a)). R32's two sightings, package-reconcile's test 4 in
       # main's run 40293707305 and #67's run 40190112362, were load-blind:
@@ -1306,6 +1376,7 @@ jobs:
           { nohup bash -c 'while :; do bash "$0" cp-sample; sleep 10; done' "$RUNNER_TEMP/ci-load-line.sh" \
               > "$RUNNER_TEMP/ci-load-cp-samples.log" 2>&1 < /dev/null & } || true
           echo "$!" > "$RUNNER_TEMP/ci-load-cp-sampler.pid" || true
+        timeout-minutes: 5
       - name: tests pass and actually run (summary echoed for the audit trail)
         run: |
           set -o pipefail
@@ -1319,6 +1390,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "expected 0 failures"; exit 1; fi
           # A glob that matches nothing must not pass as a green build.
           if [ "${passed:-0}" -lt 30 ]; then echo "expected at least 30 tests, got ${passed:-0}"; exit 1; fi
+        timeout-minutes: 5
       - name: the automation suite actually ran (Prompt 11)
         # Two floors, rule 8. Every automation test loads a real package over
         # the wire, which needs nbe-preflight: without it they SKIP, and the
@@ -1347,6 +1419,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL automation: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 37 ]; then echo "FAIL automation: expected at least 37 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 37 ]; then echo "FAIL automation: expected at least 37 tests to execute rather than skip, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the belief suite actually ran (R17 spine part B, SPEC v0.4.8 row 11)"
         # Two floors, rule 8, the automation suite's shape and reason: every
         # belief test loads a real package over the wire, which needs
@@ -1370,6 +1443,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "FAIL belief: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to execute rather than skip, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
         # Two floors, rule 8. Reads every REGISTERED command's handler writes
         # to the fields a stateChange rule can name — directly, through state
@@ -1392,6 +1466,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL effects static scan: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the slate-release end-to-end actually ran (PR #34)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
         # not a pass), and zero failures. 4 tests: take, cut, and (the fix
@@ -1411,6 +1486,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL slate-release e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the recall end-to-end actually ran (Prompt 13 re-plan P1, the recall leg)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, and zero
         # failures. 2 tests (new): after a recall, the control plane's View and
@@ -1432,6 +1508,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL recall e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the take-duration end-to-end actually ran (SPEC v0.4.8 row 2)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 2 tests (new), on the real engine built above: a cut to a
@@ -1455,6 +1532,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL take-duration e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 3 ]; then echo "FAIL take-duration e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 3 ]; then echo "FAIL take-duration e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the resync-end end-to-end actually ran (SPEC v0.4.8 row 3)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 3 tests (new), on the real engine built above, killed and
@@ -1477,6 +1555,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL resync-end e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 2 tests (new), on the real engine built above, killed and
@@ -1504,6 +1583,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the show.stop end-to-end ran (queue position 2: the (C) fix, SPEC v0.4.8 row 6)"
         # Six legs on the real gate, behind a tap on the render channel: E1
         # record+stream, E2 stream, E3 record (inverted by the (C) fix: show.stop
@@ -1534,6 +1614,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL show-stop-version e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 6 ]; then echo "FAIL show-stop-version e2e: expected at least 6 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL show-stop-version e2e: expected at least 1 test (the E4 control) to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the resync-request end-to-end actually ran (queue position 4, SPEC v0.4.8 row 7)"
         # Three legs on the real engine behind a real sequence gap: a re-resync
         # whose snapshot cannot be built closes 1011 and the engine reconnects
@@ -1555,6 +1636,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL resync-request e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 3 ]; then echo "FAIL resync-request e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-request e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the operator-signals end-to-end ran (R17 spine part A, SPEC v0.4.8 row 8)"
         # Four legs on the real engine. The refused start runs HERE: this
         # runner has no hardware H.264 encoder, so the engine refuses
@@ -1580,6 +1662,7 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL operator-signals e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL operator-signals e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL operator-signals e2e: expected at least 1 test (the refused start) to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "R32 load capture: after the test steps, every sample"
         if: always()
         continue-on-error: true
@@ -1588,6 +1671,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/ci-load-cp-sampler.pid" 2>/dev/null)" 2>/dev/null || true
           echo "[ci-load] the control-plane samples, every 10 s from the line before the first test step:" || true
           cat "$RUNNER_TEMP/ci-load-cp-samples.log" 2>/dev/null || echo "[ci-load] no control-plane samples file" || true
+        timeout-minutes: 5
 
   # ---------------------------------------------------------------------------
   # The dress rehearsal ([RI-1]) — a REQUIRED gate since Findings R12/R13
@@ -1683,6 +1767,7 @@ jobs:
   dress-rehearsal:
     name: dress rehearsal
     runs-on: macos-15
+    timeout-minutes: 30
     env:
       # Standards §4: verify a build artifact before a later step consumes it.
       # The real release binary is ~13.5 MB. Under disk pressure `cargo build`
@@ -1694,10 +1779,13 @@ jobs:
       PREFLIGHT_MIN_BYTES: "1000000"
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
       # Cargo cache. 438 s of cold release build on each job that shells
       # preflight, every run, was the tax for making that binary 8x faster —
       # this makes the warm case ~0.6 s and leaves the speed-up free.
@@ -1710,6 +1798,7 @@ jobs:
       # source — which is precisely the "stale binary looks fresh" failure this
       # project has already been bitten by once, in a falsification battery.
       - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
       # Both binaries are real dependencies: the rehearsal spawns the engine
       # and shells preflight. With either missing every step fails for a reason
       # unrelated to the show — measured at 12 of 12 with the engine absent.
@@ -1717,7 +1806,9 @@ jobs:
       # the rehearsal shells it from `show.load`, and its 46 s cost in debug is
       # what makes step 3 flaky.
       - run: cargo build -p nbe-engine
+        timeout-minutes: 7
       - run: cargo build -p nbe-preflight --release
+        timeout-minutes: 9
       # Step 1 spawns the DEBUG preflight binary, which this job never built.
       # The step was therefore red on CI for as long as the job was advisory —
       # hidden by continue-on-error and a band that tolerated five failures —
@@ -1725,6 +1816,7 @@ jobs:
       # against advisory run 34596023038: 'not ok 1' is there too. That is the
       # argument for promoting an advisory job, in one line.
       - run: cargo build -p nbe-preflight
+        timeout-minutes: 5
       - name: the release binary is real, not a truncated write
         working-directory: .
         run: |
@@ -1739,13 +1831,16 @@ jobs:
           # A size floor catches truncation; executing it catches a binary that
           # is the right size and still will not run.
           "$bin" --version
+        timeout-minutes: 5
       - run: npm ci
         working-directory: packages/control-plane
+        timeout-minutes: 5
       # ffprobe verifies the rehearsal's record step (bytes that parse, not a
       # returned ok). Pinned by PATH lookup in the test with fallbacks for
       # both Homebrew prefixes; installed here so the CI branch asserts
       # structure instead of skipping.
       - run: brew install ffmpeg
+        timeout-minutes: 5
       - name: play the show
         working-directory: packages/control-plane
         env:
@@ -1824,6 +1919,7 @@ jobs:
           if [ "$exercised" -lt 18 ]; then
             echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1
           fi
+        timeout-minutes: 5
       - name: failure artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -1831,3 +1927,4 @@ jobs:
           name: dress-rehearsal-artifacts
           path: target/dress-rehearsal/
           if-no-files-found: warn
+        timeout-minutes: 5
