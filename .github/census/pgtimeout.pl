@@ -2,7 +2,8 @@
 # pgtimeout.pl SECS CMD...: run CMD in its own process group and kill the
 # whole group when SECS pass, so a hung test binary dies with the cargo that
 # started it. Exits with CMD's status, 128+N for a signal N, or 124 when the
-# timer fired.
+# timer fired. PGTIMEOUT_HOOK (a command) runs with the group id before the
+# kill.
 use strict;
 use warnings;
 
@@ -15,6 +16,9 @@ if ($pid == 0) {
 }
 local $SIG{ALRM} = sub {
     print STDERR "KILLED: the ${secs} s kill timer fired\n";
+    # PGTIMEOUT_HOOK, if set, runs first with the hung group's id, so the
+    # group is sampled while it still hangs.
+    system($ENV{PGTIMEOUT_HOOK}, $pid) if $ENV{PGTIMEOUT_HOOK};
     kill 'KILL', -$pid;
     waitpid($pid, 0);
     exit 124;

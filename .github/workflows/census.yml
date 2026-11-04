@@ -31,6 +31,9 @@ env:
 jobs:
   workspace:
     name: workspace ${{ matrix.shard }}
+    # Run 2 completes solo shard 3 only: the workspace jobs and solo shards 1
+    # and 2 finished in run 41879492093.
+    if: false
     runs-on: macos-15
     timeout-minutes: 120
     strategy:
@@ -81,10 +84,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: 1
-            arms: b
-          - shard: 2
-            arms: a b
+          # Run 2: shard 3 only. Run 41879492093's shard 3 hung on every
+          # encoder-opening run from its 19th on (a wedge on that runner) and
+          # its loop step timed out in pass 1.
           - shard: 3
             arms: b
     steps:
@@ -114,6 +116,10 @@ jobs:
           bash .github/census/build.sh "$RUNNER_TEMP/census" ${{ matrix.arms }} -- -p nbe-engine $targets
       - name: each test alone, 10 passes
         timeout-minutes: 60
+        env:
+          # Every test here ran alone in under 2 s in run 41879492093 when it
+          # did not hang; 120 s is 60x that.
+          SOLO_KILL_S: "120"
         run: bash .github/census/solo.sh ${{ matrix.shard }} "$RUNNER_TEMP/census"
       - uses: actions/upload-artifact@v4
         if: always()
