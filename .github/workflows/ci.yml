@@ -631,6 +631,11 @@ jobs:
         # proof also skips on its absent binary). One measurement is #[ignore].
         # ~~Twelve of the thirteen tests ... gate on the encoder + chain~~ —
         # PR #30 exercised 1 of 13 here (§2c).
+        # (The census re-scope, the user's ruling of 2026-11-04: on a runner,
+        # both_live and transport_death print a `SKIP normative:` line for the
+        # one bound each asserts only on the normative machine. That skips a
+        # bound, not a test, so the skip count leaves those lines out, as
+        # prompt11_watchdog's does.)
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -639,7 +644,7 @@ jobs:
           line=$(echo "$out" | grep "test result: ok" || true)
           ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
-          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          skipped=$(echo "$out" | grep '^SKIP' | grep -vc '^SKIP normative:' || true)
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
           echo "prompt10_rtmp: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=20 exercised>=13)"

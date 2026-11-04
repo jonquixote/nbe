@@ -242,6 +242,20 @@ async fn run_frames(
     reports
 }
 
+/// The machine a bound that measures the machine may be asserted on, the dress
+/// rehearsal's rule (`dress-rehearsal.test.ts`), fail-closed: neither `CI` nor
+/// `GITHUB_ACTIONS` set is the normative machine; `GITHUB_ACTIONS=true` is a
+/// CI runner, not the reference machine (SPEC §0.3); anything else is refused.
+fn on_the_normative_machine() -> bool {
+    let ci = std::env::var("CI").unwrap_or_default();
+    let actions = std::env::var("GITHUB_ACTIONS").unwrap_or_default();
+    match (ci.as_str(), actions.as_str()) {
+        ("", "") => true,
+        (_, "true") => false,
+        _ => panic!("unidentified machine: CI={ci:?}, GITHUB_ACTIONS={actions:?}"),
+    }
+}
+
 fn zero_copy_selection() -> nbe_engine::record::tap_path::Selection {
     nbe_engine::record::tap_path::select_stream(true).expect("a chain selects zero-copy")
 }
@@ -1838,6 +1852,18 @@ async fn second_stream_emits_seq_header_first() {
 /// Both outputs live on the zero-copy path: one composite, two holders. The
 /// stream takes the record loan's surface (its own pool is never touched),
 /// and a stream never costs record a frame (G1).
+///
+/// R46 (the user's ruling of 2026-11-04): on `macos-15` the strict count
+/// failed 9 of 10 runs alone and 8 of 20 in the workspace (the census, #83),
+/// on #80's head and #81's alike. A record frame is skipped for one of three
+/// reasons, all on one counter: no free record surface before the draw, the
+/// View's draw over its budget, or a full record queue. The first and the
+/// last are what a sharing stream could cost record; the second is the
+/// machine's own draw time (the degradation ladder: record yields, the View
+/// never waits). So every machine asserts that each record skip is an
+/// over-budget draw, read from the loop's own reports with the value the
+/// skip was decided on; the strict bound, no skip at all, is asserted on the
+/// normative machine and in the soak.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_live_stream_shares_the_record_composite() {
     let _serial = SERIAL.lock().await;
@@ -1882,8 +1908,12 @@ async fn both_live_stream_shares_the_record_composite() {
         .apply(&directive("record.stop", 6, serde_json::json!({})))
         .await
         .expect("record.stop must succeed");
+    // Every tick here records, and the loop runs the clock, so each tick's
+    // draw was checked against one frame's budget.
+    let budget = Duration::from_secs_f64(1.0 / 30.0);
+    let over_budget = reports.iter().filter(|r| r.render >= budget).count() as u64;
     eprintln!(
-        "BOTH LIVE: {} ticks, record skips {record_skips}, stream skips {stream_skips}, video {}",
+        "BOTH LIVE: {} ticks, record skips {record_skips}, over-budget draws {over_budget}, stream skips {stream_skips}, video {}",
         reports.len(),
         dbl.with(|r| r.video_media().len())
     );
@@ -1896,7 +1926,18 @@ async fn both_live_stream_shares_the_record_composite() {
         own_pool.len(),
         "the stream's own pool is untouched while it shares"
     );
-    assert_eq!(record_skips, 0, "a live stream never costs record a frame");
+    assert_eq!(
+        record_skips, over_budget,
+        "every record skip is the View's own draw over its budget: the stream's share costs record nothing"
+    );
+    // The bound measures the machine (R46, R9's class).
+    if on_the_normative_machine() {
+        assert_eq!(record_skips, 0, "a live stream never costs record a frame");
+    } else {
+        eprintln!(
+            "SKIP normative: no record skip beside a live stream (record skips {record_skips}, each an over-budget draw) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+        );
+    }
 }
 
 /// A CPU-readback take beside a live stream: the take draws to the built-in
@@ -1955,6 +1996,14 @@ async fn cpu_record_beside_live_stream_still_feeds() {
 /// `streamTransportState` reads `live` → `reconnecting` → `live` → `closed`
 /// across the kill, the return and the stop, while the engine's `streamState`
 /// stays Live throughout the redial.
+///
+/// The census (#83, the user's ruling of 2026-11-04): on `macos-15` the View
+/// dropped a frame across the kill in 5 of 20 runs alone and 1 of 20 in the
+/// workspace, while the loop's stream share stayed at most 160 µs. What a
+/// dead transport could cost the View is the loop waiting on it, and every
+/// machine asserts that it never does. A dropped frame with the loop not
+/// waiting is the machine's own wake or draw, so the strict count, no drop
+/// at all, is asserted on the normative machine and in the soak.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transport_death_leaves_the_loop_untouched() {
     let _serial = SERIAL.lock().await;
@@ -2003,15 +2052,22 @@ async fn transport_death_leaves_the_loop_untouched() {
     );
     let worst = during.iter().map(|r| r.stream).max().unwrap();
     eprintln!("SURVIVAL: dropped {before} → {after} across the kill, worst stream share {worst:?}");
-    assert_eq!(
-        after - before,
-        0,
-        "a dead transport never drops a View frame"
-    );
     assert!(
         worst < Duration::from_millis(5),
         "the loop never waits on the transport ({worst:?})"
     );
+    // The count measures the machine (the census, R9's class).
+    if on_the_normative_machine() {
+        assert_eq!(
+            after - before,
+            0,
+            "a dead transport never drops a View frame"
+        );
+    } else {
+        eprintln!(
+            "SKIP normative: no View frame dropped across the kill (dropped {before} → {after}, the loop's stream share at most {worst:?}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+        );
+    }
 
     let dbl2 = TestDouble::start_on(port);
     let _ = run_frames(&mut render, &state, 30, 60).await;
