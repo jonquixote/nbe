@@ -752,6 +752,25 @@ impl AudioGraph {
         *rendered_samples += frames as u64;
     }
 
+    /// A block of silence for the outputs, in place of one nothing renders:
+    /// the null sink's catch-up gives the rest of a late wake's gap past its
+    /// cap to this (`audio_driver::render_due`). `out` is zeroed and pushed
+    /// to the record and stream taps, and counted as rendered, so the outputs
+    /// keep the master clock's length. Nothing is mixed: a copy, not a
+    /// render, so it costs no more on a slow machine. The buses' ramps, the
+    /// voices and the limiter do not advance through it, as they did not when
+    /// the gap was skipped.
+    pub fn render_silence(&mut self, out: &mut [f32]) {
+        out.fill(0.0);
+        if let Some(tap) = &self.record_tap {
+            tap.push(out);
+        }
+        if let Some(tap) = &self.stream_tap {
+            tap.push(out);
+        }
+        self.rendered_samples += (out.len() / CHANNELS) as u64;
+    }
+
     /// Render guest G's mix-minus return (SPEC §8.6).
     ///
     /// The isolation is structural: this function has no path that reads

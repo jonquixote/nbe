@@ -15,15 +15,23 @@
 //! One more test holds the tests' loop live while it catches up: behind its schedule it no longer
 //! sleeps, and before it yielded there, a sink slower than real time starved a current-thread
 //! runtime for good.
+//!
+//! Two more read what the blocks carry, on a graph that plays a tone (the user's ruling of
+//! 2026-11-04, items 3 and 4). A tone's samples are a function of the master frame, so a block
+//! rendered at the wrong frame reads differently, where a silent graph's zeros read the same at
+//! any frame (fx3's M9 survived every test above for that reason). And past the cap, the record
+//! and stream taps carry silence for the rest of the gap: nothing shortened, nothing mixed.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use nbe_engine::audio::{BusId, Source};
 use nbe_engine::audio_driver::{
     render_due, run, run_blocking_paced, AudioDriver, AudioSink, NullSink, Pace,
     MAX_CATCH_UP_BLOCKS,
 };
+use nbe_engine::record::AudioTap;
 use nbe_engine::state::EngineState;
 
 const HOUSE_RATE: u32 = 30;
@@ -87,25 +95,145 @@ fn a_late_wake_renders_every_block_due() {
     }
 }
 
+/// A tone on the mic bus: every sample is a function of the master sample it renders at.
+fn tone(driver: &mut AudioDriver) {
+    driver.graph.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 997.0,
+            amplitude: 0.5,
+        }],
+    );
+}
+
+/// A sink that keeps every block it takes.
+struct Recording(Arc<Mutex<Vec<Vec<f32>>>>);
+
+impl AudioSink for Recording {
+    fn write(&mut self, block: &[f32]) -> bool {
+        self.0.lock().unwrap().push(block.to_vec());
+        true
+    }
+    fn block_frames(&self) -> usize {
+        BLOCK
+    }
+}
+
 #[test]
-fn a_wake_past_the_cap_renders_the_cap_and_gives_the_rest_up() {
+fn a_wake_past_the_cap_renders_the_cap_and_the_rest_is_silence() {
     let block = AudioDriver::new(running_state(), Box::new(NullSink::new(BLOCK)), HOUSE_RATE)
         .block_duration();
     let cap = MAX_CATCH_UP_BLOCKS + 1;
-    // (how late, blocks due): one past the cap, and a hundred blocks.
+    // (how late, blocks due): one past the cap, and a hundred blocks, inside the taps' 5 s.
     for (late, due) in [(block * cap + NS, cap + 1), (block * 201 / 2, 101)] {
-        let (rendered, next, underruns) = wake(late);
+        let state = running_state();
+        let (record, stream) = (Arc::new(AudioTap::new()), Arc::new(AudioTap::new()));
+        *state.record_tap.lock().unwrap() = Some(record.clone());
+        *state.stream_tap.lock().unwrap() = Some(stream.clone());
+        let taken = Arc::new(Mutex::new(Vec::new()));
+        let mut driver = AudioDriver::new(
+            state.clone(),
+            Box::new(Recording(taken.clone())),
+            HOUSE_RATE,
+        );
+        tone(&mut driver);
+        let origin = Instant::now();
+        let mut next = origin;
+        render_due(&mut driver, &state, &mut next, block, origin + late);
+
+        let rendered = taken.lock().unwrap().len();
         assert_eq!(
-            rendered,
-            u64::from(cap),
-            "a wake {late:?} late: the block it woke for and {MAX_CATCH_UP_BLOCKS} caught up, no more"
+            rendered, cap as usize,
+            "a wake {late:?} late: the block it woke for and {MAX_CATCH_UP_BLOCKS} caught up are \
+             rendered, no more"
+        );
+        for (name, tap) in [("record", &record), ("stream", &stream)] {
+            let got = tap.drain();
+            assert_eq!(
+                got.len(),
+                due as usize * BLOCK * 2,
+                "a wake {late:?} late: the {name} tap carries all {due} blocks due, none shortened"
+            );
+            let (mixed, silent) = got.split_at(rendered * BLOCK * 2);
+            assert!(
+                mixed
+                    .chunks(BLOCK * 2)
+                    .all(|b| b.iter().any(|&v| v != 0.0)),
+                "a wake {late:?} late: the {name} tap's first {rendered} blocks are the tone, rendered"
+            );
+            assert!(
+                silent.iter().all(|&v| v == 0.0),
+                "a wake {late:?} late: the {name} tap's other {} blocks are silence",
+                due as usize - rendered
+            );
+        }
+        assert_eq!(
+            driver.graph.rendered_samples(),
+            u64::from(due) * BLOCK as u64,
+            "a wake {late:?} late: the silence counts as rendered, so the drift reads the outputs"
         );
         assert_eq!(
-            next,
+            next - origin,
             block * due,
-            "a wake {late:?} late: the rest is given up, and the schedule keeps its phase"
+            "a wake {late:?} late: the schedule keeps its phase"
         );
-        assert_eq!(underruns, 1, "a wake {late:?} late: one underrun");
+        assert_eq!(
+            driver.graph.underruns(),
+            1,
+            "a wake {late:?} late: one underrun, past the cap or not"
+        );
+    }
+}
+
+#[test]
+fn each_caught_up_block_renders_at_the_master_frame_of_its_own_deadline() {
+    let state = running_state();
+    let taken = Arc::new(Mutex::new(Vec::new()));
+    let mut driver = AudioDriver::new(
+        state.clone(),
+        Box::new(Recording(taken.clone())),
+        HOUSE_RATE,
+    );
+    tone(&mut driver);
+    let block = driver.block_duration();
+    let origin = Instant::now();
+    let mut next = origin;
+    // Six blocks due: the one at `origin`, and the five deadlines behind a wake 5 blocks late.
+    render_due(
+        &mut driver,
+        &state,
+        &mut next,
+        block,
+        origin + block * 5 + NS,
+    );
+    let frames: Vec<u64> = (0..6)
+        .map(|k| state.master_frame_at(origin + block * k).unwrap())
+        .collect();
+    assert!(
+        frames.windows(2).all(|w| w[0] < w[1]),
+        "each deadline names its own master frame, or the guard could not tell them apart: \
+         {frames:?}"
+    );
+    // The same graph, cycled by hand at those frames.
+    let want = Arc::new(Mutex::new(Vec::new()));
+    let mut reference = AudioDriver::new(
+        running_state(),
+        Box::new(Recording(want.clone())),
+        HOUSE_RATE,
+    );
+    tone(&mut reference);
+    for &f in &frames {
+        reference.cycle(f);
+    }
+    let (got, want) = (taken.lock().unwrap(), want.lock().unwrap());
+    assert_eq!(got.len(), 6, "six blocks due, six rendered");
+    for (k, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        assert!(
+            g == w,
+            "block {k} rendered at a frame other than its deadline's ({}): the catch-up drew it at \
+             the wrong point on the master clock",
+            frames[k]
+        );
     }
 }
 

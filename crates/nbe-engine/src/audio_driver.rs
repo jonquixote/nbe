@@ -97,9 +97,16 @@ pub const EPISODE_GAP: Duration = Duration::from_millis(1000);
 
 /// The cap on catch-up: the most overdue blocks one late null-sink wake
 /// renders after the block it woke for. A block is one house frame, so this is
-/// one second at 30 fps, inside the record and stream taps' 5 s rings. A wake
-/// later than this gives the rest up, logged, rather than burst minutes of
-/// audio after a sleep or a debugger.
+/// one second at 30 fps, inside the record and stream taps' 5 s rings.
+///
+/// Past the cap, the rest of the gap is silence, never shortened: the record
+/// and stream taps get a block of zeros for each block left, nothing is mixed
+/// for them, and the warn line names the length. The late wake counts one
+/// underrun, past the cap or not (SPEC §8.10). So the render work a wake can
+/// owe is bounded by the cap, and the outputs keep the master clock's length.
+/// One bound remains: the taps hold 5 s, so silence past what a tap's ring
+/// holds at once evicts its oldest samples, and the tap counts each one it
+/// evicts as dropped. Only a wake about 5 s late or more can do that.
 pub const MAX_CATCH_UP_BLOCKS: u32 = 30;
 
 /// The rate guard's decision (D1 a): the rate is the engine's explicit act,
@@ -374,6 +381,13 @@ impl AudioDriver {
 
         self.publish(master_frame);
         self.block.len() / CHANNELS
+    }
+
+    /// One block of silence for the record and stream taps, in place of a
+    /// block past the catch-up cap ([`render_due`]). The sink is not written:
+    /// a slow sink would make the gap's silence cost what rendering it does.
+    fn silence(&mut self) {
+        self.graph.render_silence(&mut self.block);
     }
 
     /// Drain a bounded batch of intents. The lock is held only long enough to
@@ -889,8 +903,9 @@ pub fn run_blocking_paced(
 /// dress telemetry read the null sink rendering 27-47% of wall time on every
 /// run (the user's rulings of 2026-11-02, late, and 2026-11-03). A late wake
 /// still counts one underrun (SPEC §8.10: a missed deadline is one), as
-/// before. Past [`MAX_CATCH_UP_BLOCKS`] the rest is given up and logged, and
-/// the schedule keeps its phase.
+/// before. Past [`MAX_CATCH_UP_BLOCKS`] the rest of the gap is silence for
+/// the taps, logged, and the schedule keeps its phase (the user's ruling of
+/// 2026-11-04, item 4).
 ///
 /// `now` is the caller's reading, so what renders is a function of the two
 /// instants alone: the guard injects a late wake without a timer.
@@ -911,13 +926,16 @@ pub fn render_due(
         driver.graph.note_underrun();
     }
     if due > rendered {
-        let skipped = block * (due - rendered);
+        let silent = due - rendered;
+        for _ in 0..silent {
+            driver.silence();
+        }
+        *next += block * silent;
         tracing::warn!(
-            skipped_ms = skipped.as_secs_f64() * 1e3,
+            silence_ms = (block * silent).as_secs_f64() * 1e3,
             caught_up = rendered - 1,
-            "null sink woke too late to catch up: the rest of the gap is not rendered"
+            "null sink woke past its catch-up cap: the rest of the gap is silence"
         );
-        *next += skipped;
     }
 }
 
