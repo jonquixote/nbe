@@ -1,0 +1,150 @@
+name: census (throwaway, DO NOT MERGE)
+
+# The user's ruling of 2026-11-04 (second), item 2: a census of the rust
+# tests on macos-15. The workspace suite runs 10 times per arm, and each
+# live-rig and encoder-dependent test (.github/census/tests.txt) runs alone
+# 10 times. Arm a is #80's head, arm b is #81's. Both arms run where #81's
+# code runs (the workspace, and prompt10_rtmp's tests, whose audio cases
+# spawn the null-sink driver), interleaved a b / b a by pass on one runner;
+# elsewhere arm b alone. Each arm is a cold debug build in its own worktree
+# and target dir, CARGO_INCREMENTAL=0 as in ci.yml's rust job.
+#
+# Timeouts: every job and step carries timeout-minutes, and every run sits
+# under a process-group kill timer (.github/census/pgtimeout.pl): 300 s for
+# a solo run, 20 min for a workspace run.
+#
+# This branch deletes ci.yml, so the full CI does not run here (the same
+# ruling, item 1: neither red is rerun). The branch and its PR are closed and
+# deleted after the read.
+
+on:
+  pull_request:
+
+env:
+  NBE_AUDIO_SINK: "null"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+  ARM_A: c0a07d5176a6ec075c28859d71a9058b66574dd1
+  ARM_B: 9b57a31e8acef89cfa5ca28c3064c62de80b3f89
+  RUNS: "10"
+
+jobs:
+  workspace:
+    name: workspace ${{ matrix.shard }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      # Two jobs of 5 passes per arm: 10 per arm in all.
+      RUNS: "5"
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
+      - name: the runner image and the toolchain
+        timeout-minutes: 5
+        run: |
+          echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
+          sw_vers
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          rustc -Vv
+      - name: the load sampler, every 10 s for the rest of the job
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/census"
+          { nohup bash -c 'while :; do echo "$(date -u +%H:%M:%SZ) $(sysctl -n vm.loadavg)"; sleep 10; done' \
+              > "$RUNNER_TEMP/census/load.log" 2>&1 < /dev/null & } || true
+      - name: build both arms' workspace tests
+        timeout-minutes: 40
+        run: bash .github/census/build.sh "$RUNNER_TEMP/census" a b -- --workspace
+      - name: the workspace suite, 5 passes per arm, interleaved
+        timeout-minutes: 75
+        run: bash .github/census/workspace.sh "$RUNNER_TEMP/census"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 5
+        with:
+          name: workspace-${{ matrix.shard }}
+          path: ${{ runner.temp }}/census
+
+  solo:
+    name: solo ${{ matrix.shard }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            arms: b
+          - shard: 2
+            arms: a b
+          - shard: 3
+            arms: b
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 5
+      - name: the runner image and the toolchain
+        timeout-minutes: 5
+        run: |
+          echo "ImageOS=${ImageOS:-?} ImageVersion=${ImageVersion:-?}"
+          sw_vers
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          rustc -Vv
+      - name: the load sampler, every 10 s for the rest of the job
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/census"
+          { nohup bash -c 'while :; do echo "$(date -u +%H:%M:%SZ) $(sysctl -n vm.loadavg)"; sleep 10; done' \
+              > "$RUNNER_TEMP/census/load.log" 2>&1 < /dev/null & } || true
+      - name: build this shard's test binaries
+        timeout-minutes: 30
+        run: |
+          targets=$(grep -v '^#' .github/census/tests.txt | awk -v s=${{ matrix.shard }} '$1 == s {print "--test " $2}' | sort -u | tr '\n' ' ')
+          bash .github/census/build.sh "$RUNNER_TEMP/census" ${{ matrix.arms }} -- -p nbe-engine $targets
+      - name: each test alone, 10 passes
+        timeout-minutes: 60
+        run: bash .github/census/solo.sh ${{ matrix.shard }} "$RUNNER_TEMP/census"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 5
+        with:
+          name: solo-${{ matrix.shard }}
+          path: ${{ runner.temp }}/census
+
+  read:
+    needs: [workspace, solo]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 5
+        with:
+          path: census
+      - name: per-test failure counts with Wilson intervals
+        timeout-minutes: 5
+        run: |
+          python3 -I .github/census/summarize.py census && rc=0 || rc=$?
+          cat census/summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 5
+        with:
+          name: census-read
+          path: |
+            census/summary.md
+            census/per-test.csv
