@@ -50,6 +50,13 @@ pub struct TickReport {
     /// How late the loop woke against the instant it slept for: the timer's
     /// granularity and the scheduler's, which differ by OS (R33).
     pub woke_late: Duration,
+    /// From the tick's start to the View draw's start: the stream's surface
+    /// loan and the record pool's.
+    pub before_draw: Duration,
+    /// How long after the next master frame's boundary the View draw was
+    /// submitted, when it was: a dropped frame (SPEC §10.2). `None` on time,
+    /// and while the clock is STOPPED.
+    pub submitted_late: Option<Duration>,
 }
 
 /// Wake-lateness buckets' upper edges, in microseconds; past the last edge a
@@ -173,6 +180,9 @@ struct Cadence {
     run: Option<Span>,
     take: Option<Span>,
     lines: LineBudget,
+    /// R21's lines have their own budget, so a burst of skips cannot hide a
+    /// late submit.
+    late_lines: LineBudget,
     /// How long the last tick ran (its timed region), so a skip's line says
     /// whether the tick before it overran or the wake came late.
     last_tick: Duration,
@@ -254,6 +264,29 @@ impl Cadence {
     /// The tick just run took `total` (its timed region).
     fn ticked(&mut self, total: Duration) {
         self.last_tick = total;
+    }
+
+    /// R21: a frame drawn, but submitted after the next frame's boundary, is
+    /// a drop that skips nothing, so no R33 line names it. This line does
+    /// (rate-limited), with where the frame's time went: how late the wake
+    /// came, the work before the draw, and the draw. A drop can then be tied
+    /// to a late wake or to a slow draw.
+    fn submitted_late(&mut self, report: &TickReport) {
+        let (Some(f), Some(late)) = (report.master_frame, report.submitted_late) else {
+            return;
+        };
+        if let Some(suppressed) = self.late_lines.take(Instant::now()) {
+            tracing::warn!(
+                master_frame = f,
+                late_ms = late.as_secs_f64() * 1000.0,
+                woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
+                before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
+                render_ms = report.render.as_secs_f64() * 1000.0,
+                suppressed,
+                "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
+                f + 1
+            );
+        }
     }
 
     /// The clock restarted between two ticks (a new epoch): the run so far
@@ -351,18 +384,20 @@ pub async fn run_tick(
     report.stream += stream_started.elapsed();
 
     let render_started = Instant::now();
+    report.before_draw = render_started - tick_started;
     let _ = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
     // SPEC §10.2, as the user ruled on 2026-10-28: a View frame is dropped
     // when the master clock reaches the next frame's boundary before it was
     // submitted. Counted only while the clock runs, once per master frame: a
-    // frame never drawn is counted by the loop's cadence instead.
-    if deadline.is_some()
-        && state
-            .frame_boundary(frame + 1)
-            .is_some_and(|next| Instant::now() >= next)
-    {
-        state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
+    // frame never drawn is counted by the loop's cadence instead. The loop's
+    // cadence logs this drop too (R21), since no frame was skipped.
+    if deadline.is_some() {
+        let submitted = Instant::now();
+        if let Some(next) = state.frame_boundary(frame + 1).filter(|&n| submitted >= n) {
+            state.dropped_frames_total.fetch_add(1, Ordering::SeqCst);
+            report.submitted_late = Some(submitted - next);
+        }
     }
     // Back to the built-in target the moment the draw is done: a retarget
     // left in place would composite the NEXT frame into a surface nobody
@@ -500,6 +535,7 @@ pub async fn run_loop(
         report.master_frame = master;
         report.woke_late = woke_late;
         cadence.ticked(report.total);
+        cadence.submitted_late(&report);
         if !on_tick(&report) {
             cadence.end(state);
             return;
@@ -602,6 +638,52 @@ mod tests {
             take.summary("record take", &state),
             "cadence: record take ended after 3 ticks: repeats 1, skips 2, drops 3; \
              woke late mean 13660 µs, max 40.00 ms; ≤0.1 ms 1, ≤0.25 0, ≤0.5 0, ≤1 1, ≤2 0, ≤5 0, ≤10 0, ≤1 frame 0, >1 frame 1"
+        );
+    }
+
+    #[test]
+    fn a_burst_of_skips_cannot_hide_a_late_submit() {
+        #[derive(Clone, Default)]
+        struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let state = EngineState::new(30);
+            let mut cadence = Cadence::default();
+            // Every other frame skipped: more R33 lines than a second allows.
+            let frames: Vec<_> = (0..=2 * R33_LINES_PER_SECOND as u64 + 2)
+                .map(|i| Some(2 * i))
+                .collect();
+            feed(&mut cadence, &state, &frames);
+            cadence.submitted_late(&TickReport {
+                master_frame: Some(99),
+                submitted_late: Some(Duration::from_millis(3)),
+                ..Default::default()
+            });
+        });
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            text.matches("R33: ").count() >= R33_LINES_PER_SECOND as usize,
+            "the skips used up R33's budget:\n{text}"
+        );
+        assert!(
+            text.contains(
+                "R21: master frame 99 was drawn but submitted after frame 100's boundary"
+            ),
+            "a late submit after R33's budget is spent still has its line:\n{text}"
         );
     }
 

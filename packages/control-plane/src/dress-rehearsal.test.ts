@@ -239,6 +239,22 @@ function engineLogMark(): number {
 }
 
 /**
+ * R21's attribution: the engine's own lines, since `mark`, that name a
+ * dropped frame. A frame never drawn has an R33 line (with how late the wake
+ * came and how long the tick before it ran); a frame drawn but submitted after
+ * the next frame's boundary has an R21 line (with how late the wake came, the
+ * work before the draw, and the draw). Both are rate-limited in the engine,
+ * and a suppressed count rides the next line let through.
+ */
+function dropLines(mark: number): string[] {
+  return engineLog
+    .join("")
+    .slice(mark)
+    .split("\n")
+    .filter((l) => l.includes("R21: master frame") || l.includes("R33: master frames"));
+}
+
+/**
  * R29 (R25's construction, R5's class): wait for the load to complete on the
  * render thread, not only for the engine's acknowledgement of it.
  *
@@ -579,16 +595,22 @@ test("[RI-1] step 4: a take with audio follow raises the clip bus on the wire", 
 });
 
 test("[RI-1] step 5: a 15-frame mix drops no frames", async () => {
+  const mark = engineLogMark();
   const before = droppedNow();
   await ok("preview.set", { itemRef: "A2" });
   await ok("view.take", { transition: "mix", durationFrames: 15 });
   // Two ticks so the whole transition is inside the measured window.
   await new Promise((r) => setTimeout(r, RISE_MS));
   const after = droppedNow();
-  assert.equal(after, before, `a mix must not drop frames: ${before} -> ${after}`);
+  assert.equal(
+    after,
+    before,
+    `a mix must not drop frames: ${before} -> ${after}; the engine's lines for them: ${JSON.stringify(dropLines(mark))}`,
+  );
 });
 
 test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", async () => {
+  const mark = engineLogMark();
   const before = droppedNow();
   await ok("soundboard.play", { assetId: "stab_sfx" });
   const playedAt = Date.now();
@@ -611,7 +633,12 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
   >;
   const sfx = peaks["sfx"] ?? -120;
   assert.ok(sfx > -60, `sfx bus should carry the stab: ${sfx} dBFS`);
-  assert.equal(droppedNow(), before, "a soundboard trigger must not cost a frame");
+  const after = droppedNow();
+  assert.equal(
+    after,
+    before,
+    `a soundboard trigger must not cost a frame: ${before} -> ${after}; the engine's lines for them: ${JSON.stringify(dropLines(mark))}`,
+  );
 });
 
 test("[RI-1] step 7: an audio.bus.set is accepted and the graph survives it", async () => {
