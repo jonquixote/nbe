@@ -242,19 +242,11 @@ async fn run_frames(
     reports
 }
 
-/// The machine a bound that measures the machine may be asserted on, the dress
-/// rehearsal's rule (`dress-rehearsal.test.ts`), fail-closed: neither `CI` nor
-/// `GITHUB_ACTIONS` set is the normative machine; `GITHUB_ACTIONS=true` is a
-/// CI runner, not the reference machine (SPEC §0.3); anything else is refused.
-fn on_the_normative_machine() -> bool {
-    let ci = std::env::var("CI").unwrap_or_default();
-    let actions = std::env::var("GITHUB_ACTIONS").unwrap_or_default();
-    match (ci.as_str(), actions.as_str()) {
-        ("", "") => true,
-        (_, "true") => false,
-        _ => panic!("unidentified machine: CI={ci:?}, GITHUB_ACTIONS={actions:?}"),
-    }
-}
+/// Strict unless a GitHub Actions runner (`GITHUB_ACTIONS=true`): the one
+/// helper, shared (#84; ruled 2026-11-04, night).
+#[path = "common/machine.rs"]
+mod machine;
+use machine::on_the_normative_machine;
 
 fn zero_copy_selection() -> nbe_engine::record::tap_path::Selection {
     nbe_engine::record::tap_path::select_stream(true).expect("a chain selects zero-copy")
