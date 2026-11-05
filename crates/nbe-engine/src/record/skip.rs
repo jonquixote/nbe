@@ -9,9 +9,14 @@
 //! skips 7, the stream's own pool untouched). [`SkipCount`] keeps the total
 //! the engine has always kept and, beside it, one count per [`SkipPath`].
 //! [`CountSkip::count`] moves the path and the total in one call, so a skip
-//! is attributed to exactly one path and the paths sum to the total; a test
-//! that asserts the sum checks the counter's own arithmetic, and each site's
-//! path is pinned by the test that drives it.
+//! is attributed to exactly one path. They are two atomics, the path added
+//! first, so a reader between the two adds sees the paths ahead of the total:
+//! the paths sum to the total whenever nothing is counting, which is why
+//! `both_live` reads after both outputs have stopped. A test that asserts the
+//! sum then checks the counter's own arithmetic. Each site's path is pinned by
+//! the test that drives it, where a deterministic one exists: seven of the
+//! sixteen paths (record and stream together) have one, and nine do not
+//! (#84's body lists both).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -107,7 +112,8 @@ impl SkipCount {
         self.paths[path as usize].load(Ordering::SeqCst)
     }
 
-    /// The paths' counts added up: the total, when every skip named its path.
+    /// The paths' counts added up: the total, when every skip named its path
+    /// and nothing is counting.
     pub fn paths_total(&self) -> u64 {
         SkipPath::ALL.iter().map(|&p| self.path(p)).sum()
     }
