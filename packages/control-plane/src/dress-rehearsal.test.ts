@@ -30,6 +30,7 @@ import { tempDir } from "./test-tmp.js";
 import { loadComplete, residency } from "./load-residency.js";
 import { R20_FRAMES, R20_ITEM, r20Classify } from "./r20-counter.js";
 import { ENGINE_TELEMETRY_TTL_MS } from "./telemetry.js";
+import { R21_LINE, R33_LINE, accountDrops, lineFields } from "./drop-account.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
 
@@ -251,7 +252,7 @@ function dropLines(mark: number): string[] {
     .join("")
     .slice(mark)
     .split("\n")
-    .filter((l) => l.includes("R21: master frame") || l.includes("R33: master frames"));
+    .filter((l) => l.includes(R21_LINE) || l.includes(R33_LINE));
 }
 
 /**
@@ -261,68 +262,14 @@ function dropLines(mark: number): string[] {
  * wake, and a show tolerates at most `TIED_DROPS_CAP` of them. Anywhere else
  * the strict bound applies (fail-closed).
  *
- * Each R21 and R33 line carries `dropped_total`, the engine's
- * `droppedFramesTotal` right after the drops it names were counted (one thread
- * moves the counter). A step's drops are the counts in (before, after], and
- * each count is matched to the line that explains it, with no time window to
- * race:
- * - an R21 line explains one count, tied to a late wake when
- *   `woke_late_ms >= late_ms` (an on-time wake would have submitted it on time);
- * - an R33 line explains `skipped` counts, tied to a late wake when
- *   `woke_late_ms` covers the skipped span, `skipped` frames at the house rate.
- * A count no line explains (the engine's rate limit suppressed it) is
- * unattributed and fails, as does a count whose line does not tie it to a
+ * Which line explains each count, and whether it ties the count to a late
+ * wake, is `drop-account.ts`'s rule, pinned by `drop-account.test.ts` in
+ * `npm test`. A count no line explains (the engine's rate limit suppressed it)
+ * is unattributed and fails, as does a count whose line does not tie it to a
  * late wake.
  */
 const TIED_DROPS_CAP = 8; // PROVISIONAL (the ruling): revisited after three green macos-15 runs.
 let tiedDrops = 0;
-
-/**
- * A drop line's numeric fields, as tracing writes them: `key=value`, with the
- * engine's colour codes around the key and the `=` stripped first, and a float
- * in Rust's Debug form (`3.5456250000000002`, or `1e-6` when tiny).
- */
-function lineFields(line: string): Record<string, number> {
-  const out: Record<string, number> = {};
-  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
-  for (const m of plain.matchAll(/\b([a-z_]+)=(-?\d+(?:\.\d+)?(?:e-?\d+)?)\b/g)) {
-    out[m[1]!] = Number(m[2]);
-  }
-  return out;
-}
-
-interface DropAccount {
-  tied: number[];
-  untied: number[];
-  unexplained: number[];
-  lines: string[];
-}
-
-/** The counts in (before, after]: each tied to a late wake by its line, not tied, or explained by none. */
-function accountDrops(before: number, after: number): DropAccount {
-  const explains = new Map<number, { line: string; tied: boolean }>();
-  for (const line of dropLines(0)) {
-    const f = lineFields(line);
-    const r21 = line.includes("R21: master frame");
-    const n = r21 ? 1 : (f["skipped"] ?? Number.NaN);
-    const total = f["dropped_total"] ?? Number.NaN;
-    if (!Number.isInteger(n) || !Number.isInteger(total)) continue;
-    const late = f["woke_late_ms"] ?? Number.NaN;
-    const tied = r21 ? late >= (f["late_ms"] ?? Number.NaN) : late >= (n * 1000) / HOUSE_RATE;
-    for (let count = total - n + 1; count <= total; count++) explains.set(count, { line, tied });
-  }
-  const account: DropAccount = { tied: [], untied: [], unexplained: [], lines: [] };
-  for (let count = before + 1; count <= after; count++) {
-    const e = explains.get(count);
-    if (e === undefined) {
-      account.unexplained.push(count);
-      continue;
-    }
-    (e.tied ? account.tied : account.untied).push(count);
-    if (!account.lines.includes(e.line)) account.lines.push(e.line);
-  }
-  return account;
-}
 
 /** Wait, a telemetry tick at most, for the line of the count `after` to arrive. */
 async function dropLinesArrived(after: number): Promise<void> {
@@ -343,7 +290,7 @@ async function noDropsOrTiedOnes(what: string, before: number, after: number, ma
   }
   if (after === before) return;
   await dropLinesArrived(after);
-  const a = accountDrops(before, after);
+  const a = accountDrops(dropLines(0), before, after, HOUSE_RATE);
   tiedDrops += a.tied.length;
   console.log(
     `R21-BACKSTOP ${JSON.stringify({ what, before, after, tied: a.tied, untied: a.untied, unexplained: a.unexplained, showTied: tiedDrops, cap: TIED_DROPS_CAP, provisional: true })}`,
