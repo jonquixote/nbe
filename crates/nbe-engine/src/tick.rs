@@ -658,28 +658,57 @@ mod tests {
         );
     }
 
-    /// What `f` logged, as text.
-    fn captured(f: impl FnOnce()) -> String {
-        #[derive(Clone, Default)]
-        struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Log {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
+    thread_local! {
+        /// This thread's capture, while [`captured`] runs on it.
+        static CAPTURE: std::cell::RefCell<Option<Vec<u8>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The lib tests' one subscriber's writer: each event goes to the buffer
+    /// of the thread that emitted it while [`captured`] runs there, and is
+    /// dropped otherwise.
+    struct ThreadBuffer;
+
+    impl std::io::Write for ThreadBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            CAPTURE.with(|capture| {
+                if let Some(log) = capture.borrow_mut().as_mut() {
+                    log.extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
         }
-        let log = Log::default();
-        let writer = log.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = log.0.lock().unwrap().clone();
-        String::from_utf8(bytes).unwrap()
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// What `f` logged on this thread, as text.
+    ///
+    /// One global subscriber, installed once, writes each thread's events to
+    /// that thread's own buffer (the user's rulings of 2026-11-05, item 2). A
+    /// scoped subscriber per capture (`with_default`) missed events while the
+    /// lib's other tests ran in parallel with none:
+    /// `a_burst_of_skips_cannot_hide_a_late_submit` lost every R33 line in 6
+    /// to 9 of 40 parallel runs, and none alone or on one thread. With one
+    /// global subscriber no scoped dispatcher comes and goes during a run.
+    /// The interest cache is rebuilt once after the install, so a callsite
+    /// registered before it sees the subscriber.
+    fn captured(f: impl FnOnce()) -> String {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(|| ThreadBuffer)
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the lib tests' only subscriber");
+            tracing::callsite::rebuild_interest_cache();
+        });
+        CAPTURE.with(|capture| *capture.borrow_mut() = Some(Vec::new()));
+        f();
+        let bytes = CAPTURE.with(|capture| capture.borrow_mut().take());
+        String::from_utf8(bytes.unwrap_or_default()).unwrap()
     }
 
     #[test]
