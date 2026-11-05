@@ -183,8 +183,9 @@ struct Cadence {
     /// R21's lines have their own budget, so a burst of skips cannot hide a
     /// late submit.
     late_lines: LineBudget,
-    /// How long the last tick ran (its timed region), so a skip's line says
-    /// whether the tick before it overran or the wake came late.
+    /// How long the last tick ran (its timed region), so a drop's line (R33's
+    /// skip, R21's late submit) says whether the tick before it overran or
+    /// the wake came late.
     last_tick: Duration,
 }
 
@@ -270,9 +271,15 @@ impl Cadence {
 
     /// R21: a frame drawn, but submitted after the next frame's boundary, is
     /// a drop that skips nothing, so no R33 line names it. This line does
-    /// (rate-limited), with where the frame's time went: how late the wake
-    /// came, the work before the draw, and the draw. A drop can then be tied
-    /// to a late wake or to a slow draw.
+    /// (rate-limited), with where the frame's time went: how long the tick
+    /// before it ran, how late the wake came, the work before the draw, and
+    /// the draw. A drop can then be tied to a late wake or to a slow draw, and
+    /// a wake made late by the tick before it overrunning is not mistaken for
+    /// a late timer: the loop does not sleep when that tick ended past this
+    /// one's boundary, so the overrun is part of `woke_late_ms`.
+    ///
+    /// Called before [`Cadence::ticked`] records this tick, so
+    /// `previous_tick_ms` is the tick before it, as on R33's line.
     ///
     /// Both drop lines carry `dropped_total`: `droppedFramesTotal` right after
     /// the drops the line names were counted. Only the render thread moves
@@ -287,6 +294,7 @@ impl Cadence {
             tracing::warn!(
                 master_frame = f,
                 late_ms = late.as_secs_f64() * 1000.0,
+                previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
                 woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
                 before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
                 render_ms = report.render.as_secs_f64() * 1000.0,
@@ -543,8 +551,8 @@ pub async fn run_loop(
         let mut report = run_tick(render, state, frame, deadline).await;
         report.master_frame = master;
         report.woke_late = woke_late;
-        cadence.ticked(report.total);
         cadence.submitted_late(state, &report);
+        cadence.ticked(report.total);
         if !on_tick(&report) {
             cadence.end(state);
             return;
@@ -735,6 +743,36 @@ mod tests {
         assert!(line("R33: master frames 11..=12 were never drawn").contains("dropped_total=7"));
         assert!(line("R21: master frame 13 was drawn").contains("dropped_total=8"));
         assert!(line("R33: master frames 14..=14 were never drawn").contains("dropped_total=9"));
+    }
+
+    /// R21's line says how long the tick before it ran, as R33's does: the
+    /// tick before overrunning is a late wake no timer caused.
+    #[test]
+    fn the_late_submit_line_names_the_tick_before_it() {
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            let mut cadence = Cadence::default();
+            feed(&mut cadence, &state, &[Some(20)]);
+            cadence.ticked(Duration::from_millis(45));
+            feed(&mut cadence, &state, &[Some(21)]);
+            cadence.submitted_late(
+                &state,
+                &TickReport {
+                    master_frame: Some(21),
+                    submitted_late: Some(Duration::from_millis(3)),
+                    total: Duration::from_millis(7),
+                    ..Default::default()
+                },
+            );
+        });
+        let line = text
+            .lines()
+            .find(|l| l.contains("R21: master frame 21 was drawn"))
+            .unwrap_or_else(|| panic!("no R21 line in:\n{text}"));
+        assert!(
+            line.contains("previous_tick_ms=45"),
+            "the line names the tick before it (45 ms), not its own: {line}"
+        );
     }
 
     #[test]

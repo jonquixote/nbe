@@ -412,13 +412,27 @@ async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
         "the line names the drop count it explains, the first (R21's backstop): {}",
         lines[0]
     );
-    for field in ["late_ms=", "woke_late_ms=", "before_draw_ms=", "render_ms="] {
+    for field in [
+        "late_ms=",
+        "previous_tick_ms=",
+        "woke_late_ms=",
+        "before_draw_ms=",
+        "render_ms=",
+    ] {
         assert!(
             lines[0].contains(field),
             "the line does not say where the frame's time went ({field}): {}",
             lines[0]
         );
     }
+    // The line names the tick before it, and this is the run's first tick:
+    // none ran before it. Logged after `ticked`, it would name this tick's
+    // own frame and a half.
+    assert!(
+        lines[0].contains("previous_tick_ms=0.0 "),
+        "the first tick's line names a tick before it: {}",
+        lines[0]
+    );
 }
 
 /// The control: STOPPED, the same slow draws have no deadline, so nothing is
