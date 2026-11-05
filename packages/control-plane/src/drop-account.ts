@@ -10,10 +10,20 @@
 //! moves the counter). A step's drops are the counts in (before, after], and
 //! each count is matched to the line that explains it, with no time window to
 //! race:
-//! - an R21 line explains one count, tied to a late wake when
-//!   `woke_late_ms >= late_ms` (an on-time wake would have submitted it on time);
-//! - an R33 line explains `skipped` counts, tied to a late wake when
-//!   `woke_late_ms` covers the skipped span, `skipped` frames at the house rate.
+//! - an R21 line explains one count; an R33 line explains `skipped` counts.
+//! - A line ties its counts to a late wake only if both hold (the user's
+//!   rulings of 2026-11-04, night, the tightened rule):
+//!   (a) the wake was late enough to cost the frame: for R21,
+//!       `woke_late_ms >= late_ms` (an on-time wake would have submitted it on
+//!       time); for R33, `woke_late_ms` covers the skipped span, `skipped`
+//!       frames at the house rate;
+//!   (b) the tick before it did not overrun: `previous_tick_ms` is within the
+//!       loop's frame budget, `1000 / houseRate` ms. The loop does not sleep
+//!       when that tick ended past this one's boundary, so its overrun is part
+//!       of `woke_late_ms`, and a wake made late that way is a slow tick, not
+//!       a late timer. A line without `previous_tick_ms` (the engine's R21 line
+//!       before e9225a8) cannot show (b), so it ties nothing.
+//!   A count whose line fails either is untied: a slow draw or a slow tick.
 //! A count no line explains (the engine's rate limit suppressed it) is
 //! unexplained.
 
@@ -61,8 +71,10 @@ export function accountDrops(
     const n = r21 ? 1 : (f["skipped"] ?? Number.NaN);
     const total = f["dropped_total"] ?? Number.NaN;
     if (!Number.isInteger(n) || !Number.isInteger(total)) continue;
-    const late = f["woke_late_ms"] ?? Number.NaN;
-    const tied = r21 ? late >= (f["late_ms"] ?? Number.NaN) : late >= (n * 1000) / houseRate;
+    const woke = f["woke_late_ms"] ?? Number.NaN;
+    const wokeLateEnough = r21 ? woke >= (f["late_ms"] ?? Number.NaN) : woke >= (n * 1000) / houseRate;
+    const tickBeforeOnBudget = (f["previous_tick_ms"] ?? Number.NaN) <= 1000 / houseRate;
+    const tied = wokeLateEnough && tickBeforeOnBudget;
     for (let count = total - n + 1; count <= total; count++) explains.set(count, { line, tied });
   }
   const account: DropAccount = { tied: [], untied: [], unexplained: [], lines: [] };

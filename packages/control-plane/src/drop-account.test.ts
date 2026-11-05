@@ -31,23 +31,44 @@ function r33(first: number, last: number, fields: string): string {
 }
 
 const LINES = [
+  // 1: logged before e9225a8, so no previous_tick_ms: it cannot show (b).
   REAL_R21,
-  r21(300, "late_ms=12.0 woke_late_ms=0.5 before_draw_ms=0.004 render_ms=4.4 dropped_total=2"),
+  // 2: a slow draw.
+  r21(300, "late_ms=12.0 previous_tick_ms=4.0 woke_late_ms=0.5 before_draw_ms=0.004 render_ms=4.4 dropped_total=2"),
+  // 3..7: #81's CI show start, a 200.1 ms tick before: a slow tick.
   r33(2, 6, "previous_tick_ms=200.1 woke_late_ms=169.8 dropped_total=7"),
-  r33(40, 42, "previous_tick_ms=200.1 woke_late_ms=90.0 dropped_total=10"),
-  r21(500, "late_ms=3.0 woke_late_ms=1e-6 before_draw_ms=0.004 render_ms=4.4 dropped_total=11"),
-  r21(600, "late_ms=2e-5 woke_late_ms=0.5 before_draw_ms=0.004 render_ms=33.3 dropped_total=13"),
+  // 8..10: the wake short of the span.
+  r33(40, 42, "previous_tick_ms=12.0 woke_late_ms=90.0 dropped_total=10"),
+  // 11: an on-time wake, a late submit.
+  r21(500, "late_ms=3.0 previous_tick_ms=4.0 woke_late_ms=1e-6 before_draw_ms=0.004 render_ms=4.4 dropped_total=11"),
+  // 12: no line.
+  // 13: Debug's exponent.
+  r21(600, "late_ms=2e-5 previous_tick_ms=5.0 woke_late_ms=0.5 before_draw_ms=0.004 render_ms=33.3 dropped_total=13"),
+  // 14: the real line's figures, with the tick before on budget.
+  r21(218, "late_ms=3.5456250000000002 previous_tick_ms=4.401917 woke_late_ms=32.460083 before_draw_ms=0.003541 render_ms=4.401917 dropped_total=14"),
+  // 15..19: a late wake covering the span after an on-budget tick.
+  r33(70, 74, "previous_tick_ms=10.0 woke_late_ms=169.8 dropped_total=19"),
+  // 20: woke late enough, but the tick before overran: a slow tick.
+  r21(800, "late_ms=3.0 previous_tick_ms=45.0 woke_late_ms=40.0 before_draw_ms=0.004 render_ms=4.4 dropped_total=20"),
+  // 21 and 22: either side of the budget, 33.33 ms at 30 fps.
+  r21(900, "late_ms=3.0 previous_tick_ms=33.3 woke_late_ms=40.0 before_draw_ms=0.004 render_ms=4.4 dropped_total=21"),
+  r21(1000, "late_ms=3.0 previous_tick_ms=33.4 woke_late_ms=40.0 before_draw_ms=0.004 render_ms=4.4 dropped_total=22"),
 ];
 
 const CASES: [string, number, number, { tied: number[]; untied: number[]; unexplained: number[] }][] = [
-  ["the real #85 step-6 R21 line ties count 1", 0, 1, { tied: [1], untied: [], unexplained: [] }],
+  ["the real #85 step-6 R21 line has no previous_tick_ms, so it ties nothing", 0, 1, { tied: [], untied: [1], unexplained: [] }],
   ["a slow draw (woke 0.5 < late 12) is untied", 1, 2, { tied: [], untied: [2], unexplained: [] }],
-  ["R33 5 frames, woke 169.8 >= 166.7: tied 3..7", 2, 7, { tied: [3, 4, 5, 6, 7], untied: [], unexplained: [] }],
+  ["R33 5 frames, woke 169.8 >= 166.7 after a 200.1 ms tick: a slow tick, untied 3..7", 2, 7, { tied: [], untied: [3, 4, 5, 6, 7], unexplained: [] }],
   ["R33 3 frames, woke 90 < 100: untied 8..10", 7, 10, { tied: [], untied: [8, 9, 10], unexplained: [] }],
   ["R21 woke 1e-6 < late 3: untied 11", 10, 11, { tied: [], untied: [11], unexplained: [] }],
   ["count 12 has no line: unexplained", 11, 12, { tied: [], untied: [], unexplained: [12] }],
   ["no drops: empty", 5, 5, { tied: [], untied: [], unexplained: [] }],
   ["R21 late 2e-5 (Debug's exponent), woke 0.5: tied 13", 12, 13, { tied: [13], untied: [], unexplained: [] }],
+  ["the real line's figures after a 4.4 ms tick: tied 14", 13, 14, { tied: [14], untied: [], unexplained: [] }],
+  ["R33 5 frames, woke 169.8 after a 10 ms tick: tied 15..19", 14, 19, { tied: [15, 16, 17, 18, 19], untied: [], unexplained: [] }],
+  ["R21 woke 40 >= late 3 after a 45 ms tick: a slow tick, untied 20", 19, 20, { tied: [], untied: [20], unexplained: [] }],
+  ["R21 after a 33.3 ms tick, inside the 33.33 ms budget: tied 21", 20, 21, { tied: [21], untied: [], unexplained: [] }],
+  ["R21 after a 33.4 ms tick, over the 33.33 ms budget: untied 22", 21, 22, { tied: [], untied: [22], unexplained: [] }],
 ];
 
 for (const [what, before, after, want] of CASES) {

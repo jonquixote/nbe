@@ -243,8 +243,8 @@ function engineLogMark(): number {
  * R21's attribution: the engine's own lines, since `mark`, that name a
  * dropped frame. A frame never drawn has an R33 line (with how late the wake
  * came and how long the tick before it ran); a frame drawn but submitted after
- * the next frame's boundary has an R21 line (with how late the wake came, the
- * work before the draw, and the draw). Both are rate-limited in the engine,
+ * the next frame's boundary has an R21 line (with how long the tick before it
+ * ran, how late the wake came, the work before the draw, and the draw). Both are rate-limited in the engine,
  * and a suppressed count rides the next line let through.
  */
 function dropLines(mark: number): string[] {
@@ -259,14 +259,15 @@ function dropLines(mark: number): string[] {
  * R21's backstop (the user's ruling of 2026-11-04, third set, item 2). On the
  * normative machine a step's drops are zero, strictly. On a GitHub Actions
  * runner a drop is tolerated only when the engine's own line ties it to a late
- * wake, and a show tolerates at most `TIED_DROPS_CAP` of them. Anywhere else
+ * wake that the tick before it did not cause (the tightened rule, ruled
+ * 2026-11-04, night), and a show tolerates at most `TIED_DROPS_CAP` of them. Anywhere else
  * the strict bound applies (fail-closed).
  *
  * Which line explains each count, and whether it ties the count to a late
  * wake, is `drop-account.ts`'s rule, pinned by `drop-account.test.ts` in
  * `npm test`. A count no line explains (the engine's rate limit suppressed it)
  * is unattributed and fails, as does a count whose line does not tie it to a
- * late wake.
+ * late wake: a slow draw, or a slow tick (the tick before overran).
  */
 const TIED_DROPS_CAP = 8; // PROVISIONAL (the ruling): revisited after three green macos-15 runs.
 let tiedDrops = 0;
@@ -304,7 +305,7 @@ async function noDropsOrTiedOnes(what: string, before: number, after: number, ma
   assert.deepEqual(
     a.untied,
     [],
-    `${what}: drop count(s) ${JSON.stringify(a.untied)} are not tied to a late wake; ${detail}`,
+    `${what}: drop count(s) ${JSON.stringify(a.untied)} are not tied to a late wake (a slow draw, or a slow tick: the tick before overran); ${detail}`,
   );
   assert.ok(
     tiedDrops <= TIED_DROPS_CAP,
