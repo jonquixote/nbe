@@ -45,6 +45,24 @@ jobs:
         timeout-minutes: 5
       - run: cargo fmt --all -- --check
         timeout-minutes: 5
+      # R49 (filed 2026-11-05): the recording file-structure tests look for
+      # ffprobe and ffmpeg at /usr/local/bin, which is empty on macos-15
+      # (Homebrew's prefix there is /opt/homebrew). Eleven tests returned early
+      # and two skipped their ffprobe assertions on every macos-15 run, each
+      # printing a SKIP line the floors accepted. Install ffmpeg and link both
+      # tools where the tests look; the 09 and migration floor steps fail if a
+      # test still reports ffprobe absent. The tests looking ffprobe up on PATH
+      # is R49's follow-up.
+      - name: ffprobe and ffmpeg where the recording tests look (R49)
+        run: |
+          set -eu
+          brew install ffmpeg
+          sudo mkdir -p /usr/local/bin
+          sudo ln -sf "$(brew --prefix)/bin/ffprobe" /usr/local/bin/ffprobe
+          sudo ln -sf "$(brew --prefix)/bin/ffmpeg" /usr/local/bin/ffmpeg
+          /usr/local/bin/ffprobe -version | head -n 1
+          /usr/local/bin/ffmpeg -version | head -n 1
+        timeout-minutes: 5
       - name: the unsafe exception stays in crates/nbe-decode
         run: |
           # The workspace denies unsafe_code (root Cargo.toml). Exactly one
@@ -373,6 +391,11 @@ jobs:
             case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
             exercised=$((ran - skipped))
             echo "$target: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=$floor exercised>=$exercised_floor)"
+            # R49: ffprobe is installed above, so a test that reports it
+            # absent is a silent skip of the file-structure checks, and fails.
+            if echo "$out" | grep -q 'ffprobe absent'; then
+              echo "FAIL $target: a test reports ffprobe absent (R49); its file-structure checks did not run"; fail=1
+            fi
             if [ "$ran" -lt "$floor" ]; then
               echo "FAIL $target: expected at least $floor tests to run, got $ran"; fail=1
             fi
@@ -457,6 +480,11 @@ jobs:
           case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
           exercised=$((ran - skipped))
           echo "zerocopy_migration: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=6 exercised>=2)"
+          # R49: ffprobe is installed above, so a test that reports it absent
+          # is a silent skip of the structure assertions, and fails.
+          if echo "$out" | grep -q 'ffprobe absent'; then
+            echo "FAIL zerocopy_migration: a test reports ffprobe absent (R49); its structure assertions did not run"; exit 1
+          fi
           if [ "$ran" -lt 6 ]; then
             echo "FAIL zerocopy_migration: expected at least 6 tests to run, got $ran"; exit 1
           fi
