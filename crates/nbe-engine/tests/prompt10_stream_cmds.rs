@@ -1021,7 +1021,7 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
                 surface.clone(),
                 Some(drawn.clone()),
                 frame,
-                &state.skipped_stream_frames,
+                &*state.skipped_stream_frames,
             ));
         }
     }
@@ -1031,6 +1031,13 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
             .load(std::sync::atomic::Ordering::SeqCst),
         3,
         "three dropped frames must be counted"
+    );
+    assert_eq!(
+        state
+            .skipped_stream_frames
+            .path(nbe_engine::record::SkipPath::QueueFull),
+        3,
+        "each under the full queue that dropped it (R46)"
     );
 
     handler
@@ -1052,6 +1059,11 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
             .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "a new stream starts its drop counter from zero (record-start shape)"
+    );
+    assert_eq!(
+        state.skipped_stream_frames.paths_total(),
+        0,
+        "and every path it counted (R46)"
     );
     assert_eq!(
         *state.stream_tap_ms.lock().unwrap(),

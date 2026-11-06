@@ -152,7 +152,7 @@ async fn run_take(
 
     let budget = Duration::from_secs_f64(1.0 / 30.0);
     let readback_awaited = AtomicBool::new(false);
-    let skipped = &state.skipped_record_frames;
+    let skipped = &*state.skipped_record_frames;
     // PACED to the frame boundary, exactly as `main.rs` paces. Without this the
     // feed runs as fast as the CPU allows, the bounded channel fills on frame 2
     // and 33 of 40 frames shed — an artifact of the harness, not of the system,
@@ -462,7 +462,7 @@ fn loop_wiring_acquires_the_surface_before_the_draw() {
 
 /// Companion to the above: the counter the acquire feeds is the one the loop
 /// and the thread already share, so a soak's span counters stay comparable
-/// across paths.
+/// across paths. Since R46 the refusal is counted under its own path.
 #[test]
 fn the_pool_skip_uses_the_same_counter_as_every_other_skip() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/record/feed.rs"))
@@ -473,7 +473,7 @@ fn the_pool_skip_uses_the_same_counter_as_every_other_skip() {
     let tail = &src[acquire..];
     let body_end = tail.find("\n}\n").expect("the function ends");
     assert!(
-        tail[..body_end].contains("skipped.fetch_add(1"),
+        tail[..body_end].contains("skipped.count(SkipPath::NoSurface, 1)"),
         "acquire_record_surface must count its refusal, or a zero-copy take \
          under pressure looks like a take with nothing to report"
     );
@@ -535,7 +535,7 @@ async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_fr
     assert_eq!(reported_path(&state), ("zeroCopy".into(), "Table".into()));
 
     let budget = Duration::from_secs_f64(1.0 / 30.0);
-    let skipped = &state.skipped_record_frames;
+    let skipped = &*state.skipped_record_frames;
     let mut next_boundary = Instant::now() + budget;
     let mut fed = 0u32;
     let mut loss: Option<String> = None;

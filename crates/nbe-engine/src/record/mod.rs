@@ -29,6 +29,7 @@ pub mod markers;
 pub mod pool;
 pub mod rtmp;
 pub mod session;
+pub mod skip;
 pub mod stream;
 pub mod tap_path;
 pub mod thread;
@@ -40,6 +41,7 @@ pub use feed::{
     handoff_record_frame, handoff_record_surface, restore_view, should_skip_record_frame,
     AwaitDraw, DrawDone, HandoffOutcome, TapLoan, DRAW_POLL, DRAW_WAIT,
 };
+pub use skip::{CountSkip, SkipCount, SkipPath};
 
 /// Build a take's surface pool at this geometry.
 ///

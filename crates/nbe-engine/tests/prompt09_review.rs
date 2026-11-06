@@ -8,7 +8,7 @@ use std::time::Duration;
 use nbe_engine::directive::{DirectiveError, DirectiveHandler};
 use nbe_engine::record::markers;
 use nbe_engine::record::writer::{MAX_BUFFERED_AUDIO_PACKETS, MAX_BUFFERED_VIDEO_FRAMES};
-use nbe_engine::record::{RecordingWriter, RECORD_STOP_TIMEOUT};
+use nbe_engine::record::{CountSkip, RecordingWriter, SkipPath, RECORD_STOP_TIMEOUT};
 use nbe_engine::state::{EngineState, OutgoingQueue, RecordState};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
 
@@ -343,9 +343,7 @@ async fn record_start_resets_counters() {
     let dir = tempfile::tempdir().expect("tempdir must succeed");
     *state.record_dir.lock().unwrap() = Some(dir.path().to_path_buf());
     *state.record_tap_ms.lock().unwrap() = 1234.5;
-    state
-        .skipped_record_frames
-        .store(999, std::sync::atomic::Ordering::SeqCst);
+    state.skipped_record_frames.count(SkipPath::QueueFull, 999);
     handler
         .apply(&directive(
             "record.start",
@@ -366,6 +364,11 @@ async fn record_start_resets_counters() {
             .load(std::sync::atomic::Ordering::SeqCst),
         0,
         "skipped_record_frames must reset on start"
+    );
+    assert_eq!(
+        state.skipped_record_frames.paths_total(),
+        0,
+        "and so must every path it counted (R46)"
     );
     abandon_and_drain(&state).await;
 }
