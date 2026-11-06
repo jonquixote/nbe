@@ -230,8 +230,23 @@ async fn start_recording(state: &Arc<EngineState>, handler: &DirectiveHandler, s
         .to_path_buf()
 }
 
+/// How many times `feed_take` offers one frame before it fails the test, and
+/// the pause after each refusal (R48). The record queue holds
+/// `RECORD_CHANNEL_BOUND` (2) frames. The production loop offers one frame a
+/// tick and sheds a refused one as a counted skip; this helper offers frames
+/// as fast as it can make them, so the queue can be full only because the
+/// record thread has not drained it yet. A refused frame is offered again
+/// after the pause. The bound is a count of attempts, not a deadline (R39):
+/// nothing here reads the clock, and load only stretches the pauses, so a
+/// thread that drains within 5,000 pauses (10 s or more) is never failed, and
+/// a thread that never accepts still fails.
+const FEED_ATTEMPTS: u32 = 5_000;
+const FEED_RETRY_PAUSE: Duration = Duration::from_millis(2);
+
 /// Feed `n` full-View frames through the REAL loop feed fns (pre-check +
-/// handoff), pushing `tone_s` of tone into the shared tap first.
+/// handoff), pushing `tone_s` of tone into the shared tap first. Each frame
+/// is offered until the record thread accepts it, at most `FEED_ATTEMPTS`
+/// times (R48).
 fn feed_take(state: &Arc<EngineState>, n: u32, tone_s: u32) {
     use nbe_engine::render::{VIEW_H, VIEW_W};
     let tap = state
@@ -243,6 +258,7 @@ fn feed_take(state: &Arc<EngineState>, n: u32, tone_s: u32) {
         .tap();
     tap.push(&tone_secs(tone_s));
     let budget = Duration::from_secs_f64(1.0 / 30.0);
+    let mut refused = 0u32;
     for frame in 0..n {
         assert!(!should_skip_record_frame(
             Duration::from_millis(2),
@@ -258,9 +274,26 @@ fn feed_take(state: &Arc<EngineState>, n: u32, tone_s: u32) {
             .as_ref()
             .expect("session must be present")
             .frame_sender();
-        let outcome = handoff_record_frame(rgba, &tx, readback_elapsed);
-        assert!(outcome.sent, "a live thread must accept handoffs");
+        let mut attempts = 1;
+        let outcome = loop {
+            let outcome = handoff_record_frame(rgba.clone(), &tx, readback_elapsed);
+            if outcome.sent {
+                break outcome;
+            }
+            assert!(
+                attempts < FEED_ATTEMPTS,
+                "a live thread must accept handoffs: frame {frame} refused {FEED_ATTEMPTS} times (R48)"
+            );
+            attempts += 1;
+            refused += 1;
+            std::thread::sleep(FEED_RETRY_PAUSE);
+        };
         *state.record_tap_ms.lock().unwrap() += outcome.feed_ms;
+    }
+    if refused > 0 {
+        println!(
+            "R48: the record queue refused {refused} handoff(s) across {n} frames; each refused frame was offered again until accepted"
+        );
     }
 }
 

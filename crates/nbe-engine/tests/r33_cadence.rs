@@ -6,6 +6,10 @@
 //! R33 (filed 2026-10-26): the loop slept to its own boundary and then read
 //! the clock, so two ticks could read the same master frame — 630, 630, then
 //! 632 — and nothing counted it.
+//!
+//! R21's attribution line (the user's ruling of 2026-11-04): a frame drawn
+//! but submitted after the next frame's boundary is a drop that skips
+//! nothing, and the loop names it in its own line.
 
 use std::io::Write;
 use std::sync::atomic::Ordering;
@@ -338,4 +342,121 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
         line.contains("previous_tick_ms=") && line.contains("woke_late_ms="),
         "the skip's line says neither how long the tick before it ran nor how late the wake came: {line}"
     );
+    assert!(
+        line.contains("dropped_total="),
+        "the skip's line does not say which drop counts it explains (R21's backstop): {line}"
+    );
+}
+
+/// The log a run of the loop wrote, with every line a test's subscriber saw.
+fn subscribe() -> (Captured, tracing::subscriber::DefaultGuard) {
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .finish();
+    (captured, tracing::subscriber::set_default(subscriber))
+}
+
+/// R21: a frame drawn but submitted after the next frame's boundary is a drop
+/// that skips nothing, so no R33 line names it. Its own line does, with where
+/// the time went. Every draw here takes a frame and a half, and a tick starts
+/// at or after its own frame's boundary, so the draw is submitted at least
+/// half a frame after the next one's, on any machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    let (captured, _guard) = subscribe();
+    render.injected_view_delay = Some(budget() * 3 / 2);
+    state.clock.lock().unwrap().start();
+    let mut reports = Vec::new();
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        false
+    })
+    .await;
+    let report = reports[0];
+    let f = report.master_frame.expect("the clock runs");
+    let late = report
+        .submitted_late
+        .unwrap_or_else(|| panic!("frame {f}: a draw of a frame and a half was submitted on time"));
+    assert!(
+        late >= budget() / 2,
+        "frame {f}: submitted {late:?} after the next boundary, under half a frame"
+    );
+    assert_eq!(
+        state.dropped_frames_total.load(Ordering::SeqCst),
+        1,
+        "the late submit is one dropped frame (SPEC §10.2)"
+    );
+    assert_eq!(
+        state.skipped_master_frames.load(Ordering::SeqCst),
+        0,
+        "nothing was skipped, so no R33 line could name the drop"
+    );
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    let expected = format!(
+        "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
+        f + 1
+    );
+    let lines: Vec<&str> = log.lines().filter(|l| l.contains("R21: ")).collect();
+    assert_eq!(lines.len(), 1, "one drop, one R21 line:\n{log}");
+    assert!(
+        lines[0].contains(&expected),
+        "no line `{expected}` in:\n{log}"
+    );
+    assert!(
+        lines[0].contains("dropped_total=1 "),
+        "the line names the drop count it explains, the first (R21's backstop): {}",
+        lines[0]
+    );
+    for field in [
+        "late_ms=",
+        "previous_tick_ms=",
+        "woke_late_ms=",
+        "before_draw_ms=",
+        "render_ms=",
+    ] {
+        assert!(
+            lines[0].contains(field),
+            "the line does not say where the frame's time went ({field}): {}",
+            lines[0]
+        );
+    }
+    // The line names the tick before it, and this is the run's first tick:
+    // none ran before it. Logged after `ticked`, it would name this tick's
+    // own frame and a half.
+    assert!(
+        lines[0].contains("previous_tick_ms=0.0 "),
+        "the first tick's line names a tick before it: {}",
+        lines[0]
+    );
+}
+
+/// The control: STOPPED, the same slow draws have no deadline, so nothing is
+/// dropped and no R21 line is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_clock_s_slow_draw_is_neither_a_drop_nor_an_r21_line() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    let (captured, _guard) = subscribe();
+    render.injected_view_delay = Some(budget() * 3 / 2);
+    let mut reports = Vec::new();
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        reports.len() < 2
+    })
+    .await;
+    assert!(
+        reports
+            .iter()
+            .all(|r| r.master_frame.is_none() && r.submitted_late.is_none()),
+        "a STOPPED draw is never late: {reports:?}"
+    );
+    assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(!log.contains("R21: "), "an R21 line while STOPPED:\n{log}");
 }

@@ -344,6 +344,8 @@ pub struct SurfacePool {
     surfaces: Vec<std::sync::Arc<SharedSurface>>,
     width: u32,
     height: u32,
+    /// Every surface [`Self::acquire`] has handed out, ever.
+    acquisitions: std::sync::atomic::AtomicU64,
 }
 
 impl SurfacePool {
@@ -373,6 +375,7 @@ impl SurfacePool {
             surfaces,
             width,
             height,
+            acquisitions: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -465,10 +468,23 @@ impl SurfacePool {
     /// Never hands out a surface another holder still has — including an
     /// encoder that has not finished reading it (see [`Self::is_free`]).
     pub fn acquire(&self) -> Option<std::sync::Arc<SharedSurface>> {
-        self.surfaces
+        let s = self
+            .surfaces
             .iter()
             .find(|s| Self::is_free(s))
-            .map(std::sync::Arc::clone)
+            .map(std::sync::Arc::clone);
+        if s.is_some() {
+            self.acquisitions
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        s
+    }
+
+    /// How many surfaces [`Self::acquire`] has handed out, ever, for tests
+    /// that must tell "never touched" from "free again by now": a surface
+    /// taken and returned inside one tick reads free a moment later.
+    pub fn acquisitions(&self) -> u64 {
+        self.acquisitions.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Every surface's IOSurface id, for tests that need to check "same

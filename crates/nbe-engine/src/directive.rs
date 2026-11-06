@@ -1025,7 +1025,7 @@ impl DirectiveHandler {
         // take's lifetime, so a new take starts from zero (set before the
         // state flip, while the loop still sees Idle).
         *self.state.record_tap_ms.lock().unwrap() = 0.0;
-        self.state.skipped_record_frames.store(0, Ordering::SeqCst);
+        self.state.skipped_record_frames.reset();
         *self.state.record_tap.lock().unwrap() = Some(tap);
         *self.state.record_session.lock().unwrap() = Some(session);
         *self.state.record_state.lock().unwrap() = RecordState::Recording;
@@ -1248,7 +1248,7 @@ impl DirectiveHandler {
         // stream's lifetime, so a new stream starts from zero (set before the
         // state flip, while the loop still sees Idle) — the record-start shape.
         *self.state.stream_tap_ms.lock().unwrap() = 0.0;
-        self.state.skipped_stream_frames.store(0, Ordering::SeqCst);
+        self.state.skipped_stream_frames.reset();
         // §9.4 at the show's geometry and rate, with the manifest's bitrates.
         let params = crate::record::stream::StreamParams::new(
             crate::render::VIEW_W,

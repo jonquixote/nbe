@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use crate::encode::{EncodeSession, EncodedUnit};
 use crate::record::session::{force_no_encoder, SessionError};
-use crate::record::{AudioTap, RecordError, RecordParams, RecordingWriter};
+use crate::record::{AudioTap, CountSkip, RecordError, RecordParams, RecordingWriter, SkipPath};
 
 /// Frames in flight between loop and record thread. 1080p RGBA is ~8.3 MiB,
 /// so the bound caps recorder pressure at ~2 frames (~17 MiB); beyond it the
@@ -120,7 +120,7 @@ pub struct ThreadArgs {
     pub done_tx: Sender<SessionResult>,
     /// Thread-side sheds (failed encoder open, refused encodes) land here —
     /// the same engine-state counter the loop feeds, so no skip is invisible.
-    pub skipped: Arc<std::sync::atomic::AtomicU64>,
+    pub skipped: Arc<dyn CountSkip>,
 }
 
 /// Spawn the record thread (detached: the done channel is the rendezvous, the
@@ -170,7 +170,7 @@ struct Drive {
     tap: Arc<AudioTap>,
     frame_rx: Receiver<RecordMsg>,
     control_rx: Receiver<ControlMsg>,
-    skipped: Arc<std::sync::atomic::AtomicU64>,
+    skipped: Arc<dyn CountSkip>,
     encoder: Option<EncodeSession>,
     /// Eager-open refusal (SPEC `E_NO_HARDWARE_ENCODER` shape): `Frame`s shed
     /// from here on; `Unit`s still flow (the hermetic seam); the stop reports
@@ -329,7 +329,7 @@ impl Drive {
                 let Some(enc) = self.encoder.as_mut() else {
                     // No encoder (failed open): shed the frame, count it, keep
                     // the take alive for `Unit`s / a loud stop.
-                    self.count_skip();
+                    self.count_skip(SkipPath::NoEncoder);
                     return Ok(());
                 };
                 let encoded = enc.encode_rgba(&rgba);
@@ -347,7 +347,7 @@ impl Drive {
                         // Hardware encode is all-or-nothing by design (no CPU
                         // fallback): a refusal degrades the frame, never the
                         // take. The encoder stays open; the next frame retries.
-                        self.count_skip();
+                        self.count_skip(SkipPath::Refused);
                     }
                 }
             }
@@ -357,7 +357,7 @@ impl Drive {
                 frame,
             } => {
                 let Some(enc) = self.encoder.as_mut() else {
-                    self.count_skip();
+                    self.count_skip(SkipPath::NoEncoder);
                     return Ok(());
                 };
                 // The ONE difference from `Frame` above: the encoder reads the
@@ -389,7 +389,7 @@ impl Drive {
                         frame,
                         "record: the View's draw did not finish within DRAW_WAIT; frame skipped"
                     );
-                    self.count_skip();
+                    self.count_skip(SkipPath::DrawWait);
                     return Ok(());
                 };
                 match encoded {
@@ -400,7 +400,7 @@ impl Drive {
                         }
                     }
                     Err(_) => {
-                        self.count_skip();
+                        self.count_skip(SkipPath::Refused);
                     }
                 }
                 // `surface` goes out of scope here, and THAT is the pool's
@@ -472,9 +472,8 @@ impl Drive {
         Ok(())
     }
 
-    fn count_skip(&self) {
-        self.skipped
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn count_skip(&self, path: SkipPath) {
+        self.skipped.count(path, 1);
     }
 
     /// Frames disconnected: the session was dropped without `Stop` (the

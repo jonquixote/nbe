@@ -76,7 +76,7 @@ impl MasterClock {
     /// floating-point form read 28 at the instant frame 29 begins at 25 fps
     /// (1.16 × 25 = 28.999…), so it disagreed with [`boundary`](Self::boundary)
     /// for that nanosecond (R33's fix, 2026-10-28).
-    fn frame_at(&self, now: Instant) -> Option<u64> {
+    pub fn frame_at(&self, now: Instant) -> Option<u64> {
         match self.state {
             ClockState::Stopped => None,
             ClockState::Running => {
