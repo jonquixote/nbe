@@ -541,13 +541,14 @@ jobs:
         # R33 (the loop draws the master clock's frame, once, in order) and R36
         # (a slow free-space measurement never stalls the loop's timer) are
         # guarded on the real loop and a real RenderLoop, which skips loudly
-        # without an adapter. The same two-floor shape: r33_cadence's 6 all
-        # need the adapter; r36_record_space's 2, one of them; R42's guard (two
-        # pollers and a drain loop on one device) needs it too. If the runner
+        # without an adapter. The same two-floor shape: r33_cadence's 8 all
+        # need the adapter (R21's late-submit line and its control among
+        # them); r36_record_space's 2, one of them; R42's guard (two pollers
+        # and a drain loop on one device) needs it too. If the runner
         # loses its adapter, this step fails instead of going green on skips.
         run: |
           set -u
-          for spec in "r33_cadence 6 6" "r36_record_space 2 2" "r42_two_pollers 1 1"; do
+          for spec in "r33_cadence 8 8" "r36_record_space 2 2" "r42_two_pollers 1 1"; do
             set -- $spec
             out=$(cargo test -p nbe-engine --test "$1" -- --nocapture 2>&1) && rc=0 || rc=$?
             echo "$out"
