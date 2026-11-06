@@ -40,6 +40,8 @@ nbe-decode = { path = "../nbe-decode", features = ["gpu-tap", "device-audio"] }
 [dev-dependencies]
 pollster = "0.4"
 tempfile = "3"
+# A paused clock: tests/null_sink_catch_up.rs drives `audio_driver::run` on it.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
