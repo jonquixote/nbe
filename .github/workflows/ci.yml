@@ -21,6 +21,7 @@ env:
 # holding a runner for GitHub's 6 h default.
 jobs:
   rust:
+    if: false  # THROWAWAY (R50 falsification): control-plane only
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -1381,13 +1382,6 @@ jobs:
       # Homebrew's prefix on macos-15 is /opt/homebrew, which is on PATH, so
       # installing ffmpeg is enough; the show.stop step fails if a leg still
       # reports ffprobe absent.
-      - name: ffprobe on PATH for the show.stop end-to-end (R50)
-        run: |
-          set -eu
-          brew install ffmpeg
-          command -v ffprobe
-          ffprobe -version | head -n 1
-        timeout-minutes: 5
       # R32's load capture (docs/soak-protocol.md, R32; the user's ruling of
       # 2026-10-26, (a)). R32's two sightings, package-reconcile's test 4 in
       # main's run 40293707305 and #67's run 40190112362, were load-blind:
@@ -1644,6 +1638,7 @@ jobs:
         # load's preflight; the reconnect after loads nothing).
         run: |
           set -u
+          echo "FALSIFY F1: package-reconcile forced red"; exit 1
           out=$(node --import tsx --test src/package-reconcile.e2e.ts 2>&1) && rc=0 || rc=$?
           echo "$out" | grep -E "^(ok|not ok|# )" || true
           if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL package-reconcile.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
@@ -1847,6 +1842,7 @@ jobs:
   # The artifact upload stays: engine.log, telemetry.jsonl and timings.json are
   # why a failure here is debuggable rather than merely red.
   dress-rehearsal:
+    if: false  # THROWAWAY (R50 falsification): control-plane only
     name: dress rehearsal
     runs-on: macos-15
     timeout-minutes: 30
