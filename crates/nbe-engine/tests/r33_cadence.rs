@@ -70,6 +70,45 @@ fn read(reports: &[TickReport]) -> (Vec<u64>, u64, u64) {
     (frames, repeats, skips)
 }
 
+/// Each tick of one run against the master clock, so that a late timer and a
+/// prompt one read alike (R39). `ended` is when each report reached `on_tick`.
+/// Read from the loop's own numbers, these cannot fail on a machine that is
+/// merely slow:
+///
+/// - A tick began at or after its frame's boundary. `ended - total` is no
+///   earlier than the tick began, which is after the clock was read.
+/// - The loop woke before the boundary after the frame it drew. Its wake is
+///   `woke_late` past `boundary(previous + 1)`, read before the clock was.
+///
+/// Together: every frame a tick leaves behind the clock had passed, and no
+/// frame it draws is one the clock had left, which is what catching up draws.
+/// `repeats == 0` pins neither: a burst draws distinct frames.
+fn assert_each_tick_drew_the_clock_s_frame(
+    state: &EngineState,
+    reports: &[TickReport],
+    ended: &[Instant],
+) {
+    let boundary = |f: u64| state.frame_boundary(f).expect("the clock is running");
+    let frame = |r: &TickReport| r.master_frame.expect("every tick ran on the clock");
+    let (frames, _, _) = read(reports);
+    for (r, ended) in reports.iter().zip(ended) {
+        let (f, began) = (frame(r), *ended - r.total);
+        assert!(
+            boundary(f) <= began,
+            "frame {f} drawn {:?} ahead of its boundary: {frames:?}",
+            boundary(f) - began
+        );
+    }
+    for pair in reports.windows(2) {
+        let (previous, f) = (frame(&pair[0]), frame(&pair[1]));
+        let woke = boundary(previous + 1) + pair[1].woke_late;
+        assert!(
+            woke < boundary(f + 1),
+            "frame {f} drawn after {previous}, but the clock had passed it at the wake: {frames:?}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_loop_counts_every_repeat_and_skip_it_draws() {
     let Some((state, mut render)) = rig_or_skip().await else {
@@ -273,6 +312,9 @@ async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts(
         reports.len() < 60
     })
     .await;
+    // No burst, by the clock. The gaps between ticks measure the timer, not a
+    // burst: a wake 18 ms late leaves the next gap 15 ms (R39, on CI at 51dfe87).
+    assert_each_tick_drew_the_clock_s_frame(&state, &reports, &at);
     let (frames, repeats, skips) = read(&reports);
     let before = frames[29];
     let after = frames[30];
@@ -293,13 +335,6 @@ async fn after_a_stalled_tick_the_loop_draws_the_clock_s_frame_and_never_bursts(
     assert!(
         dropped >= skips,
         "{dropped} dropped, but {skips} master frames were never drawn: {frames:?}"
-    );
-    // No burst: the ten ticks after the stall are each a frame apart, give or
-    // take the timer, never drawn back to back to make the frames up.
-    let gaps: Vec<Duration> = at[31..41].windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(
-        gaps.iter().all(|g| *g >= budget() / 2),
-        "ticks ran back to back after the stall: {gaps:?}"
     );
 }
 
