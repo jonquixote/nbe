@@ -4,6 +4,9 @@
 //! exist on Windows. The proof: the read succeeds with PATH empty, where any
 //! spawned command by name cannot be found. The test re-runs itself as a child
 //! with PATH cleared, so nothing else in this process sees the change.
+//!
+//! Its limit: an empty PATH stops only a spawn by name. A spawn by absolute
+//! path (`/bin/df`, say) still runs with PATH empty, and this guard would pass.
 
 const CHILD: &str = "NBE_FREE_SPACE_NO_PATH_CHILD";
 
