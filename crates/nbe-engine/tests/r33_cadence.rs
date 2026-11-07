@@ -11,14 +11,17 @@
 //! but submitted after the next frame's boundary is a drop that skips
 //! nothing, and the loop names it in its own line.
 
-use std::io::Write;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nbe_engine::render::RenderLoop;
 use nbe_engine::state::{EngineState, RecordState};
 use nbe_engine::tick::{run_loop, TickReport};
+
+#[path = "common/capture.rs"]
+mod capture;
+use capture::captured;
 
 const RATE: u32 = 30;
 
@@ -147,56 +150,30 @@ async fn the_loop_counts_every_repeat_and_skip_it_draws() {
     );
 }
 
-/// Log lines captured from the loop's thread.
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
-    type Writer = Captured;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_take_and_a_run_each_end_with_one_summary_line() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    state.clock.lock().unwrap().start();
-    let mut ticks = 0;
-    run_loop(&mut render, &state, RATE, |_| {
-        ticks += 1;
-        match ticks {
-            // A session-less take (the test seam): ticks 4 through 12 record.
-            3 => *state.record_state.lock().unwrap() = RecordState::Recording,
-            12 => *state.record_state.lock().unwrap() = RecordState::Idle,
-            // The run: ticks 1 through 20 have the clock RUNNING.
-            20 => state.clock.lock().unwrap().stop(),
-            _ => {}
-        }
-        ticks < 25
+    let ((), log) = captured(async {
+        state.clock.lock().unwrap().start();
+        let mut ticks = 0;
+        run_loop(&mut render, &state, RATE, |_| {
+            ticks += 1;
+            match ticks {
+                // A session-less take (the test seam): ticks 4 through 12 record.
+                3 => *state.record_state.lock().unwrap() = RecordState::Recording,
+                12 => *state.record_state.lock().unwrap() = RecordState::Idle,
+                // The run: ticks 1 through 20 have the clock RUNNING.
+                20 => state.clock.lock().unwrap().stop(),
+                _ => {}
+            }
+            ticks < 25
+        })
+        .await;
     })
     .await;
 
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     let summaries: Vec<&str> = log.lines().filter(|l| l.contains("cadence: ")).collect();
     assert_eq!(
         summaries.len(),
@@ -343,21 +320,17 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    state.clock.lock().unwrap().start();
     let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
-        reports.push(*r);
-        if reports.len() == 10 {
-            std::thread::sleep(budget() * 7 / 2);
-        }
-        reports.len() < 20
+    let ((), log) = captured(async {
+        state.clock.lock().unwrap().start();
+        run_loop(&mut render, &state, RATE, |r| {
+            reports.push(*r);
+            if reports.len() == 10 {
+                std::thread::sleep(budget() * 7 / 2);
+            }
+            reports.len() < 20
+        })
+        .await;
     })
     .await;
     let (frames, _, _) = read(&reports);
@@ -370,7 +343,6 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
         gap[0] + 1,
         gap[1] - 1
     );
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     assert!(log.contains(&expected), "no line `{expected}` in:\n{log}");
     let line = log.lines().find(|l| l.contains(&expected)).unwrap();
     assert!(
@@ -383,16 +355,6 @@ async fn a_skip_is_logged_with_the_master_frames_never_drawn() {
     );
 }
 
-/// The log a run of the loop wrote, with every line a test's subscriber saw.
-fn subscribe() -> (Captured, tracing::subscriber::DefaultGuard) {
-    let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    (captured, tracing::subscriber::set_default(subscriber))
-}
-
 /// R21: a frame drawn but submitted after the next frame's boundary is a drop
 /// that skips nothing, so no R33 line names it. Its own line does, with where
 /// the time went. Every draw here takes a frame and a half, and a tick starts
@@ -403,13 +365,15 @@ async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let (captured, _guard) = subscribe();
     render.injected_view_delay = Some(budget() * 3 / 2);
-    state.clock.lock().unwrap().start();
     let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
-        reports.push(*r);
-        false
+    let ((), log) = captured(async {
+        state.clock.lock().unwrap().start();
+        run_loop(&mut render, &state, RATE, |r| {
+            reports.push(*r);
+            false
+        })
+        .await;
     })
     .await;
     let report = reports[0];
@@ -431,7 +395,6 @@ async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
         0,
         "nothing was skipped, so no R33 line could name the drop"
     );
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
     let expected = format!(
         "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
         f + 1
@@ -471,18 +434,24 @@ async fn a_frame_drawn_but_submitted_late_is_a_drop_with_its_own_line() {
 }
 
 /// The control: STOPPED, the same slow draws have no deadline, so nothing is
-/// dropped and no R21 line is written.
+/// dropped and no R21 line is written. The loop logs nothing at INFO while
+/// STOPPED, so the test logs one line of its own inside the capture: its
+/// presence shows the capture was open and wrote, without which the absence
+/// of an R21 line would prove nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stopped_clock_s_slow_draw_is_neither_a_drop_nor_an_r21_line() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let (captured, _guard) = subscribe();
     render.injected_view_delay = Some(budget() * 3 / 2);
     let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
-        reports.push(*r);
-        reports.len() < 2
+    let ((), log) = captured(async {
+        tracing::info!("r33_cadence: the capture is open on this thread");
+        run_loop(&mut render, &state, RATE, |r| {
+            reports.push(*r);
+            reports.len() < 2
+        })
+        .await;
     })
     .await;
     assert!(
@@ -492,6 +461,9 @@ async fn a_stopped_clock_s_slow_draw_is_neither_a_drop_nor_an_r21_line() {
         "a STOPPED draw is never late: {reports:?}"
     );
     assert_eq!(state.dropped_frames_total.load(Ordering::SeqCst), 0);
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        log.contains("r33_cadence: the capture is open on this thread"),
+        "the capture saw nothing, so the absence of an R21 line proves nothing:\n{log}"
+    );
     assert!(!log.contains("R21: "), "an R21 line while STOPPED:\n{log}");
 }
