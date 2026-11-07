@@ -181,7 +181,7 @@ const PRODUCER_COMMANDS = new Set([
 const READ_ONLY = new Set(["system.status", "system.telemetry.subscribe", "system.telemetry.unsubscribe"]);
 const SHOW_LIFECYCLE = new Set(["show.start", "show.stop"]);
 
-function roleAllowed(role: Role, command: CommandName): boolean {
+export function roleAllowed(role: Role, command: CommandName): boolean {
   if (role === "admin") return true;
   if (role === "render") return false; // render sessions receive, they do not command
   if (READ_ONLY.has(command)) return true;
