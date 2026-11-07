@@ -282,8 +282,9 @@ impl Cadence {
     /// Called before [`Cadence::ticked`] records this tick, so
     /// `previous_tick_ms` is the tick before it, as on R33's line.
     ///
-    /// Both drop lines carry `dropped_total`: `droppedFramesTotal` right after
-    /// the drops the line names were counted. Only the render thread moves
+    /// Every drop line carries `dropped_total` (R33's join and its run edges,
+    /// and this one): `droppedFramesTotal` right after the drops the line
+    /// names were counted. Only the render thread moves
     /// that counter, and nothing moves it between `run_tick`'s count and this
     /// line, so a reader of the telemetry knows exactly which counts a line
     /// explains (the dress's R21 backstop).
@@ -322,19 +323,25 @@ impl Cadence {
     /// drawn, so a dropped frame (§10.2, ruled 2026-10-28), counted with the
     /// skips. A stop's edge lands in the run it ends, a start's in the run
     /// it begins.
+    ///
+    /// Its line carries `dropped_total` as the join's does: the counter right
+    /// after this edge's frames were counted, so the dress's R21 backstop
+    /// reads an edge's drops as explained by its line, never as unexplained.
     fn edge(&mut self, state: &EngineState, first: u64, last: u64, at: &str, woke_late: Duration) {
         let skipped = last - first + 1;
         state
             .skipped_master_frames
             .fetch_add(skipped, Ordering::SeqCst);
-        state
+        let dropped_total = state
             .dropped_frames_total
-            .fetch_add(skipped, Ordering::SeqCst);
+            .fetch_add(skipped, Ordering::SeqCst)
+            + skipped;
         if let Some(suppressed) = self.lines.take(Instant::now()) {
             tracing::warn!(
                 skipped,
                 previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
                 woke_late_ms = woke_late.as_secs_f64() * 1000.0,
+                dropped_total,
                 suppressed,
                 "R33: master frames {first}..={last} were never drawn {at}"
             );
@@ -845,6 +852,34 @@ mod tests {
         assert!(line("R33: master frames 11..=12 were never drawn").contains("dropped_total=7"));
         assert!(line("R21: master frame 13 was drawn").contains("dropped_total=8"));
         assert!(line("R33: master frames 14..=14 were never drawn").contains("dropped_total=9"));
+    }
+
+    /// A run edge's line names the `droppedFramesTotal` its own count
+    /// reached, as the join's does: without it the dress's backstop skips
+    /// the line, and an edge's drops read as unexplained on a runner.
+    #[test]
+    fn an_edge_line_carries_the_dropped_total_its_own_count_reached() {
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            state.dropped_frames_total.store(5, Ordering::SeqCst);
+            let mut cadence = Cadence::default();
+            cadence.edge(&state, 7, 9, "before the clock stopped", Duration::ZERO);
+            cadence.edge(&state, 0, 1, "at the run's start", Duration::ZERO);
+        });
+        let line = |what: &str| {
+            text.lines()
+                .find(|l| l.contains(what))
+                .unwrap_or_else(|| panic!("no line `{what}` in:\n{text}"))
+                .to_string()
+        };
+        assert!(
+            line("R33: master frames 7..=9 were never drawn before the clock stopped")
+                .contains("dropped_total=8")
+        );
+        assert!(
+            line("R33: master frames 0..=1 were never drawn at the run's start")
+                .contains("dropped_total=10")
+        );
     }
 
     /// R21's line says how long the tick before it ran, as R33's does: the
