@@ -1674,6 +1674,15 @@ fn assert_timeline_at(ts: &[u32], rate: u32) {
 /// receives the encoder's own sequence header first, a keyframe, frames at
 /// the show's rate, and the engine's audio; the loop's stream work stays
 /// send-shaped (the encoder never runs on it).
+///
+/// R51's pattern (the user's ruling of 2026-11-07): this test held the same
+/// every-machine bound R51 removed from `transport_death`, the loop's stream
+/// share under 5 ms each tick, and a `macos-15` runner read 1.77 ms (run
+/// 42363193570; earlier highest 0.53 ms), within 3x of the limit. Every
+/// machine now asserts the structure: each tick's stream work ends in a
+/// handoff or in a skip counted on one of the loop's own paths. The 5 ms
+/// share is printed on every machine and asserted on the normative machine
+/// only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_loop_publishes_encoded_video_and_engine_audio() {
     let _serial = SERIAL.lock().await;
@@ -1689,7 +1698,9 @@ async fn live_loop_publishes_encoded_video_and_engine_audio() {
         .apply(&directive("stream.start", 3, serde_json::json!({})))
         .await
         .expect("stream.start must open on a machine with encoder + chain");
+    let loop_skips_before = loop_stream_skips(&state);
     let reports = run_frames(&mut render, &state, 30, 75).await;
+    let loop_skips = loop_stream_skips(&state) - loop_skips_before;
     let arrived = poll_until(Duration::from_secs(5), || {
         dbl.with(|r| r.video_media().len() >= 45 && r.audio_media().len() >= 60)
     })
@@ -1701,11 +1712,18 @@ async fn live_loop_publishes_encoded_video_and_engine_audio() {
     audio.stop();
 
     let worst_stream = reports.iter().map(|r| r.stream).max().unwrap();
-    let sent = reports.iter().filter(|r| r.stream_sent).count();
+    let sent = reports.iter().filter(|r| r.stream_sent).count() as u64;
     eprintln!(
-        "LIVE LOOP: {} ticks, {sent} surfaces handed off, worst stream share of a tick {worst_stream:?}, skipped_stream_frames {}",
+        "LIVE LOOP: {} ticks, {sent} surfaces handed off, {loop_skips} skipped on the loop's paths (stream skips {}), worst stream share of a tick {worst_stream:?}, skipped_stream_frames {}",
         reports.len(),
+        state.skipped_stream_frames.by_path(),
         state.skipped_stream_frames.load(Ordering::SeqCst)
+    );
+    // R51's pattern: the structure, on every machine.
+    assert_eq!(
+        sent + loop_skips,
+        reports.len() as u64,
+        "every tick's stream work ends in a handoff or in a skip counted on the loop's own paths"
     );
     dbl.with(|r| {
         assert_eq!(r.parse_error, None);
@@ -1730,10 +1748,17 @@ async fn live_loop_publishes_encoded_video_and_engine_audio() {
         assert_timeline_at(&ts, 30);
         assert_eq!(r.audio_seq_payload(), Some(&[0xAF, 0x00, 0x11, 0x90][..]));
     });
-    assert!(
-        worst_stream < Duration::from_millis(5),
-        "the loop's stream work is a surface loan and a try_send, never an encode ({worst_stream:?})"
-    );
+    // The share measures the machine (R51's pattern, R39's class).
+    if on_the_normative_machine() {
+        assert!(
+            worst_stream < Duration::from_millis(5),
+            "the loop's stream work is a surface loan and a try_send, never an encode ({worst_stream:?})"
+        );
+    } else {
+        eprintln!(
+            "SKIP normative: the loop's stream share under 5 ms each tick (at most {worst_stream:?}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+        );
+    }
 }
 
 /// The show's frame rate is the stream's: a 60 fps show streams at 60 fps
