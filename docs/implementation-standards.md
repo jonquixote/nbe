@@ -171,6 +171,36 @@ Rules:
    `docs/soak-protocol.md`), so its green is never mistaken for coverage it does
    not have.
 
+9. **No CI bound within about 10× of its largest reading, unless it lives
+   in the normative lane** (the user's brief of 2026-11-07, §5). An upper
+   bound on a measured wall-clock quantity that reddens a test on every
+   machine starts measuring the runner once its readings come within reach
+   of it: R9's audio-tap push, R39's cadence guards, R51's stream share (5 ms,
+   read at 4.88 ms and then 10.77 ms on `macos-15` runners). A new or changed
+   every-machine bound sits at about ten times its largest reading on record
+   or more. A bound that cannot is asserted on the normative machine only,
+   with the structure it stands for asserted on every machine and one
+   `SKIP normative:` line on a runner (R51's pattern: #86 for
+   `transport_death`, #90 for `live_loop`). A hang guard (R36's and R51's
+   30 s `HANG`) measures nothing and is not such a bound. A bound that prints
+   its reading only when it fails has no recorded headroom; it is listed, not
+   trusted.
+
+   **The watch list** (every-machine wall-clock bounds near their readings;
+   revisited on any breach; the user's rulings of 2026-11-06 and
+   2026-11-07):
+   - `live_loop`'s stream share, 5 ms on every machine: highest 0.53 ms until
+     main's `9253d8a` read 1.77 ms (`42363193570`), inside 3×; moved to the
+     normative lane by #90 (the user's ruling of 2026-11-07, item 3).
+   - The dress's rise deadline (`RISE_BACKSTOP_MS`, 10,000 ms, every
+     machine): highest 5,025 ms before #81; since #81 at most 2,032 ms
+     (step 4, `b71b3c9`) and 2,005 ms (step 6, `55aaefe`), limit over highest
+     about 4.9. Inside this rule's 10×; it predates the rule, and moving it is
+     the user's ruling.
+   - The dress's step 11 file duration against the wall take (about 107 ms,
+     every machine): R53. It prints only its failures; a further breach moves
+     it to the normative lane.
+
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
 render path left 7 of 8 tests passing.

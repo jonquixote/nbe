@@ -10647,6 +10647,91 @@ item):
     against the reviewed heads `a8e9245` and `f5cbd37`), the R21 backstop
     PR, the silence spec PR, the tail fix, the soak.
 
+  **The records of 2026-11-03 to 2026-11-07** (the records PR, docs only,
+  from main `9d0e667`: the user's brief of 2026-11-07 01:20, step C, and the
+  rulings of 04:08). The register (`docs/soak-protocol.md` §5) gains R45 to
+  R53; R42's fix is recorded as landed in #80, open until the 600
+  show-minute soak on merged main reads zero panics; R38 is folded into R46;
+  R21 gains sightings 5 to 7 (the backstop's CI reds) and the render_ms
+  table; R32 gains sightings 3 and 4; the infrastructure list records the
+  backstop as built. The standards (`docs/implementation-standards.md` §2a)
+  gain rule 9, no CI bound within about 10× of its largest reading unless it
+  lives in the normative lane, with the watch list.
+
+  **The `macos-15` envelopes, per job** (the user's rulings of 2026-11-07: per job, not all three at once; a proposal sits above every green reading on `macos-15` or is dropped; diagnostics, not gates). Every reading from the 30 `ci.yml` runs on `macos-15` (`41553392985` to `42371171544`), every attempt, read from the job logs' `[ci-load]` lines (`.git/nbe-staged/nsx/r21render/envelope.py`, `envelope.md`); a section counts green when every step its bracket holds succeeded, the standing rule's form; #88's throwaways are left out. The images: `20261028.0489.1` until `42193052696`, then `20261104.0514.1` for most jobs (each job names its own).
+  - **R10, the workspace step**, 18 green readings (highest per CPU, the run, its head, the image):
+    17.52 (`41583417115`, `74937d8`, `20261028.0489.1`); 14.22 (`41839717506`, `c0a07d5`, `20261028.0489.1`); 9.04 (`41893860656`, `9286458`, `20261028.0489.1`); 9.13 (`41933104731`, `cf63f04`, `20261028.0489.1`); 9.81 (`41989928496`, `62a2d22`, `20261028.0489.1`); 8.93 (`41990470506`, `8140d8b`, `20261028.0489.1`); 17.41 (`42001031413`, `b92d703`, `20261028.0489.1`); 11.42 (`42192945665`, `a15d357`, `20261028.0489.1`); 10.92 (`42193052696`, `93a917d`, `20261028.0489.1`); 11.37 (`42193185618`, `b26a53e`, `20261104.0514.1`); 13.17 (`42199345794`, `2cbd750`, `20261104.0514.1`); 9.30 (`42214859772`, `67592e7`, `20261104.0514.1`); 12.18 (`42248939783`, `bdbcd0a`, `20261028.0489.1`); 11.94 (`42269797472`, `55aaefe`, `20261104.0514.1`); 16.91 (`42363193570`, `9253d8a`, `20261104.0514.1`); 9.15 (`42363334000`, `3c62d42`, `20261104.0514.1`); 14.15 (`42364350491`, `2afd892`, `20261104.0514.1`); 10.52 (`42371171544`, `9d0e667`, `20261104.0514.1`).
+    Highest 17.52 (`41583417115` at `74937d8`, image `20261028.0489.1`), against the staged 14.22. **Proposal: 21.90** (1.25× the highest, the pinned rule's form), or drop it.
+  - **R15, the GPU/render step**, 18 green readings (highest per CPU, the run, its head, the image):
+    5.13 (`41583417115`, `74937d8`, `20261028.0489.1`); 5.31 (`41839717506`, `c0a07d5`, `20261028.0489.1`); 7.42 (`41893860656`, `9286458`, `20261028.0489.1`); 6.31 (`41933104731`, `cf63f04`, `20261028.0489.1`); 7.81 (`41989928496`, `62a2d22`, `20261028.0489.1`); 5.76 (`41990470506`, `8140d8b`, `20261028.0489.1`); 13.37 (`42001031413`, `b92d703`, `20261028.0489.1`); 8.35 (`42192945665`, `a15d357`, `20261028.0489.1`); 6.64 (`42193052696`, `93a917d`, `20261028.0489.1`); 6.62 (`42193185618`, `b26a53e`, `20261104.0514.1`); 7.56 (`42199345794`, `2cbd750`, `20261104.0514.1`); 6.79 (`42214859772`, `67592e7`, `20261104.0514.1`); 6.61 (`42248939783`, `bdbcd0a`, `20261028.0489.1`); 9.43 (`42269797472`, `55aaefe`, `20261104.0514.1`); 13.37 (`42363193570`, `9253d8a`, `20261104.0514.1`); 7.66 (`42363334000`, `3c62d42`, `20261104.0514.1`); 10.38 (`42364350491`, `2afd892`, `20261104.0514.1`); 7.85 (`42371171544`, `9d0e667`, `20261104.0514.1`).
+    Highest 13.37, twice (`42001031413` at `b92d703`, image `20261028.0489.1`; `42363193570` at `9253d8a`, image `20261104.0514.1`), against the staged 7.46. **Proposal: 16.71** (1.25× the highest, the pinned rule's form), or drop it.
+  - **The floor bracket**, 13 green readings (highest per CPU, the run, its head, the image):
+    6.83 (`41583417115`, `74937d8`, `20261028.0489.1`); 9.06 (`41933104731`, `cf63f04`, `20261028.0489.1`); 8.23 (`41989928496`, `62a2d22`, `20261028.0489.1`); 8.08 (`41990470506`, `8140d8b`, `20261028.0489.1`); 7.73 (`42192945665`, `a15d357`, `20261028.0489.1`); 8.94 (`42199345794`, `2cbd750`, `20261104.0514.1`); 8.68 (`42214859772`, `67592e7`, `20261104.0514.1`); 8.74 (`42248939783`, `bdbcd0a`, `20261028.0489.1`); 8.95 (`42269797472`, `55aaefe`, `20261104.0514.1`); 12.38 (`42363193570`, `9253d8a`, `20261104.0514.1`); 9.31 (`42363334000`, `3c62d42`, `20261104.0514.1`); 9.74 (`42364350491`, `2afd892`, `20261104.0514.1`); 7.72 (`42371171544`, `9d0e667`, `20261104.0514.1`).
+    Highest 12.38 (`42363193570` at `9253d8a`, image `20261104.0514.1`), against the staged 10.02. **Proposal: 15.48** (1.25× the highest, the pinned rule's form), or drop it.
+  - **The control-plane bracket**, 25 green readings (highest per CPU, the run, its head, the image):
+    4.81 (`41553392985`, `fe71219`, `20261028.0489.1`); 5.98 (`41583417115`, `74937d8`, `20261028.0489.1`); 8.36 (`41795102544`, `ccc4e44`, `20261028.0489.1`); 4.87 (`41839717506`, `c0a07d5`, `20261028.0489.1`); 4.37 (`41843487504`, `9b57a31`, `20261028.0489.1`); 6.54 (`41893860656`, `9286458`, `20261028.0489.1`); 6.56 (`41894773135` a2, `aa1d70f`, `20261028.0489.1`); 4.40 (`41933104731`, `cf63f04`, `20261028.0489.1`); 5.73 (`41934829022`, `03ef961`, `20261028.0489.1`); 11.64 (`41989928496`, `62a2d22`, `20261028.0489.1`); 6.94 (`41990470506`, `8140d8b`, `20261028.0489.1`); 5.82 (`41992218761`, `f2846c1`, `20261028.0489.1`); 5.32 (`42001031413`, `b92d703`, `20261028.0489.1`); 4.00 (`42002072124`, `a22c998`, `20261028.0489.1`); 5.70 (`42192945665`, `a15d357`, `20261028.0489.1`); 5.63 (`42193052696`, `93a917d`, `20261104.0514.1`); 7.26 (`42193185618`, `b26a53e`, `20261028.0489.1`); 6.53 (`42214859772`, `67592e7`, `20261104.0514.1`); 3.39 (`42222931837`, `824c53f`, `20261028.0489.1`); 5.49 (`42246047760`, `b71b3c9`, `20261028.0489.1`); 5.00 (`42269797472`, `55aaefe`, `20261104.0514.1`); 5.89 (`42363193570`, `9253d8a`, `20261104.0514.1`); 2.75 (`42363334000`, `3c62d42`, `20261104.0514.1`); 5.06 (`42364350491`, `2afd892`, `20261104.0514.1`); 5.04 (`42371171544`, `9d0e667`, `20261104.0514.1`).
+    Highest 11.64 (`41989928496` at `62a2d22`, image `20261028.0489.1`), against the staged 8.46. **Proposal: 14.55** (1.25× the highest, the pinned rule's form), or drop it.
+  Every staged ceiling sits under a green `macos-15` reading, so none stands as staged. The ruling's text read the R10 range as 9.15 to 17.41; the full record reads 8.93 (`8140d8b`) to 17.52 (`74937d8`, `41583417115`, #80's second run, at 05:26:37Z, load1 52.55).
+
+  **The dress backstop's judgments on `macos-15`** (#85's `drop-account.ts`;
+  a judgment prints only when a drop falls in steps 5 to 7; DRESS-COUNTS
+  `drops` is the whole show). Every run carrying the backstop:
+
+  | Run | Head | Show drops | Steps 5–7 judgment | tiedDrops | Step verdict |
+  |---|---|---|---|---|---|
+  | 41934829022 | 03ef961 (#85) | 1 | nothing to judge | 0 | — |
+  | 41992218761 | f2846c1 (#85) | 1 | nothing to judge | 0 | — |
+  | 42002072124 | a22c998 (#85) | 2 | step 6 **tied** [2]: R33 frame 162, skipped 1, woke_late 39.34 ms covering the 33.33 ms span, previous_tick 2.92 ms | 1 | pass |
+  | 42193185618 | b26a53e (ci-macos-15) | 0 | nothing to judge | 0 | — |
+  | 42199345794 | 2cbd750 (ci-macos-15) | 1 | step 5 **untied** [1]: R21 frame 138, woke_late 8.25 < late 8.58 ms, a slow draw (render 33.65 ms) | 0 | **red** |
+  | 42214859772 | 67592e7 (main, #80) | 1 | step 5 **tied** [1]: R21 frame 126, woke_late 3.21 ≥ late 2.93 ms, previous_tick 3.19 ms, render 33.03 ms | 1 | pass |
+  | 42222931837 | 824c53f (#78 rebased) | 0 | nothing to judge | 0 | — |
+  | 42246047760 | b71b3c9 (main, #78) | 0 | nothing to judge | 0 | — |
+  | 42248939783 | bdbcd0a (#86, R51) | 0 | nothing to judge | 0 | — |
+  | 42269797472 | 55aaefe (#87, R50) | 0 | nothing to judge | 0 | — |
+  | 42363193570 | 9253d8a (main, #86) | 2 | step 5 **untied** [2]: R21 frame 125, woke_late 4.42 < late 5.27 ms, a slow draw (render 34.16 ms), previous_tick 1.11 ms | 0 | **red** |
+  | 42363334000 | 3c62d42 (main, #87) | 0 | nothing to judge | 0 | — |
+  | 42364350491 | 2afd892 (#89, R52) | 1 | step 5 **untied** [1]: R21 frame 143, woke_late 2.16 < late 2.60 ms, a slow draw (render 33.76 ms), previous_tick 30.99 ms | 0 | **red** |
+  | 42371171544 | 9d0e667 (main, #89) | 0 | nothing to judge | 0 | — |
+
+  14 runs, 5 judgments: 2 tied, 3 untied, 0 unexplained. All three untied
+  judgments are slow draws in step 5 (render 33.65, 34.16 and 33.76 ms), each
+  a red as ruled on a runner; with a22c998's frame 27 (33.46 ms, untied by the
+  rule, outside steps 5 to 7), all four untied slow draws on record sit just
+  above one frame period (the user's correction of 2026-11-07, 13:05); the highest show's tied count is 1 of the cap's
+  8. The rule and the cap stay as ruled (the user's rulings of 2026-11-07).
+
+  **The audit line:** the second key's own mutants, one scripted run each,
+  confirmed independently on 2026-11-06 at main `b71b3c9`: R48's four
+  variants (park, hold, unbounded, pre-fix), #78's guard pair (by name red, by
+  absolute path green), R39's burst and early-draw (red at the new
+  assertions), and #86's control, M1, M2 and M3 (M3, a handoff dropped only
+  while Reconnecting with no skip counted, red in both modes at the
+  accounting check, 0 of 60). Its verdict on #86: holds.
+
+  **The first-tick sightings** (an observation, no row; the user's ruling
+  of 2026-11-05, item 4): the first running tick, or the first draw, of a
+  show on CI. (1) 200.1 ms, #81's `41843487504` at `9b57a31`, the dress
+  (`R33: master frames 2..=6`, previous_tick 200.1). (2) 490.06 ms,
+  `42192945665` at `a15d357`, the dress's R20 show. (3) 5,436.7 ms,
+  `42199345794` at `2cbd750`, the control-plane's package-reconcile show (R32
+  sighting 3). (4) 1,675.2 ms, `42214859772` at `67592e7`, the dress, a
+  later show's start (previous_tick 1,675.2, render 302.5). (5) 3,591.2 ms,
+  `42248939783` at `bdbcd0a`, the control-plane (R32 sighting 4). Beside
+  them, the R21 table (`.git/nbe-staged/nsx/r21render/`) holds seven dress
+  runs whose later show's first draw logged an R21 line (`f2846c1`,
+  `67592e7`, `b71b3c9`, `55aaefe`, `9253d8a`, `2afd892`, `9d0e667`): each
+  reads a previous tick of 1.39 to 1.68 s and a render of 43 to 303 ms. A
+  run whose first draw was on time logs no line, so this is not every run.
+  The long previous tick fits a stopped tick before `show.start`, R41's
+  shape (its fix is on #79); not proven. The first-draw diagnostic (device init,
+  pipeline creation, ring upload; with the render-phases extension) and a
+  cold-start run on the normative machine follow #79 (step E).
+
+  **The green-run tally** (`macos-15` `ci.yml` runs, #88's throwaways left
+  out; 27 runs through main's `9d0e667`): rust 13, control-plane 25, dress
+  11, all three 4 (`67592e7`, `55aaefe`, `3c62d42`, `9d0e667`).
+
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
 - **`resync_end.rs`:**
