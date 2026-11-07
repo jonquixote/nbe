@@ -662,9 +662,17 @@ jobs:
         # PR #30 exercised 1 of 13 here (§2c).
         # (The census re-scope, the user's ruling of 2026-11-04: on a runner,
         # both_live and transport_death print a `SKIP normative:` line for the
-        # one bound each asserts only on the normative machine. That skips a
+        # bounds each asserts only on the normative machine. That skips a
         # bound, not a test, so the skip count leaves those lines out, as
         # prompt11_watchdog's does.)
+        # (§2c, 2026-11-06, R51: ~~"the one bound each"~~. transport_death
+        # asserts two things: its structure on every machine (the loop never
+        # waits on the transport; each tick's stream work ends in a handoff or
+        # in a skip counted on the loop's own paths), and its bounds on the
+        # normative machine only (the loop's stream share under 5 ms each
+        # tick, no View frame dropped across the kill), under one
+        # `SKIP normative:` line on a runner. both_live's is one bound: no
+        # record skip beside a live stream.)
         run: |
           set -u
           out=$(cargo test -p nbe-engine --test prompt10_rtmp -- --nocapture 2>&1) && rc=0 || rc=$?
@@ -1365,6 +1373,21 @@ jobs:
         working-directory: .
         run: cargo build -p nbe-engine --release
         timeout-minutes: 12
+      # R50 (filed 2026-11-06): this job installed no ffmpeg, so the show.stop
+      # end-to-end's harness found no ffprobe (it looks on PATH, then at
+      # /usr/local/bin and /opt/homebrew/bin) and printed "NOTE: ffprobe
+      # absent" four times a run on macos-15: the finished-take checks (two
+      # streams, a duration) did not run, and the step stayed green.
+      # Homebrew's prefix on macos-15 is /opt/homebrew, which is on PATH, so
+      # installing ffmpeg is enough; the show.stop step fails if a leg still
+      # reports ffprobe absent.
+      - name: ffprobe on PATH for the show.stop end-to-end (R50)
+        run: |
+          set -eu
+          brew install ffmpeg
+          command -v ffprobe
+          ffprobe -version | head -n 1
+        timeout-minutes: 5
       # R32's load capture (docs/soak-protocol.md, R32; the user's ruling of
       # 2026-10-26, (a)). R32's two sightings, package-reconcile's test 4 in
       # main's run 40293707305 and #67's run 40190112362, were load-blind:
@@ -1501,7 +1524,19 @@ jobs:
           if [ "$ran" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 2 ]; then echo "FAIL effects static scan: expected at least 2 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      # The end-to-end steps run when an earlier step fails (R32 sighting 4,
+      # the user's ruling of 2026-11-06): a red at package-reconcile skipped
+      # show.stop, resync-request and operator-signals in R32's sightings 3
+      # and 4, so a red hid three steps that have nothing to do with it.
+      # They are independent: each file runs in its own `node --test`
+      # process, starts its own engine (or the show.stop harness's) on an
+      # ephemeral port with its own temporary directories, and kills that
+      # engine in its own `after`. What they share is read-only: the release
+      # engine and preflight built above; if a build failed, each file's
+      # `before` fails on the missing binary, loudly. `!cancelled()`, not
+      # `always()`: a cancelled run still skips them.
       - name: "the slate-release end-to-end actually ran (PR #34)"
+        if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass` (a skip is
         # not a pass), and zero failures. 4 tests: take, cut, and (the fix
         # round) unload-then-load and reload — 2 at 5942305. The file never skips: a missing
@@ -1522,6 +1557,7 @@ jobs:
           if [ "$exercised" -lt 4 ]; then echo "FAIL slate-release e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the recall end-to-end actually ran (Prompt 13 re-plan P1, the recall leg)"
+        if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, and zero
         # failures. 2 tests (new): after a recall, the control plane's View and
         # the engine's report agree — the clip bus is the engine's witness to
@@ -1544,6 +1580,7 @@ jobs:
           if [ "$exercised" -lt 2 ]; then echo "FAIL recall e2e: expected at least 2 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the take-duration end-to-end actually ran (SPEC v0.4.8 row 2)"
+        if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 2 tests (new), on the real engine built above: a cut to a
         # timed autoFollow item ends it at its own duration and advances once;
@@ -1568,6 +1605,7 @@ jobs:
           if [ "$exercised" -lt 3 ]; then echo "FAIL take-duration e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the resync-end end-to-end actually ran (SPEC v0.4.8 row 3)"
+        if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 3 tests (new), on the real engine built above, killed and
         # restarted mid-item: an 8 s autoFollow item restarted at 3 s ends at
@@ -1591,6 +1629,7 @@ jobs:
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
+        if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
         # failures. 2 tests (new), on the real engine built above, killed and
         # restarted mid-show: the restarted engine reloads the package (its
@@ -1619,6 +1658,7 @@ jobs:
           if [ "$exercised" -lt 4 ]; then echo "FAIL package-reconcile e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the show.stop end-to-end ran (queue position 2: the (C) fix, SPEC v0.4.8 row 6)"
+        if: ${{ !cancelled() }}
         # Six legs on the real gate, behind a tap on the render channel: E1
         # record+stream, E2 stream, E3 record (inverted by the (C) fix: show.stop
         # is the only directive, the outputs stop, no skip, no gap), E4 neither
@@ -1648,8 +1688,15 @@ jobs:
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL show-stop-version e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 6 ]; then echo "FAIL show-stop-version e2e: expected at least 6 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL show-stop-version e2e: expected at least 1 test (the E4 control) to execute, got $exercised"; exit 1; fi
+          # R50: ffmpeg is installed above, so a leg that reports ffprobe
+          # absent did not run its finished-take checks.
+          if echo "$out" | grep -q 'ffprobe absent'; then
+            echo "$out" | grep 'ffprobe absent'
+            echo "FAIL show-stop-version e2e: a leg reports ffprobe absent (R50); its finished-take checks (two streams, a duration) did not run"; exit 1
+          fi
         timeout-minutes: 5
       - name: "the resync-request end-to-end actually ran (queue position 4, SPEC v0.4.8 row 7)"
+        if: ${{ !cancelled() }}
         # Three legs on the real engine behind a real sequence gap: a re-resync
         # whose snapshot cannot be built closes 1011 and the engine reconnects
         # to a clean slate; a refused send keeps the session and the next gap
@@ -1672,6 +1719,7 @@ jobs:
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-request e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the operator-signals end-to-end ran (R17 spine part A, SPEC v0.4.8 row 8)"
+        if: ${{ !cancelled() }}
         # Four legs on the real engine. The refused start runs HERE: this
         # runner has no hardware H.264 encoder, so the engine refuses
         # stream.start (CI's natural seam), never acknowledges it, and the
