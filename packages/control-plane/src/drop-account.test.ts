@@ -30,6 +30,14 @@ function r33(first: number, last: number, fields: string): string {
   return `WARN nbe_engine::tick: R33: master frames ${first}..=${last} were never drawn master_frame=${last + 1} skipped=${last - first + 1} ${fields} suppressed=0`;
 }
 
+/**
+ * R33's run edge (#79's `Cadence::edge`): the frames a run's start or stop
+ * left undrawn, logged with no `master_frame`, its `at` naming which edge.
+ */
+function edge(first: number, last: number, at: string, fields: string): string {
+  return `WARN nbe_engine::tick: R33: master frames ${first}..=${last} were never drawn ${at} skipped=${last - first + 1} ${fields} suppressed=0`;
+}
+
 const LINES = [
   // 1: logged before e9225a8, so no previous_tick_ms: it cannot show (b).
   REAL_R21,
@@ -53,6 +61,14 @@ const LINES = [
   // 21 and 22: either side of the budget, 33.33 ms at 30 fps.
   r21(900, "late_ms=3.0 previous_tick_ms=33.3 woke_late_ms=40.0 before_draw_ms=0.004 render_ms=4.4 dropped_total=21"),
   r21(1000, "late_ms=3.0 previous_tick_ms=33.4 woke_late_ms=40.0 before_draw_ms=0.004 render_ms=4.4 dropped_total=22"),
+  // 23..24: a stop's edge, a late wake covering its span after an on-budget tick.
+  edge(23, 24, "before the clock stopped", "previous_tick_ms=4.0 woke_late_ms=70.0 dropped_total=24"),
+  // 25..27: a start's edge after a 1.5 s stopped tick. The overrun is part of the
+  // wake (the loop does not sleep past it), so the wake covers the span and only
+  // (b) leaves it untied: a slow tick.
+  edge(0, 2, "at the run's start", "previous_tick_ms=1500.0 woke_late_ms=1450.0 dropped_total=27"),
+  // 28..29: an edge line with no dropped_total (an engine before the edge carried it).
+  edge(0, 1, "at the run's start", "previous_tick_ms=4.0 woke_late_ms=70.0"),
 ];
 
 const CASES: [string, number, number, { tied: number[]; untied: number[]; unexplained: number[] }][] = [
@@ -69,6 +85,9 @@ const CASES: [string, number, number, { tied: number[]; untied: number[]; unexpl
   ["R21 woke 40 >= late 3 after a 45 ms tick: a slow tick, untied 20", 19, 20, { tied: [], untied: [20], unexplained: [] }],
   ["R21 after a 33.3 ms tick, inside the 33.33 ms budget: tied 21", 20, 21, { tied: [21], untied: [], unexplained: [] }],
   ["R21 after a 33.4 ms tick, over the 33.33 ms budget: untied 22", 21, 22, { tied: [], untied: [22], unexplained: [] }],
+  ["a stop's edge, 2 frames, woke 70 >= 66.7 after a 4 ms tick: tied 23..24", 22, 24, { tied: [23, 24], untied: [], unexplained: [] }],
+  ["a start's edge after a 1.5 s stopped tick, woke 1450 >= 100: a slow tick by (b) alone, untied 25..27", 24, 27, { tied: [], untied: [25, 26, 27], unexplained: [] }],
+  ["an edge line without dropped_total explains nothing: unexplained 28..29", 27, 29, { tied: [], untied: [], unexplained: [28, 29] }],
 ];
 
 for (const [what, before, after, want] of CASES) {
