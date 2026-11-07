@@ -63,6 +63,18 @@ final class LiveControlPlaneTests: XCTestCase {
         await c.disconnect()
     }
 
+    func testShowGetStateAnswersEveryRoleWithNoPackage() async throws {
+        // The proposal (finding 1): read-only, so the monitor-level operator may ask.
+        let c = client(env.op, .operator)
+        _ = try await c.connect()
+        let r = try await c.send(.getState)
+        XCTAssertTrue(r.ok, "\(r)")
+        let view = try XCTUnwrap(r.data).decode(ShowStateView.self)
+        XCTAssertNil(view.rundown, "no package is loaded")
+        XCTAssertNotNil(view.showState)
+        await c.disconnect()
+    }
+
     func testABadTokenIsRefusedAtTheHandshake() async throws {
         let c = client("not-a-token", .operator)
         do {

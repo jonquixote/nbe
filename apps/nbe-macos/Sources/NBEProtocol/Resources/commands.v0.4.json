@@ -1245,6 +1245,20 @@
       }
     },
     {
+      "name": "show.getState",
+      "roles": [
+        "monitor",
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
       "name": "show.load",
       "roles": [
         "producer",

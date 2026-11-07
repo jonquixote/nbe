@@ -160,7 +160,7 @@ test("the scanner reads every registered handler and sees the writes it must (gu
     for (const k of new Set([...scanned, ...registry, ...data])) if (!set.has(k)) differences.push(`${k}: missing from ${name}`);
   }
   assert.deepEqual(differences.sort(), [], "scanned handlers, the dispatch registry and the effects data disagree");
-  assert.equal(registry.size, 55, "§16's 55 commands");
+  assert.equal(registry.size, 56, "§16's 55 commands, and show.getState (PROPOSED, the operator-shell draft)");
   // Writes reached each way: directly, through a state method, through a
   // method conditionally — the pass's two finds among them.
   const must: Record<string, string[]> = {

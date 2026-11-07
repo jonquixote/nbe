@@ -161,6 +161,9 @@ export const CommandPayloadSchemas = {
     .strict(),
   "show.stop": z.object({ quiesceOutputs: z.boolean().default(true), force: z.boolean().default(false) }).strict(),
   "show.unload": z.object({}).strict(),
+  // PROPOSAL (operator-shell draft, finding 1; not in SPEC v0.4 §16): the
+  // loaded show as an operator surface draws it. Read-only, every role.
+  "show.getState": z.object({}).strict(),
 
   // 16.2 view/preview
   "preview.set": z.object({ itemRef: id }).strict(),

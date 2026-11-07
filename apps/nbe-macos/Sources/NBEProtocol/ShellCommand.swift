@@ -9,6 +9,8 @@ public enum ShellCommand: Equatable, Sendable {
     case showPreflight
     case showStart
     case showStop(force: Bool)
+    /// PROPOSAL (finding 1): not in SPEC v0.4 §16; the draft's control plane has it.
+    case getState
     // 16.2 view/preview
     case previewSet(itemRef: String)
     case take(transition: Transition, durationFrames: Int?)
@@ -37,6 +39,7 @@ public enum ShellCommand: Equatable, Sendable {
         case .showPreflight: "show.preflight"
         case .showStart: "show.start"
         case .showStop: "show.stop"
+        case .getState: "show.getState"
         case .previewSet: "preview.set"
         case .take: "view.take"
         case .cut: "view.cut"
@@ -57,7 +60,7 @@ public enum ShellCommand: Equatable, Sendable {
     public var payload: [String: JSONValue] {
         switch self {
         case .showLoad(let path): ["packagePath": .string(path)]
-        case .showPreflight, .showStart, .breakingHide, .soundboardStopAll, .recordStop, .streamStop, .status: [:]
+        case .showPreflight, .showStart, .getState, .breakingHide, .soundboardStopAll, .recordStop, .streamStop, .status: [:]
         case .showStop(let force): ["force": .bool(force)]
         case .previewSet(let ref): ["itemRef": .string(ref)]
         case .take(let t, let frames):
@@ -80,7 +83,7 @@ public enum ShellCommand: Equatable, Sendable {
 
     /// One instance of every case, for the parity tests.
     public static let samples: [ShellCommand] = [
-        .showLoad(packagePath: "/shows/dress"), .showPreflight, .showStart, .showStop(force: false),
+        .showLoad(packagePath: "/shows/dress"), .showPreflight, .showStart, .showStop(force: false), .getState,
         .previewSet(itemRef: "B2"), .take(transition: .cut, durationFrames: nil),
         .take(transition: .mix, durationFrames: 12), .cut(itemRef: "B3"),
         .elementToggle(elementId: "lt1", visible: true), .elementToggle(elementId: "lt1", visible: nil),

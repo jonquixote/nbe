@@ -96,8 +96,10 @@ final class ParityTests: XCTestCase {
                        "a fraction where an integer is required")
         XCTAssertFalse(catalog.problems(command: "view.take", payload: ["durationFrames": 601]).isEmpty,
                        "past the schema's max")
-        XCTAssertFalse(catalog.problems(command: "show.getState", payload: [:]).isEmpty,
-                       "the draft's finding 1: §16 has no show.getState")
+        XCTAssertFalse(catalog.problems(command: "show.getEverything", payload: [:]).isEmpty,
+                       "a command §16 does not have")
+        // Finding 1's proposal, on the draft branch's control plane: read-only, every role.
+        XCTAssertEqual(catalog["show.getState"]?.roles, ["monitor", "operator", "producer", "admin"])
     }
 
     func testTheMatrixIsTheCatalogs() {

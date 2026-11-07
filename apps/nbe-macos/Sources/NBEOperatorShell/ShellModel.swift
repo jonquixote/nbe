@@ -19,6 +19,9 @@ final class ShellModel: ObservableObject {
     @Published var connection: Connection = .disconnected
     @Published var status = StatusSnapshot()
     @Published var telemetry = Telemetry()
+    /// From `show.getState` (finding 1's proposal); nil until it answers.
+    @Published var show: ShowStateView?
+    @Published var showNote: String?
     /// The last refusal or failure, as the server or the catalog worded it.
     @Published var lastProblem: String?
     @Published var log: [String] = []
@@ -55,6 +58,7 @@ final class ShellModel: ObservableObject {
                 if let data = response.data, let snap = try? data.decode(StatusSnapshot.self) { status = snap }
                 connection = .connected(role: role)
                 _ = try? await client.send(.telemetrySubscribe(intervalMs: 100))
+                await refreshShow()
                 for await frame in client.pushes { fold(frame) }
                 connection = .disconnected
             } catch {
@@ -67,6 +71,7 @@ final class ShellModel: ObservableObject {
         connection = .fixture
         status = Fixture.status
         telemetry = Fixture.telemetry
+        show = Fixture.show
     }
 
     func run(_ command: ShellCommand) {
@@ -84,9 +89,26 @@ final class ShellModel: ObservableObject {
         }
     }
 
+    /// Ask `show.getState` again (after connect, and when a stateChange names
+    /// the items or the package). A control plane without it says so once.
+    func refreshShow() async {
+        guard let client else { return }
+        guard let r = try? await client.send(.getState) else { return }
+        if r.ok, let data = r.data, let view = try? data.decode(ShowStateView.self) {
+            show = view
+            showNote = nil
+        } else {
+            showNote = "show.getState: \(r.error?.code ?? "no data") — the rundown needs it (finding 1)"
+        }
+    }
+
     private func fold(_ frame: InboundFrame) {
         switch frame {
-        case .stateChange(let change): status.apply(change)
+        case .stateChange(let change):
+            status.apply(change)
+            if change.changed?.contains(where: { ["itemStates", "package", "showState"].contains($0) }) ?? true {
+                Task { await refreshShow() }
+            }
         case .telemetry(let t): telemetry = t.data
         case .response, .unknown: break
         }
@@ -113,6 +135,19 @@ enum Fixture {
          "recordTapPath":"zeroCopy","alerts":[]}
         """
         return (try? JSONDecoder().decode(Telemetry.self, from: Data(json.utf8))) ?? Telemetry()
+    }()
+
+    static let show: ShowStateView = {
+        let json = """
+        {"stateVersion":413,"showState":"RUNNING","rundown":{"id":"rundown","items":[
+          {"id":"A1","kind":"clip","durationFrames":150,"autoFollow":true,"state":"DONE"},
+          {"id":"B2","kind":"scene","durationFrames":null,"autoFollow":false,"state":"LIVE"},
+          {"id":"B3","kind":"scene","durationFrames":null,"autoFollow":false,"state":"ARMED"},
+          {"id":"C1","kind":"clip","durationFrames":300,"autoFollow":false,"state":"READY"},
+          {"id":"C2","kind":"clip","durationFrames":90,"autoFollow":false,"state":"MISSING"}]},
+         "elements":[{"id":"lt1","kind":"lowerThird"},{"id":"bug","kind":"image"}],"overlays":["lt1","bug"]}
+        """
+        return (try? JSONDecoder().decode(ShowStateView.self, from: Data(json.utf8))) ?? ShowStateView()
     }()
 
     static let status: StatusSnapshot = {

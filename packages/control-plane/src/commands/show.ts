@@ -15,6 +15,15 @@ import { SHOW_STOP_FORCE_WARNING, SHOW_STOP_HELD_WARNING } from "../dispatch.js"
 import { unreachable } from "../state.js";
 
 export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
+  // PROPOSAL (operator-shell draft, finding 1; not in SPEC v0.4 §16): what an
+  // operator surface needs to draw the rundown and the §17.1 item states,
+  // which neither `system.status` nor any other command returns. Read-only;
+  // it mutates nothing, so it emits no stateChange (§5.4.1 rule 1).
+  reg.set("show.getState", {
+    forward: false,
+    handler: (ctx): HandlerOutput => ({ data: ctx.state.showStateView() }),
+  });
+
   reg.set("show.load", {
     forward: true,
     handler: async (ctx: HandlerCtx, payload): Promise<HandlerOutput> => {

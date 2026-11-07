@@ -116,8 +116,6 @@ struct ShowPanel: View {
                 }
                 Text("package: \(model.status.package?.path ?? "none") · preflight: \(model.status.preflightPassed.map { $0 ? "passed" : "not passed" } ?? "—")")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("The rundown needs a §16 command that returns it (the draft's finding 1).")
-                    .font(.caption2).foregroundStyle(.orange)
             }
         }
     }
@@ -291,30 +289,56 @@ struct FallbackCurtain: View {
     }
 }
 
-/// The rundown (§17.1's colours) waits on a §16 command that returns the
-/// sequences and items (the draft's finding 1). Until then it shows what the
-/// status snapshot does carry: the items on the two buses.
+/// The rundown from `show.getState` (finding 1's proposal), each item in
+/// §17.1's colour. A click arms it to Preview (`preview.set`); a double
+/// click cuts it to View (`view.cut`).
 struct RundownPanel: View {
     @ObservedObject var model: ShellModel
 
     var body: some View {
         GroupBox("Rundown") {
-            VStack(alignment: .leading, spacing: 6) {
-                row(model.status.viewItem, state: "LIVE", color: .red)
-                row(model.status.previewItem, state: "ARMED", color: .yellow)
-                Text("Sequences and items need a §16 command that returns them (finding 1); §17.1's READY, PLAYING, DONE, MISSING and ERROR colours draw from it.")
-                    .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                if let items = model.show?.rundown?.items, !items.isEmpty {
+                    ForEach(items) { item in row(item) }
+                } else {
+                    Text(model.showNote ?? "no package loaded").font(.caption).foregroundStyle(.secondary)
+                }
+                if model.show == nil, model.showNote == nil {
+                    Text("Waiting on show.getState (a proposal: SPEC v0.4 §16 has no command that returns the rundown).")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func row(_ item: String?, state: String, color: Color) -> some View {
-        HStack {
-            RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 10, height: 18)
-            Text(item ?? "—").font(.body.monospaced())
+    private func row(_ item: ShowStateView.Item) -> some View {
+        let c = Self.color(item.state)
+        return HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 3).fill(c).frame(width: 10, height: 20)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(item.state == "PLAYING" ? Color.red : .clear, lineWidth: 2))
+            Text(item.id).font(.body.monospaced())
+            Text(item.kind).font(.caption).foregroundStyle(.secondary)
+            if let f = item.durationFrames { Text("\(f) fr").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            if item.autoFollow == true { Image(systemName: "arrow.turn.down.right").font(.caption) }
             Spacer()
-            Text(state).font(.caption.bold()).foregroundStyle(color)
+            Text(item.state).font(.caption.bold()).foregroundStyle(c)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { model.run(.cut(itemRef: item.id)) }
+        .onTapGesture { model.run(.previewSet(itemRef: item.id)) }
+        .opacity(item.state == "DONE" ? 0.6 : 1)
+    }
+
+    /// SPEC §17.1's UI indications.
+    static func color(_ state: String) -> Color {
+        switch state {
+        case "ARMED": .yellow
+        case "LIVE": .red
+        case "PLAYING", "DONE": .green
+        case "MISSING", "ERROR": .red
+        default: .gray
         }
     }
 }

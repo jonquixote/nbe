@@ -178,7 +178,13 @@ const PRODUCER_COMMANDS = new Set([
   "marker.add",
 ]);
 
-const READ_ONLY = new Set(["system.status", "system.telemetry.subscribe", "system.telemetry.unsubscribe"]);
+const READ_ONLY = new Set([
+  "system.status",
+  "system.telemetry.subscribe",
+  "system.telemetry.unsubscribe",
+  // PROPOSAL (operator-shell draft, finding 1): read-only, so every role.
+  "show.getState",
+]);
 const SHOW_LIFECYCLE = new Set(["show.start", "show.stop"]);
 
 export function roleAllowed(role: Role, command: CommandName): boolean {
