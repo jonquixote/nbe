@@ -226,3 +226,100 @@ async fn a_start_and_a_stop_count_at_their_edges_only_what_the_clock_passed() {
         "the edges count what the clock passed there and nothing else"
     );
 }
+
+/// The stop edge's epoch check, pinned (the second key's scenario on #79):
+/// the loop draws on run E1; between two ticks E1 stops past the frame the
+/// loop drew, E2 starts, runs on and stops too; the next tick wakes into
+/// STOPPED. The stop it reads is E2's, not the run the loop last drew on, so
+/// there is no edge: nothing is counted. Without the epoch check the frames
+/// from E1's last drawn frame to E2's stop would be counted as one span
+/// mixing two runs.
+///
+/// R39: no wall-clock limit. The preconditions are read from the clock
+/// itself (each run reaches the frames the scenario needs before it stops),
+/// and a sleep only lengthens, so they hold however the machine runs; the
+/// test says so loudly if they do not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_from_another_run_is_no_edge_of_the_run_last_drawn() {
+    let Some((state, mut render)) = rig_or_skip().await else {
+        return;
+    };
+    /// Sleep on this thread until the running clock reads `frame` or later.
+    fn run_to(state: &EngineState, frame: u64) {
+        let boundary = state
+            .clock
+            .lock()
+            .unwrap()
+            .boundary(frame)
+            .expect("the clock is running");
+        let now = std::time::Instant::now();
+        if boundary > now {
+            std::thread::sleep(boundary - now);
+        }
+    }
+    let mut reports: Vec<TickReport> = Vec::new();
+    let mut scenario: Option<(u64, u64, u64, u64, u64)> = None; // last, E1 stop, E2 stop, skipped, dropped
+    let mut after: Option<(Option<u64>, u64, u64)> = None; // the next tick's frame, skipped, dropped
+    run_loop(&mut render, &state, RATE, |r| {
+        reports.push(*r);
+        match reports.len() {
+            3 => state.clock.lock().unwrap().start(),
+            n if n >= 5 && scenario.is_none() => {
+                if let Some(last) = r.master_frame {
+                    let e1 = state.clock.lock().unwrap().epoch().expect("E1 runs");
+                    // E1 runs past the frame after the one drawn, then stops.
+                    run_to(&state, last + 2);
+                    state.clock.lock().unwrap().stop();
+                    let (stopped, e1_stop) = state.last_stopped_run().expect("E1 stopped");
+                    assert_eq!(stopped, e1, "the stop remembered is E1's");
+                    // E2 starts, runs past E1's span, and stops.
+                    state.clock.lock().unwrap().start();
+                    let e2 = state.clock.lock().unwrap().epoch().expect("E2 runs");
+                    assert_ne!(e2, e1, "E2 is a new run");
+                    run_to(&state, last + 5);
+                    state.clock.lock().unwrap().stop();
+                    let (stopped, e2_stop) = state.last_stopped_run().expect("E2 stopped");
+                    assert_eq!(stopped, e2, "the stop remembered is now E2's");
+                    assert!(
+                        e1_stop > last + 1 && e2_stop > last + 1,
+                        "precondition: both runs stopped past the frame after the one drawn \
+                         (drawn {last}, E1 stopped in {e1_stop}, E2 in {e2_stop})"
+                    );
+                    scenario = Some((
+                        last,
+                        e1_stop,
+                        e2_stop,
+                        state.skipped_master_frames.load(Ordering::SeqCst),
+                        state.dropped_frames_total.load(Ordering::SeqCst),
+                    ));
+                }
+            }
+            _ if scenario.is_some() && after.is_none() => {
+                after = Some((
+                    r.master_frame,
+                    state.skipped_master_frames.load(Ordering::SeqCst),
+                    state.dropped_frames_total.load(Ordering::SeqCst),
+                ));
+            }
+            _ => {}
+        }
+        after.is_none() && reports.len() < 60
+    })
+    .await;
+
+    let (last, e1_stop, e2_stop, skipped0, dropped0) =
+        scenario.expect("the loop drew on E1 within its first 60 ticks");
+    let (frame, skipped1, dropped1) = after.expect("a tick after the scenario");
+    eprintln!(
+        "run edges: drawn {last} on E1; E1 stopped in {e1_stop}, E2 in {e2_stop}; \
+         the next tick read {frame:?}; skips {skipped0} -> {skipped1}, drops {dropped0} -> {dropped1}"
+    );
+    assert_eq!(frame, None, "precondition: the next tick woke into STOPPED");
+    assert_eq!(
+        (skipped1 - skipped0, dropped1 - dropped0),
+        (0, 0),
+        "a stop from another run is no edge of the run last drawn: frames {}..={} span E1 and E2 and must not be counted",
+        last + 1,
+        e2_stop - 1
+    );
+}
