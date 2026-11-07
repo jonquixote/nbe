@@ -80,17 +80,21 @@ struct BusesPanel: View {
                 Text("picture not wired\n(the View's surface, finding 3)")
                     .font(.caption).multilineTextAlignment(.center).foregroundStyle(.gray)
             }
-            .aspectRatio(16 / 9, contentMode: .fit)
+            .frame(width: 352, height: 198)
             .overlay(RoundedRectangle(cornerRadius: 2).stroke(tint, lineWidth: 2))
             Text(item ?? "—").font(.headline.monospaced())
         }
     }
 
     private func button(_ title: String, _ command: ShellCommand) -> some View {
-        Button(title) { model.run(command) }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.may(command))
-            .help(model.why(command))
+        Button { model.run(command) } label: {
+            Text(title).font(.title3.bold()).frame(width: 90, height: 36)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .controlSize(.large)
+        .disabled(!model.may(command))
+        .help(model.why(command))
     }
 }
 
@@ -284,5 +288,33 @@ struct FallbackCurtain: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+/// The rundown (§17.1's colours) waits on a §16 command that returns the
+/// sequences and items (the draft's finding 1). Until then it shows what the
+/// status snapshot does carry: the items on the two buses.
+struct RundownPanel: View {
+    @ObservedObject var model: ShellModel
+
+    var body: some View {
+        GroupBox("Rundown") {
+            VStack(alignment: .leading, spacing: 6) {
+                row(model.status.viewItem, state: "LIVE", color: .red)
+                row(model.status.previewItem, state: "ARMED", color: .yellow)
+                Text("Sequences and items need a §16 command that returns them (finding 1); §17.1's READY, PLAYING, DONE, MISSING and ERROR colours draw from it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func row(_ item: String?, state: String, color: Color) -> some View {
+        HStack {
+            RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 10, height: 18)
+            Text(item ?? "—").font(.body.monospaced())
+            Spacer()
+            Text(state).font(.caption.bold()).foregroundStyle(color)
+        }
     }
 }

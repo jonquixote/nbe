@@ -12,6 +12,13 @@ struct OperatorShellApp: App {
     @StateObject private var model = ShellModel()
 
     init() {
+        // `--snapshot <path.png>`: render the fixture state to a PNG and exit,
+        // with no window and no control plane (a look at the layout).
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
+            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]))
+            exit(0)
+        }
         // Run from `swift run`, with no app bundle: become a regular app with
         // a Dock icon and key windows.
         NSApplication.shared.setActivationPolicy(.regular)
@@ -58,6 +65,7 @@ struct ShellWindow: View {
                             GraphicsPanel(model: model)
                             SoundboardPanel(model: model)
                         }
+                        RundownPanel(model: model)
                     }
                     VStack(spacing: 12) {
                         ShowPanel(model: model)
@@ -67,13 +75,49 @@ struct ShellWindow: View {
                     .frame(width: 380)
                 }
                 .padding(12)
-                Divider()
-                List(model.log, id: \.self) { Text($0).font(.caption.monospaced()) }
-                    .frame(height: 110)
+                if !model.log.isEmpty {
+                    Divider()
+                    List(model.log, id: \.self) { Text($0).font(.caption.monospaced()) }
+                        .frame(height: 110)
+                }
             }
             if model.status.fallbackActive == true || model.telemetry.fallbackActive == true {
                 FallbackCurtain()
             }
+        }
+    }
+}
+
+/// The fixture state drawn offscreen into a real AppKit view hierarchy
+/// (`cacheDisplay`), so controls draw as they do in a window. No server.
+@MainActor
+enum Snapshot {
+    static func write(to url: URL) {
+        _ = NSApplication.shared
+        let model = ShellModel()
+        model.loadFixture()
+        let size = NSSize(width: 1280, height: 820)
+        let root = ShellWindow(model: model)
+            .frame(width: size.width, height: size.height, alignment: .top)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .environment(\.colorScheme, .dark)
+        let hosting = NSHostingView(rootView: root)
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        hosting.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        // One turn of the run loop so SwiftUI commits its first layout.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            FileHandle.standardError.write(Data("snapshot: no bitmap\n".utf8))
+            exit(1)
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+        do { try png.write(to: url) } catch {
+            FileHandle.standardError.write(Data("snapshot: \(error)\n".utf8))
+            exit(1)
         }
     }
 }
