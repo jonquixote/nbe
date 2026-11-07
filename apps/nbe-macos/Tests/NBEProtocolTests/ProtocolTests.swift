@@ -137,6 +137,20 @@ final class HandshakeTests: XCTestCase {
         XCTAssertEqual(req.value(forHTTPHeaderField: "X-NBE-Role"), "operator")
     }
 
+    func testATokenNeverTravelsInCleartextToAnotherHost() async throws {
+        XCTAssertNoThrow(try ControlPlaneClient.checkTransport(URL(string: "ws://127.0.0.1:8462/nbe/v0.3")!))
+        XCTAssertNoThrow(try ControlPlaneClient.checkTransport(URL(string: "ws://localhost:8462/nbe/v0.3")!))
+        XCTAssertNoThrow(try ControlPlaneClient.checkTransport(URL(string: "wss://render.local:8463/nbe/v0.3")!))
+        XCTAssertThrowsError(try ControlPlaneClient.checkTransport(URL(string: "ws://render.local:8462/nbe/v0.3")!))
+        let client = ControlPlaneClient(config: .init(url: URL(string: "ws://10.0.0.5:8462/nbe/v0.3")!, token: "t", role: .operator))
+        do {
+            _ = try await client.connect()
+            XCTFail("a token must not leave over ws:// to another host")
+        } catch let ControlPlaneClient.ClientError.cleartextToRemoteHost(host) {
+            XCTAssertEqual(host, "10.0.0.5")
+        }
+    }
+
     func testTheClientRefusesABindingTheRoleMayNotSendBeforeTheWire() async {
         let client = ControlPlaneClient(config: .local(token: "t", role: .operator))
         do {

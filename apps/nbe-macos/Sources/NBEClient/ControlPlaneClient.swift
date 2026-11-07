@@ -31,6 +31,9 @@ public actor ControlPlaneClient {
     }
 
     public enum ClientError: Error, Equatable {
+        /// A bearer token over `ws://` to a host that is not this machine:
+        /// refused. SPEC §5.3 puts remote use on the TLS endpoint (`wss://`).
+        case cleartextToRemoteHost(String)
         case notConnected
         case unanswered(command: String)
         case refusedByCatalog([String])
@@ -60,7 +63,17 @@ public actor ControlPlaneClient {
         return req
     }
 
+    /// Whether a token may travel to `url`: `wss://` anywhere, `ws://` only
+    /// to the loopback interface (SPEC §5.3's default local endpoint).
+    public nonisolated static func checkTransport(_ url: URL) throws {
+        guard url.scheme?.lowercased() == "ws" else { return }
+        let host = (url.host ?? "").lowercased()
+        let loopback = ["127.0.0.1", "::1", "[::1]", "localhost"]
+        if !loopback.contains(host) { throw ClientError.cleartextToRemoteHost(host) }
+    }
+
     public func connect() async throws -> CommandResponse {
+        try Self.checkTransport(config.url)
         let task = URLSession.shared.webSocketTask(with: Self.handshake(config))
         self.task = task
         task.resume()
