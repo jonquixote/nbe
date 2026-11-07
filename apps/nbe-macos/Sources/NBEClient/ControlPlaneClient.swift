@@ -64,11 +64,13 @@ public actor ControlPlaneClient {
     }
 
     /// Whether a token may travel to `url`: `wss://` anywhere, `ws://` only
-    /// to the loopback interface (SPEC §5.3's default local endpoint).
+    /// to a literal loopback address (SPEC §5.3's default local endpoint is
+    /// `127.0.0.1`). A name such as `localhost` is refused: what it resolves
+    /// to is the resolver's, not this check's.
     public nonisolated static func checkTransport(_ url: URL) throws {
         guard url.scheme?.lowercased() == "ws" else { return }
         let host = (url.host ?? "").lowercased()
-        let loopback = ["127.0.0.1", "::1", "[::1]", "localhost"]
+        let loopback = ["127.0.0.1", "::1", "[::1]"]
         if !loopback.contains(host) { throw ClientError.cleartextToRemoteHost(host) }
     }
 
