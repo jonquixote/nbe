@@ -2006,6 +2006,53 @@ async fn cpu_record_beside_live_stream_still_feeds() {
     );
 }
 
+/// Past this a wait is a hang, and its test fails: it turns a hang into a red
+/// and measures nothing (R36's guards, R39). A loop that holds never waits
+/// this long.
+const HANG: Duration = Duration::from_secs(30);
+
+/// The loop's own stream paths (`tick`): its pool busy before the draw, no
+/// draw after it, its queue full at the handoff. The stream thread counts on
+/// the others.
+const LOOP_STREAM_PATHS: [nbe_engine::record::SkipPath; 3] = [
+    nbe_engine::record::SkipPath::NoSurface,
+    nbe_engine::record::SkipPath::NoDraw,
+    nbe_engine::record::SkipPath::QueueFull,
+];
+
+fn loop_stream_skips(state: &Arc<EngineState>) -> u64 {
+    LOOP_STREAM_PATHS
+        .iter()
+        .map(|&p| state.skipped_stream_frames.path(p))
+        .sum()
+}
+
+/// The ingest, held dead on its port until the test releases it or [`HANG`]
+/// passes. At `HANG` it returns on its own, so a loop that waits on the
+/// transport is let go, and its test reads red, not a hang (R51).
+struct HeldIngest {
+    done: std::sync::mpsc::Sender<()>,
+    waiter: std::thread::JoinHandle<Option<TestDouble>>,
+}
+
+impl HeldIngest {
+    fn hold(port: u16) -> Self {
+        let (done, released) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || match released.recv_timeout(HANG) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(TestDouble::start_on(port)),
+            _ => None,
+        });
+        Self { done, waiter }
+    }
+
+    /// `None` when the ingest was still held; the returned ingest when
+    /// `HANG` brought it back.
+    fn release(self) -> Option<TestDouble> {
+        let _ = self.done.send(());
+        self.waiter.join().expect("the held ingest's thread")
+    }
+}
+
 /// Survival (§9.5): kill the ingest mid-stream while the real loop runs. The
 /// View never notices (no dropped frames), the loop's stream work stays a
 /// send, the transport reads Reconnecting, and when the ingest returns the
@@ -2023,6 +2070,16 @@ async fn cpu_record_beside_live_stream_still_feeds() {
 /// machine asserts that it never does. A dropped frame with the loop not
 /// waiting is the machine's own wake or draw, so the strict count, no drop
 /// at all, is asserted on the normative machine and in the soak.
+///
+/// R51 (filed 2026-11-06): #84 asserted "never waits" as the loop's stream
+/// share under 5 ms each tick, on every machine, and a `macos-15` runner read
+/// 10.77 ms (run 42222931837), a wall-clock limit of R39's class. Every
+/// machine now asserts the structure: the ingest stays dead until the loop
+/// has drawn its ticks beside it, so a loop that waits on the transport never
+/// gets there (at [`HANG`] the ingest returns, the wait ends, and the test
+/// reads red, not a hang); and each tick's stream work ends in a handoff or
+/// in a skip counted on one of the loop's own paths. The 5 ms share is
+/// asserted on the normative machine only, beside the strict count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transport_death_leaves_the_loop_untouched() {
     let _serial = SERIAL.lock().await;
@@ -2051,9 +2108,19 @@ async fn transport_death_leaves_the_loop_untouched() {
     );
 
     let before = dropped(&state);
+    let loop_skips_before = loop_stream_skips(&state);
     dbl.kill();
+    let held = HeldIngest::hold(port);
     let during = run_frames(&mut render, &state, 30, 60).await;
+    let returned = held.release();
     let after = dropped(&state);
+    let loop_skips = loop_stream_skips(&state) - loop_skips_before;
+    let sent = during.iter().filter(|r| r.stream_sent).count() as u64;
+    assert!(
+        returned.is_none(),
+        "the loop waited on the transport: it drew its {} ticks only after the ingest returned at {HANG:?}",
+        during.len()
+    );
     assert_eq!(
         publisher_state_of(&state),
         PublisherState::Reconnecting,
@@ -2070,13 +2137,23 @@ async fn transport_death_leaves_the_loop_untouched() {
         "the stream stays Live"
     );
     let worst = during.iter().map(|r| r.stream).max().unwrap();
-    eprintln!("SURVIVAL: dropped {before} → {after} across the kill, worst stream share {worst:?}");
-    assert!(
-        worst < Duration::from_millis(5),
-        "the loop never waits on the transport ({worst:?})"
+    eprintln!(
+        "SURVIVAL: dropped {before} → {after} across the kill; {} ticks, {sent} handed off, {loop_skips} skipped on the loop's paths (stream skips {}); worst stream share {worst:?}",
+        during.len(),
+        state.skipped_stream_frames.by_path()
     );
-    // The count measures the machine (the census, R9's class).
+    // R51: the structure, on every machine.
+    assert_eq!(
+        sent + loop_skips,
+        during.len() as u64,
+        "every tick's stream work ends in a handoff or in a skip counted on the loop's own paths"
+    );
+    // The share and the count measure the machine (R51; the census, R9's class).
     if on_the_normative_machine() {
+        assert!(
+            worst < Duration::from_millis(5),
+            "the loop never waits on the transport ({worst:?})"
+        );
         assert_eq!(
             after - before,
             0,
@@ -2084,7 +2161,7 @@ async fn transport_death_leaves_the_loop_untouched() {
         );
     } else {
         eprintln!(
-            "SKIP normative: no View frame dropped across the kill (dropped {before} → {after}, the loop's stream share at most {worst:?}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
+            "SKIP normative: the loop's stream share under 5 ms each tick (at most {worst:?}) and no View frame dropped across the kill (dropped {before} → {after}) — a GitHub Actions runner (GITHUB_ACTIONS=true), not the reference machine (SPEC §0.3)"
         );
     }
 
