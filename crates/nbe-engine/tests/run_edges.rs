@@ -6,9 +6,8 @@
 //! `RenderLoop`, as in `r33_cadence.rs`; the stall is the loop's own thread
 //! held inside `on_tick`, where a directive would apply.
 
-use std::io::Write;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nbe_engine::render::RenderLoop;
@@ -43,49 +42,20 @@ fn in_run_skips(reports: &[TickReport]) -> u64 {
         .sum()
 }
 
-/// Log lines captured from the loop's thread.
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
-    type Writer = Captured;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
-    let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    (captured, guard)
-}
-
-fn log_of(captured: &Captured) -> String {
-    String::from_utf8(captured.0.lock().unwrap().clone()).unwrap()
-}
+/// One global thread-keyed capture (R52, #89): never a scoped subscriber.
+/// These tests assert presences only (each edge's line), so the line itself
+/// proves the capture saw it.
+#[path = "common/capture.rs"]
+mod capture;
+use capture::captured;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stall_across_the_clock_s_start_counts_the_frames_never_drawn() {
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let (captured, _guard) = capture();
     let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
+    let ((), log) = captured(run_loop(&mut render, &state, RATE, |r| {
         reports.push(*r);
         if reports.len() == 5 {
             // The clock starts, and the loop's thread is held two and a half
@@ -94,7 +64,7 @@ async fn a_stall_across_the_clock_s_start_counts_the_frames_never_drawn() {
             std::thread::sleep(budget() * 5 / 2);
         }
         reports.len() < 40
-    })
+    }))
     .await;
 
     let first = reports
@@ -117,7 +87,6 @@ async fn a_stall_across_the_clock_s_start_counts_the_frames_never_drawn() {
         first - 1
     );
     assert!(state.dropped_frames_total.load(Ordering::SeqCst) >= skipped);
-    let log = log_of(&captured);
     assert!(
         log.contains(&format!(
             "R33: master frames 0..={} were never drawn at the run's start",
@@ -132,10 +101,9 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
     let Some((state, mut render)) = rig_or_skip().await else {
         return;
     };
-    let (captured, _guard) = capture();
     state.clock.lock().unwrap().start();
     let mut reports = Vec::new();
-    run_loop(&mut render, &state, RATE, |r| {
+    let ((), log) = captured(run_loop(&mut render, &state, RATE, |r| {
         reports.push(*r);
         if reports.len() == 5 {
             // The loop's thread is held three and a half frames, then the
@@ -146,7 +114,7 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
             state.clock.lock().unwrap().stop();
         }
         reports.len() < 15
-    })
+    }))
     .await;
 
     let last = reports[4].master_frame.expect("tick 5 ran on the clock");
@@ -170,7 +138,6 @@ async fn a_wake_into_stopped_counts_the_frames_the_clock_passed_before_it_stoppe
         last + 1,
         at_stop - 1
     );
-    let log = log_of(&captured);
     assert!(
         log.contains(&format!(
             "R33: master frames {}..={} were never drawn before the clock stopped",

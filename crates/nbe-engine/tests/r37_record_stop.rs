@@ -30,10 +30,9 @@
 //! there to draw in.
 
 use std::cell::Cell;
-use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use nbe_engine::directive::DirectiveHandler;
@@ -247,30 +246,19 @@ async fn stop_beside_the_stand_in() {
     nbe_engine::record::markers::clear();
 }
 
-/// Log lines captured from the tick's thread.
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
+/// One global thread-keyed capture (R52, #89): never a scoped subscriber.
+#[path = "common/capture.rs"]
+mod capture;
+use capture::captured;
 
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+/// Logged inside each capture whose test asserts an absence: the tick under
+/// test may log nothing at INFO, so without it a capture that saw nothing
+/// would pass an absence assertion (#89's witness, the STOPPED control's).
+const WITNESS: &str = "r37_record_stop: the capture is open on this thread";
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
-    type Writer = Captured;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-/// The engine state and its render loop, a take that claims zero-copy, and the
-/// captured log; or a loud skip without an adapter.
-async fn zero_copy_take_or_skip() -> Option<(Arc<EngineState>, RenderLoop, Captured)> {
+/// The engine state and its render loop, and a take that claims zero-copy; or
+/// a loud skip without an adapter.
+async fn zero_copy_take_or_skip() -> Option<(Arc<EngineState>, RenderLoop)> {
     let state = Arc::new(EngineState::new(30));
     let render = match RenderLoop::new(state.clone()).await {
         Ok(render) => render,
@@ -284,25 +272,27 @@ async fn zero_copy_take_or_skip() -> Option<(Arc<EngineState>, RenderLoop, Captu
         reason: Reason::Table,
     });
     *state.record_state.lock().unwrap() = RecordState::Recording;
-    Some((state, render, Captured::default()))
+    Some((state, render))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tick_inside_a_stop_s_finish_is_a_take_ending_not_a_lost_chain() {
-    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+    let Some((state, mut render)) = zero_copy_take_or_skip().await else {
         return;
     };
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let ((), log) = captured(async {
+        tracing::info!("{WITNESS}");
+        // The window: `Recording`, the claim standing, the session already taken.
+        assert!(state.record_session.lock().unwrap().is_none());
+        run_tick(&mut render, &state, 0, None).await;
+    })
+    .await;
 
-    // The window: `Recording`, the claim standing, the session already taken.
-    assert!(state.record_session.lock().unwrap().is_none());
-    run_tick(&mut render, &state, 0, None).await;
-
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    // What proves the capture saw something: the witness, logged inside it.
+    assert!(
+        log.contains(WITNESS),
+        "the capture saw nothing, so the absence of a chain-lost line proves nothing: {log}"
+    );
     assert!(
         !log.contains("chain lost"),
         "a stop's finish was reported as a lost chain: {log}"
@@ -316,14 +306,9 @@ async fn a_tick_inside_a_stop_s_finish_is_a_take_ending_not_a_lost_chain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_take_that_keeps_its_session_and_loses_its_pool_still_ends_loudly() {
-    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+    let Some((state, mut render)) = zero_copy_take_or_skip().await else {
         return;
     };
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     // Option A's case: the session stands and its pool is gone.
     let dir = tempfile::tempdir().expect("tempdir must succeed");
@@ -341,9 +326,12 @@ async fn a_take_that_keeps_its_session_and_loses_its_pool_still_ends_loudly() {
     )
     .expect("test-seam open must succeed");
     *state.record_session.lock().unwrap() = Some(session);
-    run_tick(&mut render, &state, 0, None).await;
+    let ((), log) = captured(async {
+        run_tick(&mut render, &state, 0, None).await;
+    })
+    .await;
 
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    // A presence: the line itself proves the capture saw it.
     assert!(log.contains("chain lost"), "{log}");
     assert_eq!(*state.record_state.lock().unwrap(), RecordState::Idle);
 }
@@ -361,50 +349,57 @@ async fn stop_beside_the_loop() {
     if !aac_or_skip() {
         return;
     }
-    let Some((state, mut render, captured)) = zero_copy_take_or_skip().await else {
+    let Some((state, mut render)) = zero_copy_take_or_skip().await else {
         return;
     };
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(captured.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-    nbe_engine::record::markers::clear();
-    let outgoing = Arc::new(OutgoingQueue::default());
-    let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
-    handler.apply(&directive("show.start", 1)).await.unwrap();
-    let dir = tempfile::tempdir().expect("tempdir must succeed");
-    let video_path = open_a_take(&state, dir.path(), 1);
+    // `_dir` leaves the capture with the take's file: the TempDir deletes it when dropped.
+    let ((inside, result, video_path, outgoing, _dir), log) = captured(async {
+        tracing::info!("{WITNESS}");
+        nbe_engine::record::markers::clear();
+        let outgoing = Arc::new(OutgoingQueue::default());
+        let handler = DirectiveHandler::new(state.clone(), outgoing.clone());
+        handler.apply(&directive("show.start", 1)).await.unwrap();
+        let dir = tempfile::tempdir().expect("tempdir must succeed");
+        let video_path = open_a_take(&state, dir.path(), 1);
 
-    let local = tokio::task::LocalSet::new();
-    let (inside, result) = local
-        .run_until(async {
-            let mut held = Some(hold_the_pool());
-            let stop = tokio::task::spawn_local(async move {
-                handler.apply(&directive("record.stop", 2)).await
-            });
-            // Nothing ticks until the stop has taken its session: a tick
-            // before that sees a take with a session and no pool, which is a
-            // lost chain, rightly.
-            while state.record_session.lock().unwrap().is_some() {
-                tokio::task::yield_now().await;
-            }
-            let mut inside = 0;
-            run_loop(&mut render, &state, 30, |_| {
-                let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
-                inside += u32::from(recording);
-                if inside == 3 || !recording {
-                    drop(held.take());
+        let local = tokio::task::LocalSet::new();
+        let (inside, result) = local
+            .run_until(async {
+                let mut held = Some(hold_the_pool());
+                let stop = tokio::task::spawn_local(async move {
+                    handler.apply(&directive("record.stop", 2)).await
+                });
+                // Nothing ticks until the stop has taken its session: a tick
+                // before that sees a take with a session and no pool, which is a
+                // lost chain, rightly.
+                while state.record_session.lock().unwrap().is_some() {
+                    tokio::task::yield_now().await;
                 }
-                !stop.is_finished()
+                let mut inside = 0;
+                run_loop(&mut render, &state, 30, |_| {
+                    let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
+                    inside += u32::from(recording);
+                    if inside == 3 || !recording {
+                        drop(held.take());
+                    }
+                    !stop.is_finished()
+                })
+                .await;
+                (inside, stop.await.expect("the stop must not panic"))
             })
             .await;
-            (inside, stop.await.expect("the stop must not panic"))
-        })
-        .await;
+        (inside, result, video_path, outgoing, dir)
+    })
+    .await;
     result.expect("record.stop must finish the synthetic take");
 
-    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    // What proves the capture saw something: the witness, logged inside it on
+    // the thread the loop and the stop run on (`block_on`'s, with the
+    // `LocalSet`), where a chain-lost line would be logged.
+    assert!(
+        log.contains(WITNESS),
+        "the capture saw nothing, so the absence of a chain-lost line proves nothing: {log}"
+    );
     assert!(
         !log.contains("chain lost"),
         "a real stop's finish was reported as a lost chain: {log}"
