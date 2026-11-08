@@ -282,8 +282,9 @@ impl Cadence {
     /// Called before [`Cadence::ticked`] records this tick, so
     /// `previous_tick_ms` is the tick before it, as on R33's line.
     ///
-    /// Both drop lines carry `dropped_total`: `droppedFramesTotal` right after
-    /// the drops the line names were counted. Only the render thread moves
+    /// Every drop line carries `dropped_total` (R33's join and its run edges,
+    /// and this one): `droppedFramesTotal` right after the drops the line
+    /// names were counted. Only the render thread moves
     /// that counter, and nothing moves it between `run_tick`'s count and this
     /// line, so a reader of the telemetry knows exactly which counts a line
     /// explains (the dress's R21 backstop).
@@ -314,6 +315,37 @@ impl Cadence {
             tracing::info!("{}", run.summary("run", state));
         }
         self.last = None;
+    }
+
+    /// R33's run edge: master frames `first..=last` the clock passed at a
+    /// run's start before the loop's first tick on it, or at its stop after
+    /// the loop's last (#77's precision note 1). Each is a master frame never
+    /// drawn, so a dropped frame (§10.2, ruled 2026-10-28), counted with the
+    /// skips. A stop's edge lands in the run it ends, a start's in the run
+    /// it begins.
+    ///
+    /// Its line carries `dropped_total` as the join's does: the counter right
+    /// after this edge's frames were counted, so the dress's R21 backstop
+    /// reads an edge's drops as explained by its line, never as unexplained.
+    fn edge(&mut self, state: &EngineState, first: u64, last: u64, at: &str, woke_late: Duration) {
+        let skipped = last - first + 1;
+        state
+            .skipped_master_frames
+            .fetch_add(skipped, Ordering::SeqCst);
+        let dropped_total = state
+            .dropped_frames_total
+            .fetch_add(skipped, Ordering::SeqCst)
+            + skipped;
+        if let Some(suppressed) = self.lines.take(Instant::now()) {
+            tracing::warn!(
+                skipped,
+                previous_tick_ms = self.last_tick.as_secs_f64() * 1000.0,
+                woke_late_ms = woke_late.as_secs_f64() * 1000.0,
+                dropped_total,
+                suppressed,
+                "R33: master frames {first}..={last} were never drawn {at}"
+            );
+        }
     }
 
     /// The loop is returning: close whatever span is open.
@@ -351,11 +383,14 @@ pub async fn run_tick(
         false => (None, None),
     };
     // What the take CLAIMS, which is what makes a missing pool a chain loss
-    // rather than an ordinary CPU take.
+    // rather than an ordinary CPU take. Only a take with a session claims
+    // anything: a stop takes the session before the record thread finishes
+    // the file, and the loop draws while it does (R37; `show.stop`'s finish
+    // alike). That take is ending, and it has lost nothing.
     let claims_zero_copy = matches!(
         *state.record_tap_selection.lock().unwrap(),
         Some(sel) if sel.path == crate::record::tap_path::TapPath::ZeroCopy
-    ) && recording;
+    ) && endpoint.is_some();
     let mut loan = match crate::record::begin_tap_frame(
         render,
         pool.as_deref(),
@@ -500,6 +535,12 @@ pub async fn run_tick(
 /// the loop's own grid. The loop used to sleep to its own grid and read the
 /// clock wherever it woke, so a grid near a clock boundary drew one frame
 /// twice and never the next (630, 630, 632).
+///
+/// **R41: a start ends the stopped sleep.** The first tick of a run is drawn
+/// at the start. It used to wait for the stopped grid, up to a budget late and
+/// a whole one after a long stopped tick, whose start lands just behind it:
+/// the wake read frame 1 on 63 of 100 starts after a reload, and frame 0 was
+/// never drawn.
 pub async fn run_loop(
     render: &mut RenderLoop,
     state: &EngineState,
@@ -512,8 +553,12 @@ pub async fn run_loop(
     let mut cadence = Cadence::default();
     // The running clock's epoch and the master frame last drawn on it.
     let mut drawn: Option<(Instant, u64)> = None;
+    // Whether the loop has ticked yet: the frames a clock passed before the
+    // loop existed are not the loop's to count.
+    let mut ticked = false;
     loop {
-        let intended = match (state.clock_reading(), drawn) {
+        let running = state.clock_reading();
+        let intended = match (running, drawn) {
             (Some((epoch, _)), Some((drawn_epoch, last))) if epoch == drawn_epoch => {
                 state.frame_boundary(last + 1).unwrap_or(next_boundary)
             }
@@ -523,10 +568,40 @@ pub async fn run_loop(
         };
         let now = Instant::now();
         if intended > now {
-            tokio::time::sleep(intended - now).await;
+            if running.is_some() {
+                tokio::time::sleep(intended - now).await;
+            } else {
+                tokio::select! {
+                    _ = tokio::time::sleep(intended - now) => {}
+                    _ = state.clock_started.notified() => {}
+                }
+            }
         }
         let woke_late = Instant::now().saturating_duration_since(intended);
         let reading = state.clock_reading();
+        // R33's run edges. The run drawn last ended since the last tick
+        // (stopped, or restarted on a new epoch): the frames its clock passed
+        // after the last one drawn were never drawn. The frame the clock
+        // stopped in is not among them: the clock never reached its
+        // successor's boundary. And a run this tick is the first on: the
+        // frames before the one it reads were never drawn. A stall across the
+        // edge is what they count.
+        let now_epoch = reading.map(|(epoch, _)| epoch);
+        let stop_edge = drawn
+            .filter(|(epoch, _)| now_epoch != Some(*epoch))
+            .and_then(|(epoch, last)| {
+                let (stopped, at_stop) = state.last_stopped_run()?;
+                (stopped == epoch && at_stop > last + 1).then_some((last + 1, at_stop - 1))
+            });
+        let start_edge = match reading {
+            Some((epoch, first)) if ticked && first > 0 && drawn.map(|(e, _)| e) != Some(epoch) => {
+                Some((0, first - 1))
+            }
+            _ => None,
+        };
+        if let Some((first, last)) = stop_edge {
+            cadence.edge(state, first, last, "before the clock stopped", woke_late);
+        }
         // A wake at or after `boundary(last + 1)` reads `last + 1` or later:
         // the clock's arithmetic is exact (clock.rs pins the agreement), and a
         // sleep never ends before its deadline.
@@ -549,6 +624,10 @@ pub async fn run_loop(
         };
         let recording = *state.record_state.lock().unwrap() == RecordState::Recording;
         cadence.tick(state, master, recording, woke_late, frame_budget);
+        if let Some((first, last)) = start_edge {
+            cadence.edge(state, first, last, "at the run's start", woke_late);
+        }
+        ticked = true;
         let mut report = run_tick(render, state, frame, deadline).await;
         report.master_frame = master;
         report.woke_late = woke_late;
@@ -773,6 +852,34 @@ mod tests {
         assert!(line("R33: master frames 11..=12 were never drawn").contains("dropped_total=7"));
         assert!(line("R21: master frame 13 was drawn").contains("dropped_total=8"));
         assert!(line("R33: master frames 14..=14 were never drawn").contains("dropped_total=9"));
+    }
+
+    /// A run edge's line names the `droppedFramesTotal` its own count
+    /// reached, as the join's does: without it the dress's backstop skips
+    /// the line, and an edge's drops read as unexplained on a runner.
+    #[test]
+    fn an_edge_line_carries_the_dropped_total_its_own_count_reached() {
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            state.dropped_frames_total.store(5, Ordering::SeqCst);
+            let mut cadence = Cadence::default();
+            cadence.edge(&state, 7, 9, "before the clock stopped", Duration::ZERO);
+            cadence.edge(&state, 0, 1, "at the run's start", Duration::ZERO);
+        });
+        let line = |what: &str| {
+            text.lines()
+                .find(|l| l.contains(what))
+                .unwrap_or_else(|| panic!("no line `{what}` in:\n{text}"))
+                .to_string()
+        };
+        assert!(
+            line("R33: master frames 7..=9 were never drawn before the clock stopped")
+                .contains("dropped_total=8")
+        );
+        assert!(
+            line("R33: master frames 0..=1 were never drawn at the run's start")
+                .contains("dropped_total=10")
+        );
     }
 
     /// R21's line says how long the tick before it ran, as R33's does: the

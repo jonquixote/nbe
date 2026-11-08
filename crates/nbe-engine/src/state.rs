@@ -26,6 +26,8 @@ pub struct EngineState {
     /// The clock is locked because Rust's ownership doesn't allow &mut behind
     /// Arc; lock order is: clock before everything else.
     pub clock: Mutex<MasterClock>,
+    /// Ends the render loop's stopped sleep when the clock starts (R41).
+    pub clock_started: Notify,
     /// last applied stateVersion (what the control plane is signaling about)
     pub last_applied_state_version: AtomicU64,
     /// package path loaded by show.load (used by fallback residency check)
@@ -262,6 +264,7 @@ impl EngineState {
     pub fn new(house_rate: u32) -> Self {
         Self {
             clock: Mutex::new(MasterClock::new(house_rate)),
+            clock_started: Notify::new(),
             last_applied_state_version: AtomicU64::new(0),
             package_path: Mutex::new(None),
             fallback: Mutex::new(None),
@@ -472,6 +475,16 @@ impl EngineState {
         self.clock.lock().unwrap().frame()
     }
 
+    /// Start the master clock and end the render loop's stopped sleep, so the
+    /// run's first tick is drawn at its start and not at the next tick of the
+    /// stopped grid (R41). `Notify::notify_one` stores one permit: a start that
+    /// lands outside that sleep costs one early stopped tick, which counts
+    /// nothing.
+    pub fn start_clock(&self) {
+        self.clock.lock().unwrap().start();
+        self.clock_started.notify_one();
+    }
+
     /// The running clock's epoch and current master frame, read under one
     /// lock so they belong to the same run; None while STOPPED (R33).
     pub fn clock_reading(&self) -> Option<(std::time::Instant, u64)> {
@@ -483,6 +496,12 @@ impl EngineState {
     /// renders each block at the frame due at its own deadline.
     pub fn master_frame_at(&self, t: std::time::Instant) -> Option<u64> {
         self.clock.lock().unwrap().frame_at(t)
+    }
+
+    /// The run that last stopped: its epoch and the master frame it read at
+    /// its stop (R33's run edge).
+    pub fn last_stopped_run(&self) -> Option<(std::time::Instant, u64)> {
+        self.clock.lock().unwrap().last_run()
     }
 
     /// The instant master frame `frame` begins on the running clock; None
