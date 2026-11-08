@@ -265,11 +265,22 @@ async fn wait_publisher_live(p: &PublisherHandle) -> bool {
     .await
 }
 
-/// Admit one payload, retrying briefly: `try_send` is instant by design and
-/// a synchronous test burst can outrun the drain. The NON-blocking property
-/// itself is pinned by `publishes_never_block_under_backpressure`.
+/// How many times a refused payload is offered before the test fails (R48's
+/// form, `prompt09_session.rs`'s `feed_take`): a count, not a deadline (R39).
+const ADMIT_ATTEMPTS: u32 = 5_000;
+/// The pause between two offers of a refused payload.
+const ADMIT_RETRY_PAUSE: Duration = Duration::from_millis(2);
+
+/// Admit one payload, offering it again while the publisher's queue is full:
+/// `try_send` is instant by design and a synchronous test burst can outrun
+/// the drain. The NON-blocking property itself is pinned by
+/// `publishes_never_block_under_backpressure`. It used to give up after 2 s
+/// of wall clock, a limit a stalled runner could reach with the publisher
+/// healthy (R39's class, R48's pattern); now a publisher that never drains
+/// fails by name after `ADMIT_ATTEMPTS` refusals, and a slow one only
+/// lengthens the test.
 async fn admit(p: &PublisherHandle, video: bool, payload: Vec<u8>, ts: u32) {
-    let start = Instant::now();
+    let mut attempts = 1;
     loop {
         let ok = if video {
             p.try_publish_video(payload.clone(), ts)
@@ -280,10 +291,11 @@ async fn admit(p: &PublisherHandle, video: bool, payload: Vec<u8>, ts: u32) {
             return;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "payload at ts {ts} was never admitted while Live"
+            attempts < ADMIT_ATTEMPTS,
+            "payload at ts {ts} was never admitted while Live: refused {ADMIT_ATTEMPTS} times (R48)"
         );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        attempts += 1;
+        tokio::time::sleep(ADMIT_RETRY_PAUSE).await;
     }
 }
 
