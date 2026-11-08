@@ -192,13 +192,28 @@ async fn start_recording(
         .to_path_buf()
 }
 
+/// How many times a refused frame is offered before the test fails (R48's
+/// fix, `prompt09_session.rs`'s `feed_take`, carried here): a count, not a
+/// deadline (R39). A thread that never accepts fails naming the frame.
+const FEED_ATTEMPTS: u32 = 5_000;
+/// The pause between two offers of a refused frame.
+const FEED_RETRY_PAUSE: Duration = Duration::from_millis(2);
+
 /// Feed `n` frames through the REAL loop feed fns: budget pre-check (never
 /// over here) + `handoff_record_frame` into the session's channel, folding
 /// readback + handoff into the engine-state `record_tap_ms` exactly as the
 /// loop does. Returns accumulated feed ms for the test's own assert.
+///
+/// Each frame is offered until the record thread accepts it, at most
+/// `FEED_ATTEMPTS` times, as `feed_take` does since R48's fix: the record
+/// queue holds 2 frames, and a thread that has not drained yet refuses a
+/// handoff the production loop would shed as a counted skip. Unpaced, this
+/// feed failed on CI ("a live thread must accept handoffs", run
+/// 42373049234), R48's shape in its sibling.
 fn feed_frames(state: &Arc<EngineState>, n: u32) -> f64 {
     let budget = Duration::from_secs_f64(1.0 / 30.0);
     let mut total = 0.0;
+    let mut refused = 0u32;
     for frame in 0..n {
         // Loop-measured render time: comfortably inside budget.
         let render_elapsed = Duration::from_millis(2);
@@ -217,14 +232,31 @@ fn feed_frames(state: &Arc<EngineState>, n: u32) -> f64 {
             .as_ref()
             .expect("session must be present")
             .frame_sender();
-        let outcome = handoff_record_frame(rgba, &tx, readback_elapsed);
-        assert!(outcome.sent, "a live thread must accept handoffs");
+        let mut attempts = 1;
+        let outcome = loop {
+            let outcome = handoff_record_frame(rgba.clone(), &tx, readback_elapsed);
+            if outcome.sent {
+                break outcome;
+            }
+            assert!(
+                attempts < FEED_ATTEMPTS,
+                "a live thread must accept handoffs: frame {frame} refused {FEED_ATTEMPTS} times (R48)"
+            );
+            attempts += 1;
+            refused += 1;
+            std::thread::sleep(FEED_RETRY_PAUSE);
+        };
         assert!(
             outcome.feed_ms >= readback_elapsed.as_secs_f64() * 1000.0,
             "feed_ms must include the measured readback"
         );
         *state.record_tap_ms.lock().unwrap() += outcome.feed_ms;
         total += outcome.feed_ms;
+    }
+    if refused > 0 {
+        println!(
+            "R48: the record queue refused {refused} handoff(s) across {n} frames; each refused frame was offered again until accepted"
+        );
     }
     total
 }
