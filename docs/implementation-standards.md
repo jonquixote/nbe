@@ -171,6 +171,47 @@ Rules:
    `docs/soak-protocol.md`), so its green is never mistaken for coverage it does
    not have.
 
+9. **No CI bound within about 10× of its largest reading, unless it lives
+   in the normative lane** (the user's brief of 2026-11-07, §5). An upper
+   bound on a measured wall-clock quantity that reddens a test on every
+   machine starts measuring the runner once its readings come within reach
+   of it: R9's audio-tap push, R39's cadence guards, R51's stream share (5 ms,
+   read at 4.88 ms and then 10.77 ms on `macos-15` runners). A new or changed
+   every-machine bound sits at about ten times its largest reading on record
+   or more. A bound that cannot is asserted on the normative machine only,
+   with the structure it stands for asserted on every machine and one
+   `SKIP normative:` line on a runner (R51's pattern: #86 for
+   `transport_death`, #90 for `live_loop`). A hang guard (R36's and R51's
+   30 s `HANG`) measures nothing and is not such a bound. A bound that prints
+   its reading only when it fails has no recorded headroom; it is listed, not
+   trusted.
+
+   **The watch list** (every-machine wall-clock bounds near their readings;
+   revisited on any breach; the user's rulings of 2026-11-06 and
+   2026-11-07):
+   - `live_loop`'s stream share, 5 ms on every machine: highest 0.53 ms until
+     main's `9253d8a` read 1.77 ms (`42363193570`), inside 3×; moved to the
+     normative lane by #90 (the user's ruling of 2026-11-07, item 3).
+   - The dress's rise deadline (`RISE_BACKSTOP_MS`, 10,000 ms, every
+     machine): highest 5,025 ms before #81; since #81 at most 2,032 ms
+     (step 4, `b71b3c9`) and 2,005 ms (step 6, `55aaefe`), limit over highest
+     about 4.9. Inside this rule's 10×; it predates the rule, and moving it is
+     the user's ruling.
+   - The dress's step 11 file duration against the wall take (about 107 ms,
+     every machine): R53. It prints only its failures; a further breach moves
+     it to the normative lane.
+   - The end-to-ends' poll deadlines (the user's brief of 2026-11-08, §7):
+     `REPORT_MS` 20 s in `package-reconcile` (its `reconnect()` among them)
+     and `resync-end`, 10 s in `recall` and `take-duration`, 5 s in
+     `slate-release`; `resync-request`'s `APPLY_MS` 10 s; the 30 s
+     registration waits. CI's first draws have reached 5,436.7 ms (R32's
+     third sighting), inside 4× of the 20 s; whether any shorter wait spans
+     a first draw is not read.
+   - **The bounds that print only when they fail** (the step 11 file
+     duration and every poll deadline above among them) have no recorded
+     headroom: each is listed here, not trusted, until it prints its reading
+     when it passes.
+
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
 render path left 7 of 8 tests passing.
@@ -196,6 +237,17 @@ green" from its job conclusion while 1 and 2 of its 16 tests had failed
 
 *Provenance, as v0.4.2 row 2 set the precedent: this rule is the user's word of
 2026-10-03, and it arrived inside PR #35's ride-along rather than on its own.*
+
+**After every merge, main's push run at that merge commit is read, per
+test, before the next step** (the user's ruling of 2026-11-08, 03:00). Every
+job, job-exact: the floors, the fixtures, the dress's counts and its
+backstop row. Diffing the merged message is not a reading of the run. A red
+there gets its row before the next step starts. The rule came from a miss:
+main's push run at `dc3f4cb` (#91's merge, `42448857646`) went red on the
+control-plane, R32's fifth sighting, and sat unread for about five hours,
+because only #91's message had been diffed. The sweep that followed read
+every main push run since `67592e7` (`docs/prompt-map-07-13.md`, the
+records of 2026-11-07 to 2026-11-08).
 
 **Reading a rerun's attempts** (the user's ruling of 2026-10-20, from PR
 #59's second-key pass; the third trap added at #59's bookend). Three traps:
