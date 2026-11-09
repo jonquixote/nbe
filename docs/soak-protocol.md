@@ -338,3 +338,68 @@ A void names its cause from this list, or says it is unproven.
   about recording.
 - **No new thresholds.** This protocol moves where the existing §1 claims are
   gated. It does not invent numbers.
+
+## 8. R42's closure soak: 600 show-minutes on merged main
+
+**Prepared, not started.** It runs only on the user's word, after the
+diagnostics it records have merged (step F's render phases) and every box
+below is ticked (the user's rulings of 2026-11-08, 01:55 and 03:45). Its
+purpose is R42's closing condition (§5): an encode thread that panics in
+`Device::maintain` takes its output with it silently, so a zero-drop reading
+stands for nothing alone. The soak reads, beside the drop counter, the panics
+in the engine log and each output's duration against its wall span.
+
+**The run:** `scripts/soak-r42.sh`. Twenty AC-5-style shows of 30 minutes
+(`SOAK_SHOWS`, `SOAK_MINUTES`), each `packages/control-plane/src/r42-soak.measure.ts`
+on the release engine: the View and the preview, the recording and one RTMP
+output live together, two overlays up, three clips and a graphic taken in turn
+by mix and cut, one take every 20 s (the harness of R42's sightings, kept as
+`.git/nbe-staged/ac5/`). No camera and no WHIP guest: AC-5-style, not AC-5.
+- Each show is its own load-gated window: admitted under a 1-minute load of
+  2.6, kept only if it ends under 3.0 (§6's standing rule).
+- A void show runs once more. A panic, a drop, or an output 1 s or more
+  shorter than its span is a finding and is never rerun.
+- The whole run is under `caffeinate -i -s`; any `Sleep` or battery line in
+  the power log from the first show to the last voids it.
+- Output lands in `target/soak-r42.noindex/<UTC stamp>/`: `soak.log`,
+  `table.tsv`, `power-events.txt`, and per show its `result.json`,
+  `engine.log`, `audit.jsonl`, the recording and `stream/stream.flv`.
+- **Pass:** 600 show-minutes kept, zero panics, `droppedFramesTotal` 0 in
+  every show, and every recording and stream as long as its span. **Fail:** any
+  finding. **Void:** a pre-flight check failed, a power event, or fewer than
+  600 kept show-minutes.
+
+**Pre-flight checklist** (the script checks what it can and voids on a
+miss; the rest is ticked by hand before it starts):
+- [ ] **The user's word to start**, given after steps (a) to (e) of the
+      ruling of 2026-11-08, 03:45, have reported.
+- [ ] **Main, clean, at the commit to be soaked**: `git checkout main`,
+      `git pull --ff-only`, `git status` clean. The script refuses any other
+      head (it compares `HEAD` with `origin/main`).
+- [ ] **A release build of that commit**: `cargo build --release -p nbe-engine
+      -p nbe-preflight` after the pull. The script refuses a binary older than
+      any `.rs`, `Cargo.toml` or `Cargo.lock` in the tree, and records both
+      binaries' sha256.
+- [ ] **Spotlight excluded**: the output folder's `.noindex` suffix keeps
+      Spotlight out of what the soak writes; the repo is added to System
+      Settings, Spotlight, Search Privacy; `mdutil -s /` is recorded; the
+      script refuses while `mds_stores`, `mdworker`, `mediaanalysisd` or
+      `photoanalysisd` hold 5% CPU or more.
+- [ ] **The machine quiet**: no other agent or remote-desktop session, no
+      build or test (the script refuses on `cargo` or `rustc`), interactive
+      apps closed (§6's list of ambient causes). Load under 2.6 before each
+      show, by the script.
+- [ ] **Disk**: at least 8 GiB free (§2) and, by the user's ruling, keep
+      15 GiB or more: the script refuses under `SOAK_MIN_FREE_GIB` (15). Twenty
+      30-minute recordings and streams need a few GiB.
+- [ ] **Power**: on AC (the script refuses otherwise); the adapter's wattage
+      and Low Power Mode are recorded (§2a: on this machine's 45 W adapter the
+      run is power-limited, not void).
+- [ ] **ffprobe** on PATH or under Homebrew's prefix (the script refuses
+      without it).
+- [ ] **About 11 hours** of the machine's time: 600 show-minutes plus each
+      show's load and stop and the waits for admission.
+
+**What it does not do:** it starts nothing by itself (no launchd job, no
+cron); it does not judge R44's tail (it records each recording's video and
+audio durations for it); it changes no threshold.
