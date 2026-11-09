@@ -12,9 +12,11 @@
 //   hang      starts a stand-in engine in its own process group and never returns
 //   escape    starts a stand-in engine in a session of its own (outside the show's
 //             process group), then passes
-// The stand-in engine is a copy of /bin/sleep named nbe-engine, in the show's folder.
-import { chmodSync, copyFileSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+// The stand-in engine is a native program named nbe-engine that waits forever, compiled
+// by cc into the show's folder (a copy of an Apple binary such as /bin/sleep will not
+// do: macOS kills a system binary launched from outside its own path within a second).
+import { writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const arg = (name) => {
@@ -32,9 +34,12 @@ console.log(`STUB harness: case ${kase}, out ${out}, minutes ${minutes}`);
 
 function standIn(detached) {
   const bin = join(out, "nbe-engine");
-  copyFileSync("/bin/sleep", bin);
-  chmodSync(bin, 0o755);
-  const child = spawn(bin, ["600"], { detached, stdio: "ignore" });
+  const cc = spawnSync("cc", ["-x", "c", "-o", bin, "-"], { input: "#include <unistd.h>\nint main(void) { for (;;) pause(); }\n", encoding: "utf8" });
+  if (cc.status !== 0) {
+    console.error(`STUB: cannot build the stand-in engine with cc: ${cc.error ?? cc.stderr}`);
+    process.exit(2);
+  }
+  const child = spawn(bin, [], { detached, stdio: "ignore" });
   if (detached) child.unref();
   console.log(`STUB stand-in nbe-engine pid ${child.pid}${detached ? ", in a session of its own" : ""}`);
 }
