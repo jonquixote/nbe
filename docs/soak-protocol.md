@@ -397,8 +397,14 @@ miss; the rest is ticked by hand before it starts):
       run is power-limited, not void).
 - [ ] **ffprobe** on PATH or under Homebrew's prefix (the script refuses
       without it).
+- [ ] **The show count, `SOAK_SHOWS`**: unset (20 shows) for the soak;
+      `SOAK_SHOWS=1 scripts/soak-r42.sh` for the rehearsal, one 30-minute
+      show on merged main, run after this section's PR has merged and
+      main's push run for it is read (the user's ruling of 2026-11-09,
+      00:45). The script has no `--shows` flag.
 - [ ] **About 11 hours** of the machine's time: 600 show-minutes plus each
-      show's load and stop and the waits for admission.
+      show's load and stop and the waits for admission (about 35 minutes
+      for the rehearsal).
 
 **What it does not do:** it starts nothing by itself (no launchd job, no
 cron); it does not judge R44's tail (it records each recording's video and
