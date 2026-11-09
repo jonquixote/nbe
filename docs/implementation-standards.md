@@ -200,6 +200,17 @@ Rules:
    - The dress's step 11 file duration against the wall take (about 107 ms,
      every machine): R53. It prints only its failures; a further breach moves
      it to the normative lane.
+   - The end-to-ends' poll deadlines (the user's brief of 2026-11-08, §7):
+     `REPORT_MS` 20 s in `package-reconcile` (its `reconnect()` among them)
+     and `resync-end`, 10 s in `recall` and `take-duration`, 5 s in
+     `slate-release`; `resync-request`'s `APPLY_MS` 10 s; the 30 s
+     registration waits. CI's first draws have reached 5,436.7 ms (R32's
+     third sighting), inside 4× of the 20 s; whether any shorter wait spans
+     a first draw is not read.
+   - **The bounds that print only when they fail** (the step 11 file
+     duration and every poll deadline above among them) have no recorded
+     headroom: each is listed here, not trusted, until it prints its reading
+     when it passes.
 
 This step exists because it has caught real absence twice: a control-plane
 bridge that delivered no directives, and a compositor where deleting the whole
@@ -226,6 +237,17 @@ green" from its job conclusion while 1 and 2 of its 16 tests had failed
 
 *Provenance, as v0.4.2 row 2 set the precedent: this rule is the user's word of
 2026-10-03, and it arrived inside PR #35's ride-along rather than on its own.*
+
+**After every merge, main's push run at that merge commit is read, per
+test, before the next step** (the user's ruling of 2026-11-08, 03:00). Every
+job, job-exact: the floors, the fixtures, the dress's counts and its
+backstop row. Diffing the merged message is not a reading of the run. A red
+there gets its row before the next step starts. The rule came from a miss:
+main's push run at `dc3f4cb` (#91's merge, `42448857646`) went red on the
+control-plane, R32's fifth sighting, and sat unread for about five hours,
+because only #91's message had been diffed. The sweep that followed read
+every main push run since `67592e7` (`docs/prompt-map-07-13.md`, the
+records of 2026-11-07 to 2026-11-08).
 
 **Reading a rerun's attempts** (the user's ruling of 2026-10-20, from PR
 #59's second-key pass; the third trap added at #59's bookend). Three traps:
