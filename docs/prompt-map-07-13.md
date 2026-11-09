@@ -10671,7 +10671,7 @@ item):
   - **The control-plane bracket**, 31 green readings (highest per CPU, the run, its head, the image):
     4.81 (`41553392985`, `fe71219`, `20261028.0489.1`); 5.98 (`41583417115`, `74937d8`, `20261028.0489.1`); 8.36 (`41795102544`, `ccc4e44`, `20261028.0489.1`); 4.87 (`41839717506`, `c0a07d5`, `20261028.0489.1`); 4.37 (`41843487504`, `9b57a31`, `20261028.0489.1`); 6.54 (`41893860656`, `9286458`, `20261028.0489.1`); 6.56 (`41894773135` a2, `aa1d70f`, `20261028.0489.1`); 4.40 (`41933104731`, `cf63f04`, `20261028.0489.1`); 5.73 (`41934829022`, `03ef961`, `20261028.0489.1`); 11.64 (`41989928496`, `62a2d22`, `20261028.0489.1`); 6.94 (`41990470506`, `8140d8b`, `20261028.0489.1`); 5.82 (`41992218761`, `f2846c1`, `20261028.0489.1`); 5.32 (`42001031413`, `b92d703`, `20261028.0489.1`); 4.00 (`42002072124`, `a22c998`, `20261028.0489.1`); 5.70 (`42192945665`, `a15d357`, `20261028.0489.1`); 5.63 (`42193052696`, `93a917d`, `20261104.0514.1`); 7.26 (`42193185618`, `b26a53e`, `20261028.0489.1`); 6.53 (`42214859772`, `67592e7`, `20261104.0514.1`); 3.39 (`42222931837`, `824c53f`, `20261028.0489.1`); 5.49 (`42246047760`, `b71b3c9`, `20261028.0489.1`); 5.00 (`42269797472`, `55aaefe`, `20261104.0514.1`); 5.89 (`42363193570`, `9253d8a`, `20261104.0514.1`); 2.75 (`42363334000`, `3c62d42`, `20261104.0514.1`); 5.06 (`42364350491`, `2afd892`, `20261104.0514.1`); 5.04 (`42371171544`, `9d0e667`, `20261104.0514.1`); 5.50 (`42373049234`, `bfc8683`, `20261104.0514.1`); 6.30 (`42447972927`, `af2f79b`, `20261104.0514.1`); 4.78 (`42448948098`, `22a5fcb`, `20261104.0514.1`); 5.22 (`42452241709`, `7501111`, `20261104.0514.1`); 4.77 (`42452668695`, `d77f351`, `20261104.0514.1`); 5.91 (`42468984160`, `9fac254`, `20261104.0514.1`).
     Highest 11.64 (`41989928496` at `62a2d22`, image `20261028.0489.1`), against the staged 8.46. **Proposal: 14.55** (1.25× the highest, the pinned rule's form), or drop it.
-  Every staged ceiling sits under a green `macos-15` reading, so none stands as staged. The brief's text read the R10 range as 9.15 to 17.41; the full record reads 5.75 (`af2f79b`, `42447972927`) to 17.52 (`74937d8`, `41583417115`, #80's second run, at 05:26:37Z, load1 52.55). The refresh adds seven runs (`42373049234` to `42468984160`) and changes no highest reading and no proposal.
+  Every staged ceiling sits under a green `macos-15` reading, so none stands as staged. The brief's text read the R10 range as 9.15 to 17.41; the full record reads 5.75 (`af2f79b`, `42447972927`) to 17.52 (`74937d8`, `41583417115`, #80's second run, at 05:26:37Z, load1 52.55). The refresh adds seven runs (`42373049234` to `42468984160`) and changes no highest reading and no proposal. The six PR runs since, of #92 to #96 (`42542910936` to `42568689138`, recorded by the user's ruling of 2026-11-08, 23:10), read at most 13.75 (R10), 10.79 (GPU), 10.00 (floors) and 5.10 (control-plane) per CPU on their green sections: no highest and no proposal moves.
 
   **The dress backstop's judgments on `macos-15`** (#85's `drop-account.ts`;
   a judgment prints only when a drop falls in steps 5 to 7; DRESS-COUNTS
@@ -10700,15 +10700,27 @@ item):
   | 42452241709 | 7501111 (main, #90) | 1 | nothing to judge (R21 frame 0, the show's first draw, render 16.54 ms, woke_late 5.44 < late 10.43 ms, previous_tick 72.78 ms) | 0 | — |
   | 42452668695 | d77f351 (#79) | 3 | nothing to judge (R33 frames 230..=231, woke_late 70.62 ms, and frame 233, woke_late 50.24 ms, both after on-budget ticks; after the run's third take, about frame 210) | 0 | — |
   | 42468984160 | 9fac254 (main, #79) | 2 | nothing to judge (R21 frame 102, a slow draw, render 58.32 ms, woke_late 3.27 < late 28.28 ms; R21 frame 105, woke_late 27.35 ≥ late 0.12 ms after a 3.10 ms tick; both before step 5's take) | 0 | — |
+  | 42542910936 | 53d96fb (#92, docs only) | 6 | nothing to judge (R21 frame 1, a slow draw, render 172.97 ms, and R33 frames 2..=5 behind it, at run 1's start; R33 frame 324, woke_late 60.17 ms after a 1.51 ms tick, after the third take) | 0 | — |
+  | 42543904085 | 286ca14 (#93) | 0 | nothing to judge | 0 | — |
+  | 42545762546 | 154e642 (#94) | 3 | step 5 **untied** [1, 2], **tied** [3]: R21 frame 113, a slow draw (render 45.05 ms, woke_late 2.97 < late 14.70 ms, previous_tick 1.19 ms); R21 frame 114, render 40.92 ms after the 45.06 ms tick (untied by the tick rule); R21 frame 116, woke_late 3.80 ≥ late 1.29 ms after a 1.64 ms tick | 1 | **red** |
+  | 42546204011 | a97579b (#95) | 1 | nothing to judge (R21 frame 374, render 39.47 ms, outside steps 5 to 7) | 0 | — |
+  | 42546223118 | 2af7bc8 (#96) | 0 | nothing to judge | 0 | — |
+  | 42568689138 | c274b2d (#96) | 0 | nothing to judge | 0 | — |
 
-  21 runs, 6 judgments: 3 tied, 3 untied, 0 unexplained (14 runs and 5
-  judgments on 2026-11-07; the seven rows since, through main's `9fac254`, are
-  the sweep of the user's ruling of 2026-11-08, 03:00). All three untied
+  ~~21 runs, 6 judgments: 3 tied, 3 untied, 0 unexplained~~ 27 runs, 7
+  judgments: 3 tied, 4 untied (#94's with a tied drop beside its two untied
+  ones), 0 unexplained (14 runs and 5 judgments on 2026-11-07; the seven rows
+  through main's `9fac254` are the sweep of the user's ruling of 2026-11-08,
+  03:00; the six PR runs of #92 to #96 since are recorded by the ruling of
+  2026-11-08, 23:10). All three untied
   judgments are slow draws in step 5 (render 33.65, 34.16 and 33.76 ms), each
   a red as ruled on a runner; with a22c998's frame 27 (33.46 ms, untied by the
   rule, outside steps 5 to 7), all four untied slow draws just above one frame
   period stay the only ones in the band (the user's correction of 2026-11-07,
-  13:05; R21's refreshed render_ms table). The highest show's tied count is
+  13:05; R21's refreshed render_ms table). **#94's red** (`42545762546`,
+  R21's sighting 8) adds two untied slow draws in step 5 at 45.05 and 40.92
+  ms, outside that band: of the four untied step-5 judgments, the band no
+  longer holds every one. The highest show's tied count is
   now 3 of the cap's 8 (main's `dc3f4cb`; it was 1). Where an unjudged drop
   fell is placed from the artifact's `timings.json` at about 33.3 ms a master
   frame; the backstop's own lines are the judgment. The rule and the cap stay
@@ -10727,6 +10739,39 @@ item):
   not run for a disk shortfall (M12, M14, C1 and C2, M1 against the
   poll-counter test, the TypeScript error bodies), which the author ran
   (#79's author's rows, below).
+  **#95's mutant audit** (step F), the second key's own, on 2026-11-08 at
+  `a97579b` (base `9fac254`): its verdict, holds. Direction A, the log-only
+  claim: with the phases never recorded, only `render_phases`' second test
+  went red; `prompt04` 19, `prompt07_overlay` 13, `prompt07b_graphics` 14,
+  `r33_cadence` 8, `run_edges` 4, `r37_record_stop` 4, `r41_run_start` 4 and
+  the lib's tick tests green. Direction B: an empty submit (B1) red at
+  `prompt04` and `prompt07_overlay`, green at `prompt07b_graphics` (R54,
+  filed as a watch); the first-draw line never logged (B5) and logged every
+  tick (B6) red at `render_phases`' first test; the View's phases not kept
+  (B8) red at its second; the R21 line without `view_encode_ms` (B9) red at
+  the lib test; B10 red at an earlier drop-account fixture (Debug's
+  exponent). Not run by it: B2, B3, B4, B7, the new fixture's specificity
+  and the CI's job-exact counts. **#95's author's rows** (the user's ruling
+  of 2026-11-08, 23:10, item 1; at `a97579b` in the PR's worktree, each
+  binary run its own load-gated window, three voids each run again and kept,
+  the tree clean after): the controls before and after, every engine test
+  binary (53 and the lib), 522 passed, 0 failed, 5 ignored, alike. B2,
+  `sync_package` skipped in `render_frame`: red at one test,
+  `package_reconcile`'s g7 ("healed at the same identity"); the constructor
+  syncs the package too, so only a package changed mid-life needs the
+  frame's sync. B3, the read-ahead pumped after the View's draw, and B4, the
+  preview finished and submitted after the View: no test red in any binary;
+  no suite pins either order (informational, as ruled). B7, the first-draw
+  line naming the frame before (saturating at 0), against the second key's
+  direction-A set: green. Both of the guard's runs begin at frame 0, where
+  the frame before saturates to 0, so the guard cannot tell a run's first
+  drawn frame from frame 0 (F3, the frame after, is caught): a gap in the
+  guard's inputs, not in the render path. MF1, `lineFields` reading only a
+  line's first 8 fields (the old R21 line's width): `npm test` 223 of 224,
+  red only at the new fixture (step F's fields push `dropped_total` past the
+  eighth, so the line explains nothing: unexplained [1] where the plain line
+  reads untied [1]); the controls 224 of 224. The new fixture's specificity
+  holds (`.git/nbe-staged/nsx/stepf/author/`).
 
   **The first-tick sightings** (an observation, no row; the user's ruling
   of 2026-11-05, item 4): the first running tick, or the first draw, of a
@@ -10738,7 +10783,9 @@ item):
   later show's start (previous_tick 1,675.2, render 302.5). (5) 3,591.2 ms,
   `42248939783` at `bdbcd0a`, the control-plane (R32 sighting 4). (6)
   3,506.2 ms, main's push run `42448857646` at `dc3f4cb`, the control-plane
-  (R32 sighting 5; accepted by the user's ruling of 2026-11-08, 03:00).
+  (R32 sighting 5; accepted by the user's ruling of 2026-11-08, 03:00). (7)
+  2,790.3 ms, #96's run `42568689138` at `c274b2d`, the control-plane (R32
+  sighting 6; recorded by the ruling of 2026-11-08, 23:10).
   Beside them, the R21 table (`.git/nbe-staged/nsx/r21render/`) holds nine
   dress runs whose later show's first draw logged an R21 line (`f2846c1`,
   `67592e7`, `b71b3c9`, `55aaefe`, `9253d8a`, `2afd892`, `9d0e667`, and since
@@ -10747,7 +10794,20 @@ item):
   logs no line, so this is not every run. The long previous tick fits a
   stopped tick before `show.start`, R41's shape; not proven. R41's fix landed
   with #79 (`9fac254`); the two dress runs on its code so far (`d77f351`,
-  `9fac254`) logged no such line, two runs, which proves nothing yet. The
+  `9fac254`) logged no such line, two runs, which proves nothing yet. On
+  #79's code, three runs' first costly draw came at frame 1, not frame 0:
+  `d77f351`'s record show (161.30 ms after a 5.17 ms tick), #92's run 1
+  (`42542910936`, 172.97 ms after a 2.07 ms tick) and a later show on #94's
+  run (`42545762546`, 144.15 ms after a 1.96 ms tick, with the watchdog's
+  fault, misses 3). It fits R41's fix moving frame 0's draw ahead of the
+  first costly one; not proven. Step F's first CI reading (#95's
+  `42546204011`) logged three first draws, each at frame 0: 1.55, 0.89 and
+  1.06 ms, the later two after stopped ticks of 1,443.2 and 3,982.7 ms. The
+  cold-start run (item (d)) on the normative machine, `a97579b`'s release
+  build, twenty fresh engine launches each in its own load-gated window:
+  frame 0 drawn in 0.20 to 0.42 ms and no late line in the first frames,
+  with A1 cut right behind `show.start` in ten of them; against CI's 43 ms
+  to 5.4 s, none late. Fresh launches on a warm machine, not a fresh boot. The
   first-draw line and the render-phases line (step F) and a cold-start run on
   the normative machine are item (d) of the user's ruling of 2026-11-08, 03:45.
 
@@ -10758,7 +10818,10 @@ item):
   `d77f351`'s rust job went green at attempt 2, the ruled rerun of a real red
   (R47's second sighting); counted at its final attempt, the tally reads rust
   19, all three 9. On 2026-11-07: 27 runs through `9d0e667`, rust 13,
-  control-plane 25, dress 11, all three 4.
+  control-plane 25, dress 11, all three 4. With the six PR runs of #92 to
+  #96 since (`42542910936` to `42568689138`, each at attempt 1): 40 runs,
+  rust 23, control-plane 36, dress 23, all three 12 (`53d96fb`,
+  `286ca14`, `a97579b` and `2af7bc8` added).
 
   **The records of 2026-11-07 to 2026-11-08** (the records PR's fourth
   commit: the user's brief of 2026-11-08, 01:15, §7, and the rulings of 01:55,
@@ -10837,6 +10900,28 @@ item):
   - **Still open:** R42, until the 600 show-minute soak on merged main reads
     zero panics; R49's PATH follow-up; R32 and R47, each with its test fix
     next (the user's ruling of 2026-11-08, 03:45, items (b) and (c)).
+
+  **The records of 2026-11-08, evening** (the records PR's fifth commit:
+  the user's ruling of 2026-11-08, 23:10, item 3). The five PRs of the
+  ruling of 03:45 are open, each from main `9fac254`; nothing merged. Each
+  PR run, attempt 1, image `20261104.0514.1`, read job-exact and per test:
+
+  | PR | Head | Run | rust | control-plane | dress | Row of each red |
+  |---|---|---|---|---|---|---|
+  | #92 (records) | 53d96fb | 42542910936 | green (637/0/5) | green (`npm test` 223) | green (29) | — |
+  | #93 (R32's test fix) | 286ca14 | 42543904085 | green (637/0/5) | green (`npm test` 228; package-reconcile 4 of 4) | green (29) | — |
+  | #94 (R47's test fix) | 154e642 | 42545762546 | green (637/0/5; `r20_clip` 9 of 9) | green (223) | red (128930316636) | R21 sighting 8, step 5 untied [1, 2] (45.05 and 40.92 ms) |
+  | #95 (step F) | a97579b | 42546204011 | green (640/0/5; `render_phases` 2 of 2) | green (224) | green (29) | — |
+  | #96 (the soak's preparation) | 2af7bc8 | 42546223118 | green (637/0/5) | green (223) | green (29) | — |
+  | #96, second head | c274b2d | 42568689138 | red (129000799112) | red (129000799062) | green (29) | R47 sighting 3 (`r20_clip.rs:359`, frame 45 [0, 0, 0]); R32 sighting 6 (sv 13, last applied 12) and first-tick sighting 7; both on main's test code, #94's and #93's fixes not in it |
+
+  None rerun. In the register (`docs/soak-protocol.md` §5): **R54 filed**
+  (watch): `prompt07b_graphics` stays green when `render_bus` submits an
+  empty command list; `prompt04` and `prompt07_overlay` catch it; no fix
+  without a ruling. R21's sighting 8 and step F's first CI reading; R32's
+  sixth sighting and #93; R47's third sighting and #94. **Still open:**
+  R42, until the soak; R32 and R47, until #93 and #94 merge and main's
+  runs read them; R54, a watch.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
