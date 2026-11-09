@@ -22,8 +22,12 @@
 //! No-hardware policy, as Prompt 05: without VideoToolbox or a wgpu adapter
 //! these tests FAIL, naming what was missing. They never skip.
 
+#[path = "common/capture.rs"]
+mod capture;
+
 use nbe_engine::decode::DecodeSession;
 use nbe_engine::directive::DirectiveHandler;
+use nbe_engine::gpu::Gpu;
 use nbe_engine::render::{RenderLoop, VIEW_H, VIEW_W};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
@@ -330,6 +334,170 @@ async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
     );
 }
 
+/// R47: rounds of the settle, a count, never a deadline (R39; R48's form).
+/// Each round pumps the read-ahead once, uncapped, and reads whether the
+/// window is settled; rounds are 2 ms apart, so 15,000 is 30 s or more, and a
+/// stall lengthens the wait without ever ending it.
+const SETTLE_ROUNDS: u32 = 15_000;
+/// R47: polls of the device, 2 ms apart, before a submission is called lost.
+const GPU_POLLS: u32 = 15_000;
+
+/// R47: settle the read-ahead at `frame` by count. `settle_read_ahead` given
+/// no time of its own is one round: one uncapped pump, then the settled
+/// check. Returns the rounds it took, or `None` when every round was spent.
+fn settle_by_count(render: &mut RenderLoop, frame: u64) -> Option<u32> {
+    for round in 1..=SETTLE_ROUNDS {
+        if render.settle_read_ahead(frame, Duration::ZERO) {
+            return Some(round);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    None
+}
+
+/// R47: wait, by gate and count, for the work submitted so far to finish on
+/// the GPU. `on_submitted_work_done` opens the gate once the last submission
+/// (and so every one before it) has completed; the device is polled, never
+/// waited on with a timeout, at most `GPU_POLLS` times. Returns the polls it
+/// took, or `None`.
+fn gpu_done(gpu: &Gpu) -> Option<u32> {
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let open = gate.clone();
+    gpu.queue
+        .on_submitted_work_done(move || open.store(true, Ordering::SeqCst));
+    for poll in 1..=GPU_POLLS {
+        gpu.device
+            .poll(wgpu::PollType::Poll)
+            .expect("R47: polling the device failed");
+        if gate.load(Ordering::SeqCst) {
+            return Some(poll);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    None
+}
+
+/// R47: read a texture back by gate and count: the copy is submitted, its
+/// buffer mapped, and the device polled until the map's callback opens the
+/// gate, at most `GPU_POLLS` times. Never a discarded timeout: a copy that
+/// never completes fails by name.
+fn read_back(gpu: &Gpu, tex: &wgpu::Texture) -> Vec<u8> {
+    let (width, height) = (tex.width(), tex.height());
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let row_bytes = (width * 4).div_ceil(align) * align;
+    let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("R47 readback"),
+        size: row_bytes as u64 * height as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = gpu.device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row_bytes),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([enc.finish()]);
+    let mapped = Arc::new(std::sync::Mutex::new(None));
+    let done = mapped.clone();
+    buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        *done.lock().unwrap() = Some(r);
+    });
+    let mut polls = 0;
+    let result = loop {
+        gpu.device
+            .poll(wgpu::PollType::Poll)
+            .expect("R47: polling the device failed");
+        polls += 1;
+        if let Some(r) = mapped.lock().unwrap().take() {
+            break r;
+        }
+        assert!(
+            polls < GPU_POLLS,
+            "R47: a readback's copy was not mapped after {GPU_POLLS} polls of the device"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    result.expect("R47: the readback's buffer failed to map");
+    let data = buf
+        .slice(..)
+        .get_mapped_range()
+        .expect("R47: the readback's mapped range");
+    let row_out = (width * 4) as usize;
+    let mut out = Vec::with_capacity(row_out * height as usize);
+    for row in 0..height as usize {
+        let off = row * row_bytes as usize;
+        out.extend_from_slice(&data[off..off + row_out]);
+    }
+    out
+}
+
+/// R47: draw frame `n` on the View, wait for the View's own submission and
+/// everything before it by gate and count, and read the View back by gate and
+/// count. Err names what never came.
+fn drawn_centre(render: &mut RenderLoop, n: u64) -> Result<[u8; 3], String> {
+    render.render_frame(n, None);
+    if render.view_submission().is_none() {
+        return Err(format!("R47: frame {n}'s View was not submitted"));
+    }
+    if gpu_done(&render.gpu).is_none() {
+        return Err(format!(
+            "R47: frame {n}'s View submission did not complete after {GPU_POLLS} polls of the device"
+        ));
+    }
+    let bytes = read_back(&render.gpu, render.view_target());
+    Ok(centre(&bytes, VIEW_W, VIEW_H))
+}
+
+/// R47: what the window held for source frame `j`, for a failure's message:
+/// resident(j), the slot `j` lives in and the frame that slot holds, the
+/// slot's own picture read back (so a slot that held the wrong frame or no
+/// picture reads apart from a layer that drew nothing), the miss counter, and
+/// the window's state.
+fn window_facts(render: &RenderLoop, j: u64) -> String {
+    let mut out = vec![format!("read_ahead_misses_total {}", misses(render))];
+    for r in render.clip_window_report(j) {
+        let own = r
+            .slot_texture
+            .as_ref()
+            .map(|t| centre(&read_back(&render.gpu, t), t.width(), t.height()));
+        out.push(format!(
+            "clip {}: resident({j}) {}, slot {:?} holds frame {:?}, the slot's own centre {:?}; \
+             window {} slots from base {} past a head of {}, first missing {:?}, pending {:?}, \
+             worker next {:?}, last presented {:?}",
+            r.asset_id,
+            r.resident,
+            r.slot,
+            r.slot_frame,
+            own,
+            r.window_len,
+            r.base,
+            r.head,
+            r.first_missing,
+            r.pending,
+            r.worker_next,
+            r.last_presented
+        ));
+    }
+    out.join("; ")
+}
+
 #[tokio::test]
 async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     let _lane = LANE.read().await;
@@ -341,28 +509,52 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     // 45's own slot, so a correct read-ahead holds 105 back until the draw
     // passes 45 (rule 3); one that wrote past its window would put 105 there,
     // and frame 45 would read as frame 105.
+    //
+    // R47 (docs/soak-protocol.md §5): the settle is a count of rounds, never a
+    // clock; every draw is waited for on the GPU by gate and count, and read
+    // back the same way, never through a discarded timeout; a mismatch names
+    // the window's facts (resident(45), slot 15's frame and its own picture,
+    // the miss counter); and the engine's log is captured through
+    // tests/common/capture.rs, witnessed by the load's own line.
     let source = dress_media("counter_150.mp4");
     let decoded = decoded("counter_150.mp4");
     let truth = |n: u64| decoded[n as usize].centre;
     let dir = tempfile::tempdir().unwrap();
     write_clip_package(dir.path(), &source, decoded.len() as u64);
-    let mut render = on_air(dir.path()).await;
-    rendered_centre(&mut render, INSIDE_THE_RING).await;
-    rendered_centre(&mut render, PAST_THE_RING).await;
+    let (outcome, log) = capture::captured(async {
+        let mut render = on_air(dir.path()).await;
+        drawn_centre(&mut render, INSIDE_THE_RING)?;
+        drawn_centre(&mut render, PAST_THE_RING)?;
+        if settle_by_count(&mut render, PAST_THE_RING).is_none() {
+            return Err(format!(
+                "R20: at frame {PAST_THE_RING} the read-ahead must fill its window [45, 105) and hold \
+                 its decoder at the window's end (occupancy, §12.8.1 rule 3); it did not settle in \
+                 {SETTLE_ROUNDS} rounds. R47: {}",
+                window_facts(&render, PAST_THE_RING)
+            ));
+        }
+        for n in [PAST_THE_RING, 89, 104] {
+            let got = drawn_centre(&mut render, n)?;
+            if !close(got, truth(n)) {
+                return Err(format!(
+                    "R20: with the window full at [45, 105), frame {n} must be {:?}, got {got:?} \
+                     (frame 105 {:?}: a slot overwritten past the window). R47: {}",
+                    truth(n),
+                    truth(105),
+                    window_facts(&render, n)
+                ));
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
     assert!(
-        render.settle_read_ahead(PAST_THE_RING, SETTLE),
-        "R20: at frame {PAST_THE_RING} the read-ahead must fill its window [45, 105) and hold \
-         its decoder at the window's end (occupancy, §12.8.1 rule 3); it did not settle"
+        log.contains("clip ring resident"),
+        "R47: the capture saw nothing of the load (no \"clip ring resident\" line), so the log \
+         below proves nothing: {log}"
     );
-    for n in [PAST_THE_RING, 89, 104] {
-        let got = rendered_centre(&mut render, n).await;
-        assert!(
-            close(got, truth(n)),
-            "R20: with the window full at [45, 105), frame {n} must be {:?}, got {got:?} \
-             (frame 105 {:?}: a slot overwritten past the window)",
-            truth(n),
-            truth(105)
-        );
+    if let Err(e) = outcome {
+        panic!("{e}\nthe engine's log on this thread:\n{log}");
     }
 }
 

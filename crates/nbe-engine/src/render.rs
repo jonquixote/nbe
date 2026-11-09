@@ -158,6 +158,35 @@ impl ClipRing {
     }
 }
 
+/// One clip's window as [`RenderLoop::clip_window_report`] reads it (R47).
+#[derive(Debug, Clone)]
+pub struct ClipWindowReport {
+    pub asset_id: String,
+    /// Head frames resident for the load.
+    pub head: u64,
+    /// The lowest source index the window must hold.
+    pub base: u64,
+    pub window_len: usize,
+    /// The source frame asked about.
+    pub frame: u64,
+    /// Whether `frame` is resident (its head, or its window slot holds it).
+    pub resident: bool,
+    /// The window slot `frame` lives in, past the head.
+    pub slot: Option<usize>,
+    /// The source index that slot holds.
+    pub slot_frame: Option<u64>,
+    /// The first frame the window must hold and does not.
+    pub first_missing: Option<u64>,
+    /// A delivered frame held back past the window.
+    pub pending: Option<u64>,
+    /// The next frame the read-ahead worker will deliver, while one runs.
+    pub worker_next: Option<u64>,
+    /// The last source index the View drew.
+    pub last_presented: Option<u64>,
+    /// The slot's texture, for reading back the slot's own picture.
+    pub slot_texture: Option<wgpu::Texture>,
+}
+
 pub struct RenderTargets {
     pub view: wgpu::Texture,
     pub preview: wgpu::Texture,
@@ -742,6 +771,40 @@ impl RenderLoop {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    /// R47's diagnostic seam (tests and inspection only; production never
+    /// calls it): every clip's window as it stands for source frame `j`, for
+    /// a failure's message. It reads and changes nothing. Its slot texture is
+    /// the window slot `j` lives in, so a test can read back the slot's own
+    /// picture as well as the View's: a slot holding the wrong frame or no
+    /// picture reads differently from a clip layer that drew nothing.
+    pub fn clip_window_report(&self, j: u64) -> Vec<ClipWindowReport> {
+        let mut out: Vec<ClipWindowReport> = self
+            .video_rings
+            .iter()
+            .filter_map(|(id, ring)| {
+                let c = ring.clip.as_ref()?;
+                let slot = (j >= c.head && !c.window.is_empty()).then(|| c.slot(j));
+                Some(ClipWindowReport {
+                    asset_id: id.clone(),
+                    head: c.head,
+                    base: c.base,
+                    window_len: c.window.len(),
+                    frame: j,
+                    resident: c.resident(j),
+                    slot,
+                    slot_frame: slot.and_then(|s| c.slot_frame[s]),
+                    first_missing: c.first_missing(),
+                    pending: c.pending.as_ref().map(|f| f.index),
+                    worker_next: c.worker.as_ref().map(|w| w.next()),
+                    last_presented: c.last_presented.get(),
+                    slot_texture: slot.map(|s| c.window[s].clone()),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+        out
     }
 
     /// The video assets `bus` draws at `frame` — both sides of a transition
