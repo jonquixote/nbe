@@ -189,7 +189,7 @@ try {
   await sleep(1000);
   await receiver.close();
   const text = clean();
-  const run = text.match(/run ended after (\d+) ticks: repeats (\d+), skips (\d+), drops (\d+); woke late mean (\S+ \S+), max (\S+ \S+)/);
+  const run = text.match(/run ended after (\d+) ticks: repeats (\d+), skips (\d+), drops (\d+); woke late mean (\S+ \S+), max (\S+ [^;\s]+)/);
   const file = readdirSync(join(out, "record")).filter((f) => /\.(mp4|mov|mkv)$/.test(f)).map((f) => join(out, "record", f))[0];
   const flv = join(out, "stream", "stream.flv");
   const result = {
