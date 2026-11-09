@@ -38,6 +38,7 @@ import { AuditLog } from "./audit.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { ControlPlaneState } from "./state.js";
 import { tempDir } from "./test-tmp.js";
+import { awaitHandshakeResync, witnessResyncs, type ResyncWitness } from "./resync-witness.js";
 
 const ADMIN = "admin-token";
 const RENDER = "render-token";
@@ -52,6 +53,8 @@ const STORM_WATCH_MS = 3000;
 
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
+/** Every `show.resync` the engine was sent, at the version stamped at send time (R32). */
+let resyncs: ResyncWitness;
 let engine: ChildProcess | undefined;
 const engineLog: string[] = [];
 let ws: WebSocket;
@@ -118,8 +121,17 @@ async function lastApplied(): Promise<number | null> {
  * Drop the engine's connection with the engine process still running: a
  * reconnect, so the resync arrives at the identity the engine already holds.
  * Resolves once the engine has registered again and applied that resync.
+ *
+ * R32: "applied that resync" is read against the version the resync was
+ * stamped with at send time, never the control plane's current version. An
+ * item end the engine reports moves the current version with no directive to
+ * apply (an overdue item ends on the resync's receipt, SPEC v0.4.8 row 3), so
+ * a wait for the current version could wait for one no directive carries:
+ * sightings 3 to 5 ("sv 13, last applied 12"). `resync-witness.test.ts`
+ * reproduces it deterministically.
  */
 async function reconnect(): Promise<void> {
+  const sentBefore = resyncs.stamped.length;
   for (const s of proxied) s.destroy();
   if ((await until(() => server.wsBridge.renderNodeCount() === 0, REPORT_MS)) === null) {
     throw new Error("the control plane never noticed the connection go");
@@ -127,20 +139,20 @@ async function reconnect(): Promise<void> {
   if ((await until(() => server.wsBridge.renderNodeCount() === 1, REPORT_MS)) === null) {
     throw new Error(`the engine never reconnected:\n${engineLog.join("")}`);
   }
-  const sv = state.stateVersion;
-  const deadline = Date.now() + REPORT_MS;
-  while ((await lastApplied()) !== sv) {
-    if (Date.now() > deadline) {
-      // R32 (c), the user's ruling of 2026-10-26: the next sighting's log
-      // carries the answer sighting 2's lacked. The engine's directive log
-      // says whether the resync arrived, whether it reloaded the package (and
-      // for which identity), and how long the reload's audio phase took.
-      throw new Error(
-        `the engine never applied its resync (sv ${sv}, last applied ${await lastApplied()}); ` +
-          `the engine's last log lines:\n${engineTail()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 25));
+  // The handshake sends show.resync before the registration is visible
+  // (server.ts: register, then sendResync, in one turn), so it is witnessed.
+  const r = await awaitHandshakeResync({ witness: resyncs, since: sentBefore, lastApplied, current: () => state.stateVersion });
+  if (r.resyncAt === undefined) throw new Error("the engine registered again, and no show.resync was sent to it");
+  if (!r.applied) {
+    // R32 (c), the user's ruling of 2026-10-26: the next sighting's log
+    // carries the answer sighting 2's lacked. The engine's directive log
+    // says whether the resync arrived, whether it reloaded the package (and
+    // for which identity), and how long the reload's audio phase took.
+    throw new Error(
+      `the engine never applied its resync (sent at sv ${r.resyncAt}; last applied ${r.last}; ` +
+        `the control plane now at sv ${r.current}; ${r.polls} reads); ` +
+        `the engine's last log lines:\n${engineTail()}`,
+    );
   }
 }
 
@@ -241,6 +253,7 @@ before(async () => {
     persistence: { onDirty: () => {}, flushNow: () => {} },
     warn: () => {},
   });
+  resyncs = witnessResyncs(server.wsBridge);
   proxy = createServer((client) => {
     const upstream = connect(server.port, "127.0.0.1");
     proxied.add(client);
