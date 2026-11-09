@@ -10766,7 +10766,8 @@ item):
   direction-A set: green. Both of the guard's runs begin at frame 0, where
   the frame before saturates to 0, so the guard cannot tell a run's first
   drawn frame from frame 0 (F3, the frame after, is caught): a gap in the
-  guard's inputs, not in the render path. MF1, `lineFields` reading only a
+  guard's inputs, not in the render path (R55, filed as a watch by the
+  user's ruling of 2026-11-09, 00:45). MF1, `lineFields` reading only a
   line's first 8 fields (the old R21 line's width): `npm test` 223 of 224,
   red only at the new fixture (step F's fields push `dropped_total` past the
   eighth, so the line explains nothing: unexplained [1] where the plain line
@@ -10922,6 +10923,14 @@ item):
   sixth sighting and #93; R47's third sighting and #94. **Still open:**
   R42, until the soak; R32 and R47, until #93 and #94 merge and main's
   runs read them; R54, a watch.
+
+  **R55 filed** (the records PR's sixth commit: the user's ruling of
+  2026-11-09, 00:45, item 5), a watch beside R54: the first-draw guard
+  (#95's `render_phases`) cannot tell a run's first frame from frame 0,
+  because both of its runs start at frame 0 (the author's B7 green). No
+  fix. The same ruling accepts the author's rows on #95, its restaged
+  message and this PR's fifth commit (`826272f`; its run `42583827756`,
+  all three jobs green).
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
