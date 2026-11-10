@@ -251,6 +251,8 @@ pub enum LoopCacheEvent {
 #[derive(Debug, Clone)]
 pub struct FrameReport {
     pub frame: u64,
+    /// Where the frame's time went (step F, log-only; nothing asserts it).
+    pub phases: RenderPhases,
     pub rendered_preview: bool,
     pub view_late_by: Option<Duration>,
     pub preview_failed: bool,
@@ -260,6 +262,38 @@ pub struct FrameReport {
     pub read_ahead: Duration,
     /// Window frames the read-ahead uploaded this frame.
     pub read_ahead_uploads: usize,
+}
+
+/// One bus's draw, by phase (step F's render-phases extension, log-only).
+/// `build` resolves the scene and its layers (texture lookups, and any upload
+/// a draw does); `encode` records the pass (uniform writes and bind groups
+/// included); `finish` closes the encoder; `submit` is `queue.submit`, where
+/// the CPU waits if the GPU's queue is backed up.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BusPhases {
+    pub build: Duration,
+    pub encode: Duration,
+    pub finish: Duration,
+    pub submit: Duration,
+}
+
+impl BusPhases {
+    pub fn total(&self) -> Duration {
+        self.build + self.encode + self.finish + self.submit
+    }
+}
+
+/// Where a `render_frame`'s time went, by phase (step F, log-only): the
+/// package sync, the View's loop re-acquire and the ladder's shed, the
+/// read-ahead, and each bus's draw. The View's draw is the part `render_ms`
+/// is about; the rest runs before it inside the same call.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RenderPhases {
+    pub sync: Duration,
+    pub reacquire: Duration,
+    pub read_ahead: Duration,
+    pub preview: BusPhases,
+    pub view: BusPhases,
 }
 
 pub struct RenderLoop {
@@ -870,20 +904,26 @@ impl RenderLoop {
     /// The View renders unconditionally — including while the clock is
     /// STOPPED, where the engine still owes the operator a picture.
     pub fn render_frame(&mut self, frame: u64, deadline: Option<Duration>) -> FrameReport {
+        let mut phases = RenderPhases::default();
         self.view_submission = None;
+        let sync_started = Instant::now();
         self.sync_package();
+        phases.sync = sync_started.elapsed();
 
         let rung = self.state.rung();
         // The View always has its loops: a take of a shed loop re-acquires it
         // here, before the View draws (rung 2 never sheds what is on air, so
         // this only ever re-uploads a loop that was off air when it was shed).
+        let reacquire_started = Instant::now();
         self.reacquire_for(Bus::View, frame, "take");
         if rung >= Rung::LoopsShed {
             self.shed_off_air_loops(frame);
         }
+        phases.reacquire = reacquire_started.elapsed();
         let read_ahead_started = Instant::now();
         let read_ahead_uploads = self.pump_read_ahead(frame, false);
         let read_ahead = read_ahead_started.elapsed();
+        phases.read_ahead = read_ahead;
 
         let preview_due = match rung {
             Rung::Nominal => true,
@@ -901,7 +941,7 @@ impl RenderLoop {
         // never counted as dropped frames).
         let mut preview_failed = false;
         if preview_due {
-            if let Err(e) = self.render_bus(Bus::Preview, frame) {
+            if let Err(e) = self.render_bus(Bus::Preview, frame, &mut phases.preview) {
                 preview_failed = true;
                 self.state.preview_missed.fetch_add(1, Ordering::SeqCst);
                 tracing::warn!(err = %e, frame, "preview render missed (View unaffected)");
@@ -912,7 +952,7 @@ impl RenderLoop {
         if let Some(d) = self.injected_view_delay {
             std::thread::sleep(d);
         }
-        match self.render_bus(Bus::View, frame) {
+        match self.render_bus(Bus::View, frame, &mut phases.view) {
             Ok(submission) => {
                 self.view_submission = Some(submission);
                 // Recovery is worth exactly one line too.
@@ -954,6 +994,7 @@ impl RenderLoop {
 
         FrameReport {
             frame,
+            phases,
             rendered_preview: preview_due && !preview_failed,
             view_late_by,
             preview_failed,
@@ -1115,7 +1156,13 @@ impl RenderLoop {
         Ok(())
     }
 
-    fn render_bus(&self, bus: Bus, frame: u64) -> anyhow::Result<wgpu::SubmissionIndex> {
+    fn render_bus(
+        &self,
+        bus: Bus,
+        frame: u64,
+        phases: &mut BusPhases,
+    ) -> anyhow::Result<wgpu::SubmissionIndex> {
+        let build_started = Instant::now();
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
         }
@@ -1166,6 +1213,8 @@ impl RenderLoop {
             }
         }
 
+        phases.build = build_started.elapsed();
+        let encode_started = Instant::now();
         let mut enc = self
             .gpu
             .device
@@ -1232,7 +1281,14 @@ impl RenderLoop {
                 pass.draw(0..6, 0..1);
             }
         }
-        Ok(self.gpu.queue.submit([enc.finish()]))
+        phases.encode = encode_started.elapsed();
+        let finish_started = Instant::now();
+        let commands = enc.finish();
+        phases.finish = finish_started.elapsed();
+        let submit_started = Instant::now();
+        let submission = self.gpu.queue.submit([commands]);
+        phases.submit = submit_started.elapsed();
+        Ok(submission)
     }
 
     fn draw_for(

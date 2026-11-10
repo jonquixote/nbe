@@ -102,6 +102,19 @@ test("R21 backstop: a step's lines are each named once, in order", () => {
   assert.deepEqual(got.lines, [LINES[1], LINES[2], LINES[3]]);
 });
 
+test("R21 backstop: step F's phase fields on an R21 line change nothing the accounting reads", () => {
+  const plain = r21(143, "late_ms=2.6 previous_tick_ms=30.99 woke_late_ms=2.16 before_draw_ms=0.003 render_ms=33.76 dropped_total=1");
+  const phased = r21(
+    143,
+    "late_ms=2.6 previous_tick_ms=30.99 woke_late_ms=2.16 before_draw_ms=0.003 render_ms=33.76 " +
+      "sync_ms=0.01 read_ahead_ms=0.4 preview_ms=1.2 view_build_ms=0.3 view_encode_ms=0.5 view_finish_ms=0.1 view_submit_ms=32.5 dropped_total=1",
+  );
+  const a = accountDrops([plain], 0, 1, HOUSE_RATE);
+  const b = accountDrops([phased], 0, 1, HOUSE_RATE);
+  assert.deepEqual({ tied: b.tied, untied: b.untied, unexplained: b.unexplained }, { tied: a.tied, untied: a.untied, unexplained: a.unexplained });
+  assert.equal(lineFields(phased)["view_submit_ms"], 32.5);
+});
+
 test("R21 backstop: the engine's colour codes are stripped before the fields are read", () => {
   assert.deepEqual(lineFields(REAL_R21), {
     master_frame: 218,

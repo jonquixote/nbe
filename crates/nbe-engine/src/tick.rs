@@ -58,6 +58,13 @@ pub struct TickReport {
     /// submitted, when it was: a dropped frame (SPEC §10.2). `None` on time,
     /// and while the clock is STOPPED.
     pub submitted_late: Option<Duration>,
+    /// Where `render`'s time went, by phase (step F, log-only).
+    pub render_phases: crate::render::RenderPhases,
+}
+
+/// A duration as the log's milliseconds.
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
 }
 
 /// Wake-lateness buckets' upper edges, in microseconds; past the last edge a
@@ -300,6 +307,14 @@ impl Cadence {
                 woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
                 before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
                 render_ms = report.render.as_secs_f64() * 1000.0,
+                // Step F: where render_ms went (log-only; additive fields).
+                sync_ms = ms(report.render_phases.sync),
+                read_ahead_ms = ms(report.render_phases.read_ahead),
+                preview_ms = ms(report.render_phases.preview.total()),
+                view_build_ms = ms(report.render_phases.view.build),
+                view_encode_ms = ms(report.render_phases.view.encode),
+                view_finish_ms = ms(report.render_phases.view.finish),
+                view_submit_ms = ms(report.render_phases.view.submit),
                 dropped_total = state.dropped_frames_total.load(Ordering::SeqCst),
                 suppressed,
                 "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
@@ -438,8 +453,9 @@ pub async fn run_tick(
 
     let render_started = Instant::now();
     report.before_draw = render_started - tick_started;
-    let _ = render.render_frame(frame, deadline);
+    let frame_report = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
+    report.render_phases = frame_report.phases;
     // SPEC §10.2, as the user ruled on 2026-10-28: a View frame is dropped
     // when the master clock reaches the next frame's boundary before it was
     // submitted. Counted only while the clock runs, once per master frame: a
@@ -518,6 +534,31 @@ pub async fn run_tick(
     }
     report.total = tick_started.elapsed();
     report
+}
+
+/// Step F (log-only): the first draw of a run, by phase. The first-tick
+/// sightings on CI (200 ms to 5.4 s) are first draws; this says where one's
+/// time went. Logged once a run, so the frame path stays quiet.
+fn first_draw_line(report: &TickReport, previous_tick: Duration) {
+    let p = report.render_phases;
+    tracing::info!(
+        master_frame = report.master_frame.unwrap_or_default(),
+        render_ms = ms(report.render),
+        previous_tick_ms = ms(previous_tick),
+        woke_late_ms = ms(report.woke_late),
+        sync_ms = ms(p.sync),
+        reacquire_ms = ms(p.reacquire),
+        read_ahead_ms = ms(p.read_ahead),
+        preview_build_ms = ms(p.preview.build),
+        preview_encode_ms = ms(p.preview.encode),
+        preview_finish_ms = ms(p.preview.finish),
+        preview_submit_ms = ms(p.preview.submit),
+        view_build_ms = ms(p.view.build),
+        view_encode_ms = ms(p.view.encode),
+        view_finish_ms = ms(p.view.finish),
+        view_submit_ms = ms(p.view.submit),
+        "render phases: the run's first draw"
+    );
 }
 
 /// The render loop: tick at every master-clock frame boundary until `on_tick`
@@ -610,6 +651,11 @@ pub async fn run_loop(
                 cadence.new_run(state);
             }
         }
+        // Step F: the first draw of a run gets one line of its phases.
+        let first_of_run = matches!(
+            (reading, drawn),
+            (Some((epoch, _)), last) if last.map(|(e, _)| e) != Some(epoch)
+        );
         drawn = reading;
         let master = reading.map(|(_, f)| f);
         let (frame, deadline) = match master {
@@ -632,6 +678,9 @@ pub async fn run_loop(
         report.master_frame = master;
         report.woke_late = woke_late;
         cadence.submitted_late(state, &report);
+        if first_of_run {
+            first_draw_line(&report, cadence.last_tick);
+        }
         cadence.ticked(report.total);
         if !on_tick(&report) {
             cadence.end(state);
@@ -852,6 +901,61 @@ mod tests {
         assert!(line("R33: master frames 11..=12 were never drawn").contains("dropped_total=7"));
         assert!(line("R21: master frame 13 was drawn").contains("dropped_total=8"));
         assert!(line("R33: master frames 14..=14 were never drawn").contains("dropped_total=9"));
+    }
+
+    /// Step F: the R21 line says where the draw's time went, by phase, so a
+    /// slow draw names its phase (log-only; additive fields the dress's
+    /// backstop reads past).
+    #[test]
+    fn the_late_submit_line_names_the_draw_s_phases() {
+        use crate::render::{BusPhases, RenderPhases};
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            let mut cadence = Cadence::default();
+            cadence.submitted_late(
+                &state,
+                &TickReport {
+                    master_frame: Some(143),
+                    submitted_late: Some(Duration::from_micros(2_600)),
+                    render: Duration::from_micros(33_760),
+                    render_phases: RenderPhases {
+                        read_ahead: Duration::from_micros(400),
+                        view: BusPhases {
+                            build: Duration::from_micros(300),
+                            encode: Duration::from_micros(500),
+                            finish: Duration::from_micros(100),
+                            submit: Duration::from_micros(32_500),
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        });
+        let line = text
+            .lines()
+            .find(|l| l.contains("R21: master frame 143"))
+            .unwrap_or_else(|| panic!("no R21 line in:\n{text}"));
+        let value = |name: &str| -> f64 {
+            let at = line
+                .find(&format!("{name}="))
+                .unwrap_or_else(|| panic!("{name} missing: {line}"));
+            line[at + name.len() + 1..]
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} unreadable: {line}"))
+        };
+        for (name, want) in [
+            ("read_ahead_ms", 0.4),
+            ("view_build_ms", 0.3),
+            ("view_encode_ms", 0.5),
+            ("view_finish_ms", 0.1),
+            ("view_submit_ms", 32.5),
+            ("render_ms", 33.76),
+        ] {
+            assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
+        }
     }
 
     /// A run edge's line names the `droppedFramesTotal` its own count
