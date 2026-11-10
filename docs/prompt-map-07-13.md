@@ -10706,13 +10706,24 @@ item):
   | 42546204011 | a97579b (#95) | 1 | nothing to judge (R21 frame 374, render 39.47 ms, outside steps 5 to 7) | 0 | — |
   | 42546223118 | 2af7bc8 (#96) | 0 | nothing to judge | 0 | — |
   | 42568689138 | c274b2d (#96) | 0 | nothing to judge | 0 | — |
+  | 42583827756 | 826272f (#92) | 0 | nothing to judge | 0 | — |
+  | 42588696002 | a002f1f (#92) | 2 | nothing to judge (R33 frames 33..=34, woke_late 67.76 ms after a 1.24 ms tick, before step 5's take) | 0 | — |
+  | 42589844474 | b7ea436 (main, #93) | 3 | nothing to judge (R21 frame 62 and R33 frames 67..=68, before step 5's take) | 0 | — |
+  | 42596053748 | e780a23 (main, #94) | 0 | nothing to judge | 0 | — |
+  | 42597575152 | f29fb9d (#96, rebased) | 0 | nothing to judge | 0 | — |
+  | 42617081726 | 70905bf (main, #92) | 0 | nothing to judge | 0 | — |
+  | 42780878692 | d5a5174 (#95, rebased) | 0 | nothing to judge (R21 frame 394 and R33 frame 1 outside the count) | 0 | — |
+  | 42785462049 | 59a5f77 (main, #95) | 1 | step 6 **tied** [1]: R21 frame 175, woke_late 1.76 ≥ late 1.12 ms, previous_tick 0.94 ms, render 32.68 ms (the preview's draw 30.48) | 1 | pass (showTied 1 of 8) |
+  | 42787139004 | b5c5914 (#96, rebased) | 0 | nothing to judge (outside the count: R21 frame 21, render 33.66 ms, the View pass's encode 26.98, woke_late 1.56 < late 1.91 ms, and R33 frame 41, woke_late 46.97 ms after a 2.74 ms tick, in the record show; R33 frames 1..=4 at run 3's start, woke_late 166.24 ms) | 0 | — |
+  | 42799597751 | 85e41af (main, #96) | 2 | nothing to judge (R21 frame 102, render 33.20 ms, the View pass's encode 28.21, woke_late 2.22 ≥ late 2.12 ms after a 20.56 ms tick; R21 frame 108, render 38.32 ms, the read-ahead 37.32, woke_late 1.96 < late 6.95 ms; both before step 5's take, about frame 120) | 0 | — |
 
-  ~~21 runs, 6 judgments: 3 tied, 3 untied, 0 unexplained~~ 27 runs, 7
-  judgments: 3 tied, 4 untied (#94's with a tied drop beside its two untied
+  ~~21 runs, 6 judgments: 3 tied, 3 untied, 0 unexplained~~ ~~27 runs, 7
+  judgments: 3 tied, 4 untied~~ 38 runs, 8 judgments: 4 tied, 4 untied (#94's with a tied drop beside its two untied
   ones), 0 unexplained (14 runs and 5 judgments on 2026-11-07; the seven rows
   through main's `9fac254` are the sweep of the user's ruling of 2026-11-08,
   03:00; the six PR runs of #92 to #96 since are recorded by the ruling of
-  2026-11-08, 23:10). All three untied
+  2026-11-08, 23:10; the ten runs since, `42583827756` to `42799597751`, by the
+  rulings of 2026-11-10, 01:15, item 2(d), and 02:35, item 3(b)). All three untied
   judgments are slow draws in step 5 (render 33.65, 34.16 and 33.76 ms), each
   a red as ruled on a runner; with a22c998's frame 27 (33.46 ms, untied by the
   rule, outside steps 5 to 7), all four untied slow draws just above one frame
@@ -10725,6 +10736,17 @@ item):
   fell is placed from the artifact's `timings.json` at about 33.3 ms a master
   frame; the backstop's own lines are the judgment. The rule and the cap stay
   as ruled (the user's rulings of 2026-11-07).
+
+  **Step 6's tied drop at `59a5f77`** (a reading; the user's ruling of
+  2026-11-10, 01:15, item 2(e)): main's push run for #95's merge
+  (`42785462049`) gave the backstop its first judgment with step F's phases:
+  step 6's drop, R21 frame 175, tied by the rule (woke_late 1.76 ≥ late 1.12
+  ms, previous_tick 0.94 ms), was a 32.68 ms render, 30.48 ms of it the
+  preview bus's draw. The wake was 1.76 ms late; the draw alone took 98% of
+  the 33.33 ms frame. So a tied judgment can sit on a draw near one frame
+  period: the rule ties a drop to a late wake whenever the wake was at least
+  as late as the submit, however long the draw. A reading, recorded; the rule
+  and the cap stay as ruled.
 
   **The audit line:** the second key's own mutants, one scripted run each,
   confirmed independently on 2026-11-06 at main `b71b3c9`: R48's four
@@ -10786,7 +10808,9 @@ item):
   3,506.2 ms, main's push run `42448857646` at `dc3f4cb`, the control-plane
   (R32 sighting 5; accepted by the user's ruling of 2026-11-08, 03:00). (7)
   2,790.3 ms, #96's run `42568689138` at `c274b2d`, the control-plane (R32
-  sighting 6; recorded by the ruling of 2026-11-08, 23:10).
+  sighting 6; recorded by the ruling of 2026-11-08, 23:10). (8) 2,765.3 ms, #92's run
+  `42588696002` at `a002f1f`, the control-plane (R32 sighting 7; recorded by
+  the ruling of 2026-11-10, 01:15).
   Beside them, the R21 table (`.git/nbe-staged/nsx/r21render/`) holds nine
   dress runs whose later show's first draw logged an R21 line (`f2846c1`,
   `67592e7`, `b71b3c9`, `55aaefe`, `9253d8a`, `2afd892`, `9d0e667`, and since
@@ -10811,6 +10835,34 @@ item):
   to 5.4 s, none late. Fresh launches on a warm machine, not a fresh boot. The
   first-draw line and the render-phases line (step F) and a cold-start run on
   the normative machine are item (d) of the user's ruling of 2026-11-08, 03:45.
+
+  **Frame 1, by phase** (an observation, no row; the user's rulings of
+  2026-11-09, 03:45, item 5, 2026-11-10, 01:15, item 2(b), and 02:35, item
+  3(b)). Before step F (no phases), four runs' first costly draw came at
+  frame 1: `d77f351`'s record show, 161.30 ms; #92's `42542910936`, 172.97
+  ms; #94's `42545762546`, 144.15 ms; main's `42589844474` at `b7ea436` (the
+  record show), 395.64 ms after a 1.51 ms tick, R33 frames 2..=11 behind it.
+  On step F's code, five CI runs, fifteen engine runs:
+
+  | CI run | Engine run | Frame 0, the first draw | Frame 1 |
+  |---|---|---|---|
+  | `42546204011` (`a97579b`, #95) | 1, 2, 3 | 1.55, 0.89, 1.06 ms | on time (no line) in each |
+  | `42780878692` (`d5a5174`, #95 rebased) | 1, 2 | 1.30, 2.24 ms | on time |
+  | `42780878692` | 3 | 2.37 ms | never drawn (R33 1..=1): a late wake, woke_late 34.53 ms after a 2.38 ms tick, not a slow draw |
+  | `42785462049` (`59a5f77`, main, #95) | 1, 3 | 4.84, 4.34 ms | on time |
+  | `42785462049` | 2 (the record show) | 1.00 ms, after a 1,535.2 ms stopped tick | **render 146.18 ms**: the View pass's encode **141.74**, View finish 2.32, preview 1.52, View submit 0.22, read-ahead 0.17, View build 0.06; late 114.48 ms; R33 frames 2..=4 behind it; the watchdog's fault (misses 4) |
+  | `42787139004` (`b5c5914`, #96 rebased) | 1, 2 | 14.27 (after a 12.62 ms tick; View finish 7.79), 0.99 ms | on time |
+  | `42787139004` | 3 | 1.28 ms, after a 4,547.2 ms stopped tick | never drawn (R33 1..=4): a late wake, woke_late 166.24 ms after a 1.29 ms tick, not a slow draw |
+  | `42799597751` (`85e41af`, main, #96) | 1, 3 | 1.68, 1.84 ms (run 3 after a 4,343.0 ms stopped tick) | on time |
+  | `42799597751` | 2 (the record show) | 1.28 ms, after a 1,294.8 ms stopped tick | **render 190.19 ms**: the View pass's encode **181.24**, preview 5.10, View finish 3.06, View submit 0.45, read-ahead 0.12, View build 0.05; late 159.20 ms; R33 frames 2..=5 behind it; the watchdog's fault (misses 5), recovered |
+
+  Two costly frame-1 draws with phases, both in the record show (engine run
+  2) on main's push runs, each spent its time in the View pass's encode:
+  141.74 of 146.18 ms at `59a5f77` and 181.24 of 190.19 ms at `85e41af`. Two
+  of fifteen engine runs; two more lost frame 1 to a late wake (34.53 and
+  166.24 ms), not to a draw. An observation. Where that encode's time goes
+  inside the pass (a pipeline, bind group or texture made on first use are
+  candidates) is not read. Fits, not proven.
 
   **The green-run tally** (`macos-15` `ci.yml` runs, #88's throwaways left
   out, each run counted at attempt 1; 34 runs through main's `9fac254`): rust
