@@ -1257,6 +1257,16 @@ jobs:
         with:
           node-version: 20
         timeout-minutes: 5
+      # R42's soak script (scripts/soak-r42.sh) classifies each show by what
+      # its harness hands it. This runs that classification against the stub
+      # harness (no engine, no GPU, no ffprobe), so a change to the script that
+      # breaks a finding, a void, the group kill or the stray check goes red
+      # here. It opens the script's load gate itself, so the runner's load does
+      # not change its answer. Before any build: no nbe-engine is running yet.
+      - name: the soak script's classification, against the stub harness (scripts/soak-r42-check.sh)
+        working-directory: .
+        run: bash scripts/soak-r42-check.sh
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@stable
         timeout-minutes: 5
       # Cargo cache. 438 s of cold release build on each job that shells
