@@ -155,6 +155,12 @@ pub struct Bus {
     /// bus's gain from its audio mode, and must not reset an operator's music
     /// or sfx level.
     operator_db: f32,
+    /// The per-frame gain of the last program render, so a guest's
+    /// mix-minus return (rendered after it, for the same samples) applies
+    /// the gains the program applied without advancing the ramps a second
+    /// time. `trace_len` frames are valid.
+    trace: Vec<f32>,
+    trace_len: usize,
 }
 
 impl Bus {
@@ -167,6 +173,19 @@ impl Bus {
             rms_accum: 0.0,
             rms_count: 0,
             operator_db: 0.0,
+            trace: Vec::new(),
+            trace_len: 0,
+        }
+    }
+
+    /// The gain to apply at frame `f` of a return render: the program's
+    /// traced gain when the program rendered this block, else the next ramp
+    /// step (a return rendered on its own, as the graph tests do).
+    fn return_gain(&mut self, f: usize, frames: usize) -> f32 {
+        if self.trace_len >= frames {
+            self.trace[f]
+        } else {
+            self.next_gain()
         }
     }
 
@@ -201,6 +220,7 @@ impl Bus {
     /// happens to have no source freezes a fade half-way, and a swap waiting
     /// for silence then waits forever.
     fn advance_silent(&mut self, frames: usize) {
+        self.trace_len = 0;
         for _ in 0..frames {
             self.next_gain();
         }
@@ -318,6 +338,8 @@ pub struct AudioGraph {
     /// Scratch buffers, allocated once so `render` allocates nothing.
     scratch: Vec<f32>,
     guest_scratch: BTreeMap<String, Vec<f32>>,
+    /// Per-guest return feeds and their scratch (PR D).
+    returns: BTreeMap<String, (crate::audio_ring::RingProducer, Vec<f32>)>,
     /// Master-bus record tap (WU34, SPSC rewrite): `None` until `set_record_tap`. When
     /// present, `render` pushes a copy of the post-master mix into it via the
     /// tap's lock-free `push` (atomic head publish, preallocated ring, no
@@ -351,6 +373,7 @@ impl AudioGraph {
             pending_swaps: Vec::with_capacity(8),
             scratch: vec![0.0; 8192],
             guest_scratch: BTreeMap::new(),
+            returns: BTreeMap::new(),
             record_tap: None,
             stream_tap: None,
             limiter: crate::limiter::MasterLimiter::new(crate::limiter::DEFAULT_CEILING_DBTP),
@@ -608,6 +631,21 @@ impl AudioGraph {
                 buf.resize(samples, 0.0);
             }
         }
+        let frames = samples / CHANNELS;
+        for bus in self
+            .buses
+            .values_mut()
+            .chain(self.guests.values_mut().map(|(b, _)| b))
+        {
+            if bus.trace.len() < frames {
+                bus.trace.resize(frames, 0.0);
+            }
+        }
+        for (_, buf) in self.returns.values_mut() {
+            if buf.len() < samples {
+                buf.resize(samples, 0.0);
+            }
+        }
     }
 
     /// Render `out.len() / CHANNELS` sample frames for the master frame that
@@ -698,15 +736,20 @@ impl AudioGraph {
 
             let ducking = *id == BusId::Music;
             let bus = buses.get_mut(id).expect("every BusId has a Bus");
+            let traced = bus.trace.len() >= frames;
             for f in 0..frames {
                 let g = bus.next_gain();
                 let duck = if ducking { ducker.gain.advance() } else { 1.0 };
+                if traced {
+                    bus.trace[f] = g * duck;
+                }
                 for c in 0..CHANNELS {
                     let v = scratch[f * CHANNELS + c] * g * duck;
                     bus.observe(v);
                     out[f * CHANNELS + c] += v;
                 }
             }
+            bus.trace_len = if traced { frames } else { 0 };
         }
 
         // Guest buses sum into the program mix. `guests` and `guest_scratch`
@@ -719,14 +762,19 @@ impl AudioGraph {
             let buf = &mut buf[..out.len()];
             buf.fill(0.0);
             render_sources(guest_sources, buf, base, *house_frame_rate);
+            let traced = bus.trace.len() >= frames;
             for f in 0..frames {
                 let g = bus.next_gain();
+                if traced {
+                    bus.trace[f] = g;
+                }
                 for c in 0..CHANNELS {
                     let v = buf[f * CHANNELS + c] * g;
                     bus.observe(v);
                     out[f * CHANNELS + c] += v;
                 }
             }
+            bus.trace_len = if traced { frames } else { 0 };
         }
 
         // Master gain, then the §8.2 limiter, then the meter on what leaves.
@@ -783,10 +831,18 @@ impl AudioGraph {
     /// guest G's own bus, so no check can be forgotten and no configuration
     /// can route it back. That is what AC-18 measures.
     pub fn render_guest_return(&mut self, guest_id: &str, out: &mut [f32], master_frame: u64) {
+        let base = self.sample_for_master_frame(master_frame, 0);
         self.reserve(out.len());
+        self.render_guest_return_at(guest_id, out, base);
+    }
+
+    /// [`Self::render_guest_return`] at an explicit sample position: the
+    /// position the program block was just rendered at, so live sources
+    /// return the same samples (`live::LiveAudio`'s block cache) and the
+    /// buses apply the gains the program traced.
+    pub fn render_guest_return_at(&mut self, guest_id: &str, out: &mut [f32], base: i64) {
         out.fill(0.0);
         let frames = out.len() / CHANNELS;
-        let base = self.sample_for_master_frame(master_frame, 0);
 
         let Self {
             buses,
@@ -810,7 +866,7 @@ impl AudioGraph {
             render_sources(bus_sources, scratch, base, *house_frame_rate);
             let bus = buses.get_mut(&id).expect("every BusId has a Bus");
             for f in 0..frames {
-                let g = bus.next_gain();
+                let g = bus.return_gain(f, frames);
                 for c in 0..CHANNELS {
                     out[f * CHANNELS + c] += scratch[f * CHANNELS + c] * g;
                 }
@@ -831,12 +887,47 @@ impl AudioGraph {
             buf.fill(0.0);
             render_sources(guest_sources, buf, base, *house_frame_rate);
             for f in 0..frames {
-                let g = bus.next_gain();
+                let g = bus.return_gain(f, frames);
                 for c in 0..CHANNELS {
                     out[f * CHANNELS + c] += buf[f * CHANNELS + c] * g;
                 }
             }
         }
+    }
+
+    /// A guest's return feed (PR D): after each program block, that guest's
+    /// mix-minus is rendered and pushed here, lock-free; the guest session's
+    /// writer thread sends it on. Replaces any earlier one.
+    pub fn set_guest_return(&mut self, guest_id: &str, producer: crate::audio_ring::RingProducer) {
+        let width = self.scratch.len();
+        self.returns
+            .insert(guest_id.to_string(), (producer, vec![0.0; width]));
+    }
+
+    /// Remove a guest: its bus, its sources and its return feed.
+    pub fn remove_guest(&mut self, guest_id: &str) {
+        self.guests.remove(guest_id);
+        self.guest_scratch.remove(guest_id);
+        self.returns.remove(guest_id);
+    }
+
+    /// Render every guest's return for the block just rendered at `base`
+    /// and push it to its feed. A feed with no room drops the block (its
+    /// reader stalled) rather than wait.
+    pub fn render_returns(&mut self, base: i64, samples: usize) {
+        if self.returns.is_empty() {
+            return;
+        }
+        let mut returns = std::mem::take(&mut self.returns);
+        for (gid, (producer, buf)) in returns.iter_mut() {
+            if buf.len() < samples {
+                continue;
+            }
+            let out = &mut buf[..samples];
+            self.render_guest_return_at(gid, out, base);
+            producer.push(out);
+        }
+        self.returns = returns;
     }
 
     /// Count a callback the graph could not fill in time (SPEC §8.10).
@@ -919,7 +1010,7 @@ fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, house_r
                     }
                 }
             }
-            Source::Live { input, gain } => input.mix_into(out, *gain),
+            Source::Live { input, gain } => input.mix_into(out, *gain, base_sample),
             Source::Tone { hz, amplitude } => {
                 for f in 0..frames {
                     let n = base_sample + f as i64;

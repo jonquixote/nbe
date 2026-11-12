@@ -11,6 +11,31 @@ use crate::directive::DirectiveError;
 use nbe_protocol::DirectiveFrame;
 
 /// One audio intent, parsed from a Section 16.8 directive.
+/// A guest's live audio input, compared by identity (PR D).
+#[derive(Debug, Clone)]
+pub struct GuestInput(pub std::sync::Arc<crate::live::LiveAudio>);
+impl PartialEq for GuestInput {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A guest's return feed's producer end, handed to the graph once (PR D).
+#[derive(Clone)]
+pub struct GuestReturnFeed(
+    pub std::sync::Arc<std::sync::Mutex<Option<crate::audio_ring::RingProducer>>>,
+);
+impl std::fmt::Debug for GuestReturnFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GuestReturnFeed")
+    }
+}
+impl PartialEq for GuestReturnFeed {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     Play {
@@ -44,6 +69,17 @@ pub enum AudioCommand {
         dbtp: f64,
         /// `"show"` or `"default"`, for the log line that records it.
         source: &'static str,
+    },
+    /// A guest joined (PR D): its bus carries its live input, and its
+    /// mix-minus return is pushed to its feed after every program block.
+    UpsertGuest {
+        guest_id: String,
+        input: GuestInput,
+        feed: GuestReturnFeed,
+    },
+    /// A guest left: its bus and its return feed go.
+    RemoveGuest {
+        guest_id: String,
     },
     /// A take: put this item's audio on its buses at its `t0`, honouring the
     /// §8.7.3 audio mode.
@@ -299,6 +335,27 @@ pub fn apply(
                 if let Some(b) = graph.guest_bus_mut(&guest_id) {
                     b.set_muted(muted, DEFAULT_RAMP_MS);
                 }
+            }
+            AudioCommand::UpsertGuest {
+                guest_id,
+                input,
+                feed,
+            } => {
+                graph.upsert_guest(
+                    &guest_id,
+                    vec![crate::audio::Source::Live {
+                        input: input.0,
+                        gain: 1.0,
+                    }],
+                );
+                if let Some(producer) = feed.0.lock().unwrap().take() {
+                    graph.set_guest_return(&guest_id, producer);
+                }
+                tracing::info!(guest = %guest_id, "guest bus and return feed in the graph");
+            }
+            AudioCommand::RemoveGuest { guest_id } => {
+                graph.remove_guest(&guest_id);
+                tracing::info!(guest = %guest_id, "guest bus removed");
             }
         }
     }
