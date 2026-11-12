@@ -386,12 +386,17 @@ miss; the rest is ticked by hand before it starts):
 - [ ] **Spotlight excluded**: the output folder's `.noindex` suffix keeps
       Spotlight out of what the soak writes; the repo is added to System
       Settings, Spotlight, Search Privacy; `mdutil -s /` is recorded; the
-      script refuses while `mds_stores`, `mdworker`, `mediaanalysisd` or
-      `photoanalysisd` hold 5% CPU or more.
+      script refuses while `mds_stores`, `mdworker`, `mediaanalysisd`,
+      `photoanalysisd` and the four knowledge daemons below hold 5% CPU or
+      more between them.
 - [ ] **The machine quiet**: no other agent or remote-desktop session, no
       build or test (the script refuses on `cargo` or `rustc`), interactive
-      apps closed (§6's list of ambient causes). Load under 2.6 before each
-      show, by the script.
+      apps closed (§6's list of ambient causes). The knowledge daemons,
+      `knowledgeconstructiond`, `intelligenceplatformd`, `siriknowledged` and
+      `knowledge-agent`, quiet: the script sums their CPU with the indexers'
+      and refuses at 5% or more (the user's ruling of 2026-11-10, 18:20;
+      `knowledgeconstructiond` held 94 to 99% CPU for 9 h 41 min before the
+      rehearsal). Load under 2.6 before each show, by the script.
 - [ ] **Disk**: at least 8 GiB free (§2) and, by the user's ruling, keep
       15 GiB or more: the script refuses under `SOAK_MIN_FREE_GIB` (15). Twenty
       30-minute recordings and streams need a few GiB.
@@ -405,6 +410,9 @@ miss; the rest is ticked by hand before it starts):
       show on merged main, run after this section's PR has merged and
       main's push run for it is read (the user's ruling of 2026-11-09,
       00:45). The script has no `--shows` flag.
+- [ ] **No stub harness**: `SOAK_HARNESS` set without `--stub` voids the
+      run before anything else; a stub run (`--stub`, the check's) is never
+      a soak.
 - [ ] **About 11 hours** of the machine's time: 600 show-minutes plus each
       show's load and stop and the waits for admission (about 35 minutes
       for the rehearsal).
