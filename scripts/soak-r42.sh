@@ -19,11 +19,26 @@
 #   1  FAIL  a finding: a show kept with a panic, a drop, a short or unmeasured output, or no result
 #   2  VOID  a precondition did not hold, or too few shows were kept
 #
-# SOAK_HARNESS=<program> runs that program in place of the measure harness,
-# with the same arguments (--out <dir> --minutes <n>), so each of the paths
-# above can be tested with a stub (scripts/soak-r42-stub.mjs). The pre-flight
-# is then skipped and every line says STUB: a stub run is never a soak.
+# A stub run is asked for on the command line, `scripts/soak-r42.sh --stub`:
+# then SOAK_HARNESS=<program> runs that program in place of the measure
+# harness, with the same arguments (--out <dir> --minutes <n>), so each of the
+# paths above can be tested with a stub (scripts/soak-r42-stub.mjs). The
+# pre-flight is then skipped, but for the indexer check, and every line says
+# STUB: a stub run is never a soak. Without --stub, SOAK_HARNESS in the
+# environment voids the run before anything else, so a variable left from a
+# check cannot turn a soak into a stub run (#97's review). Two more inputs
+# exist for the check's cases and are read only with --stub: SOAK_STUB_PS, a
+# file in `ps -Ao pcpu=,comm=` form that the indexer check reads in place of
+# ps, and SOAK_STUB_LOADS, a comma list of 1-minute loads handed out one per
+# reading, the last one repeated.
 set -uo pipefail
+
+STUB_RUN=0
+case "$#:${1:-}" in
+  0:) : ;;
+  1:--stub) STUB_RUN=1 ;;
+  *) echo "usage: scripts/soak-r42.sh [--stub]" >&2; exit 2 ;;
+esac
 
 SHOWS="${SOAK_SHOWS:-20}"
 MINUTES="${SOAK_MINUTES:-30}"
@@ -34,7 +49,12 @@ ALARM_S="${SOAK_ALARM_S:-$(( (MINUTES + 10) * 60 ))}" # a show's kill timer
 MIN_FREE_GIB="${SOAK_MIN_FREE_GIB:-15}"   # the user's "keep >= 15"; section 2's floor is 8
 SHORT_MS="${SOAK_SHORT_MS:-1000}"          # an output this much shorter than its span is a finding
 HARNESS="${SOAK_HARNESS:-}"
-if [ -n "$HARNESS" ]; then HARNESS="$(cd "$(dirname "$HARNESS")" && pwd)/$(basename "$HARNESS")"; STUB="STUB "; else STUB=""; fi
+if [ "$STUB_RUN" = 1 ]; then
+  [ -n "$HARNESS" ] || { echo "VOID: --stub needs SOAK_HARNESS=<program>" >&2; exit 2; }
+  HARNESS="$(cd "$(dirname "$HARNESS")" && pwd)/$(basename "$HARNESS")"; STUB="STUB "
+else
+  STUB=""
+fi
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Spotlight skips a folder whose name ends in .noindex, so nothing the soak
 # writes is indexed while it runs (the user's "Spotlight excluded").
@@ -46,7 +66,27 @@ mkdir -p "$OUT"
 LOG="$OUT/soak.log"
 void() { echo "${STUB}VOID: $*" | tee -a "$LOG" >&2; exit 2; }
 say()  { echo "${STUB}$*" | tee -a "$LOG"; }
-load1() { sysctl -n vm.loadavg | awk '{print $2}'; }
+load1() {
+  if [ "$STUB_RUN" = 1 ] && [ -n "${SOAK_STUB_LOADS:-}" ]; then
+    local n; n="$(cat "$OUT/.stub-loads-read" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$OUT/.stub-loads-read"
+    printf '%s\n' "$SOAK_STUB_LOADS" | tr ',' '\n' | awk -v n="$n" 'NR == n + 1 {print; found = 1} {last = $0} END {if (!found) print last}'
+  else
+    sysctl -n vm.loadavg | awk '{print $2}'
+  fi
+}
+# The indexers and the knowledge daemons (section 2, item 2; section 8), their
+# CPU summed against 5%. The four knowledge daemons are the user's ruling of
+# 2026-11-10, 18:20: knowledgeconstructiond held 94 to 99% CPU for 9 h 41 min
+# before the rehearsal, outside the indexers' list.
+QUIET_NAMES='mds_stores|mdworker|mediaanalysisd|photoanalysisd|knowledgeconstructiond|intelligenceplatformd|siriknowledged|knowledge-agent'
+procs() { if [ "$STUB_RUN" = 1 ]; then cat "${SOAK_STUB_PS:-/dev/null}"; else ps -Ao pcpu=,comm=; fi; }
+quiet_check() {
+  local idx busy
+  idx="$(procs | awk -v re="$QUIET_NAMES" '$0 ~ re {s += $1} END {print s + 0}')"
+  busy="$(procs | awk -v re="$QUIET_NAMES" '$0 ~ re && $1 > 0 {n = $2; sub(/.*\//, "", n); printf "%s%s %s%%", sep, n, $1; sep = ", "}')"
+  say "indexers' CPU: ${idx}%${busy:+ ($busy)}"
+  awk -v s="$idx" 'BEGIN {exit !(s < 5)}' || void "an indexer is working (${idx}% CPU${busy:+: $busy}): wait"
+}
 engines() { pgrep -x nbe-engine | paste -sd, -; }
 
 HEAD="$(git rev-parse HEAD)"
@@ -54,10 +94,13 @@ say "=== R42 soak $(date -u +%Y-%m-%dT%H:%M:%SZ): $SHOWS shows x $MINUTES min; h
 say "=== artifacts: $OUT"
 
 # --- Pre-flight (section 8's checklist; each failure is a VOID) ---------------
+# A stub harness only with --stub: never a soak that runs a stub by accident.
+[ "$STUB_RUN" = 1 ] || [ -z "$HARNESS" ] || void "SOAK_HARNESS is set ($HARNESS) without --stub: unset it for a soak"
 # No engine is running: a show's engine must be the only one.
 [ -z "$(engines)" ] || void "an nbe-engine is already running (pids $(engines))"
-if [ -n "$HARNESS" ]; then
-  say "pre-flight skipped: SOAK_HARNESS=$HARNESS (a stub run, never a soak)"
+if [ "$STUB_RUN" = 1 ]; then
+  say "pre-flight skipped: SOAK_HARNESS=$HARNESS (a stub run, never a soak); the indexer check reads SOAK_STUB_PS"
+  quiet_check
 else
 # The tree: main, clean, at the commit the release build was made from.
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || void "not on main"
@@ -79,9 +122,7 @@ say "disk free: ${free_gib} GiB (keep >= $MIN_FREE_GIB)"
 # Quiet: no build or test of this repo, and no indexer at work (section 2, item 2).
 pgrep -x cargo >/dev/null && void "cargo is running"
 pgrep -x rustc >/dev/null && void "rustc is running"
-idx="$(ps -Ao pcpu=,comm= | awk '/mds_stores|mdworker|mediaanalysisd|photoanalysisd/ {s+=$1} END {print s+0}')"
-say "indexers' CPU: ${idx}%"
-awk -v s="$idx" 'BEGIN {exit !(s < 5)}' || void "an indexer is working (${idx}% CPU): wait"
+quiet_check
 say "spotlight: $(mdutil -s / 2>&1 | tr '\n' ' ')"
 # Power (section 2, item 6): on AC; the adapter and Low Power Mode recorded.
 pmset -g batt | grep -q "AC Power" || void "not on AC power"
@@ -95,7 +136,7 @@ fi
 # --- The shows ----------------------------------------------------------------
 TABLE="$OUT/table.tsv"
 printf 'show\tverdict\tadmitted\tended\tminutes\tdropped\tpanics\trecord_s\trecord_wall_s\tstream_s\tstream_wall_s\n' > "$TABLE"
-kept=0; findings=0; stray=0
+kept=0; findings=0; stray=0; NOT_ADMITTED=""
 # A show's engine must not outlive it: the harness runs as the leader of a
 # process group of its own, so the engine it spawns is in that group; at the
 # kill timer the whole group is stopped (TERM, then KILL 5 s later) and the
@@ -117,7 +158,8 @@ run_show() { # tag
   local tag=$1 o="$OUT/$1"
   mkdir -p "$o"
   # Admission, bounded: a load that does not come under ADMIT within
-  # ADMIT_WAIT_S voids the run, with the history of the load it waited on.
+  # ADMIT_WAIT_S ends the run, with the history of the load it waited on: a
+  # VOID, or a FAIL if an earlier show made a finding (#97's review).
   local a waited=0 hist="$o/admission-load.txt"
   while :; do
     a="$(load1)"; echo "$(date +%H:%M:%S) $a" >> "$hist"
@@ -126,12 +168,13 @@ run_show() { # tag
       say "$tag: the load did not come under $ADMIT within ${ADMIT_WAIT_S} s; its history (time, 1-minute load):"
       tee -a "$LOG" < "$hist"
       ps -Ao pcpu,comm -r | sed -n 2,7p | tee -a "$LOG"
-      void "$tag was not admitted within ${ADMIT_WAIT_S} s"
+      NOT_ADMITTED="$tag was not admitted within ${ADMIT_WAIT_S} s"
+      return 4
     fi
     sleep 15; waited=$((waited + 15))
   done
   local s; s="$(date +%H:%M:%S)"
-  if [ -n "$HARNESS" ]; then
+  if [ "$STUB_RUN" = 1 ]; then
     run_group "$ALARM_S" "$HARNESS" --out "$o" --minutes "$MINUTES" > "$o/run.out" 2>&1
   else
     (cd packages/control-plane && export NBE_ENGINE_BIN="$BIN" NBE_PREFLIGHT_BIN="$PREFLIGHT_BIN" &&
@@ -189,9 +232,11 @@ for i in $(seq 1 "$SHOWS"); do
     0) kept=$((kept + 1)) ;;
     1) kept=$((kept + 1)); findings=$((findings + 1)); say "FINDING at show $i: never rerun" ;;
     3) findings=$((findings + 1)); say "FINDING at show $i: no result in a kept window (a crash or a hang), never rerun" ;;
+    4) say "$NOT_ADMITTED: the run stops here" ;;
     *) say "show $i void twice" ;;
   esac
   [ "$stray" = 1 ] && break
+  [ -n "$NOT_ADMITTED" ] && break
 done
 # The power log's lines since the first show: a Sleep, or a line on battery.
 pmset -g log | tail -n +"$((PM_START + 1))" | awk '$4 == "Sleep" || tolower($0) ~ /using batt/' > "$OUT/power-events.txt" || true
@@ -199,6 +244,7 @@ say "power events in the window: $(wc -l < "$OUT/power-events.txt" | tr -d ' ') 
 say "=== kept $kept of $SHOWS shows, $((kept * MINUTES)) show-minutes; findings $findings"
 [ -s "$OUT/power-events.txt" ] && void "a sleep or battery event in the window"
 [ "$findings" -gt 0 ] && { say "FAIL"; exit 1; }
+[ -n "$NOT_ADMITTED" ] && void "$NOT_ADMITTED"
 [ "$stray" = 1 ] && void "an nbe-engine outlived a show"
 [ $((kept * MINUTES)) -ge 600 ] || void "only $((kept * MINUTES)) show-minutes kept"
 say "PASS"; exit 0
