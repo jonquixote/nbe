@@ -119,9 +119,17 @@ pub trait CaptureHandle: Send {}
 // ---------------------------------------------------------------------------
 
 /// The most a live input may lag before its oldest samples are dropped
-/// (100 ms), and what is kept when that happens (40 ms).
-pub const LIVE_AUDIO_MAX_BACKLOG_FRAMES: u64 = 4_800;
-pub const LIVE_AUDIO_KEEP_FRAMES: u64 = 1_920;
+/// (1.2 s), and what is kept when that happens (200 ms).
+///
+/// The bound is set by the graph, not the device: with the null sink the
+/// graph can fall up to `MAX_CATCH_UP_BLOCKS` (about a second) behind the
+/// wall clock and then catch up in a burst. A backlog trimmed during the lag
+/// is samples the catch-up then finds missing — PR C's first CI run trimmed
+/// at 100 ms and counted 195,360 trimmed and 199,200 underrun frames, half
+/// the take, on a runner at load 14 on 3 CPUs. Past 1.2 s the graph is not
+/// catching up, and the oldest samples go.
+pub const LIVE_AUDIO_MAX_BACKLOG_FRAMES: u64 = 57_600;
+pub const LIVE_AUDIO_KEEP_FRAMES: u64 = 9_600;
 
 /// One live audio input: 48 kHz stereo float, pushed by the capture side,
 /// read by the audio graph once a block. The graph never waits: a ring the
@@ -143,9 +151,9 @@ impl std::fmt::Debug for LiveAudio {
 }
 
 impl LiveAudio {
-    /// A new input with a one-second ring, and its producer end.
+    /// A new input with a two-second ring, and its producer end.
     pub fn new() -> (Arc<Self>, crate::audio_ring::RingProducer) {
-        let (producer, consumer) = crate::audio_ring::ring(48_000);
+        let (producer, consumer) = crate::audio_ring::ring(96_000);
         (
             Arc::new(Self {
                 // Scratch for one block, sized once: the audio thread does not allocate.
