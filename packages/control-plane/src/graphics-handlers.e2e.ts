@@ -466,15 +466,69 @@ test("[A] item.stop: the playing clip freezes on its frame; the View is not empt
   assert.equal(cpAt["dark"]?.viewItem, "A2", "precondition for the graphics steps: the cut put A2 up");
 });
 
+/**
+ * Consecutive decoded frames from `t` for `secs`, at a quarter of 1080p,
+ * classified one by one against the previous: "moving" (more than 300 pixels
+ * of the picture band changed by more than 60), "still", or "dark" (the
+ * band is not lit: the A2 solid, not the counter clip).
+ *
+ * Timeline-free on purpose. The recording's PTS is the encoder's submit
+ * count (`record/thread.rs`), so a frame the record path sheds under load
+ * makes the file shorter than the wall clock, and a sample taken at a wall
+ * time late in the take lands in the next step's window. PR C's CI run at
+ * 0f31b9c read the second stop "moving" that way while the first stop, early
+ * in the take, read still. A run of still, lit frames between moving ones is
+ * the hold, wherever it falls in the file.
+ */
+function motionRun(t: number, secs: number): string[] {
+  const QW = 480;
+  const QH = 270;
+  const r = spawnSync(
+    FFMPEG,
+    ["-v", "error", "-ss", Math.max(0, t).toFixed(3), "-t", secs.toFixed(3), "-i", recording, "-vf", `scale=${QW}:${QH}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { maxBuffer: QW * QH * 3 * Math.ceil(secs * 30 + 30) },
+  );
+  assert.equal(r.status, 0, `ffmpeg decode: ${r.stderr?.toString()}`);
+  const size = QW * QH * 3;
+  const frames: Buffer[] = [];
+  for (let i = 0; i + size <= r.stdout.length; i += size) frames.push(r.stdout.subarray(i, i + size));
+  const y0 = Math.floor(PICTURE[1] * QH);
+  const y1 = Math.floor((PICTURE[1] + PICTURE[3]) * QH);
+  const out: string[] = [];
+  for (let k = 1; k < frames.length; k++) {
+    const a = frames[k - 1]!;
+    const b = frames[k]!;
+    let moved = 0;
+    let lit = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = 0; x < QW; x++) {
+        const i = (y * QW + x) * 3;
+        if (Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!) > 60) moved++;
+        if (b[i]! + b[i + 1]! + b[i + 2]! > 120) lit++;
+      }
+    }
+    out.push(lit < 300 ? "dark" : moved > 300 ? "moving" : "still");
+  }
+  return out;
+}
+
 test("[A] item.stop's hold is released by a cut and by a take: A1 stopped, cut away, cut back plays; stopped again, taken plays", (t) => {
   if (skipIfNoRecording(t)) return;
-  const recut = changed(sample("recut", 0.3), sample("recut", 0.8), PICTURE);
-  const restop = changed(sample("restop", 0.5), sample("restop", 0.9), PICTURE);
-  const retake = changed(sample("retake", 0.3), sample("retake", 0.8), PICTURE);
-  console.log(`hold release: changed pixels after the cut back ${recut}, after the second stop ${restop}, after the take ${retake}`);
-  assert.ok(recut > 500, `a cut back to the stopped item plays it (changed ${recut})`);
-  assert.ok(restop < 50, `the second stop holds again (changed ${restop})`);
-  assert.ok(retake > 500, `a take of the stopped item plays it (changed ${retake})`);
+  // From before the cut back to well after the take: moving (the cut back
+  // plays A1), a still run (the second stop holds), moving (the take plays).
+  const from = appliedAt["recut"]! - 0.5;
+  const secs = appliedAt["retake"]! - from + 2.5;
+  const run = motionRun(from, secs);
+  const code = run.map((c) => (c === "moving" ? "m" : c === "still" ? "s" : "d")).join("");
+  console.log(`hold release: ${run.length} frames from ${from.toFixed(2)} s: ${code}`);
+  // The longest run of still, lit frames, and what surrounds it.
+  const m = [...code.matchAll(/s+/g)].sort((x, y) => y[0].length - x[0].length)[0];
+  assert.ok(m, `a still (held) run between the cut back and the take: ${code}`);
+  const start = m.index!;
+  const end = start + m[0].length;
+  assert.ok(m[0].length >= 10, `the second stop holds for at least 10 recorded frames (held ${m[0].length}): ${code}`);
+  assert.ok(code.slice(0, start).includes("mmm"), `the cut back to the stopped item plays it before the hold: ${code}`);
+  assert.ok(code.slice(end).includes("mmm"), `the take of the stopped item plays it after the hold: ${code}`);
 });
 
 test("[A] graphic.show / update / hide: the lower third appears, changes, and goes", (t) => {
