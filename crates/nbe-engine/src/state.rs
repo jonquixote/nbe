@@ -183,6 +183,9 @@ pub struct EngineState {
     /// holds that item's picture as it was at that frame — a stopped clip
     /// freezes, it does not vanish — until a take or cut puts another item up.
     pub view_hold: Mutex<Option<(String, u64)>>,
+    /// Running live sources (cameras), started at `show.load` for the
+    /// package's `cameraId`s; see [`crate::live`].
+    pub live: crate::live::LiveInputs,
     /// The off-render-thread text worker, published by the render loop when it
     /// opens its device. Absent in a test that drives directives with no
     /// render loop; a command's text is then shaped by the render loop's own
@@ -322,6 +325,7 @@ impl EngineState {
             overlays: Mutex::new(std::collections::BTreeMap::new()),
             graphics: Mutex::new(crate::graphics::GraphicsRuntime::new()),
             view_hold: Mutex::new(None),
+            live: crate::live::LiveInputs::default(),
             text_prep: Mutex::new(None),
             record_state: Mutex::new(RecordState::Idle),
             record_session: Mutex::new(None),
@@ -572,6 +576,11 @@ pub enum FallbackSource {
     /// The frame watchdog: engaged on a trip, released by its recovery
     /// (`watchdog.rs`, `WATCHDOG_CLEAR_AFTER_ON_TIME`).
     Watchdog = 0b10,
+    /// A live camera on the View stopped delivering frames (SPEC §10.3
+    /// trigger 3; `live.rs`): engaged after `LIVE_LOSS_MS` without a frame,
+    /// released after `LIVE_RECOVER_MS` of fresh ones, or when no live source
+    /// is on the View any more.
+    LiveLoss = 0b100,
 }
 
 /// What the directive handler needs to emit back to the control plane.

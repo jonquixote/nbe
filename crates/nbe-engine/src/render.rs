@@ -375,6 +375,17 @@ pub struct RenderLoop {
     /// View's submit and cleared at the start of every frame, so a View that
     /// failed to draw hands on no index from an earlier frame.
     view_submission: Option<wgpu::SubmissionIndex>,
+    /// One upload thread per live source in the package (`live.rs`), keyed
+    /// by source id; started and stopped at the package boundary.
+    live_uploaders: HashMap<String, crate::live::LiveUploader>,
+    /// Since when every live source on the View has been fresh, while the
+    /// live-loss slate is up: the recovery clock.
+    live_fresh_since: Option<Instant>,
+    /// Each live source's frame synchroniser (`live::FrameSync`).
+    live_sync: HashMap<String, crate::live::FrameSync>,
+    /// The texture each live source shows this frame, chosen once a frame
+    /// before either bus draws, so the View and the Preview agree.
+    live_now: HashMap<String, wgpu::Texture>,
 }
 
 impl RenderLoop {
@@ -458,6 +469,10 @@ impl RenderLoop {
             view_failing: false,
             view_surface: None,
             view_submission: None,
+            live_uploaders: HashMap::new(),
+            live_fresh_since: None,
+            live_sync: HashMap::new(),
+            live_now: HashMap::new(),
         };
         me.sync_package();
         Ok(me)
@@ -489,6 +504,7 @@ impl RenderLoop {
             *self.fonts.lock().unwrap() = crate::text::FontBook::from_packaged(faces);
         }
         self.text_cache.lock().unwrap().clear();
+        self.sync_live_uploaders();
 
         {
             let index = self.state.package.lock().unwrap();
@@ -933,6 +949,7 @@ impl RenderLoop {
             self.shed_off_air_loops(frame);
         }
         phases.reacquire = reacquire_started.elapsed();
+        self.check_live_loss(frame);
         let read_ahead_started = Instant::now();
         let read_ahead_uploads = self.pump_read_ahead(frame, false);
         let read_ahead = read_ahead_started.elapsed();
@@ -1334,6 +1351,11 @@ impl RenderLoop {
             // element uses, rather than a second pipeline.
             LayerSource::Text(t) => (self.text_texture(t, frame)?, [1.0, 1.0, 1.0, 1.0]),
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
+            // The newest uploaded frame: an atomic read of the ring, never a
+            // wait or a copy (`live.rs`).
+            LayerSource::Live { source_id } => {
+                (self.live_now.get(source_id)?.clone(), [1.0, 1.0, 1.0, 1.0])
+            }
             // SPEC §12.1: which frame shows is a pure function of the master
             // clock. The ring textures were uploaded at load; this is a lookup.
             // SPEC §12.8.1: a plain clip draws its head, then its window. A
@@ -1486,6 +1508,124 @@ impl RenderLoop {
                     draws.push(d);
                 }
             }
+        }
+    }
+
+    /// One upload thread per camera the package names, each reading the
+    /// mailbox `show.load` started; the rest stopped. Package boundary only.
+    fn sync_live_uploaders(&mut self) {
+        let ids: Vec<String> = self
+            .state
+            .package
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|i| i.camera_ids())
+            .unwrap_or_default()
+            .iter()
+            .map(|c| crate::live::camera_source_id(c))
+            .collect();
+        self.live_uploaders.retain(|k, _| ids.contains(k));
+        self.live_sync.retain(|k, _| ids.contains(k));
+        self.live_now.retain(|k, _| ids.contains(k));
+        for id in ids {
+            if self.live_uploaders.contains_key(&id) {
+                continue;
+            }
+            let Some(mailbox) = self.state.live.mailbox(&id) else {
+                tracing::warn!(source = %id, "live source not running; its layer draws nothing");
+                continue;
+            };
+            let up = crate::live::LiveUploader::start(
+                id.clone(),
+                mailbox,
+                self.gpu.device.clone(),
+                self.gpu.queue.clone(),
+            );
+            self.live_uploaders.insert(id, up);
+        }
+    }
+
+    /// SPEC §10.3 trigger 3: a live source on the View with no frame for
+    /// `LIVE_LOSS_MS` puts the slate up; `LIVE_RECOVER_MS` of fresh frames
+    /// (or no live source on the View any more) takes it down.
+    fn check_live_loss(&mut self, frame: u64) {
+        let on_view: Vec<String> = self
+            .scene_for(Bus::View, frame)
+            .into_iter()
+            .flat_map(|s| s.scene.layers)
+            .filter_map(|l| match l.source {
+                LayerSource::Live { source_id } => Some(source_id),
+                _ => None,
+            })
+            .collect();
+        // This frame's camera frames: one step per tick while on the View
+        // (counted), the newest otherwise (not counted: nobody is watching).
+        let mut published = Vec::new();
+        for (id, up) in &self.live_uploaders {
+            let newest = up.ring.newest_seq();
+            let sync = self.live_sync.entry(id.clone()).or_default();
+            let seq = if on_view.contains(id) {
+                sync.advance(newest)
+            } else {
+                sync.drawn_seq = newest;
+                newest
+            };
+            match up.ring.frame(seq).or_else(|| up.ring.frame(newest)) {
+                Some(tex) => {
+                    self.live_now.insert(id.clone(), tex);
+                }
+                None => {
+                    self.live_now.remove(id);
+                }
+            }
+            published.push((
+                id.clone(),
+                (sync.clone(), up.ring.uploaded.load(Ordering::Relaxed)),
+            ));
+        }
+        if !published.is_empty() {
+            let mut out = self.state.live.sync.lock().unwrap();
+            for (id, v) in published {
+                out.insert(id, v);
+            }
+        }
+        let lost: Vec<&String> = on_view
+            .iter()
+            .filter(|id| {
+                self.state
+                    .live
+                    .mailbox(id)
+                    .and_then(|m| m.age())
+                    .is_none_or(|age| age > Duration::from_millis(crate::live::LIVE_LOSS_MS))
+            })
+            .collect();
+        let held = self
+            .state
+            .fallback_held_by(crate::state::FallbackSource::LiveLoss);
+        if !lost.is_empty() {
+            self.live_fresh_since = None;
+            if !held {
+                tracing::warn!(frame, sources = ?lost, "live source lost on the View: fallback slate");
+                self.state
+                    .engage_fallback(crate::state::FallbackSource::LiveLoss);
+            }
+            return;
+        }
+        if !held {
+            return;
+        }
+        let since = *self.live_fresh_since.get_or_insert_with(Instant::now);
+        if on_view.is_empty()
+            || since.elapsed() >= Duration::from_millis(crate::live::LIVE_RECOVER_MS)
+        {
+            tracing::info!(
+                frame,
+                "live source recovered (or left the View): slate released"
+            );
+            self.state
+                .release_fallback(crate::state::FallbackSource::LiveLoss);
+            self.live_fresh_since = None;
         }
     }
 

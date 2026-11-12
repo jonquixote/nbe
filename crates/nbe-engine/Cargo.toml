@@ -45,7 +45,7 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 # (the target gate keeps cpal's Linux backend out).
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.18.2"
-nbe-decode = { path = "../nbe-decode", features = ["gpu-tap", "device-audio"] }
+nbe-decode = { path = "../nbe-decode", features = ["gpu-tap", "device-audio", "capture"] }
 
 [dev-dependencies]
 pollster = "0.4"

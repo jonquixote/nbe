@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { loadavg } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
 
@@ -58,6 +59,12 @@ let recordDir = "";
 const appliedAt: Record<string, number> = {};
 /** The engine's on-air line as first reported after each step. */
 const reported: Record<string, Record<string, unknown>> = {};
+/** Per step, in order: the engine's View drop count at its window's end, and
+ *  the runner's 1-minute load when the command was sent (the user's ruling of
+ *  2026-11-12, 03:20, item 3). */
+const stepLog: Array<{ name: string; at: number; dropsEnd: number; load1: number }> = [];
+/** The control plane's View and Preview items as each step left them. */
+const cpAt: Record<string, { viewItem: string | null; previewItem: string | null }> = {};
 let recordStartMs = 0;
 let recording = "";
 let dropsAtStart = 0;
@@ -118,6 +125,7 @@ async function step(
   want: (s: Record<string, unknown>) => boolean,
 ): Promise<void> {
   const from = ticks.length;
+  const load1 = loadavg()[0] ?? 0;
   const at = await applied(command, payload);
   appliedAt[name] = (at - recordStartMs) / 1000;
   // A report that never comes fails that step's test, not the whole timeline.
@@ -130,6 +138,8 @@ async function step(
   // one at +0.9 s both sit inside it.
   const held = Date.now() - at;
   if (held < 1100) await sleep(1100 - held);
+  stepLog.push({ name, at: appliedAt[name]!, dropsEnd: droppedNow(), load1 });
+  cpAt[name] = { viewItem: state.viewItem, previewItem: state.previewItem };
 }
 
 function droppedNow(): number {
@@ -386,6 +396,14 @@ before(async () => {
   );
   await step("preview", "preview.set", { itemRef: "A3" }, (s) => s["previewItem"] === "A3");
 
+  // #102's open question: the hold item.stop puts on A1 is released by a cut
+  // and by a take. A cut back to A1 after a cut away, then a second stop and
+  // a take of the same item.
+  await step("recut", "view.cut", { itemRef: "A1" }, () => true);
+  await step("restop", "item.stop", { itemId: "A1" }, () => true);
+  await applied("preview.set", { itemRef: "A1" });
+  await step("retake", "view.take", { transition: "cut" }, () => true);
+
   dropsAtEnd = droppedNow();
   const stop = await send("record.stop", {});
   assert.equal(stop.status, "ok", `record.stop: ${JSON.stringify(stop)}`);
@@ -406,6 +424,15 @@ before(async () => {
   // The demo: keep the take to watch (`NBE_GRAPHICS_E2E_KEEP=/path/take.mp4`).
   const keep = process.env.NBE_GRAPHICS_E2E_KEEP;
   if (keep) copyFileSync(recording, keep);
+  // Drops and load per step: the window of each step is from its apply to
+  // the next step's apply; the engine's counter is read at each window's end.
+  let prevDrops = dropsAtStart;
+  for (const st of stepLog) {
+    console.log(
+      `graphics e2e step: ${st.name.padEnd(16)} applied ${st.at.toFixed(2)} s, View drops in its window ${st.dropsEnd - prevDrops} (total ${st.dropsEnd}), runner load1 ${st.load1.toFixed(2)}`,
+    );
+    prevDrops = st.dropsEnd;
+  }
   console.log(
     `graphics e2e: recording ${recording}; steps applied at ${JSON.stringify(
       Object.fromEntries(Object.entries(appliedAt).map(([k, v]) => [k, Number(v.toFixed(2))])),
@@ -436,7 +463,18 @@ test("[A] item.stop: the playing clip freezes on its frame; the View is not empt
   assert.ok(moving > 500, `the counter clip must move before the stop (changed ${moving})`);
   assert.ok(frozen < 50, `the stopped clip must hold its frame (changed ${frozen})`);
   assert.ok(lit > 500, `the View keeps the stopped item's picture, not black (lit ${lit})`);
-  assert.equal(state.viewItem, "A2", "precondition for the rest: the cut put A2 up");
+  assert.equal(cpAt["dark"]?.viewItem, "A2", "precondition for the graphics steps: the cut put A2 up");
+});
+
+test("[A] item.stop's hold is released by a cut and by a take: A1 stopped, cut away, cut back plays; stopped again, taken plays", (t) => {
+  if (skipIfNoRecording(t)) return;
+  const recut = changed(sample("recut", 0.3), sample("recut", 0.8), PICTURE);
+  const restop = changed(sample("restop", 0.5), sample("restop", 0.9), PICTURE);
+  const retake = changed(sample("retake", 0.3), sample("retake", 0.8), PICTURE);
+  console.log(`hold release: changed pixels after the cut back ${recut}, after the second stop ${restop}, after the take ${retake}`);
+  assert.ok(recut > 500, `a cut back to the stopped item plays it (changed ${recut})`);
+  assert.ok(restop < 50, `the second stop holds again (changed ${restop})`);
+  assert.ok(retake > 500, `a take of the stopped item plays it (changed ${retake})`);
 });
 
 test("[A] graphic.show / update / hide: the lower third appears, changes, and goes", (t) => {
@@ -490,7 +528,7 @@ test("[A] clock.configure: HH:mm:ss becomes HH:mm on air", (t) => {
 test("[A] preview.set: the engine's Preview bus follows (reported; the Preview bus is not recorded)", (t) => {
   if (skipIfNoRecording(t)) return;
   assert.equal(reported["preview"]?.["previewItem"], "A3");
-  assert.equal(state.previewItem, "A3", "the control plane agrees");
+  assert.equal(cpAt["preview"]?.previewItem, "A3", "the control plane agrees");
 });
 
 test("[A] every command's text was shaped before it was drawn: no prepared-text misses", (t) => {

@@ -239,6 +239,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         audio_device: state.audio_device.lock().unwrap().clone(),
         audio_limiter_ceiling: state.audio_limiter_ceiling.lock().unwrap().clone(),
         overlay_state: overlay_state(state),
+        live_inputs: state.live.lines(),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),

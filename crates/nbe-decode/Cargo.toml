@@ -42,11 +42,28 @@ objc2-metal = { version = "0.3.2", features = ["MTLDevice", "MTLTexture", "MTLPi
 # device, so its size-gated binary keeps its dependency surface. `nbe-engine`
 # turns it on.
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware"], optional = true }
+dispatch2 = { version = "0.3.1", optional = true }
 
 [features]
 default = []
 gpu-tap = ["dep:wgpu", "dep:objc2-io-surface", "dep:objc2-metal", "objc2-core-video/CVPixelBufferIOSurface", "objc2-core-video/objc2-io-surface"]
 device-audio = ["dep:objc2-core-audio"]
+# Camera capture (sprint PR C): AVCaptureSession and a sample-buffer
+# delegate on a serial dispatch queue. OPTIONAL and off by default, the
+# `gpu-tap` pattern: `nbe-preflight` never opens a camera, so its size-gated
+# binary keeps its dependency surface. `nbe-engine` turns it on. No new crate
+# downloads: `dispatch2` 0.3.1 and the AVFoundation bindings are already in
+# the lockfile; this only enables their capture features.
+capture = [
+    "dep:dispatch2",
+    "objc2-av-foundation/AVCaptureSession",
+    "objc2-av-foundation/AVCaptureSessionPreset",
+    "objc2-av-foundation/AVCaptureDevice",
+    "objc2-av-foundation/AVCaptureInput",
+    "objc2-av-foundation/AVCaptureOutputBase",
+    "objc2-av-foundation/AVCaptureVideoDataOutput",
+    "objc2-av-foundation/dispatch2",
+]
 
 [lints]
 workspace = true

@@ -70,6 +70,10 @@ pub enum LayerSource {
     /// `overlay_alpha` follows). Resolution here stays pure — no shaping, no
     /// I/O, nothing that could not run twice with the same answer.
     Text(TextLayer),
+    /// A live source's newest frame (`camera` elements: `camera:<cameraId>`).
+    /// Drawn from the source's upload ring (`live.rs`); a source with nothing
+    /// uploaded draws nothing, and its loss on the View engages the slate.
+    Live { source_id: String },
 }
 
 /// What a text element draws, before the clock is consulted.
@@ -284,6 +288,8 @@ pub struct ElementSpec {
     /// Ticker scroll speed in pixels per master frame, from
     /// `fields.speedPxPerFrame` when the package states one.
     pub speed_px_per_frame: f32,
+    /// `cameraId`, on a `camera` element (SPEC §7.4).
+    pub camera_id: Option<String>,
 }
 
 impl PackageIndex {
@@ -521,9 +527,20 @@ impl PackageIndex {
         }
         self.drawn_elements(item_ref)
             .into_iter()
-            .filter(|e| e.kind == "clip" || e.kind == "videoLoop")
+            .filter(|e| e.kind == "clip" || e.kind == "videoLoop" || e.kind == "camera")
             .filter(|e| !e.audio_muted)
             .filter_map(|e| {
+                // A camera's mic (PR C): a live input, keyed by the camera's
+                // source id, on the element's bus (`mic` unless it says).
+                if e.kind == "camera" {
+                    return Some(ElementAudio {
+                        element_id: e.id.clone(),
+                        asset_id: crate::live::live_audio_id(e.camera_id.as_deref()?),
+                        bus: e.audio_bus.clone(),
+                        gain_db: e.audio_gain_db,
+                        looping: false,
+                    });
+                }
                 let asset = e.asset_id.as_deref()?;
                 self.asset_can_carry_audio(asset).then(|| ElementAudio {
                     element_id: e.id.clone(),
@@ -610,6 +627,7 @@ impl PackageIndex {
                         // answers "which items show this media", and a glyph
                         // is not media.
                         LayerSource::Text(_) => false,
+                        LayerSource::Live { .. } => false,
                     })
             })
             .cloned()
@@ -756,6 +774,22 @@ impl PackageIndex {
             .map(String::as_str)
     }
 
+    /// Every `cameraId` the package's elements name, overlays and scenes,
+    /// sorted and once each: the cameras `show.load` starts.
+    pub fn camera_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .overlays
+            .values()
+            .flatten()
+            .chain(self.scenes.values().flatten())
+            .filter(|e| e.kind == "camera")
+            .filter_map(|e| e.camera_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     /// Every declared ticker element, overlays and scenes: the elements a
     /// `ticker.override` re-points at its items.
     pub fn declared_tickers(&self) -> Vec<&ElementSpec> {
@@ -777,6 +811,9 @@ impl PackageIndex {
             "graphic" => LayerSource::Solid(e.color.unwrap_or(PLACEHOLDER_GRAPHIC)),
             "ticker" => self.text_layer(e, TextContent::Static(e.text.clone()?), true, false),
             "clock" => self.text_layer(e, TextContent::Clock(e.clock.clone()?), false, false),
+            "camera" => LayerSource::Live {
+                source_id: crate::live::camera_source_id(e.camera_id.as_deref()?),
+            },
             "clip" | "videoLoop" => {
                 let asset = e.asset_id.as_deref()?;
                 match self.asset_kind.get(asset).map(String::as_str) {
@@ -849,6 +886,7 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
         tracing::warn!(element = %id, "scene element has no kind; skipping");
         return None;
     };
+    let is_camera = kind == "camera";
     let z = e.get("z").and_then(|v| v.as_i64()).unwrap_or(0);
     let visible = e.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
     let opacity = e.get("opacity").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
@@ -870,7 +908,8 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .get("audio")
             .and_then(|a| a.get("bus"))
             .and_then(|v| v.as_str())
-            .unwrap_or("clip")
+            // A camera's audio is its mic: the mic bus unless it says.
+            .unwrap_or(if is_camera { "mic" } else { "clip" })
             .to_string(),
         audio_muted: e
             .get("audio")
@@ -905,6 +944,10 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .and_then(|f| f.get("speedPxPerFrame"))
             .and_then(|v| v.as_f64())
             .unwrap_or(DEFAULT_TICKER_SPEED_PX_PER_FRAME as f64) as f32,
+        camera_id: e
+            .get("cameraId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
