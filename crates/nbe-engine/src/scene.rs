@@ -87,6 +87,12 @@ pub struct TextLayer {
     /// Pixels per master frame. §6.5: scroll position is a pure function of
     /// `(masterFrame, speedPxPerFrame)`.
     pub speed_px_per_frame: f32,
+    /// Text a command put on air at runtime (`graphic.show`/`update`,
+    /// `breaking.show`). Its raster is shaped and uploaded off the render
+    /// thread before the command is acknowledged ([`crate::text_prep`]); the
+    /// render loop only looks it up and never shapes it. A miss draws nothing
+    /// for that frame and is counted, rather than shaping on the frame path.
+    pub prepared_only: bool,
 }
 
 /// The two kinds of text content: one fixed until someone edits it, one a
@@ -169,6 +175,13 @@ pub struct PackageIndex {
     /// using it draws no text, because assumption 11 forbids reaching for a
     /// host-system font when the package supplied none.
     pub template_fonts: HashMap<String, Vec<String>>,
+    /// template id → its §6.5 class (`lowerThirdHeadline`, `lowerThirdName`,
+    /// `breakingBanner`, `ticker`, `generic`), for the runtime graphics a
+    /// `graphic.show` or `breaking.show` puts on air ([`crate::graphics`]).
+    pub template_kind: HashMap<String, String>,
+    /// Template ids in declaration order, so "the package's breaking template"
+    /// is the first one declared and not whichever a hash map yields.
+    pub template_order: Vec<String>,
     /// asset id → decoded image, for `image`-kind assets only.
     pub images: HashMap<String, DecodedImage>,
     /// asset id → kind, so video references can be skipped by scope, not error.
@@ -317,6 +330,21 @@ impl PackageIndex {
                 .unwrap_or_default(),
             ..Default::default()
         };
+        for t in manifest
+            .get("templates")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some(kind)) = (
+                t.get("id").and_then(|v| v.as_str()),
+                t.get("kind").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            idx.template_kind.insert(id.to_string(), kind.to_string());
+            idx.template_order.push(id.to_string());
+        }
 
         for asset in manifest
             .get("assets")
@@ -669,7 +697,13 @@ impl PackageIndex {
     /// Build a text layer, resolving the element's template to its packaged
     /// fonts. A template that names no face yields an empty font list, and the
     /// render loop draws nothing — never a host-system fallback (assumption 11).
-    fn text_layer(&self, e: &ElementSpec, content: TextContent, scroll: bool) -> LayerSource {
+    pub(crate) fn text_layer(
+        &self,
+        e: &ElementSpec,
+        content: TextContent,
+        scroll: bool,
+        prepared_only: bool,
+    ) -> LayerSource {
         let fonts = e
             .template_id
             .as_deref()
@@ -683,7 +717,54 @@ impl PackageIndex {
             font_asset_ids: fonts,
             scroll,
             speed_px_per_frame: e.speed_px_per_frame,
+            prepared_only,
         })
+    }
+
+    /// A declared element by id, overlays first, then scenes (§7.10's overlay
+    /// level is where a runtime graphic's host normally lives).
+    pub fn declared_element(&self, element_id: &str) -> Option<&ElementSpec> {
+        self.overlays
+            .values()
+            .flatten()
+            .chain(self.scenes.values().flatten())
+            .find(|e| e.id == element_id)
+    }
+
+    /// The first declared element that names `template_id`, overlays first
+    /// and in a stable order: the box a runtime graphic of that template is
+    /// drawn in when the command names no element.
+    pub fn template_host(&self, template_id: &str) -> Option<&ElementSpec> {
+        let mut overlay_ids: Vec<&String> = self.overlays.keys().collect();
+        overlay_ids.sort();
+        let mut scene_ids: Vec<&String> = self.scenes.keys().collect();
+        scene_ids.sort();
+        overlay_ids
+            .into_iter()
+            .filter_map(|id| self.overlays.get(id))
+            .chain(scene_ids.into_iter().filter_map(|id| self.scenes.get(id)))
+            .flatten()
+            .find(|e| e.template_id.as_deref() == Some(template_id))
+    }
+
+    /// The package's breaking-banner template: the first declared with that
+    /// class (§6.5 class 3).
+    pub fn breaking_template(&self) -> Option<&str> {
+        self.template_order
+            .iter()
+            .find(|id| self.template_kind.get(*id).map(String::as_str) == Some("breakingBanner"))
+            .map(String::as_str)
+    }
+
+    /// Every declared ticker element, overlays and scenes: the elements a
+    /// `ticker.override` re-points at its items.
+    pub fn declared_tickers(&self) -> Vec<&ElementSpec> {
+        self.overlays
+            .values()
+            .flatten()
+            .chain(self.scenes.values().flatten())
+            .filter(|e| e.kind == "ticker")
+            .collect()
     }
 
     fn layer_for(&self, e: &ElementSpec) -> Option<Layer> {
@@ -691,11 +772,11 @@ impl PackageIndex {
             // A graphic with text on it is text; a graphic without is the solid
             // fill it always was. Both reach the same `draw_for`.
             "graphic" if e.text.is_some() => {
-                self.text_layer(e, TextContent::Static(e.text.clone()?), false)
+                self.text_layer(e, TextContent::Static(e.text.clone()?), false, false)
             }
             "graphic" => LayerSource::Solid(e.color.unwrap_or(PLACEHOLDER_GRAPHIC)),
-            "ticker" => self.text_layer(e, TextContent::Static(e.text.clone()?), true),
-            "clock" => self.text_layer(e, TextContent::Clock(e.clock.clone()?), false),
+            "ticker" => self.text_layer(e, TextContent::Static(e.text.clone()?), true, false),
+            "clock" => self.text_layer(e, TextContent::Clock(e.clock.clone()?), false, false),
             "clip" | "videoLoop" => {
                 let asset = e.asset_id.as_deref()?;
                 match self.asset_kind.get(asset).map(String::as_str) {
@@ -841,7 +922,7 @@ pub const DEFAULT_TICKER_SPEED_PX_PER_FRAME: f32 = 4.0;
 /// and a lower third carry `headline` (plus `subhead`), a name strap carries
 /// `name` (plus `role`). Absent fields yield `None`, which draws nothing — an
 /// element whose text has not been filled in is empty, not a placeholder.
-fn text_of(fields: Option<&serde_json::Value>) -> Option<String> {
+pub(crate) fn text_of(fields: Option<&serde_json::Value>) -> Option<String> {
     let f = fields?;
     let get = |k: &str| f.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
     let primary = get("text")
@@ -877,7 +958,7 @@ fn rect_of(transform: Option<&serde_json::Value>) -> [f32; 4] {
     [get("x", 0.0), get("y", 0.0), get("w", 1.0), get("h", 1.0)]
 }
 
-fn parse_hex_rgb(s: &str) -> Option<[f32; 4]> {
+pub(crate) fn parse_hex_rgb(s: &str) -> Option<[f32; 4]> {
     let h = s.strip_prefix('#')?;
     if h.len() != 6 {
         return None;

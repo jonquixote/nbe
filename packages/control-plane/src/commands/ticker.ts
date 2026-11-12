@@ -27,7 +27,13 @@ export function tickerHandlers(reg: CommandRegistry, _deps: DispatchDeps): void 
   });
 
   reg.set("ticker.override", {
-    forward: true,
+    // The engine gets the queue RESOLVED (SPEC §5.9.1: directives carry the
+    // control plane's resolution, never re-resolved by the engine): the
+    // ordered items after this command's mode and the priority sort, sent as
+    // a `replace`. Forwarding the raw payload would make the engine repeat
+    // the merge and the sort, and a second implementation of one rule is two
+    // chances to disagree.
+    forward: false,
     handler: (ctx, payload): HandlerOutput => {
       requireTicker(ctx);
       const items = payload.items as TickerItem[];
@@ -40,7 +46,10 @@ export function tickerHandlers(reg: CommandRegistry, _deps: DispatchDeps): void 
       // Section 16.7 ordering: priority desc, insertion order preserved (stable sort).
       next = stablePriorityOrder(next);
       ctx.state.tickerItems = next;
-      return { data: { count: next.length } };
+      return {
+        data: { count: next.length },
+        extraDirectives: [{ command: "ticker.override", payload: { items: next, mode: "replace" } }],
+      };
     },
   });
 

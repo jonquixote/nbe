@@ -321,6 +321,10 @@ pub struct RenderLoop {
     /// per content change" true rather than aspirational: a hit costs a hash
     /// lookup, and only a miss shapes.
     text_cache: std::sync::Mutex<HashMap<String, TextTexture>>,
+    /// The off-render-thread text worker ([`crate::text_prep`]). Text a
+    /// command put on air is shaped and uploaded there; this loop only adopts
+    /// the texture.
+    text_prep: Arc<crate::text_prep::TextPrep>,
     /// How many rasterizations have happened. A counter rather than a log line
     /// because the texture-discipline test asserts on it: a second of scrolling
     /// must add zero.
@@ -415,6 +419,13 @@ impl RenderLoop {
         });
         let watchdog = Watchdog::new(state.clone(), 2);
         let house_rate = state.house_rate();
+        let text_prep = crate::text_prep::TextPrep::spawn(
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            VIEW_W,
+            VIEW_H,
+        );
+        *state.text_prep.lock().unwrap() = Some(text_prep.clone());
 
         let mut me = Self {
             gpu,
@@ -428,6 +439,7 @@ impl RenderLoop {
             white,
             fonts: std::sync::Mutex::new(crate::text::FontBook::from_packaged(Vec::new())),
             text_cache: std::sync::Mutex::new(HashMap::new()),
+            text_prep,
             text_rasterizations: std::sync::atomic::AtomicU64::new(0),
             loaded_generation: u64::MAX,
             uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
@@ -473,6 +485,7 @@ impl RenderLoop {
                         .collect()
                 })
                 .unwrap_or_default();
+            self.text_prep.set_fonts(generation, faces.clone());
             *self.fonts.lock().unwrap() = crate::text::FontBook::from_packaged(faces);
         }
         self.text_cache.lock().unwrap().clear();
@@ -1101,11 +1114,23 @@ impl RenderLoop {
                 });
                 out
             }
-            _ => vec![BusScene {
-                scene: index.resolve(snapshot.view_item.as_deref()),
-                alpha: 1.0,
-                t0: snapshot.view_item_start_frame,
-            }],
+            _ => {
+                // `item.stop` (SPEC §16.4): the stopped item holds the picture
+                // it showed at the stop. Sliding its `t0` forward with the
+                // master clock keeps every source index (§12.1: a function of
+                // `frame - t0`) where it was at the stop frame.
+                let mut t0 = snapshot.view_item_start_frame;
+                if let Some((item, at)) = self.state.view_hold.lock().unwrap().as_ref() {
+                    if snapshot.view_item.as_deref() == Some(item.as_str()) && frame > *at {
+                        t0 += frame - *at;
+                    }
+                }
+                vec![BusScene {
+                    scene: index.resolve(snapshot.view_item.as_deref()),
+                    alpha: 1.0,
+                    t0,
+                }]
+            }
         }
     }
 
@@ -1210,6 +1235,7 @@ impl RenderLoop {
             // the spec is silent and no rule is invented).
             if bus == Bus::View {
                 self.overlay_draws(frame, &mut draws);
+                self.graphic_draws(frame, &mut draws);
             }
         }
 
@@ -1463,6 +1489,18 @@ impl RenderLoop {
         }
     }
 
+    /// The runtime graphics' draws (`graphic.show`, `breaking.show`;
+    /// [`crate::graphics`]), after the declared overlays: the overlay level,
+    /// View only, covered by a fallback slate like every overlay.
+    fn graphic_draws(&self, frame: u64, draws: &mut Vec<(wgpu::Texture, LayerUniform)>) {
+        let layers = self.state.graphics.lock().unwrap().layers();
+        for layer in layers {
+            if let Some(d) = self.draw_for(Bus::View, &layer, 1.0, frame, 0) {
+                draws.push(d);
+            }
+        }
+    }
+
     /// Read the Preview target back as RGBA8.
     pub async fn readback_preview(&self) -> Vec<u8> {
         self.gpu.readback_rgba(&self.targets.preview).await
@@ -1515,40 +1553,39 @@ impl RenderLoop {
     /// the cache is keyed on the string. That is what keeps §6.5's no-per-frame-
     /// relayout rule true for an element whose face is literally a clock.
     fn text_texture(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<wgpu::Texture> {
-        let content = self.resolve_text(t, frame)?;
+        let (content, commanded) = self.resolve_text(t, frame)?;
         if content.is_empty() {
             return None;
         }
-        // The raster is sized in pixels against the View, not the element box:
-        // a band 10% of a 1080-line frame is 108 px tall, and text sized to the
-        // box is text that reads the same at any output resolution.
-        let target_h = self.view_target().height().max(1);
-        let height_px = (target_h as f32 * 0.06).round().max(8.0) as u32;
-        let width_px = self.view_target().width().max(1);
-        // A ticker's raster holds the item twice, separated by a gap, so the
-        // scroll can wrap without a seam and without a repeating sampler. The
-        // period is one copy plus the gap, which `ticker_window` slides by.
-        let laid_out = if t.scroll {
-            crate::text::ticker_layout(&content)
-        } else {
-            content
-        };
-        let spec = crate::text::TextSpec {
-            text: laid_out,
-            size_px: height_px as f32 * 0.72,
-            color: t.color,
-            width_px,
-            height_px,
-            grow_to_text: t.scroll,
-        };
-        let key = format!("{}|{}", t.element_id, spec.cache_key());
+        let w = self.view_target().width().max(1);
+        let h = self.view_target().height().max(1);
+        let spec = crate::text_prep::spec_for(&content, t.color, t.scroll, w, h);
+        let key = crate::text_prep::key_for(&t.element_id, &spec);
 
         if let Some(hit) = self.text_cache.lock().unwrap().get(&key) {
             return Some(hit.tex.clone());
         }
 
-        // A miss: shape, rasterize, upload. Off the frame path by construction —
-        // reaching here means the content changed.
+        // Prepared off the render thread (a command's text, or a clock face a
+        // `clock.configure` prepared): adopt it. A lookup, no shaping.
+        if let Some(p) = self.text_prep.take(&key) {
+            self.adopt_text(&t.element_id, key, p.tex.clone(), p.period_px, p.width);
+            return Some(p.tex);
+        }
+
+        // Text a command put on air is never shaped here. Its handler prepared
+        // it before acknowledging; not finding it means the worker is behind,
+        // and the honest frame draws the layer as nothing and counts it.
+        if t.prepared_only || commanded {
+            self.text_prep
+                .misses_total
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.text_prep.request(key, &t.element_id, spec, t.scroll);
+            return None;
+        }
+
+        // Declared text (the package's own strings, clock faces): shaped here
+        // on the frame its content first appears, as before this worker.
         let raster = {
             let mut book = self.fonts.lock().unwrap();
             crate::text::TextRaster::rasterize(&mut book, &spec)?
@@ -1560,27 +1597,63 @@ impl RenderLoop {
             .make_texture(raster.width, raster.height, &t.element_id);
         self.gpu
             .upload_rgba(&tex, raster.width, raster.height, &raster.rgba);
-        self.text_cache.lock().unwrap().insert(
-            key,
-            TextTexture {
-                tex: tex.clone(),
-                // Two copies went in, so one period is half the shaped width.
-                period_px: if t.scroll {
-                    crate::text::ticker_period_px(raster.text_width)
-                } else {
-                    raster.text_width.max(1)
-                },
-                width: raster.width,
-            },
-        );
+        // Two copies went in, so one period is half the shaped width.
+        let period_px = if t.scroll {
+            crate::text::ticker_period_px(raster.text_width)
+        } else {
+            raster.text_width.max(1)
+        };
+        self.adopt_text(&t.element_id, key, tex.clone(), period_px, raster.width);
         Some(tex)
     }
 
-    /// The string a text layer shows at this frame.
-    fn resolve_text(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<String> {
+    /// Make `key` the element's one cached texture. One entry per element is
+    /// what `ticker_window` reads, and what keeps a stream of updates from
+    /// accumulating textures.
+    fn adopt_text(
+        &self,
+        element_id: &str,
+        key: String,
+        tex: wgpu::Texture,
+        period_px: u32,
+        width: u32,
+    ) {
+        let prefix = format!("{element_id}|");
+        let mut cache = self.text_cache.lock().unwrap();
+        cache.retain(|k, _| !k.starts_with(&prefix));
+        cache.insert(
+            key,
+            TextTexture {
+                tex,
+                period_px,
+                width,
+            },
+        );
+    }
+
+    /// The string a text layer shows at this frame, and whether a command
+    /// (not the package) chose it.
+    ///
+    /// A declared ticker shows `ticker.override`'s items per its source
+    /// (`graphics::GraphicsRuntime::ticker_text`); a declared clock shows the
+    /// configuration `clock.configure` set, if any.
+    fn resolve_text(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<(String, bool)> {
         match &t.content {
-            crate::scene::TextContent::Static(s) => Some(s.clone()),
-            crate::scene::TextContent::Clock(c) => Some(self.clock_face(c, frame)),
+            crate::scene::TextContent::Static(s) if t.scroll && !t.prepared_only => {
+                Some(self.state.graphics.lock().unwrap().ticker_text(s))
+            }
+            crate::scene::TextContent::Static(s) => Some((s.clone(), false)),
+            crate::scene::TextContent::Clock(c) => {
+                let over = self
+                    .state
+                    .graphics
+                    .lock()
+                    .unwrap()
+                    .clock_overrides
+                    .get(&t.element_id)
+                    .cloned();
+                Some((self.clock_face(over.as_ref().unwrap_or(c), frame), false))
+            }
         }
     }
 

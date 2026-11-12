@@ -206,6 +206,18 @@ fn render_channel_frames_round_trip() {
                 dbtp: -2.0,
                 source: "show".into(),
             },
+            // PR A's on-air line, sampled with values: a graphic, the banner,
+            // an override and a configured clock on air.
+            overlay_state: nbe_protocol::OverlayStateLine {
+                overlays: vec!["ol_ticker".into()],
+                graphics: vec!["lt-1".into()],
+                breaking: true,
+                ticker_override_items: 2,
+                ticker_source: "manual".into(),
+                clocks_configured: vec!["clock_pad".into()],
+                preview_item: Some("A2".into()),
+                text_prep_misses_total: 0,
+            },
         }),
     });
     round_trip(&PushFrame::StateChange {
@@ -411,6 +423,7 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
             dbtp: -1.0,
             source: "show".into(),
         },
+        overlay_state: nbe_protocol::OverlayStateLine::default(),
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();

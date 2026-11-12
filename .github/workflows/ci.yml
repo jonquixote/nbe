@@ -1765,6 +1765,29 @@ jobs:
           if [ "$ran" -lt 4 ]; then echo "FAIL operator-signals e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL operator-signals e2e: expected at least 1 test (the refused start) to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the engine handlers end-to-end ran (sprint PR A: graphic, breaking, ticker, clock, item.stop, preview.set)"
+        if: ${{ !cancelled() }}
+        # One recorded take on the real engine; each test decodes its window
+        # of the file with ffmpeg (installed above for R50) and counts the
+        # command's colour in the region it draws, and reads the engine's own
+        # on-air line. It needs the hardware H.264 encoder: without one every
+        # test skips with the reason, and the exercised floor fails the step.
+        # Two floors, rule 8: ran = `# tests` (7), exercised = `# pass` (7).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/graphics-handlers.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok)|^# |graphics e2e|pixels|item.stop:" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL graphics-handlers.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "graphics-handlers e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=7 exercised>=7)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL graphics-handlers e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 7 ]; then echo "FAIL graphics-handlers e2e: expected at least 7 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 7 ]; then echo "FAIL graphics-handlers e2e: expected at least 7 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "R32 load capture: after the test steps, every sample"
         if: always()
         continue-on-error: true

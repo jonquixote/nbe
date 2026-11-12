@@ -21,6 +21,7 @@ pub mod directive;
 /// session surface is re-exported through `encode` (WU2).
 pub mod encode;
 pub mod gpu;
+pub mod graphics;
 pub mod limiter;
 /// SPEC §12.5's budget decision lives in `nbe-core` so preflight and the
 /// engine cannot disagree about it. Re-exported here for callers.
@@ -32,6 +33,7 @@ pub mod scene;
 pub mod state;
 pub mod telemetry;
 pub mod text;
+pub mod text_prep;
 pub mod tick;
 pub mod video;
 pub mod watchdog;

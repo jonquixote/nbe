@@ -406,6 +406,19 @@ export const AudioDeviceLineSchema = z
 
 /** The master limiter's ceiling in force (D5's amendment). */
 export const LimiterCeilingLineSchema = z.object({ dbtp: z.number(), source: z.string() }).strict();
+export const OverlayStateLineSchema = z
+  .object({
+    overlays: z.array(z.string()),
+    graphics: z.array(z.string()),
+    breaking: z.boolean(),
+    tickerOverrideItems: z.number().int(),
+    tickerSource: z.string(),
+    clocksConfigured: z.array(z.string()),
+    previewItem: z.string().nullable(),
+    textPrepMissesTotal: z.number().int(),
+  })
+  .strict();
+export type OverlayStateLine = z.infer<typeof OverlayStateLineSchema>;
 
 export const EngineTelemetryFrameSchema = z
   .object({
@@ -483,6 +496,10 @@ export const EngineTelemetryFrameSchema = z
     // dBTP, and its source, "show" or "default". Read-only. Optional for the
     // same tolerance.
     audioLimiterCeiling: LimiterCeilingLineSchema.optional(),
+    // PR A (sprint 2026-11-12): what the engine itself has on air above the
+    // program — overlays, runtime graphics, the banner, the ticker override,
+    // configured clocks, the Preview item. Optional for the same tolerance.
+    overlayState: OverlayStateLineSchema.optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

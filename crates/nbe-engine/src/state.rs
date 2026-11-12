@@ -176,6 +176,18 @@ pub struct EngineState {
     /// after the command lands, the same boundary discipline AC-17 imposes on a
     /// take — never a transition frame.
     pub overlays: Mutex<std::collections::BTreeMap<String, OverlayRuntime>>,
+    /// What `graphic.*`, `breaking.*`, `ticker.*` and `clock.configure` put on
+    /// air (SPEC §16.5, §16.7, §16.13); see [`crate::graphics`].
+    pub graphics: Mutex<crate::graphics::GraphicsRuntime>,
+    /// `item.stop` on the item the View shows: `(item, master frame)`. The View
+    /// holds that item's picture as it was at that frame — a stopped clip
+    /// freezes, it does not vanish — until a take or cut puts another item up.
+    pub view_hold: Mutex<Option<(String, u64)>>,
+    /// The off-render-thread text worker, published by the render loop when it
+    /// opens its device. Absent in a test that drives directives with no
+    /// render loop; a command's text is then shaped by the render loop's own
+    /// path on first draw, as before.
+    pub text_prep: Mutex<Option<Arc<crate::text_prep::TextPrep>>>,
     /// Engine recording state (SPEC §16.14). WU8 flips `Idle -> Recording` on
     /// `record.start` once the [`RecordSession`](crate::record::RecordSession)
     /// opens, and back on `record.stop` / `show.stop` quiescence after the
@@ -308,6 +320,9 @@ impl EngineState {
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
             overlays: Mutex::new(std::collections::BTreeMap::new()),
+            graphics: Mutex::new(crate::graphics::GraphicsRuntime::new()),
+            view_hold: Mutex::new(None),
+            text_prep: Mutex::new(None),
             record_state: Mutex::new(RecordState::Idle),
             record_session: Mutex::new(None),
             record_tap: Mutex::new(None),
@@ -368,6 +383,11 @@ impl EngineState {
     /// loop also takes.
     pub fn render_device(&self) -> Option<std::sync::Arc<wgpu::Device>> {
         self.render_device.lock().unwrap().clone()
+    }
+
+    /// The text worker, if the render loop has published one.
+    pub fn text_prep(&self) -> Option<Arc<crate::text_prep::TextPrep>> {
+        self.text_prep.lock().unwrap().clone()
     }
 
     /// Record what the manifest asked for, then republish.

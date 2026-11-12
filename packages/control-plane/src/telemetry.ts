@@ -4,7 +4,7 @@
 //! threshold — a stale report means stub values plus `engineConnected: false`.
 //! Field shape is always complete: consumers never see a missing field.
 
-import type { EngineTelemetryFrame } from "./protocol.js";
+import type { EngineTelemetryFrame, OverlayStateLine } from "./protocol.js";
 import type { ControlPlaneState, ShowState } from "./state.js";
 import type { Alert } from "./alerts.js";
 
@@ -71,6 +71,10 @@ export interface TelemetryTick {
    *  Engine-owned, read-only; `null` with no fresh engine report, because the
    *  control plane must not claim a ceiling it has not been told. */
   audioLimiterCeiling: { dbtp: number; source: string } | null;
+  /** PR A: what the engine reports it has on air above the program picture.
+   *  Engine-owned; `null` with no fresh engine report, for the reason
+   *  `audioLimiterCeiling` is: the control plane does not fabricate it. */
+  engineOverlayState: OverlayStateLine | null;
   /** SPEC §10.1.2 (v0.4.8 row 8): the operator-signal lane, control-plane owned, the same list every snapshot surface carries. */
   alerts: Alert[];
   /** SPEC §10.1.2: R18's fallback flag. */
@@ -150,6 +154,7 @@ export function buildTick(
     // the control plane fabricating the engine's answer.
     audioDevice: f?.audioDevice ?? { state: TAP_NONE, name: null, rateHz: null, reason: null },
     audioLimiterCeiling: f?.audioLimiterCeiling ?? null,
+    engineOverlayState: f?.overlayState ?? null,
     viewItem: state.viewItem,
     previewItem: state.previewItem,
     visibleOverlays: Array.from(state.visibleOverlays),
