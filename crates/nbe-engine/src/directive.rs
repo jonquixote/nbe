@@ -18,6 +18,11 @@ use tracing::{debug, info};
 /// (§12.11.1), so the window the engine allocates is the window preflight counts.
 const DEFAULT_GOP_FRAMES: u32 = nbe_core::loop_cache::HOUSE_GOP_FRAMES;
 
+/// How long a command waits for its text to be shaped and uploaded before it
+/// publishes anyway. Shaping a line is milliseconds; this bound only matters
+/// if the worker is stuck, and then the layer draws nothing and is counted.
+const TEXT_PREP_TIMEOUT: Duration = Duration::from_millis(1500);
+
 #[derive(Debug, Error)]
 pub enum DirectiveError {
     #[error("no package loaded: {0}")]
@@ -135,6 +140,17 @@ impl DirectiveHandler {
             "stream.stop" => self.on_stream_stop(d).await?,
             "marker.add" => self.on_marker_add(d)?,
             "snapshot.recall" => self.on_recall(d)?,
+            "graphic.show" => self.on_graphic_show(d).await?,
+            "graphic.update" => self.on_graphic_update(d).await?,
+            "graphic.hide" => self.on_graphic_hide(d),
+            "breaking.show" => self.on_breaking_show(d).await?,
+            "breaking.hide" => self.on_breaking_hide(),
+            "ticker.override" | "ticker.clearOverride" | "ticker.setSource" => {
+                self.on_ticker(d).await?
+            }
+            "clock.configure" => self.on_clock_configure(d).await?,
+            "item.stop" => self.on_item_stop(d),
+            "preview.set" => self.on_preview_set(d),
             nbe_protocol::command::RESYNC => self.on_resync(d).await?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -395,8 +411,21 @@ impl DirectiveHandler {
         );
         *self.state.item_audio.lock().unwrap() = item_audio;
 
+        let faces: Vec<Vec<u8>> = index
+            .font_order
+            .iter()
+            .filter_map(|id| index.fonts.get(id).cloned())
+            .collect();
         *self.state.package.lock().unwrap() = Some(index);
-        self.state.package_generation.fetch_add(1, Ordering::SeqCst);
+        let generation = self.state.package_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // A new package's text worker gets its faces now, tagged with this
+        // load's generation, so a graphic shown before the render loop's own
+        // package sync is shaped with the right face (the sync's repeat of the
+        // same generation is a no-op). Runtime graphics belong to the old show.
+        if let Some(prep) = self.state.text_prep() {
+            prep.set_fonts(generation, faces);
+        }
+        *self.state.graphics.lock().unwrap() = crate::graphics::GraphicsRuntime::new();
         *self.state.view_item.lock().unwrap() = None;
         *self.state.preview_item.lock().unwrap() = None;
         *self.state.transition.lock().unwrap() = None;
@@ -630,7 +659,17 @@ impl DirectiveHandler {
     }
 
     fn on_take(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        self.apply_take(d, true)
+        *self.state.view_hold.lock().unwrap() = None;
+        self.apply_take(d, true)?;
+        // The control plane's `take` clears `previewItem` when the item it put
+        // on air was the one in preview (`state.ts`); the Preview bus follows.
+        if let Some(taken) = d.target.get("itemRef").and_then(|v| v.as_str()) {
+            let mut preview = self.state.preview_item.lock().unwrap();
+            if preview.as_deref() == Some(taken) {
+                *preview = None;
+            }
+        }
+        Ok(())
     }
 
     /// The take's application: the View, the transition, the clip bus's
@@ -1719,6 +1758,7 @@ impl DirectiveHandler {
         self.state.item_audio.lock().unwrap().clear();
         *self.state.audio_level_watches.lock().unwrap() = Arc::new(Vec::new());
         *self.state.record_dir.lock().unwrap() = None;
+        *self.state.graphics.lock().unwrap() = crate::graphics::GraphicsRuntime::new();
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -1803,6 +1843,332 @@ impl DirectiveHandler {
                 crossfade_frames: 0,
             },
         );
+    }
+
+    /// Shape and upload text off the render thread, and wait until it is ready
+    /// (SPEC §6.5, §7.13; [`crate::text_prep`]). Each job is
+    /// `(element id, content, colour, scroll)`. Runs on the blocking pool:
+    /// the directive task waits, the render thread never does. Returns false
+    /// when any job did not finish within its bound; the caller publishes
+    /// anyway, and the render loop draws that layer as nothing and counts it
+    /// rather than shaping on the frame path.
+    async fn prepare_text(&self, jobs: Vec<(String, String, [f32; 4], bool)>) -> bool {
+        let Some(prep) = self.state.text_prep() else {
+            return true;
+        };
+        if jobs.is_empty() {
+            return true;
+        }
+        let started = std::time::Instant::now();
+        let n = jobs.len();
+        let ok = tokio::task::spawn_blocking(move || {
+            jobs.iter().all(|(id, content, color, scroll)| {
+                prep.prepare_blocking(id, content, *color, *scroll, TEXT_PREP_TIMEOUT)
+            })
+        })
+        .await
+        .unwrap_or(false);
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if ok {
+            info!(jobs = n, elapsed_ms, "text prepared off the render thread");
+        } else {
+            tracing::warn!(
+                jobs = n,
+                elapsed_ms,
+                "text not prepared within its bound; the layer draws nothing until it is"
+            );
+        }
+        ok
+    }
+
+    /// Publish a runtime graphic once its text exists.
+    async fn publish_graphic(&self, g: crate::graphics::RuntimeGraphic) {
+        let mut jobs = Vec::new();
+        if let Some(crate::scene::Layer {
+            source: crate::scene::LayerSource::Text(t),
+            ..
+        }) = g.layer()
+        {
+            if let crate::scene::TextContent::Static(text) = &t.content {
+                jobs.push((t.element_id.clone(), text.clone(), t.color, false));
+            }
+        }
+        self.prepare_text(jobs).await;
+        info!(element = %g.element_id, template = %g.template_id, "graphic on air");
+        self.state
+            .graphics
+            .lock()
+            .unwrap()
+            .graphics
+            .insert(g.element_id.clone(), g);
+    }
+
+    /// `graphic.show` (SPEC §16.5): a template's graphic on air, its text
+    /// shaped before the ack. The element id defaults as the control plane
+    /// defaults it (`<templateId>-graphic`), so both sides key it alike.
+    async fn on_graphic_show(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let template_id = d
+            .payload
+            .get("templateId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DirectiveError::Invalid("graphic.show missing templateId".into()))?
+            .to_string();
+        let element_id = d
+            .payload
+            .get("elementId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{template_id}-graphic"));
+        let fields = d
+            .payload
+            .get("fields")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let z = d.payload.get("z").and_then(|v| v.as_i64());
+        let g = {
+            let pkg = self.state.package.lock().unwrap();
+            let idx = pkg
+                .as_ref()
+                .ok_or_else(|| DirectiveError::NoPackage("graphic.show".into()))?;
+            crate::graphics::build_graphic(idx, &template_id, &element_id, fields, z)
+        };
+        self.publish_graphic(g).await;
+        Ok(())
+    }
+
+    /// `graphic.update` (SPEC §16.5): fields merged over the on-air graphic's.
+    /// A graphic not on air is the control plane's `E_NOT_FOUND`, refused
+    /// before it is forwarded; one arriving anyway changes nothing.
+    async fn on_graphic_update(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let Some(element_id) = d.payload.get("elementId").and_then(|v| v.as_str()) else {
+            return Err(DirectiveError::Invalid(
+                "graphic.update missing elementId".into(),
+            ));
+        };
+        let Some(mut g) = self
+            .state
+            .graphics
+            .lock()
+            .unwrap()
+            .graphics
+            .get(element_id)
+            .cloned()
+        else {
+            debug!(element = element_id, "graphic.update: not on air");
+            return Ok(());
+        };
+        if let Some(patch) = d.payload.get("fields").and_then(|v| v.as_object()) {
+            for (k, v) in patch {
+                g.fields.insert(k.clone(), v.clone());
+            }
+        }
+        self.publish_graphic(g).await;
+        Ok(())
+    }
+
+    /// `graphic.hide` (SPEC §16.5): by element id, or every graphic of a template.
+    fn on_graphic_hide(&self, d: &DirectiveFrame) {
+        let element_id = d.payload.get("elementId").and_then(|v| v.as_str());
+        let template_id = d.payload.get("templateId").and_then(|v| v.as_str());
+        let mut rt = self.state.graphics.lock().unwrap();
+        rt.graphics.retain(|id, g| {
+            id == crate::graphics::BREAKING_ID
+                || !(Some(id.as_str()) == element_id
+                    || template_id.is_some_and(|t| g.template_id == t))
+        });
+    }
+
+    /// `breaking.show` (SPEC §16.5): the package's breaking-banner template
+    /// on air with the headline (and subhead).
+    async fn on_breaking_show(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let mut fields = serde_json::Map::new();
+        for key in ["headline", "subhead"] {
+            if let Some(v) = d.payload.get(key).and_then(|v| v.as_str()) {
+                fields.insert(key.into(), serde_json::Value::String(v.to_string()));
+            }
+        }
+        let g = {
+            let pkg = self.state.package.lock().unwrap();
+            let idx = pkg
+                .as_ref()
+                .ok_or_else(|| DirectiveError::NoPackage("breaking.show".into()))?;
+            let Some(template) = idx.breaking_template() else {
+                debug!("breaking.show: the package declares no breaking template");
+                return Ok(());
+            };
+            crate::graphics::build_graphic(
+                idx,
+                template,
+                crate::graphics::BREAKING_ID,
+                fields,
+                None,
+            )
+        };
+        self.publish_graphic(g).await;
+        Ok(())
+    }
+
+    fn on_breaking_hide(&self) {
+        self.state
+            .graphics
+            .lock()
+            .unwrap()
+            .graphics
+            .remove(crate::graphics::BREAKING_ID);
+    }
+
+    /// `ticker.override`, `ticker.clearOverride`, `ticker.setSource` (SPEC
+    /// §16.7). The control plane forwards `ticker.override` already resolved:
+    /// its ordered queue (priority, then insertion) with `mode: "replace"`.
+    /// Every declared ticker shows the result; the text it will show is shaped
+    /// before the new state is published.
+    async fn on_ticker(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let mut next = self.state.graphics.lock().unwrap().clone();
+        match d.command.as_str() {
+            "ticker.setSource" => {
+                if let Some(src) = d.payload.get("source").and_then(|v| v.as_str()) {
+                    next.ticker_source = src.to_string();
+                }
+            }
+            "ticker.clearOverride" => next.ticker_override.clear(),
+            _ => {
+                let items: Vec<String> = d
+                    .payload
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|it| it.get("text").and_then(|t| t.as_str()))
+                    .map(str::to_string)
+                    .collect();
+                match d.payload.get("mode").and_then(|v| v.as_str()) {
+                    Some("prepend") => {
+                        let mut v = items;
+                        v.append(&mut next.ticker_override);
+                        next.ticker_override = v;
+                    }
+                    Some("append") => next.ticker_override.extend(items),
+                    _ => next.ticker_override = items,
+                }
+            }
+        }
+        let jobs: Vec<(String, String, [f32; 4], bool)> = {
+            let pkg = self.state.package.lock().unwrap();
+            pkg.as_ref()
+                .map(|idx| {
+                    idx.declared_tickers()
+                        .into_iter()
+                        .filter_map(|e| {
+                            let (text, commanded) = next.ticker_text(e.text.as_deref()?);
+                            commanded.then(|| {
+                                (
+                                    e.id.clone(),
+                                    text,
+                                    e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                                    true,
+                                )
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        self.prepare_text(jobs).await;
+        let mut rt = self.state.graphics.lock().unwrap();
+        rt.ticker_override = next.ticker_override;
+        rt.ticker_source = next.ticker_source;
+        Ok(())
+    }
+
+    /// `clock.configure` (SPEC §16.13): the configuration merged over the
+    /// clock's current one; the face it shows next frame is shaped first.
+    async fn on_clock_configure(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let Some(element_id) = d.payload.get("elementId").and_then(|v| v.as_str()) else {
+            return Err(DirectiveError::Invalid(
+                "clock.configure missing elementId".into(),
+            ));
+        };
+        let patch = d.payload.get("clock").cloned().unwrap_or_default();
+        let (base, color) = {
+            let pkg = self.state.package.lock().unwrap();
+            let Some(e) = pkg
+                .as_ref()
+                .and_then(|idx| idx.declared_element(element_id))
+            else {
+                debug!(element = element_id, "clock.configure: no such clock");
+                return Ok(());
+            };
+            let Some(declared) = e.clock.clone() else {
+                debug!(element = element_id, "clock.configure: not a clock");
+                return Ok(());
+            };
+            (declared, e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]))
+        };
+        let current = self
+            .state
+            .graphics
+            .lock()
+            .unwrap()
+            .clock_overrides
+            .get(element_id)
+            .cloned()
+            .unwrap_or(base);
+        let spec = crate::graphics::merge_clock(&current, &patch);
+        let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+        let face = crate::render::clock_face_for_test(&spec, next_frame, self.state.house_rate());
+        self.prepare_text(vec![(element_id.to_string(), face, color, false)])
+            .await;
+        self.state
+            .graphics
+            .lock()
+            .unwrap()
+            .clock_overrides
+            .insert(element_id.to_string(), spec);
+        Ok(())
+    }
+
+    /// `item.stop` (SPEC §16.4): the playing item on the View stops. Its
+    /// picture freezes from the next frame boundary — the frame it showed
+    /// holds, as a stopped deck holds, and the control plane's `viewItem` is
+    /// unchanged (§13.4.1's `item.stop` row: `itemState` only). Its audio is
+    /// cut with a 10 ms ramp and its pending end event is dropped. An item not
+    /// on the View changes nothing here. The next take or cut releases the
+    /// hold by putting another item up.
+    fn on_item_stop(&self, d: &DirectiveFrame) {
+        let Some(item) = d.payload.get("itemId").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if self.state.view_item.lock().unwrap().as_deref() != Some(item) {
+            return;
+        }
+        let at = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+        info!(item, at, "item.stop: the View holds the stopped item");
+        *self.state.view_hold.lock().unwrap() = Some((item.to_string(), at));
+        self.playing.clear();
+        self.state.audio_commands.lock().unwrap().push(
+            crate::audio_control::AudioCommand::TakeItem {
+                item_ref: String::new(),
+                sources: Vec::new(),
+                t0: at,
+                mode: "follow".to_string(),
+                ramp_ms: 10.0,
+                crossfade_frames: 0,
+            },
+        );
+    }
+
+    /// `preview.set` (SPEC §16.2): the Preview bus shows the item from the next
+    /// frame boundary. Before this the Preview bus moved only on a resync.
+    fn on_preview_set(&self, d: &DirectiveFrame) {
+        let Some(item) = d.payload.get("itemRef").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let start = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
+        *self.state.preview_item.lock().unwrap() = Some(item.to_string());
+        self.state
+            .preview_item_start_frame
+            .store(start, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The Section 5.9.5 ack: emitted only after the engine has executed the

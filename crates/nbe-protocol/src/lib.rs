@@ -593,6 +593,35 @@ impl LimiterCeilingLine {
     }
 }
 
+/// What the engine has on air above the program picture: declared overlays,
+/// runtime graphics, the breaking banner, the ticker's override, configured
+/// clocks, and the Preview bus's item. Engine-owned and read-only, so a
+/// command's effect on air is visible on the wire and not only in the control
+/// plane's own state (the sprint ruling of 2026-11-12, PR A).
+///
+/// Always emitted, empty before anything is on air (§10.1.1's rule,
+/// `record_tap_path`'s precedent).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayStateLine {
+    /// Declared overlays on air (any phase, an exit included until it completes).
+    pub overlays: Vec<String>,
+    /// Runtime graphics on air (`graphic.show`), by element id.
+    pub graphics: Vec<String>,
+    /// The breaking banner (`breaking.show`).
+    pub breaking: bool,
+    /// `ticker.override`'s item count, and the ticker source.
+    pub ticker_override_items: u32,
+    pub ticker_source: String,
+    /// Clock elements a `clock.configure` reconfigured.
+    pub clocks_configured: Vec<String>,
+    /// The Preview bus's item (`preview.set`).
+    pub preview_item: Option<String>,
+    /// Frames on which a command's text was needed and not yet prepared, so
+    /// its layer was drawn as nothing rather than shaped on the render thread.
+    pub text_prep_misses_total: u64,
+}
+
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -692,6 +721,9 @@ pub struct EngineTelemetry {
     /// default, which is what the graph runs.
     #[serde(default = "LimiterCeilingLine::default_ceiling")]
     pub audio_limiter_ceiling: LimiterCeilingLine,
+    /// What is on air above the program picture ([`OverlayStateLine`]).
+    #[serde(default)]
+    pub overlay_state: OverlayStateLine,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.

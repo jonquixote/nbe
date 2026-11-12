@@ -238,6 +238,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         // program audio, and the limiter's ceiling in force (D5's amendment).
         audio_device: state.audio_device.lock().unwrap().clone(),
         audio_limiter_ceiling: state.audio_limiter_ceiling.lock().unwrap().clone(),
+        overlay_state: overlay_state(state),
     };
     EngineFrame::EngineTelemetry {
         v: nbe_protocol::PROTOCOL_VERSION.to_string(),
@@ -257,6 +258,25 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
 /// `recordSpaceMib` reports `0.0`; callers holding the record directory use
 /// [`build_tick_for_dir`]. The channel pump reads the loaded package's record
 /// directory out of engine state and calls [`build_tick_for_dir`] with it.
+/// The on-air line: what the engine itself is drawing above the program.
+fn overlay_state(state: &EngineState) -> nbe_protocol::OverlayStateLine {
+    let overlays = state.overlays.lock().unwrap().keys().cloned().collect();
+    let g = state.graphics.lock().unwrap().clone();
+    nbe_protocol::OverlayStateLine {
+        overlays,
+        graphics: g.on_air_ids(),
+        breaking: g.graphics.contains_key(crate::graphics::BREAKING_ID),
+        ticker_override_items: g.ticker_override.len() as u32,
+        ticker_source: g.ticker_source.clone(),
+        clocks_configured: g.clock_overrides.keys().cloned().collect(),
+        preview_item: state.preview_item.lock().unwrap().clone(),
+        text_prep_misses_total: state
+            .text_prep()
+            .map(|p| p.misses_total.load(std::sync::atomic::Ordering::SeqCst))
+            .unwrap_or(0),
+    }
+}
+
 pub fn build_tick(state: &EngineState) -> EngineFrame {
     build_tick_for_dir(state, None)
 }
