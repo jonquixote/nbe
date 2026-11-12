@@ -10720,16 +10720,19 @@ item):
   | 42811027571 | 5a2f69c (main, #97) | 2 | step 5 **untied** [1, 2]: R21 frame 140, a slow draw (render 60.59 ms: the read-ahead 28.96, the View pass's encode 30.58; woke_late 2.11 < late 29.38 ms, previous_tick 23.42 ms); R21 frame 141, render 6.37 ms after the 60.73 ms tick (untied by the tick rule) | 0 | **red** |
   | 42813039981 | 8f2965c (#98, records) | 2 | nothing to judge (R33 frame 29, woke_late 58.11 ms after a 0.87 ms tick, before step 5's take; R21 frame 458, render 31.24 ms, 1.34 ms of it in the R21 line's phases, woke_late 2.27 ≥ late 0.19 ms, outside steps 5 to 7) | 0 | — |
   | 42816712471 | d4c2992 (main, #98) | 0 | nothing to judge (outside the count: in the record show, R21 frame 1, render 32.38 ms, the preview's draw 28.14, woke_late 4.71 ≥ late 3.78 ms after a 3.74 ms tick, and R33 frame 169, woke_late 50.97 ms after a 1.36 ms tick; in run 3, R33 frames 1..=2, woke_late 89.86 ms, and R21 frame 191, render 23.15 ms, the View's finish 13.83 and submit 8.53, woke_late 20.47 ≥ late 10.31 ms) | 0 | — |
+  | 42934250235 | cc2e5f0 (#99, records) | 0 | nothing to judge (outside the count, in the record show: R21 frame 67, render 11.50 ms, the read-ahead 8.98, woke_late 30.72 ≥ late 8.91 ms after an 8.46 ms tick; R21 frame 81, render 30.68 ms, the View pass's encode 28.55, woke_late 13.40 ≥ late 10.77 ms after a 2.76 ms tick) | 0 | — |
+  | 42938888047 | 0db1f60 (main, #99) | 3 | nothing to judge (at step 8's preview.set, about frame 301: R21 frame 301, a slow draw, render 51.04 ms, 50.39 of it the preview's draw, woke_late 20.24 < late 37.96 ms after a 1.36 ms tick; R33 frame 302 after that 51.04 ms tick; R33 frame 304, woke_late 51.22 ms after a 0.98 ms tick; all outside steps 5 to 7) | 0 | — |
 
   ~~21 runs, 6 judgments: 3 tied, 3 untied, 0 unexplained~~ ~~27 runs, 7
-  judgments: 3 tied, 4 untied~~ ~~38 runs, 8 judgments: 4 tied, 4 untied~~ ~~40 runs, 9 judgments: 4 tied, 5 untied~~ 42 runs, 9 judgments: 4 tied, 5 untied (#94's with a tied drop beside its two untied
+  judgments: 3 tied, 4 untied~~ ~~38 runs, 8 judgments: 4 tied, 4 untied~~ ~~40 runs, 9 judgments: 4 tied, 5 untied~~ ~~42 runs, 9 judgments: 4 tied, 5 untied~~ 44 runs, 9 judgments: 4 tied, 5 untied (#94's with a tied drop beside its two untied
   ones), 0 unexplained (14 runs and 5 judgments on 2026-11-07; the seven rows
   through main's `9fac254` are the sweep of the user's ruling of 2026-11-08,
   03:00; the six PR runs of #92 to #96 since are recorded by the ruling of
   2026-11-08, 23:10; the twelve runs since, `42583827756` to `42811027571`, by the
   rulings of 2026-11-10, 01:15, item 2(d), 02:35, item 3(b), and 04:00, item
   3; the two since, `42813039981` and `42816712471`, by the ruling of 04:45,
-  item 3). All three untied
+  item 3; the two since, `42934250235` and `42938888047`, by the ruling of
+  2026-11-10, 18:00, item 1). All three untied
   judgments are slow draws in step 5 (render 33.65, 34.16 and 33.76 ms), each
   a red as ruled on a runner; with a22c998's frame 27 (33.46 ms, untied by the
   rule, outside steps 5 to 7), all four untied slow draws just above one frame
@@ -10764,6 +10767,21 @@ item):
   period: the rule ties a drop to a late wake whenever the wake was at least
   as late as the submit, however long the draw. A reading, recorded; the rule
   and the cap stay as ruled.
+
+  **Step 8's three drops at `0db1f60`** (a reading; the user's ruling of
+  2026-11-10, 18:00, item 1): main's push run for #99's merge
+  (`42938888047`, dress job `130255642308`) dropped three frames at step 8's
+  `preview.set`, 17.23 s into the dress show (about frame 301), outside
+  steps 5 to 7, so the backstop judged none of them. R21 frame 301, a slow
+  draw: render 51.04 ms, 50.39 of it the preview's draw (read-ahead 0.30, the
+  View pass's encode 0.04, finish 0.14, submit 0.07), woke_late 20.24 < late
+  37.96 ms after a 1.36 ms tick; R33 frame 302, woke_late 39.88 ms after that
+  51.04 ms tick; R33 frame 304, woke_late 51.22 ms after a 0.98 ms tick. The
+  run: 480 ticks, skips 2, drops 3. #99's PR run (`42934250235`) logged two
+  R21 lines in its record show, outside the count: frame 67 (render 11.50
+  ms, the read-ahead 8.98; woke_late 30.72 ≥ late 8.91 ms) and frame 81
+  (render 30.68 ms, the View pass's encode 28.55; woke_late 13.40 ≥ late
+  10.77 ms).
 
   **The audit line:** the second key's own mutants, one scripted run each,
   confirmed independently on 2026-11-06 at main `b71b3c9`: R48's four
@@ -10859,9 +10877,11 @@ item):
   frame 1: `d77f351`'s record show, 161.30 ms; #92's `42542910936`, 172.97
   ms; #94's `42545762546`, 144.15 ms; main's `42589844474` at `b7ea436` (the
   record show), 395.64 ms after a 1.51 ms tick, R33 frames 2..=11 behind it.
-  On step F's code, ~~seven CI runs, twenty-one engine runs~~ nine CI runs,
-  twenty-seven engine runs (`42813039981` and `42816712471` added by the
-  user's ruling of 2026-11-10, 04:45, item 3):
+  On step F's code, ~~seven CI runs, twenty-one engine runs~~ ~~nine CI runs,
+  twenty-seven engine runs~~ eleven CI runs, thirty-three engine runs
+  (`42813039981` and `42816712471` added by the user's ruling of 2026-11-10,
+  04:45, item 3; `42934250235` and `42938888047` by the ruling of 18:00,
+  item 1):
 
   | CI run | Engine run | Frame 0, the first draw | Frame 1 |
   |---|---|---|---|
@@ -10882,6 +10902,8 @@ item):
   | `42816712471` (`d4c2992`, main, #98) | 1 | 2.21 ms | on time |
   | `42816712471` | 2 (the record show) | 3.73 ms, after a 1,409.4 ms stopped tick | **render 32.38 ms**: the preview's draw **28.14**, read-ahead 1.41, View finish 1.26, the View pass's encode 0.87, View submit 0.43, View build 0.16; late 3.78 ms, woke_late 4.71 ms after a 3.74 ms tick; R33 frame 169 later in the run |
   | `42816712471` | 3 | 1.73 ms, after a 4,341.4 ms stopped tick | never drawn (R33 1..=2): a late wake, woke_late 89.86 ms after a 1.74 ms tick, not a slow draw |
+  | `42934250235` (`cc2e5f0`, #99) | 1, 2, 3 | 0.76, 1.27 (after a 1,777.1 ms stopped tick), 2.54 ms (after 4,085.2) | on time (no line) in each |
+  | `42938888047` (`0db1f60`, main, #99) | 1, 2, 3 | 1.83, 1.38 (after a 2,173.3 ms stopped tick), 0.98 ms (after 4,006.7) | on time (no line) in each |
 
   Three costly frame-1 draws with phases, each in the record show (engine run
   2) of a main push run, each spent its time in the View pass's encode:
@@ -10900,6 +10922,14 @@ item):
   an R21 line at frame 1 (four of four) and no PR run's does (five of five);
   four engine runs lost frame 1 to a late wake, each a CI run's third (34.53,
   166.24, 77.02 and 89.86 ms). An observation.
+
+  Through `0db1f60` (the user's ruling of 2026-11-10, 18:00, item 1): main's
+  push run for #99's merge drew its record show's frame 1 on time (the first
+  draw 1.38 ms, after a 2,173.3 ms stopped tick; no R21 or R33 line in that
+  run), the first main push run on step F's code to do so: #99 recorded four
+  of four, and it is now four of five. #99's PR run drew it on time as well,
+  so no PR run's record show has an R21 line at frame 1 (six of six). Neither
+  run lost frame 1 to a late wake. An observation.
 
   **The green-run tally** (`macos-15` `ci.yml` runs, #88's throwaways left
   out, each run counted at attempt 1; 34 runs through main's `9fac254`): rust
@@ -11020,6 +11050,35 @@ item):
   fix. The same ruling accepts the author's rows on #95, its restaged
   message and this PR's fifth commit (`826272f`; its run `42583827756`,
   all three jobs green).
+
+  **The records of 2026-11-10 to 2026-11-11** (the records PR after #99's
+  merge, docs only: the user's rulings of 2026-11-10, 18:00, item 1, 18:20,
+  item 4, and 20:30, and of 2026-11-11, 19:30, items 1 and 2, and 21:20,
+  items 1 and 3). Main stayed at `0db1f60` from #99's merge through the
+  soak.
+  - **R42 struck FIXED** (`docs/soak-protocol.md` §5; the ruling of
+    2026-11-11, 21:20, item 1): "R42 closed by the 600 show-minute soak on
+    merged main 0db1f60 (2026-11-10 21:07 PST to 2026-11-11 07:10 PST): 20
+    of 20 shows kept, 0 panics, 0 dropped frames, each output within 0.26
+    s of its span, no power events; recounted independently by the second
+    key from the raw files. Scope: the AC-5-style harness (no camera, no
+    WHIP guest, a null audio sink). Not judged: R44's tail, the audio
+    drift telemetry. It reopens on any panic sighting." The fix is #80's
+    vendored gate (`67592e7`).
+  - **The rehearsal and the run** are recorded in `docs/soak-protocol.md`
+    §8 with their readings: the loads, the wake maxima, the audio drift
+    telemetry, the display, and R44's tail (also on R44's row). The raw
+    files are under `.git/nbe-staged/nsx/soak/` and
+    `target/soak-r42.noindex/`, on one disk.
+  - **Before the rehearsal:** knowledgeconstructiond at 94 to 99% CPU for
+    9 h 41 min at 01:41Z on 2026-11-11, outside the script's indexer list
+    (§8).
+  - **#99's two runs** (its PR run `42934250235` at `cc2e5f0` and main's
+    push run `42938888047` at `0db1f60`, each attempt 1, all three jobs
+    green, read job-exact and per test, not rerun): the backstop table's
+    rows; step 8's three drops at `0db1f60` (above); R20's picture 148 with
+    index 49 missing (R53); the record show's frame 1 on time at `0db1f60`
+    (the frame-1 table: four of five); R32's green list and R56's count.
 
 **Guards** (the counts move: `resync_end` 7, new; mirror 20 → 22;
 `npm test` 129 → 134; the resync-end end-to-end 3, new):
