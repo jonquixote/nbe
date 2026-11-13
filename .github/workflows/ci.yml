@@ -1876,6 +1876,28 @@ jobs:
           if [ "$ran" -lt 4 ]; then echo "FAIL guest e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL guest e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the operator shell: Swift unit tests, and AC-16 end to end through the shell's own commands (sprint E)"
+        if: ${{ !cancelled() }}
+        # The shell (apps/nbe-macos) against the real control plane with the
+        # release engine attached: AC16LiveTests drives AC-16's ten actions
+        # with the same ShellCommand values the buttons send, and checks each
+        # in the control plane's state and the engine's own report. Floors:
+        # the unit run executes at least 13 tests, and the live run passes
+        # its 6 (AC-16 and the five control-plane tests) with none skipped.
+        working-directory: apps/nbe-macos
+        env:
+          NBE_ENGINE_BIN: ${{ github.workspace }}/target/release/nbe-engine
+        run: |
+          set -u
+          unit=$(perl -e 'alarm 900; exec @ARGV' swift test 2>&1) && rc=0 || rc=$?
+          echo "$unit" | grep -E "Executed|error:" | tail -5 || true
+          if [ "$rc" -ne 0 ]; then echo "$unit"; echo "FAIL the shell's unit tests: swift test exited $rc"; exit "$rc"; fi
+          live=$(bash scripts/shell-e2e.sh 2>&1) && rc=0 || rc=$?
+          echo "$live" | grep -E "Test Case|Executed|error:" | tail -12 || true
+          if [ "$rc" -ne 0 ]; then echo "$live"; echo "FAIL the shell's end to end: exited $rc"; exit "$rc"; fi
+          echo "$live" | grep -q "AC16LiveTests testASingleOperatorDoesTheTenThings\]' passed" || { echo "FAIL: AC-16 did not pass (skipped or absent)"; exit 1; }
+          echo "$live" | grep -qE "Executed 6 tests, with 0 failures" || { echo "FAIL: expected the 6 live tests to execute with 0 failures"; exit 1; }
+        timeout-minutes: 15
       - name: "R32 load capture: after the test steps, every sample"
         if: always()
         continue-on-error: true

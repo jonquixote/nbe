@@ -1,0 +1,1872 @@
+{
+  "v": "0.3",
+  "source": "packages/control-plane/src/protocol.ts CommandPayloadSchemas; dispatch.ts roleAllowed",
+  "commands": [
+    {
+      "name": "audio.bus.set",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "bus": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "mic",
+                "clip",
+                "music",
+                "sfx",
+                "guest",
+                "master",
+                "guestReturn",
+                "ifb"
+              ]
+            }
+          },
+          "guestId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "gainDb": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false,
+              "min": -60,
+              "max": 12
+            }
+          },
+          "muted": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "audio.duck",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "bus": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "literal": "music"
+            }
+          },
+          "enabled": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "depthDb": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false
+            }
+          },
+          "attackMs": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false
+            }
+          },
+          "releaseMs": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "automation.disable",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "ruleId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "automation.enable",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "ruleId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "automation.hold",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "hold": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "breaking.hide",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "breaking.show",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "headline": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "subhead": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "clock.configure",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "elementId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "clock": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "object",
+              "keys": {
+                "mode": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "string",
+                    "enum": [
+                      "wall",
+                      "showElapsed"
+                    ]
+                  }
+                },
+                "timezone": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "format": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "string",
+                    "enum": [
+                      "HH:mm",
+                      "HH:mm:ss",
+                      "hh:mm A",
+                      "locale"
+                    ]
+                  }
+                },
+                "locale": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "blinkColon": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "strict": true
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "element.set",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "elementId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "patch": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "object",
+              "keys": {
+                "visible": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "opacity": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "number",
+                    "integer": false,
+                    "min": 0,
+                    "max": 1
+                  }
+                },
+                "transform": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "object",
+                    "keys": {
+                      "x": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false
+                        }
+                      },
+                      "y": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false
+                        }
+                      },
+                      "w": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false
+                        }
+                      },
+                      "h": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false
+                        }
+                      },
+                      "crop": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "object",
+                          "keys": {
+                            "u": {
+                              "required": false,
+                              "hasDefault": false,
+                              "nullable": false,
+                              "value": {
+                                "type": "number",
+                                "integer": false
+                              }
+                            },
+                            "v": {
+                              "required": false,
+                              "hasDefault": false,
+                              "nullable": false,
+                              "value": {
+                                "type": "number",
+                                "integer": false
+                              }
+                            },
+                            "w": {
+                              "required": false,
+                              "hasDefault": false,
+                              "nullable": false,
+                              "value": {
+                                "type": "number",
+                                "integer": false
+                              }
+                            },
+                            "h": {
+                              "required": false,
+                              "hasDefault": false,
+                              "nullable": false,
+                              "value": {
+                                "type": "number",
+                                "integer": false
+                              }
+                            }
+                          },
+                          "strict": true
+                        }
+                      }
+                    },
+                    "strict": true
+                  }
+                },
+                "chromaKey": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "object",
+                    "keys": {
+                      "enabled": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "color": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "string",
+                          "enum": [
+                            "green",
+                            "blue",
+                            "custom"
+                          ]
+                        }
+                      },
+                      "customColorHex": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "string"
+                        }
+                      },
+                      "tolerance": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false,
+                          "min": 0,
+                          "max": 1
+                        }
+                      },
+                      "softness": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false,
+                          "min": 0,
+                          "max": 1
+                        }
+                      },
+                      "spillSuppression": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false,
+                          "min": 0,
+                          "max": 1
+                        }
+                      },
+                      "edgeFeather": {
+                        "required": false,
+                        "hasDefault": false,
+                        "nullable": false,
+                        "value": {
+                          "type": "number",
+                          "integer": false,
+                          "min": 0,
+                          "max": 1
+                        }
+                      }
+                    },
+                    "strict": true
+                  }
+                }
+              },
+              "strict": true
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "element.toggle",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "elementId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "visible": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "graphic.hide",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "elementId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "templateId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "graphic.show",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "templateId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "fields": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "record",
+              "values": {
+                "type": "unknown"
+              }
+            }
+          },
+          "elementId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "z": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": true
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "graphic.update",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "elementId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "fields": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "record",
+              "values": {
+                "type": "unknown"
+              }
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.configureReturn",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "programMinusSelf",
+                "producerMix",
+                "mute"
+              ]
+            }
+          },
+          "includeOtherGuests": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "gainDb": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false,
+              "min": -60,
+              "max": 12
+            }
+          },
+          "muted": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.connect",
+      "roles": [
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "whipUrl": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "displayName": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.disconnect",
+      "roles": [
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.getTurn",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "ttlSec": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": true,
+              "min": 30,
+              "max": 86400
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.mute",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "muted": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.placeholder",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "assetId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "guest.setLayout",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "guestId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "layout": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "pip",
+                "full"
+              ]
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "item.arm",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "item.reset",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "item.stop",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "item.unarm",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "marker.add",
+      "roles": [
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "name": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "timecode": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "overlay.hide",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "overlayId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "overlay.show",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "overlayId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "animation": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "object",
+              "keys": {
+                "durationFrames": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "number",
+                    "integer": true,
+                    "min": 1
+                  }
+                },
+                "delayFrames": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "number",
+                    "integer": true,
+                    "min": 0
+                  }
+                },
+                "easing": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              "strict": false
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "plugin.reload",
+      "roles": [
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "pluginId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "preview.set",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemRef": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "record.start",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "outputId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "record.stop",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "scene.apply",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "sceneId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "target": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "view",
+                "preview"
+              ]
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "scene.arm",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "sceneId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "show.getState",
+      "roles": [
+        "monitor",
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "show.load",
+      "roles": [
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "packagePath": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "load",
+                "reload"
+              ]
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "show.preflight",
+      "roles": [
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "strict": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "show.start",
+      "roles": [
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "startClock": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "allowWarnings": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "show.stop",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "quiesceOutputs": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "force": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "show.unload",
+      "roles": [
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "snapshot.recall",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "name": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "snapshot.save",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "name": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "soundboard.play",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "assetId": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "gainDb": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": false,
+              "min": -60,
+              "max": 12
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "soundboard.stop",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "playbackId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "assetId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "soundboard.stopAll",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "stream.start",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "outputId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "url": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "stream.stop",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "system.status",
+      "roles": [
+        "monitor",
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "system.telemetry.subscribe",
+      "roles": [
+        "monitor",
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "intervalMs": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": true,
+              "min": 100,
+              "max": 60000
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "system.telemetry.unsubscribe",
+      "roles": [
+        "monitor",
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "ticker.clearOverride",
+      "roles": [
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {},
+        "strict": true
+      }
+    },
+    {
+      "name": "ticker.override",
+      "roles": [
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "items": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "keys": {
+                  "text": {
+                    "required": true,
+                    "hasDefault": false,
+                    "nullable": false,
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "language": {
+                    "required": false,
+                    "hasDefault": false,
+                    "nullable": false,
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "priority": {
+                    "required": false,
+                    "hasDefault": true,
+                    "nullable": false,
+                    "value": {
+                      "type": "number",
+                      "integer": true,
+                      "min": 0,
+                      "max": 100000
+                    }
+                  },
+                  "ttlSec": {
+                    "required": false,
+                    "hasDefault": false,
+                    "nullable": false,
+                    "value": {
+                      "type": "number",
+                      "integer": true,
+                      "min": 1
+                    }
+                  }
+                },
+                "strict": true
+              }
+            }
+          },
+          "mode": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "replace",
+                "prepend",
+                "append"
+              ]
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "ticker.refreshRss",
+      "roles": [
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "feedId": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "ticker.setSource",
+      "roles": [
+        "operator",
+        "producer",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "source": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "manual",
+                "rss",
+                "mixed"
+              ]
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "view.cut",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "itemRef": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "view.fallback",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "reason": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
+      "name": "view.take",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "transition": {
+            "required": false,
+            "hasDefault": true,
+            "nullable": false,
+            "value": {
+              "type": "string",
+              "enum": [
+                "cut",
+                "mix",
+                "wipe",
+                "sting",
+                "move",
+                "dve"
+              ]
+            }
+          },
+          "preset": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "string"
+            }
+          },
+          "durationFrames": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": true,
+              "min": 0,
+              "max": 600
+            }
+          },
+          "audio": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "object",
+              "keys": {
+                "transition": {
+                  "required": false,
+                  "hasDefault": true,
+                  "nullable": false,
+                  "value": {
+                    "type": "string",
+                    "enum": [
+                      "follow",
+                      "crossfade",
+                      "cut",
+                      "mute"
+                    ]
+                  }
+                },
+                "durationFrames": {
+                  "required": false,
+                  "hasDefault": false,
+                  "nullable": false,
+                  "value": {
+                    "type": "number",
+                    "integer": true,
+                    "min": 1,
+                    "max": 600
+                  }
+                },
+                "rampMs": {
+                  "required": false,
+                  "hasDefault": true,
+                  "nullable": false,
+                  "value": {
+                    "type": "number",
+                    "integer": false,
+                    "min": 5,
+                    "max": 50
+                  }
+                }
+              },
+              "strict": true
+            }
+          }
+        },
+        "strict": true
+      }
+    }
+  ]
+}

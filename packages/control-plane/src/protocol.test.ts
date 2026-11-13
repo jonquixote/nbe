@@ -61,6 +61,7 @@ const SAMPLE_PAYLOADS: Record<string, unknown> = {
   "show.start": {},
   "show.stop": {},
   "show.unload": {},
+  "show.getState": {},
   "preview.set": { itemRef: "A1" },
   "view.take": { transition: "mix", durationFrames: 15, audio: { transition: "follow" } },
   "view.cut": { itemRef: "A1" },

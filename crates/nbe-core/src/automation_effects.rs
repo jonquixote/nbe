@@ -223,7 +223,11 @@ mod tests {
     #[test]
     fn the_effects_data_parses_and_names_only_state_fields() {
         let e = command_effects();
-        assert_eq!(e.len(), 55, "§16's 55 commands, each once");
+        assert_eq!(
+            e.len(),
+            56,
+            "§16's 55 commands and show.getState (approved 2026-11-12), each once"
+        );
         for (cmd, eff) in e {
             for f in &eff.state_change {
                 assert!(

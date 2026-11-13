@@ -178,10 +178,16 @@ const PRODUCER_COMMANDS = new Set([
   "marker.add",
 ]);
 
-const READ_ONLY = new Set(["system.status", "system.telemetry.subscribe", "system.telemetry.unsubscribe"]);
+const READ_ONLY = new Set([
+  "system.status",
+  "system.telemetry.subscribe",
+  "system.telemetry.unsubscribe",
+  // PROPOSAL (operator-shell draft, finding 1): read-only, so every role.
+  "show.getState",
+]);
 const SHOW_LIFECYCLE = new Set(["show.start", "show.stop"]);
 
-function roleAllowed(role: Role, command: CommandName): boolean {
+export function roleAllowed(role: Role, command: CommandName): boolean {
   if (role === "admin") return true;
   if (role === "render") return false; // render sessions receive, they do not command
   if (READ_ONLY.has(command)) return true;

@@ -172,6 +172,9 @@ pub mod command {
         "show.start",
         "show.stop",
         "show.unload",
+        // Approved 2026-11-12 (sprint E; the operator-shell draft's finding 1):
+        // read-only, the rundown and its states for an operator surface.
+        "show.getState",
         // 16.2 view/preview
         "preview.set",
         "view.take",

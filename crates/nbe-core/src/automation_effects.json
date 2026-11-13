@@ -23,6 +23,7 @@
     "show.stop": { "stateChange": ["showState", "streamState", "recordState"], "deferred": ["streamHealth"], "note": "streamState and recordState are set idle unconditionally (commands/show.ts); they change when an output was active" },
     "show.load": { "stateChange": ["showState", "viewItem", "previewItem", "fallbackActive", "itemState"] },
     "show.unload": {},
+    "show.getState": {},
     "show.preflight": {},
     "preview.set": { "stateChange": ["previewItem", "itemState"] },
     "item.arm": { "stateChange": ["itemState"] },

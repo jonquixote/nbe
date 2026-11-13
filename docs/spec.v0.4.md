@@ -3974,7 +3974,7 @@ The Section 5.3 role descriptions are intent, not a contract; this matrix is the
 | `clock.configure` | — | ✓ | — |
 | `plugin.reload` | — | — | — |
 | `record.*`, `stream.*` | — | ✓ | — |
-| `system.status`, `system.telemetry.*` | ✓ | ✓ | ✓ |
+| `system.status`, `system.telemetry.*`, `show.getState` (approved 2026-11-12, sprint E; the operator-shell draft's finding 1) | ✓ | ✓ | ✓ |
 
 Three permissions are deliberate and were previously ambiguous:
 
@@ -3993,6 +3993,7 @@ Guest admission stays producer-gated (Section 10.7 §3): `guest.connect` is a pr
 | `show.start` | `{ startClock?: boolean, allowWarnings?: boolean }` | preflight passed (see below) | show `LOADED -> RUNNING`, clock `STOPPED -> RUNNING` | `E_FORBIDDEN_STATE` |
 | `show.stop` | see below | show running unless force | show `RUNNING -> STOPPED`; outputs quiesced | `E_FORBIDDEN_STATE`, `E_DISK`, `E_NETWORK` |
 | `show.unload` | `{}` | not live | show `LOADED/RUNNING -> UNLOADED` | `E_FORBIDDEN_STATE` |
+| `show.getState` | `{}` | always | none (read-only: no version bump, no `stateChange`) | none |
 
 `show.stop` payload and behavior:
 

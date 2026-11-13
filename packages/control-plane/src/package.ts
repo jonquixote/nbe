@@ -568,6 +568,7 @@ export async function loadPackage(
     elements,
     overlays,
     templates: new Set(templates),
+    templateKinds: new Map((manifest.templates ?? []).map((t) => [t.id, t.kind])),
     breakingTemplates,
     tickerExists,
     clockElements,

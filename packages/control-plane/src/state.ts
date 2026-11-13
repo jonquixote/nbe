@@ -80,6 +80,8 @@ export interface PackageInfo {
   elements: Map<string, PackageElement>;
   overlays: Set<string>;
   templates: Set<string>;
+  /** template id → its §6.5 class, for an operator surface's graphics buttons. */
+  templateKinds?: Map<string, string>;
   breakingTemplates: Set<string>;
   tickerExists: boolean;
   clockElements: Set<string>;
@@ -284,6 +286,45 @@ export class ControlPlaneState {
 
   itemStateOf(itemRef: string): ItemState {
     return this.itemStates.get(itemRef) ?? "READY";
+  }
+
+  /**
+   * PROPOSAL (operator-shell draft, finding 1): the loaded show as an
+   * operator surface draws it: the rundown's items in manifest order with
+   * their §17.1 states, the elements and overlays, and the buses. `rundown`
+   * and `elements` are null with no package loaded.
+   */
+  showStateView(): Record<string, unknown> {
+    const pkg = this.pkg;
+    return {
+      stateVersion: this.stateVersion,
+      showState: this.showState,
+      package: pkg
+        ? { path: pkg.packagePath, showId: pkg.showId, houseRate: pkg.houseRate, manifestVersion: pkg.manifestVersion }
+        : null,
+      viewItem: this.viewItem,
+      previewItem: this.previewItem,
+      rundown: pkg
+        ? {
+            id: [...pkg.sequences][0] ?? null,
+            items: [...pkg.items.values()].map((i) => ({
+              id: i.id,
+              kind: i.kind,
+              durationFrames: i.durationFrames ?? null,
+              autoFollow: i.autoFollow ?? false,
+              state: this.itemStateOf(i.id),
+            })),
+          }
+        : null,
+      elements: pkg ? [...pkg.elements.values()].map((e) => ({ id: e.id, kind: e.kind })) : null,
+      // The package's graphic templates and what is on air from them, so a
+      // shell can offer a lower third per template (sprint E, AC-16 item 6).
+      templates: pkg ? [...(pkg.templateKinds ?? new Map<string, string>())].map(([id, kind]) => ({ id, kind })) : null,
+      graphics: [...this.graphics].map(([elementId, g]) => ({ elementId, templateId: g.templateId })),
+      breakingVisible: this.breakingVisible,
+      overlays: pkg ? [...pkg.overlays] : null,
+      visibleOverlays: Array.from(this.visibleOverlays),
+    };
   }
 
   /** READY/DONE -> ARMED. Guard: asset valid (checked by the caller against on-disk facts). */
