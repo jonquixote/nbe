@@ -293,6 +293,9 @@ function sample(name: string, dt = 0.5): Buffer {
 // Regions, normalized: where each command draws (graphics.rs `default_rect`
 // for the lower third; the declared hosts above for the rest).
 const LOWER_THIRD: [number, number, number, number] = [0.05, 0.75, 0.9, 0.12];
+// Its two lines: the headline in the top half of the box, the subhead below.
+const LT_TOP: [number, number, number, number] = [0.05, 0.75, 0.9, 0.06];
+const LT_BOTTOM: [number, number, number, number] = [0.05, 0.81, 0.9, 0.06];
 const BANNER: [number, number, number, number] = [0, 0.1, 1, 0.08];
 const TICKER: [number, number, number, number] = [0, 0.9, 1, 0.1];
 const CLOCK: [number, number, number, number] = [0, 0.2, 1, 0.06];
@@ -369,7 +372,7 @@ before(async () => {
 
   // 2. A dark, still picture under every graphic from here on.
   await step("dark", "view.cut", { itemRef: "A2" }, () => true);
-  await step("lt_show", "graphic.show", { templateId: "tpl_lt", fields: { headline: "FIRST HEADLINE TEXT", color: "#ff00ff" } }, (s) =>
+  await step("lt_show", "graphic.show", { templateId: "tpl_lt", fields: { headline: "FIRST HEADLINE TEXT", subhead: "A SECOND LINE BENEATH IT", color: "#ff00ff" } }, (s) =>
     (s["graphics"] as string[]).includes("tpl_lt-graphic"),
   );
   await step("lt_update", "graphic.update", { elementId: "tpl_lt-graphic", fields: { headline: "TWO" } }, (s) =>
@@ -531,15 +534,22 @@ test("[A] item.stop's hold is released by a cut and by a take: A1 stopped, cut a
   assert.ok(code.slice(end).includes("mmm"), `the take of the stopped item plays it after the hold: ${code}`);
 });
 
-test("[A] graphic.show / update / hide: the lower third appears, changes, and goes", (t) => {
+test("[A] graphic.show / update / hide: the lower third appears with both lines, changes, and goes", (t) => {
   if (skipIfNoRecording(t)) return;
   const base = count(sample("dark"), LOWER_THIRD, MAGENTA);
-  const shown = count(sample("lt_show"), LOWER_THIRD, MAGENTA);
-  const updated = count(sample("lt_update"), LOWER_THIRD, MAGENTA);
+  const shown = sample("lt_show");
+  const updated = sample("lt_update");
+  const [shownTop, shownBottom] = [count(shown, LT_TOP, MAGENTA), count(shown, LT_BOTTOM, MAGENTA)];
+  const [updTop, updBottom] = [count(updated, LT_TOP, MAGENTA), count(updated, LT_BOTTOM, MAGENTA)];
   const hidden = count(sample("lt_hide"), LOWER_THIRD, MAGENTA);
-  console.log(`lower third magenta pixels: base ${base}, shown ${shown}, updated ${updated}, hidden ${hidden}`);
-  assert.ok(shown > base + 2000, `graphic.show draws the headline (base ${base}, shown ${shown})`);
-  assert.ok(updated > base + 200 && updated < shown * 0.6, `graphic.update redraws the shorter headline (shown ${shown}, updated ${updated})`);
+  console.log(`lower third magenta pixels: base ${base}; shown headline ${shownTop}, subhead ${shownBottom}; updated headline ${updTop}, subhead ${updBottom}; hidden ${hidden}`);
+  // Both lines are drawn: the text is laid out at its box's size, so the
+  // subhead has a line of its own (before, a one-line raster dropped it).
+  assert.ok(shownTop > 1000, `graphic.show draws the headline (${shownTop})`);
+  assert.ok(shownBottom > 1000, `graphic.show draws the subhead on its own line (${shownBottom})`);
+  // graphic.update changed the headline only: shorter on top, the same below.
+  assert.ok(updTop > 200 && updTop < shownTop * 0.6, `graphic.update redraws the shorter headline (${shownTop} -> ${updTop})`);
+  assert.ok(Math.abs(updBottom - shownBottom) < shownBottom * 0.15, `the subhead is unchanged (${shownBottom} -> ${updBottom})`);
   assert.ok(hidden < base + 100, `graphic.hide removes it (base ${base}, hidden ${hidden})`);
   assert.deepEqual(reported["lt_show"]?.["graphics"], ["tpl_lt-graphic"]);
   assert.deepEqual(reported["lt_hide"]?.["graphics"], []);

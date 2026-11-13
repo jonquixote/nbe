@@ -33,20 +33,28 @@ pub struct PreparedText {
     pub width: u32,
 }
 
-/// The raster spec for a string at a View size — the one formula, shared by
-/// the render loop's cache and this worker.
+/// The raster spec for a string in its element's box — the one formula,
+/// shared by the render loop's cache and this worker.
 ///
-/// The raster is sized against the View, not the element box: a band 10% of a
-/// 1080-line frame is 108 px tall, and text sized to the box is text that
-/// reads the same at any output resolution.
+/// The raster is the box's size in View pixels (`rect` is the element's
+/// normalized x, y, w, h), so it is drawn 1:1 and never stretched. Until the
+/// sprint's rehearsal dry run it was always View-wide and one 6%-of-height
+/// line tall, then stretched into the box: a narrow box squeezed its glyphs,
+/// and a second line (a name strap's role, a lower third's subhead) had no
+/// room and was not drawn. The font size now fits the box's height to the
+/// text's line count, a line being 1.25 of the size, filling 90% of the box.
+/// A ticker is one line at 72% of its band's height, laid out as wide as the
+/// text needs.
 pub fn spec_for(
     content: &str,
     color: [f32; 4],
     scroll: bool,
     view_w: u32,
     view_h: u32,
+    rect: [f32; 4],
 ) -> TextSpec {
-    let height_px = (view_h.max(1) as f32 * 0.06).round().max(8.0) as u32;
+    let box_w = (rect[2] * view_w.max(1) as f32).round().clamp(8.0, 8192.0) as u32;
+    let box_h = (rect[3] * view_h.max(1) as f32).round().clamp(8.0, 4096.0) as u32;
     // A ticker's raster holds the item twice, separated by a gap, so the
     // scroll can wrap without a seam and without a repeating sampler.
     let laid_out = if scroll {
@@ -54,12 +62,18 @@ pub fn spec_for(
     } else {
         content.to_string()
     };
+    let size_px = if scroll {
+        box_h as f32 * 0.72
+    } else {
+        let lines = content.lines().count().max(1) as f32;
+        (box_h as f32 * 0.9 / (lines * 1.25)).max(6.0)
+    };
     TextSpec {
         text: laid_out,
-        size_px: height_px as f32 * 0.72,
+        size_px,
         color,
-        width_px: view_w.max(1),
-        height_px,
+        width_px: box_w,
+        height_px: box_h,
         grow_to_text: scroll,
     }
 }
@@ -213,9 +227,10 @@ impl TextPrep {
         content: &str,
         color: [f32; 4],
         scroll: bool,
+        rect: [f32; 4],
     ) -> (String, TextSpec) {
         let (w, h) = self.view_size();
-        let spec = spec_for(content, color, scroll, w, h);
+        let spec = spec_for(content, color, scroll, w, h, rect);
         (key_for(element_id, &spec), spec)
     }
 
@@ -246,9 +261,10 @@ impl TextPrep {
         content: &str,
         color: [f32; 4],
         scroll: bool,
+        rect: [f32; 4],
         timeout: Duration,
     ) -> bool {
-        let (key, spec) = self.key_and_spec(element_id, content, color, scroll);
+        let (key, spec) = self.key_and_spec(element_id, content, color, scroll, rect);
         if self.ready.lock().unwrap().contains_key(&key) {
             return true;
         }
@@ -325,4 +341,47 @@ fn upload(queue: &wgpu::Queue, tex: &wgpu::Texture, width: u32, height: u32, rgb
             depth_or_array_layers: 1,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_raster_is_its_box_and_its_font_fits_the_lines() {
+        // A lower third 0.9 x 0.12 of 1080p: 1728 x 130 px, two lines.
+        let s = spec_for(
+            "HEADLINE\nSUBHEAD",
+            [1.0; 4],
+            false,
+            1920,
+            1080,
+            [0.05, 0.75, 0.9, 0.12],
+        );
+        assert_eq!((s.width_px, s.height_px), (1728, 130));
+        // Two lines at 1.25 x the size fill at most 90% of the box.
+        assert!(
+            2.0 * s.size_px * 1.25 <= 130.0 * 0.9 + 0.01,
+            "size {}",
+            s.size_px
+        );
+        // One line in the same box is twice the size.
+        let one = spec_for(
+            "HEADLINE",
+            [1.0; 4],
+            false,
+            1920,
+            1080,
+            [0.05, 0.75, 0.9, 0.12],
+        );
+        assert!((one.size_px - 2.0 * s.size_px).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_ticker_is_one_line_at_its_bands_height_and_as_wide_as_its_text() {
+        let s = spec_for("A B C", [1.0; 4], true, 1920, 1080, [0.0, 0.9, 1.0, 0.1]);
+        assert_eq!(s.height_px, 108);
+        assert!((s.size_px - 108.0 * 0.72).abs() < 0.01);
+        assert!(s.grow_to_text);
+    }
 }

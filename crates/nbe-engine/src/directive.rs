@@ -18,6 +18,10 @@ use tracing::{debug, info};
 /// (§12.11.1), so the window the engine allocates is the window preflight counts.
 const DEFAULT_GOP_FRAMES: u32 = nbe_core::loop_cache::HOUSE_GOP_FRAMES;
 
+/// One string to shape off the render thread: element id, content, colour,
+/// whether it scrolls (a ticker), and the element's box (normalized x, y, w, h).
+type TextJob = (String, String, [f32; 4], bool, [f32; 4]);
+
 /// How long a command waits for its text to be shaped and uploaded before it
 /// publishes anyway. Shaping a line is milliseconds; this bound only matters
 /// if the worker is stuck, and then the layer draws nothing and is counted.
@@ -1868,7 +1872,7 @@ impl DirectiveHandler {
     /// when any job did not finish within its bound; the caller publishes
     /// anyway, and the render loop draws that layer as nothing and counts it
     /// rather than shaping on the frame path.
-    async fn prepare_text(&self, jobs: Vec<(String, String, [f32; 4], bool)>) -> bool {
+    async fn prepare_text(&self, jobs: Vec<TextJob>) -> bool {
         let Some(prep) = self.state.text_prep() else {
             return true;
         };
@@ -1878,8 +1882,8 @@ impl DirectiveHandler {
         let started = std::time::Instant::now();
         let n = jobs.len();
         let ok = tokio::task::spawn_blocking(move || {
-            jobs.iter().all(|(id, content, color, scroll)| {
-                prep.prepare_blocking(id, content, *color, *scroll, TEXT_PREP_TIMEOUT)
+            jobs.iter().all(|(id, content, color, scroll, rect)| {
+                prep.prepare_blocking(id, content, *color, *scroll, *rect, TEXT_PREP_TIMEOUT)
             })
         })
         .await
@@ -1902,11 +1906,12 @@ impl DirectiveHandler {
         let mut jobs = Vec::new();
         if let Some(crate::scene::Layer {
             source: crate::scene::LayerSource::Text(t),
+            rect,
             ..
         }) = g.layer()
         {
             if let crate::scene::TextContent::Static(text) = &t.content {
-                jobs.push((t.element_id.clone(), text.clone(), t.color, false));
+                jobs.push((t.element_id.clone(), text.clone(), t.color, false, rect));
             }
         }
         self.prepare_text(jobs).await;
@@ -2069,7 +2074,7 @@ impl DirectiveHandler {
                 }
             }
         }
-        let jobs: Vec<(String, String, [f32; 4], bool)> = {
+        let jobs: Vec<TextJob> = {
             let pkg = self.state.package.lock().unwrap();
             pkg.as_ref()
                 .map(|idx| {
@@ -2083,6 +2088,7 @@ impl DirectiveHandler {
                                     text,
                                     e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
                                     true,
+                                    e.rect,
                                 )
                             })
                         })
@@ -2106,7 +2112,7 @@ impl DirectiveHandler {
             ));
         };
         let patch = d.payload.get("clock").cloned().unwrap_or_default();
-        let (base, color) = {
+        let (base, color, rect) = {
             let pkg = self.state.package.lock().unwrap();
             let Some(e) = pkg
                 .as_ref()
@@ -2119,7 +2125,7 @@ impl DirectiveHandler {
                 debug!(element = element_id, "clock.configure: not a clock");
                 return Ok(());
             };
-            (declared, e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]))
+            (declared, e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]), e.rect)
         };
         let current = self
             .state
@@ -2133,7 +2139,7 @@ impl DirectiveHandler {
         let spec = crate::graphics::merge_clock(&current, &patch);
         let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
         let face = crate::render::clock_face_for_test(&spec, next_frame, self.state.house_rate());
-        self.prepare_text(vec![(element_id.to_string(), face, color, false)])
+        self.prepare_text(vec![(element_id.to_string(), face, color, false, rect)])
             .await;
         self.state
             .graphics
