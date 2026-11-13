@@ -10,6 +10,10 @@
 //! the HTTP status a refusal returns, and the requests the bridge must refuse
 //! (a browser page's cross-site POST, a DNS-rebound Host, a GET, a cross-site
 //! WebSocket, a peer that is not loopback).
+//!
+//! The tests share one control plane and one loaded show and run in order;
+//! each test that needs an item previewed sets that up itself, so a failure in
+//! one does not cascade into the next.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -307,23 +311,29 @@ test("the bridge's WebSocket takes Companion's message form, with the Origin Com
   const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/ws`, { headers: { origin: "http://127.0.0.1" } });
   await connect(ws);
   try {
+    // Set up this test's own preview (the item not on air), so it does not
+    // depend on what earlier tests left on air.
+    const target = state.viewItem === "A2" ? "A1" : "A2";
+    const arm = await send(admin, "preview.set", { itemRef: target });
+    assert.equal(arm.status, "ok", JSON.stringify(arm));
+
     // The default deck's page (0: the manifest uses page 1 only), in the
-    // text form Companion's module sends (value plus a line terminator):
-    // TAKE puts the previewed A2 on air.
+    // text form Companion's module sends (value plus a line terminator).
     ws.send("0/1/take\r\n");
     const a = await nextMessage(ws);
     assert.equal(a.httpStatus, 200, JSON.stringify(a));
     assert.equal(a.command, "view.take");
     assert.equal(a.intentSource, `companion/${PROFILE}:default-take`);
-    assert.equal(state.viewItem, "A2");
+    assert.equal(state.viewItem, target);
     assert.equal(commandRows().at(-1)!.intentSource, `companion/${PROFILE}:default-take`);
 
-    // The JSON form: the default Next button previews its placeholder, A1.
-    ws.send(JSON.stringify({ page: 0, bank: 1, key: "next" }));
+    // The JSON form, and a refusal over the WebSocket: the default SFX 1
+    // button's placeholder asset is not in this package.
+    ws.send(JSON.stringify({ page: 0, bank: 1, key: "sfx-1" }));
     const b = await nextMessage(ws);
-    assert.equal(b.httpStatus, 200, JSON.stringify(b));
-    assert.equal(b.command, "preview.set");
-    assert.equal(state.previewItem, "A1");
+    assert.equal(b.httpStatus, 409, JSON.stringify(b));
+    assert.equal(b.command, "soundboard.play");
+    assert.equal(commandRows().at(-1)!.intentSource, `companion/${PROFILE}:default-sfx-1`);
 
     ws.send("not a press");
     const c = await nextMessage(ws);
@@ -452,8 +462,13 @@ test("the bridge reconnects when the control plane restarts", { skip: NO_PREFLIG
     const h = await http(bridge.port, "GET", "/health");
     return (h.body.controlPlane as { connected: boolean }).connected;
   });
-  // The manifest's TAKE: A1 (previewed by the WebSocket test) goes on air.
+  // The press reaches the restarted control plane: it answers (accepted or
+  // refused, depending on what earlier tests left on air), and audits the
+  // press with the button's identity.
+  const rows = commandRows().length;
   const up = await press(bridge.port, 1, 1, "0");
-  assert.equal(up.status, 200, JSON.stringify(up.body));
-  assert.equal(state.viewItem, "A1");
+  assert.ok(up.status === 200 || up.status === 409, JSON.stringify(up.body));
+  if (up.status === 409) assert.match((up.body.error as { code: string }).code, /^E_/, "the control plane's own code");
+  assert.equal(commandRows().length, rows + 1);
+  assert.equal(commandRows().at(-1)!.intentSource, `companion/${PROFILE}:take-1`);
 });
