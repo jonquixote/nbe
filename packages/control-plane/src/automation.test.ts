@@ -1176,6 +1176,9 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
     }
   });
   await probe("show.stop", {});
+  // show.getState (approved 2026-11-12): read-only, its row is empty, so a
+  // probe that raises nothing is the check.
+  await probe("show.getState", {});
   await probe("show.unload", {});
 
   const refused = [...accepted].filter(([, ok]) => !ok).map(([c]) => c);
