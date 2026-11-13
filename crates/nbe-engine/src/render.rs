@@ -1332,7 +1332,10 @@ impl RenderLoop {
             // layer's tint is white and the existing blend does the rest —
             // which is what keeps text on the same `draw_for` every other
             // element uses, rather than a second pipeline.
-            LayerSource::Text(t) => (self.text_texture(t, frame)?, [1.0, 1.0, 1.0, 1.0]),
+            LayerSource::Text(t) => (
+                self.text_texture(t, frame, layer.rect)?,
+                [1.0, 1.0, 1.0, 1.0],
+            ),
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
             // SPEC §12.1: which frame shows is a pure function of the master
             // clock. The ring textures were uploaded at load; this is a lookup.
@@ -1412,7 +1415,7 @@ impl RenderLoop {
         // Only a scrolling ticker samples a window; everything else takes the
         // whole texture, which is what the shader did before uv existed.
         let uv = match &layer.source {
-            LayerSource::Text(t) if t.scroll => self.ticker_window(t, frame),
+            LayerSource::Text(t) if t.scroll => self.ticker_window(t, frame, layer.rect),
             _ => UV_FULL,
         };
         Some((
@@ -1552,14 +1555,19 @@ impl RenderLoop {
     /// called every frame — but the *string* changes about once a second, and
     /// the cache is keyed on the string. That is what keeps §6.5's no-per-frame-
     /// relayout rule true for an element whose face is literally a clock.
-    fn text_texture(&self, t: &crate::scene::TextLayer, frame: u64) -> Option<wgpu::Texture> {
+    fn text_texture(
+        &self,
+        t: &crate::scene::TextLayer,
+        frame: u64,
+        rect: [f32; 4],
+    ) -> Option<wgpu::Texture> {
         let (content, commanded) = self.resolve_text(t, frame)?;
         if content.is_empty() {
             return None;
         }
         let w = self.view_target().width().max(1);
         let h = self.view_target().height().max(1);
-        let spec = crate::text_prep::spec_for(&content, t.color, t.scroll, w, h);
+        let spec = crate::text_prep::spec_for(&content, t.color, t.scroll, w, h, rect);
         let key = crate::text_prep::key_for(&t.element_id, &spec);
 
         if let Some(hit) = self.text_cache.lock().unwrap().get(&key) {
@@ -1671,7 +1679,7 @@ impl RenderLoop {
     /// Returns `(offset_u, scale_u)`: the compositor samples `scale_u` of the
     /// raster starting at `offset_u`, so a band showing 1920 px of a 6000 px
     /// item samples a third of it, and the start slides with the master frame.
-    fn ticker_window(&self, t: &crate::scene::TextLayer, frame: u64) -> [f32; 4] {
+    fn ticker_window(&self, t: &crate::scene::TextLayer, frame: u64, rect: [f32; 4]) -> [f32; 4] {
         let cache = self.text_cache.lock().unwrap();
         let Some(entry) = cache
             .iter()
@@ -1688,7 +1696,8 @@ impl RenderLoop {
         // is why this needs no texture-repeat mode: sampling never leaves the
         // texture, so the existing clamped sampler stays correct for every
         // layer including this one.
-        let band_px = self.view_target().width().max(1) as f32;
+        // The band is the ticker element's box, drawn 1:1 (`spec_for`).
+        let band_px = (rect[2] * self.view_target().width().max(1) as f32).max(1.0);
         let scale = (band_px / entry.width as f32).min(1.0);
         let px = crate::text::ticker_offset_px(frame, t.speed_px_per_frame, entry.period_px);
         [px / entry.width as f32, 0.0, scale, 1.0]
