@@ -812,6 +812,12 @@ pub struct LiveTextureRing {
     slot_seq: [AtomicU64; 3],
     /// The newest complete upload's sequence number, 0 before the first.
     newest: AtomicU64,
+    /// The frame the render loop is drawing this tick (0: none). The upload
+    /// thread never rewrites the slot that holds it: a write queued before
+    /// the render's submit would otherwise land first, the View would show a
+    /// newer frame than it chose, and the next tick's choice would step
+    /// backwards (PR C's CI run at b70376d: one backwards step).
+    in_use: AtomicU64,
     stop: AtomicBool,
     /// Frames uploaded.
     pub uploaded: AtomicU64,
@@ -823,17 +829,26 @@ impl LiveTextureRing {
         self.newest.load(Ordering::SeqCst)
     }
 
-    /// The texture holding camera frame `seq`, if it is still in the ring.
-    /// Never waits: a ring being reallocated returns `None` for that frame.
-    pub fn frame(&self, seq: u64) -> Option<wgpu::Texture> {
+    /// Claim camera frame `seq` for this tick and return its texture, if it
+    /// is still in the ring. Never waits: a ring being reallocated returns
+    /// `None` for that frame.
+    ///
+    /// The claim and the upload thread's slot choice are a two-flag
+    /// handshake on sequentially consistent atomics: the render publishes
+    /// `in_use` and then re-reads the slot's sequence; the uploader
+    /// invalidates a slot and then reads `in_use`. One of the two always
+    /// sees the other, so a claimed slot is never rewritten while it is drawn.
+    pub fn claim(&self, seq: u64) -> Option<wgpu::Texture> {
         if seq == 0 {
             return None;
         }
+        self.in_use.store(seq, Ordering::SeqCst);
         let slot = self
             .slot_seq
             .iter()
             .position(|s| s.load(Ordering::SeqCst) == seq)?;
-        self.textures.try_lock().ok()?.get(slot).cloned()
+        let tex = self.textures.try_lock().ok()?.get(slot).cloned()?;
+        (self.slot_seq[slot].load(Ordering::SeqCst) == seq).then_some(tex)
     }
 }
 
@@ -899,6 +914,7 @@ impl LiveUploader {
             textures: Mutex::new(Vec::new()),
             slot_seq: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             newest: AtomicU64::new(0),
+            in_use: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             uploaded: AtomicU64::new(0),
         });
@@ -928,11 +944,19 @@ impl LiveUploader {
                         r.newest.store(0, Ordering::SeqCst);
                         dims = (frame.width, frame.height);
                     }
-                    slot = (slot + 1) % 3;
-                    // The slot is invalid while it is rewritten; the render
-                    // loop never chooses a frame older than the newest but
-                    // one, which is never in this slot.
-                    r.slot_seq[slot].store(0, Ordering::SeqCst);
+                    // The next slot that does not hold the frame the render
+                    // loop is drawing: invalidate it, then check the claim
+                    // (`claim`'s handshake). Of three slots at most one is
+                    // claimed, so a second candidate always exists.
+                    for _ in 0..3 {
+                        slot = (slot + 1) % 3;
+                        let old = r.slot_seq[slot].swap(0, Ordering::SeqCst);
+                        if old != 0 && r.in_use.load(Ordering::SeqCst) == old {
+                            r.slot_seq[slot].store(old, Ordering::SeqCst);
+                            continue;
+                        }
+                        break;
+                    }
                     let tex = r.textures.lock().unwrap()[slot].clone();
                     queue.write_texture(
                         wgpu::TexelCopyTextureInfo {

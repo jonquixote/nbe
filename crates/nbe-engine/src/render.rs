@@ -1571,7 +1571,24 @@ impl RenderLoop {
                 sync.drawn_seq = newest;
                 newest
             };
-            match up.ring.frame(seq).or_else(|| up.ring.frame(newest)) {
+            // The chosen frame, or — if the ring no longer holds it — the
+            // newest, and then the synchroniser moves to what is shown, so
+            // the View never steps back to an older frame next tick.
+            let shown = match up.ring.claim(seq) {
+                Some(tex) => Some(tex),
+                None => {
+                    let n = up.ring.newest_seq();
+                    let tex = up.ring.claim(n);
+                    if tex.is_some() && n > sync.drawn_seq {
+                        if on_view.contains(id) {
+                            sync.skips += n - sync.drawn_seq - 1;
+                        }
+                        sync.drawn_seq = n;
+                    }
+                    tex
+                }
+            };
+            match shown {
                 Some(tex) => {
                     self.live_now.insert(id.clone(), tex);
                 }
