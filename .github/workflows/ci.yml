@@ -1521,6 +1521,28 @@ jobs:
           if [ "$ran" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 4 ]; then echo "FAIL belief: expected at least 4 tests to execute rather than skip, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the Companion bridge suite actually ran (sprint F)"
+        # Two floors, rule 8. The bridge runs as its own process and a scripted
+        # Companion-like client presses over HTTP and WebSocket against the real
+        # control plane. Six of the nine tests load a package (nbe-preflight),
+        # and the loopback-only test needs a non-loopback IPv4 address to probe;
+        # this job has both, so exercised == ran (9) and a skip is a finding.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/companion-bridge.test.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL companion-bridge.test.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          skipped=$(echo "$out" | grep -E "^# skipped " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "companion bridge: ran=$ran skipped=$skipped exercised=$exercised failed=${failed:-?} (floors ran>=9 exercised>=9)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "FAIL companion bridge: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 9 ]; then echo "FAIL companion bridge: expected at least 9 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 9 ]; then echo "FAIL companion bridge: expected at least 9 tests to execute rather than skip, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the §13.4.1 static scan actually ran (PR #34 fix round)"
         # Two floors, rule 8. Reads every REGISTERED command's handler writes
         # to the fields a stateChange rule can name — directly, through state
