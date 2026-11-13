@@ -3974,7 +3974,7 @@ The Section 5.3 role descriptions are intent, not a contract; this matrix is the
 | `clock.configure` | — | ✓ | — |
 | `plugin.reload` | — | — | — |
 | `record.*`, `stream.*` | — | ✓ | — |
-| `system.status`, `system.telemetry.*`, `show.getState` (PROPOSED, the operator-shell draft) | ✓ | ✓ | ✓ |
+| `system.status`, `system.telemetry.*`, `show.getState` (approved 2026-11-12, sprint E; the operator-shell draft's finding 1) | ✓ | ✓ | ✓ |
 
 Three permissions are deliberate and were previously ambiguous:
 

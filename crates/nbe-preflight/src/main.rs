@@ -204,7 +204,7 @@ const REGISTERED_COMMANDS: &[&str] = &[
     "show.start",
     "show.stop",
     "show.unload",
-    // PROPOSED (the operator-shell draft, finding 1): read-only.
+    // Approved 2026-11-12 (the operator-shell draft, finding 1): read-only.
     "show.getState",
     "preview.set",
     "view.take",
