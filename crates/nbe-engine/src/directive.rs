@@ -151,6 +151,8 @@ impl DirectiveHandler {
             "clock.configure" => self.on_clock_configure(d).await?,
             "item.stop" => self.on_item_stop(d),
             "preview.set" => self.on_preview_set(d),
+            "guest.connect" => self.on_guest_connect(d)?,
+            "guest.disconnect" => self.on_guest_disconnect(d),
             nbe_protocol::command::RESYNC => self.on_resync(d).await?,
             other => {
                 debug!(command = other, "directive ignored (no engine effect)");
@@ -2168,6 +2170,76 @@ impl DirectiveHandler {
                 mode: "follow".to_string(),
                 ramp_ms: 10.0,
                 crossfade_frames: 0,
+            },
+        );
+    }
+
+    /// `guest.connect` (SPEC §16.9; PR D): start the guest's session — its
+    /// picture into a live layer, its audio onto its own bus, its mix-minus
+    /// return out to the media server (`guest.rs`). A guest already connected
+    /// is restarted with the new URL.
+    fn on_guest_connect(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let guest_id = d
+            .payload
+            .get("guestId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DirectiveError::Invalid("guest.connect missing guestId".into()))?;
+        let whip_url = d
+            .payload
+            .get("whipUrl")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| DirectiveError::Invalid("guest.connect missing whipUrl".into()))?;
+        let routes = crate::guest::routes(whip_url).ok_or_else(|| {
+            DirectiveError::Invalid(format!(
+                "guest.connect: no media server path in {whip_url:?}"
+            ))
+        })?;
+        let source = crate::live::guest_source_id(guest_id);
+        self.state.live.remove_video_source(&source);
+        let mailbox = Arc::new(crate::live::FrameMailbox::default());
+        let (input, producer) = crate::live::LiveAudio::new();
+        let (return_producer, return_consumer) = crate::audio_ring::ring(48_000);
+        let session = crate::guest::GuestSession::start(
+            guest_id,
+            routes,
+            mailbox.clone(),
+            (input.clone(), producer),
+            return_consumer,
+        );
+        self.state
+            .live
+            .guest_audio
+            .lock()
+            .unwrap()
+            .insert(source.clone(), input.clone());
+        self.state
+            .live
+            .add_video_source(source, mailbox, Box::new(session));
+        self.state.audio_commands.lock().unwrap().push(
+            crate::audio_control::AudioCommand::UpsertGuest {
+                guest_id: guest_id.to_string(),
+                input: crate::audio_control::GuestInput(input),
+                feed: crate::audio_control::GuestReturnFeed(Arc::new(Mutex::new(Some(
+                    return_producer,
+                )))),
+            },
+        );
+        Ok(())
+    }
+
+    /// `guest.disconnect` (SPEC §16.9): stop the guest's session and remove
+    /// its bus and return feed. A guest on the View is then a lost live
+    /// source (the slate), as when its browser leaves.
+    fn on_guest_disconnect(&self, d: &DirectiveFrame) {
+        let Some(guest_id) = d.payload.get("guestId").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let source = crate::live::guest_source_id(guest_id);
+        self.state.live.remove_video_source(&source);
+        self.state.live.guest_audio.lock().unwrap().remove(&source);
+        self.state.audio_commands.lock().unwrap().push(
+            crate::audio_control::AudioCommand::RemoveGuest {
+                guest_id: guest_id.to_string(),
             },
         );
     }

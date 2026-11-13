@@ -638,8 +638,9 @@ pub struct LiveInputLine {
     pub repeats: u64,
     pub skips: u64,
     pub age_ms: f64,
-    /// The camera's mic (`NBE_MICS`): whether one runs, frames it delivered,
-    /// frames the graph found missing (silence), and backlog frames dropped.
+    /// The source's audio input — a camera's mic (`NBE_MICS`), a guest's
+    /// audio (PR D): whether one runs, frames it delivered, frames the graph
+    /// found missing (silence), and backlog frames dropped.
     pub mic: bool,
     pub mic_frames_in: u64,
     pub mic_underrun_frames: u64,

@@ -386,6 +386,8 @@ pub struct RenderLoop {
     /// The texture each live source shows this frame, chosen once a frame
     /// before either bus draws, so the View and the Preview agree.
     live_now: HashMap<String, wgpu::Texture>,
+    /// The live sources' generation the upload threads were last synced to.
+    live_generation: u64,
 }
 
 impl RenderLoop {
@@ -473,6 +475,7 @@ impl RenderLoop {
             live_fresh_since: None,
             live_sync: HashMap::new(),
             live_now: HashMap::new(),
+            live_generation: u64::MAX,
         };
         me.sync_package();
         Ok(me)
@@ -1514,17 +1517,10 @@ impl RenderLoop {
     /// One upload thread per camera the package names, each reading the
     /// mailbox `show.load` started; the rest stopped. Package boundary only.
     fn sync_live_uploaders(&mut self) {
-        let ids: Vec<String> = self
-            .state
-            .package
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|i| i.camera_ids())
-            .unwrap_or_default()
-            .iter()
-            .map(|c| crate::live::camera_source_id(c))
-            .collect();
+        self.live_generation = self.state.live.generation.load(Ordering::SeqCst);
+        // Every running video source: the package's cameras, and guests that
+        // joined by command (PR D).
+        let ids: Vec<String> = self.state.live.video_source_ids();
         self.live_uploaders.retain(|k, _| ids.contains(k));
         self.live_sync.retain(|k, _| ids.contains(k));
         self.live_now.retain(|k, _| ids.contains(k));
@@ -1550,6 +1546,11 @@ impl RenderLoop {
     /// `LIVE_LOSS_MS` puts the slate up; `LIVE_RECOVER_MS` of fresh frames
     /// (or no live source on the View any more) takes it down.
     fn check_live_loss(&mut self, frame: u64) {
+        // A source started or stopped since the last frame (a guest joined or
+        // left): one upload thread more or less, started here, off the draw.
+        if self.state.live.generation.load(Ordering::SeqCst) != self.live_generation {
+            self.sync_live_uploaders();
+        }
         let on_view: Vec<String> = self
             .scene_for(Bus::View, frame)
             .into_iter()

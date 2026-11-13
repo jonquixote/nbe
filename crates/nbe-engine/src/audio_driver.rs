@@ -373,6 +373,7 @@ impl AudioDriver {
         let base = self.graph.sample_for_master_frame(master_frame, 0)
             + self.graph.latency_frames() as i64;
         self.graph.render_at(&mut self.block, base);
+        self.graph.render_returns(base, self.block.len());
         if !self.sink.write(&self.block) {
             // SPEC §8.10: a block the sink could not take is an underrun. It
             // is counted and never touches the video watchdog.
@@ -449,6 +450,8 @@ impl AudioDriver {
             let lead = self.graph.latency_frames() as i64;
             self.graph
                 .render_at(&mut self.block, plan.base_sample + lead);
+            self.graph
+                .render_returns(plan.base_sample + lead, self.block.len());
             let out = self.feeder.emit(&self.block, &plan, next);
             let dev = self.sink.device().expect("checked above");
             if dev.producer.push(out) < out.len() {

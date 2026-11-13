@@ -136,10 +136,22 @@ pub const LIVE_AUDIO_KEEP_FRAMES: u64 = 9_600;
 /// device has not filled reads as silence (counted as underrun frames), and a
 /// backlog past `LIVE_AUDIO_MAX_BACKLOG_FRAMES` is trimmed (counted).
 pub struct LiveAudio {
-    inner: Mutex<(crate::audio_ring::RingConsumer, Vec<f32>)>,
+    inner: Mutex<LiveAudioBlock>,
     pub frames_in: AtomicU64,
     pub underrun_frames: AtomicU64,
     pub trimmed_frames: AtomicU64,
+}
+
+/// The consumer end and the last block read from it, kept so every reader
+/// of the same block — the program mix and each guest's mix-minus return —
+/// gets the same samples instead of draining the ring once each.
+struct LiveAudioBlock {
+    consumer: crate::audio_ring::RingConsumer,
+    scratch: Vec<f32>,
+    /// The sample position and length of the block in `scratch`.
+    cached: Option<(i64, usize)>,
+    /// How much of `scratch` holds samples (the rest of the block is silence).
+    got: usize,
 }
 
 impl std::fmt::Debug for LiveAudio {
@@ -157,7 +169,12 @@ impl LiveAudio {
         (
             Arc::new(Self {
                 // Scratch for one block, sized once: the audio thread does not allocate.
-                inner: Mutex::new((consumer, vec![0.0; 48_000 * crate::audio::CHANNELS])),
+                inner: Mutex::new(LiveAudioBlock {
+                    consumer,
+                    scratch: vec![0.0; 48_000 * crate::audio::CHANNELS],
+                    cached: None,
+                    got: 0,
+                }),
                 frames_in: AtomicU64::new(0),
                 underrun_frames: AtomicU64::new(0),
                 trimmed_frames: AtomicU64::new(0),
@@ -166,27 +183,35 @@ impl LiveAudio {
         )
     }
 
-    /// The audio graph's read: add what arrived, at `gain`, into `out`.
-    pub fn mix_into(&self, out: &mut [f32], gain: f32) {
+    /// The audio graph's read of the block at sample position `base`: add
+    /// what arrived, at `gain`, into `out`. The first read of a block pops it
+    /// from the ring; any further read of the same block (a guest's
+    /// mix-minus return) gets the same samples.
+    pub fn mix_into(&self, out: &mut [f32], gain: f32, base: i64) {
         let Ok(mut inner) = self.inner.try_lock() else {
             return;
         };
-        let (consumer, scratch) = &mut *inner;
-        let fill = consumer.fill_frames();
-        if fill > LIVE_AUDIO_MAX_BACKLOG_FRAMES {
-            let dropped = consumer.skip_frames(fill - LIVE_AUDIO_KEEP_FRAMES);
-            self.trimmed_frames.fetch_add(dropped, Ordering::Relaxed);
+        let b = &mut *inner;
+        let want = out.len().min(b.scratch.len());
+        if b.cached != Some((base, want)) {
+            let fill = b.consumer.fill_frames();
+            if fill > LIVE_AUDIO_MAX_BACKLOG_FRAMES {
+                let dropped = b.consumer.skip_frames(fill - LIVE_AUDIO_KEEP_FRAMES);
+                self.trimmed_frames.fetch_add(dropped, Ordering::Relaxed);
+            }
+            let got = b.consumer.pop_into(&mut b.scratch[..want]);
+            if b.consumer.started() && got < want {
+                self.underrun_frames.fetch_add(
+                    ((want - got) / crate::audio::CHANNELS) as u64,
+                    Ordering::Relaxed,
+                );
+            }
+            b.got = got;
+            b.cached = Some((base, want));
         }
-        let want = out.len().min(scratch.len());
-        let got = consumer.pop_into(&mut scratch[..want]);
-        for (o, v) in out[..got].iter_mut().zip(&scratch[..got]) {
+        let got = b.got;
+        for (o, v) in out[..got].iter_mut().zip(&b.scratch[..got]) {
             *o += v * gain;
-        }
-        if consumer.started() && got < want {
-            self.underrun_frames.fetch_add(
-                ((want - got) / crate::audio::CHANNELS) as u64,
-                Ordering::Relaxed,
-            );
         }
     }
 }
@@ -443,9 +468,15 @@ pub struct LiveInputs {
     sources: Mutex<HashMap<String, VideoSource>>,
     /// Running mics, keyed by their `live:` id.
     mics: Mutex<HashMap<String, MicSource>>,
+    /// Connected guests' audio inputs, keyed by source id (`guest:<id>`),
+    /// for the telemetry line (PR D).
+    pub guest_audio: Mutex<HashMap<String, Arc<LiveAudio>>>,
     /// The render loop's frame synchronisers, published once a frame for
     /// telemetry: source id → (sync, frames uploaded).
     pub sync: Mutex<std::collections::BTreeMap<String, (FrameSync, u64)>>,
+    /// Bumped whenever a video source starts or stops, so the render loop
+    /// resyncs its upload threads at the next frame (a guest joins mid-show).
+    pub generation: AtomicU64,
 }
 
 impl std::fmt::Debug for LiveInputs {
@@ -460,6 +491,11 @@ impl std::fmt::Debug for LiveInputs {
 /// The layer id a camera element's frames are drawn from.
 pub fn camera_source_id(camera_id: &str) -> String {
     format!("camera:{camera_id}")
+}
+
+/// The layer id a guest element's frames are drawn from.
+pub fn guest_source_id(guest_id: &str) -> String {
+    format!("guest:{guest_id}")
 }
 
 impl LiveInputs {
@@ -480,7 +516,8 @@ impl LiveInputs {
         let wanted: Vec<String> = camera_ids.iter().map(|c| camera_source_id(c)).collect();
         let mut sources = self.sources.lock().unwrap();
         sources.retain(|k, _| {
-            let keep = wanted.contains(k);
+            // Guests are not the package's: they come and go by command.
+            let keep = wanted.contains(k) || !k.starts_with("camera:");
             if !keep {
                 tracing::info!(source = %k, "live source stopped (not in the package)");
             }
@@ -506,6 +543,7 @@ impl LiveInputs {
                 }
             }
         }
+        self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Each camera's mic, per `NBE_MICS`; a camera with no mapping has none.
@@ -546,8 +584,39 @@ impl LiveInputs {
         }
     }
 
+    /// Every running video source's id (cameras and guests).
+    pub fn video_source_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.sources.lock().unwrap().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Add a video source started elsewhere (a guest session).
+    pub fn add_video_source(
+        &self,
+        id: String,
+        mailbox: Arc<FrameMailbox>,
+        handle: Box<dyn CaptureHandle>,
+    ) {
+        self.sources.lock().unwrap().insert(id, (mailbox, handle));
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Stop and remove one video source. Returns whether it ran.
+    pub fn remove_video_source(&self, id: &str) -> bool {
+        // Dropped outside the lock: a guest session joins its threads.
+        let removed = self.sources.lock().unwrap().remove(id);
+        let ran = removed.is_some();
+        drop(removed);
+        if ran {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        ran
+    }
+
     /// Stop every source (the package was forgotten).
     pub fn stop_all(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.sources.lock().unwrap().clear();
         self.mics.lock().unwrap().clear();
         live_audio_registry().lock().unwrap().clear();
@@ -569,7 +638,8 @@ impl LiveInputs {
                     .lock()
                     .unwrap()
                     .get(&format!("live:{id}"))
-                    .map(|(a, _)| a.clone());
+                    .map(|(a, _)| a.clone())
+                    .or_else(|| self.guest_audio.lock().unwrap().get(id).cloned());
                 let read = |f: fn(&LiveAudio) -> &AtomicU64| {
                     mic.as_ref()
                         .map(|a| f(a).load(Ordering::Relaxed))

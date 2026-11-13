@@ -1811,6 +1811,49 @@ jobs:
           if [ "$ran" -lt 5 ]; then echo "FAIL camera e2e: expected at least 5 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 5 ]; then echo "FAIL camera e2e: expected at least 5 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "MediaMTX for the guest end-to-end (sprint PR D; v1.21.3, MIT, checksum-pinned)"
+        if: ${{ !cancelled() }}
+        # The media server the guest path runs through (the spike's decision,
+        # 2026-11-12). Pinned by version and by the release's own sha256 for
+        # each macOS architecture; a mismatch fails the step.
+        run: |
+          set -eu
+          case "$(uname -m)" in
+            arm64) arch=arm64; sum=bc1a0762fd18ffb413bcd81dcb9a072ac159fbd1f27e79ac6f14598aaac5ed3f ;;
+            x86_64) arch=amd64; sum=8a8416ee2ff5d17d9366498b6d88b76ab6d3afcda50b6d7321ccddb349bdbaf2 ;;
+            *) echo "no MediaMTX build pinned for $(uname -m)"; exit 1 ;;
+          esac
+          f="mediamtx_v1.21.3_darwin_${arch}.tar.gz"
+          mkdir -p "$RUNNER_TEMP/mediamtx"
+          curl -fsSL -o "$RUNNER_TEMP/mediamtx/$f" "https://github.com/bluenviron/mediamtx/releases/download/v1.21.3/$f"
+          echo "$sum  $RUNNER_TEMP/mediamtx/$f" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/mediamtx/$f" -C "$RUNNER_TEMP/mediamtx"
+          "$RUNNER_TEMP/mediamtx/mediamtx" --version
+          ffmpeg -hide_banner -muxers | grep -w whip
+        timeout-minutes: 3
+      - name: "the guest end-to-end ran (sprint PR D: WHIP guest through MediaMTX, mix-minus return, guest loss)"
+        if: ${{ !cancelled() }}
+        # MediaMTX and an ffmpeg WHIP client as the guest; the real engine's
+        # guest session pulls it over RTSP and publishes the return. AC-18
+        # (the guest's own tone at most -80 dBFS in its return) is asserted on
+        # every machine. Two floors, rule 8: ran = `# tests`, exercised = `# pass`.
+        env:
+          NBE_MEDIAMTX_BIN: ${{ runner.temp }}/mediamtx/mediamtx
+        run: |
+          set -u
+          out=$(node --import tsx --test src/guest-whip.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok)|^# |SKIP normative" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL guest-whip.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "guest e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=4 exercised>=4)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL guest e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 4 ]; then echo "FAIL guest e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL guest e2e: expected at least 4 tests to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "R32 load capture: after the test steps, every sample"
         if: always()
         continue-on-error: true

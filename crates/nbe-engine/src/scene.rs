@@ -290,6 +290,8 @@ pub struct ElementSpec {
     pub speed_px_per_frame: f32,
     /// `cameraId`, on a `camera` element (SPEC §7.4).
     pub camera_id: Option<String>,
+    /// `guestId`, on a `guest` element (SPEC §7.4; PR D).
+    pub guest_id: Option<String>,
 }
 
 impl PackageIndex {
@@ -814,6 +816,11 @@ impl PackageIndex {
             "camera" => LayerSource::Live {
                 source_id: crate::live::camera_source_id(e.camera_id.as_deref()?),
             },
+            // A guest's picture (PR D): the same live layer as a camera, fed
+            // by the guest's session (`guest.rs`) once `guest.connect` runs.
+            "guest" => LayerSource::Live {
+                source_id: crate::live::guest_source_id(e.guest_id.as_deref()?),
+            },
             "clip" | "videoLoop" => {
                 let asset = e.asset_id.as_deref()?;
                 match self.asset_kind.get(asset).map(String::as_str) {
@@ -946,6 +953,10 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .unwrap_or(DEFAULT_TICKER_SPEED_PX_PER_FRAME as f64) as f32,
         camera_id: e
             .get("cameraId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        guest_id: e
+            .get("guestId")
             .and_then(|v| v.as_str())
             .map(str::to_string),
     })
