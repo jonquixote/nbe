@@ -1606,7 +1606,16 @@ impl RenderLoop {
         if !lost.is_empty() {
             self.live_fresh_since = None;
             if !held {
-                tracing::warn!(frame, sources = ?lost, "live source lost on the View: fallback slate");
+                // The age of the newest frame when the slate went up: the
+                // claim (§10.3, one frame after the deadline) is about this
+                // number, not about when a source decided to stop.
+                let age_ms = lost
+                    .iter()
+                    .filter_map(|id| self.state.live.mailbox(id).and_then(|m| m.age()))
+                    .map(|a| a.as_millis() as u64)
+                    .min()
+                    .unwrap_or(u64::MAX);
+                tracing::warn!(frame, sources = ?lost, age_ms, "live source lost on the View: fallback slate");
                 self.state
                     .engage_fallback(crate::state::FallbackSource::LiveLoss);
             }
