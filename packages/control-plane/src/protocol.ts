@@ -419,6 +419,23 @@ export const OverlayStateLineSchema = z
   })
   .strict();
 export type OverlayStateLine = z.infer<typeof OverlayStateLineSchema>;
+export const LiveInputLineSchema = z
+  .object({
+    source: z.string(),
+    framesIn: z.number().int(),
+    framesOverwritten: z.number().int(),
+    framesUploaded: z.number().int(),
+    drawnSeq: z.number().int(),
+    repeats: z.number().int(),
+    skips: z.number().int(),
+    ageMs: z.number(),
+    mic: z.boolean(),
+    micFramesIn: z.number().int(),
+    micUnderrunFrames: z.number().int(),
+    micTrimmedFrames: z.number().int(),
+  })
+  .strict();
+export type LiveInputLine = z.infer<typeof LiveInputLineSchema>;
 
 export const EngineTelemetryFrameSchema = z
   .object({
@@ -500,6 +517,9 @@ export const EngineTelemetryFrameSchema = z
     // program — overlays, runtime graphics, the banner, the ticker override,
     // configured clocks, the Preview item. Optional for the same tolerance.
     overlayState: OverlayStateLineSchema.optional(),
+    // PR C: the live inputs (cameras), one line each. Optional for the same
+    // tolerance of an older engine build.
+    liveInputs: z.array(LiveInputLineSchema).optional(),
   })
   .strict();
 export type EngineTelemetryFrame = z.infer<typeof EngineTelemetryFrameSchema>;

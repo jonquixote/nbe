@@ -218,6 +218,20 @@ fn render_channel_frames_round_trip() {
                 preview_item: Some("A2".into()),
                 text_prep_misses_total: 0,
             },
+            live_inputs: vec![nbe_protocol::LiveInputLine {
+                source: "camera:main".into(),
+                frames_in: 300,
+                frames_overwritten: 2,
+                frames_uploaded: 298,
+                drawn_seq: 297,
+                repeats: 1,
+                skips: 0,
+                age_ms: 12.5,
+                mic: true,
+                mic_frames_in: 480_000,
+                mic_underrun_frames: 960,
+                mic_trimmed_frames: 0,
+            }],
         }),
     });
     round_trip(&PushFrame::StateChange {
@@ -424,6 +438,7 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
             source: "show".into(),
         },
         overlay_state: nbe_protocol::OverlayStateLine::default(),
+        live_inputs: Vec::new(),
     };
     let value = serde_json::to_value(&sample).expect("serializes");
     let ours: BTreeSet<String> = value.as_object().expect("object").keys().cloned().collect();

@@ -622,6 +622,30 @@ pub struct OverlayStateLine {
     pub text_prep_misses_total: u64,
 }
 
+/// One live input (a camera) as the engine sees it (sprint PR C): frames the
+/// capture delivered, frames replaced before upload, frames uploaded, the
+/// camera frame on the View, and the frame synchroniser's repeats and skips
+/// while it was on the View. `ageMs` is how long ago the newest frame
+/// arrived, -1 before the first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveInputLine {
+    pub source: String,
+    pub frames_in: u64,
+    pub frames_overwritten: u64,
+    pub frames_uploaded: u64,
+    pub drawn_seq: u64,
+    pub repeats: u64,
+    pub skips: u64,
+    pub age_ms: f64,
+    /// The camera's mic (`NBE_MICS`): whether one runs, frames it delivered,
+    /// frames the graph found missing (silence), and backlog frames dropped.
+    pub mic: bool,
+    pub mic_frames_in: u64,
+    pub mic_underrun_frames: u64,
+    pub mic_trimmed_frames: u64,
+}
+
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -724,6 +748,9 @@ pub struct EngineTelemetry {
     /// What is on air above the program picture ([`OverlayStateLine`]).
     #[serde(default)]
     pub overlay_state: OverlayStateLine,
+    /// Live inputs (cameras), one line each; empty when none run.
+    #[serde(default)]
+    pub live_inputs: Vec<LiveInputLine>,
 }
 
 /// SPEC §10.5 quality profiles, in ascending capability order.

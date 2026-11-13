@@ -541,6 +541,7 @@ checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags",
  "block2",
+ "libc",
  "objc2",
 ]
 
@@ -1542,6 +1543,7 @@ dependencies = [
 name = "nbe-decode"
 version = "0.2.0"
 dependencies = [
+ "dispatch2",
  "objc2",
  "objc2-audio-toolbox",
  "objc2-av-foundation",

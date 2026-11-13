@@ -25,6 +25,8 @@ pub mod zerocopy;
 
 pub mod encode;
 
+#[cfg(feature = "capture")]
+pub mod capture;
 /// CoreAudio HAL property reads for the device sink (the device-audio design
 /// record, D1): the nominal rate and the output stream's latency. The same
 /// exception covers it: every HAL property call is `unsafe` by construction.

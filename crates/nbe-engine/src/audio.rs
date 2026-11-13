@@ -249,6 +249,12 @@ pub enum Source {
     },
     /// A test tone, for the synthetic guest bus and the acceptance tests.
     Tone { hz: f32, amplitude: f32 },
+    /// A live input (a camera's mic, sprint PR C): whatever the device
+    /// delivered since the last block, read from its ring (`live.rs`).
+    Live {
+        input: std::sync::Arc<crate::live::LiveAudio>,
+        gain: f32,
+    },
 }
 
 /// A content swap waiting for its bus to reach silence (§8.7.1).
@@ -913,6 +919,7 @@ fn render_sources(sources: &[Source], out: &mut [f32], base_sample: i64, house_r
                     }
                 }
             }
+            Source::Live { input, gain } => input.mix_into(out, *gain),
             Source::Tone { hz, amplitude } => {
                 for f in 0..frames {
                     let n = base_sample + f as i64;

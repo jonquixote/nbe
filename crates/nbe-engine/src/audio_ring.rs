@@ -120,4 +120,20 @@ impl RingConsumer {
     pub fn read_frames(&self) -> u64 {
         self.shared.read.load(Ordering::Relaxed) / CHANNELS as u64
     }
+
+    /// Frames waiting to be popped.
+    pub fn fill_frames(&self) -> u64 {
+        let s = &*self.shared;
+        (s.written.load(Ordering::Acquire) - s.read.load(Ordering::Relaxed)) / CHANNELS as u64
+    }
+
+    /// Drop up to `frames` waiting frames unread, oldest first (a live input
+    /// whose backlog grew past its bound). Returns how many were dropped.
+    pub fn skip_frames(&mut self, frames: u64) -> u64 {
+        let n = frames.min(self.fill_frames());
+        self.shared
+            .read
+            .fetch_add(n * CHANNELS as u64, Ordering::Release);
+        n
+    }
 }

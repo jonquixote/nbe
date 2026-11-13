@@ -248,6 +248,14 @@ pub fn apply(
                         .iter()
                         .filter(|e| BusId::parse(&e.bus) == Some(bus))
                         .filter_map(|e| {
+                            // A camera's mic (`live:camera:<id>`, PR C) is a
+                            // running input, not a resident asset.
+                            if let Some(live) = crate::live::live_audio(&e.asset_id) {
+                                return Some(crate::audio::Source::Live {
+                                    input: live,
+                                    gain: db_to_linear(e.gain_db),
+                                });
+                            }
                             library
                                 .get(&e.asset_id)
                                 .map(|samples| crate::audio::Source::Pcm {

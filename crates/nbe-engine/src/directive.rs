@@ -411,6 +411,9 @@ impl DirectiveHandler {
         );
         *self.state.item_audio.lock().unwrap() = item_audio;
 
+        // The package's cameras run from the load on (PR C), so a take of a
+        // camera item finds frames already arriving.
+        self.state.live.ensure_cameras(&index.camera_ids());
         let faces: Vec<Vec<u8>> = index
             .font_order
             .iter()
@@ -427,6 +430,7 @@ impl DirectiveHandler {
         }
         *self.state.graphics.lock().unwrap() = crate::graphics::GraphicsRuntime::new();
         *self.state.view_item.lock().unwrap() = None;
+        *self.state.view_hold.lock().unwrap() = None;
         *self.state.preview_item.lock().unwrap() = None;
         *self.state.transition.lock().unwrap() = None;
         // Release parity (PR #34's fix round): the control plane's
@@ -1594,6 +1598,14 @@ impl DirectiveHandler {
                 .get("viewItem")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            // A stopped item's hold (`item.stop`) survives a resync only while
+            // the snapshot still puts that item on the View.
+            {
+                let mut hold = self.state.view_hold.lock().unwrap();
+                if hold.as_ref().map(|(item, _)| Some(item.as_str())) != Some(view.as_deref()) {
+                    *hold = None;
+                }
+            }
             *self.state.view_item.lock().unwrap() = view;
             // SPEC §5.9.4 (v0.4): the snapshot carries `viewItemStartFrame` —
             // §12.1's `t0` — so a resynced timed item resumes where it
@@ -1759,6 +1771,8 @@ impl DirectiveHandler {
         *self.state.audio_level_watches.lock().unwrap() = Arc::new(Vec::new());
         *self.state.record_dir.lock().unwrap() = None;
         *self.state.graphics.lock().unwrap() = crate::graphics::GraphicsRuntime::new();
+        self.state.live.stop_all();
+        *self.state.view_hold.lock().unwrap() = None;
         self.state.package_generation.fetch_add(1, Ordering::SeqCst);
     }
 
