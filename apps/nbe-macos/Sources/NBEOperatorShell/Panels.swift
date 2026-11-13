@@ -127,26 +127,43 @@ struct ShowPanel: View {
 
 struct GraphicsPanel: View {
     @ObservedObject var model: ShellModel
-    @State private var elementId = "lowerThird"
-    @State private var headline = ""
+    @State private var headlines: [String: String] = [:]
+    @State private var breaking = ""
+
+    /// The package's lower-third templates (§6.5 classes 1 and 2), from show.getState.
+    private var lowerThirds: [ShowStateView.Template] {
+        (model.show?.templates ?? []).filter { $0.kind.hasPrefix("lowerThird") }
+    }
+
+    private func onAir(_ template: String) -> Bool {
+        (model.show?.graphics ?? []).contains { $0.templateId == template }
+    }
 
     var body: some View {
         GroupBox("Graphics") {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    TextField("element", text: $elementId).frame(width: 140)
-                    Button("Show") { model.run(.elementToggle(elementId: elementId, visible: true)) }
-                        .disabled(!model.may(.elementToggle(elementId: elementId, visible: true)))
-                    Button("Hide") { model.run(.elementToggle(elementId: elementId, visible: false)) }
-                        .disabled(!model.may(.elementToggle(elementId: elementId, visible: false)))
+                if lowerThirds.isEmpty {
+                    Text("no lower-third template in this package").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(lowerThirds) { t in
+                    HStack {
+                        Circle().fill(onAir(t.id) ? Color.red : Color.gray.opacity(0.4)).frame(width: 8, height: 8)
+                        TextField(t.id, text: Binding(get: { headlines[t.id] ?? "" }, set: { headlines[t.id] = $0 }))
+                        let show = ShellCommand.graphicShow(templateId: t.id, fields: ["headline": headlines[t.id] ?? ""])
+                        Button("Show") { model.run(show) }
+                            .disabled((headlines[t.id] ?? "").isEmpty || !model.may(show))
+                        Button("Hide") { model.run(.graphicHide(templateId: t.id)) }
+                            .disabled(!onAir(t.id) || !model.may(.graphicHide(templateId: t.id)))
+                    }
                 }
                 HStack {
-                    TextField("breaking headline", text: $headline)
-                    Button("Breaking") { model.run(.breakingShow(headline: headline, subhead: nil)) }
-                        .disabled(headline.isEmpty || !model.may(.breakingShow(headline: headline, subhead: nil)))
-                    Button("Clear") { model.run(.breakingHide) }.disabled(!model.may(.breakingHide))
+                    TextField("breaking headline", text: $breaking)
+                    Button("Breaking") { model.run(.breakingShow(headline: breaking, subhead: nil)) }
+                        .disabled(breaking.isEmpty || !model.may(.breakingShow(headline: breaking, subhead: nil)))
+                    Button("Clear") { model.run(.breakingHide) }
+                        .disabled(!model.may(.breakingHide))
                 }
-                Text("on air: \((model.status.visibleOverlays ?? []).joined(separator: ", "))")
+                Text("on air: \((model.status.visibleOverlays ?? []).joined(separator: ", "))\(model.show?.breakingVisible == true ? " · BREAKING" : "")")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

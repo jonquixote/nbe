@@ -17,6 +17,10 @@ public enum ShellCommand: Equatable, Sendable {
     case cut(itemRef: String)
     // 16.5 element/graphic
     case elementToggle(elementId: String, visible: Bool?)
+    /// A template's graphic on air (a lower third), its fields as text.
+    case graphicShow(templateId: String, fields: [String: String])
+    /// Every graphic of a template off air.
+    case graphicHide(templateId: String)
     case breakingShow(headline: String, subhead: String?)
     case breakingHide
     // 16.8 soundboard
@@ -44,6 +48,8 @@ public enum ShellCommand: Equatable, Sendable {
         case .take: "view.take"
         case .cut: "view.cut"
         case .elementToggle: "element.toggle"
+        case .graphicShow: "graphic.show"
+        case .graphicHide: "graphic.hide"
         case .breakingShow: "breaking.show"
         case .breakingHide: "breaking.hide"
         case .soundboardPlay: "soundboard.play"
@@ -69,6 +75,9 @@ public enum ShellCommand: Equatable, Sendable {
         case .cut(let ref): ["itemRef": .string(ref)]
         case .elementToggle(let id, let visible):
             visible.map { ["elementId": .string(id), "visible": .bool($0)] } ?? ["elementId": .string(id)]
+        case .graphicShow(let template, let fields):
+            ["templateId": .string(template), "fields": .object(fields.mapValues { .string($0) })]
+        case .graphicHide(let template): ["templateId": .string(template)]
         case .breakingShow(let headline, let subhead):
             subhead.map { ["headline": .string(headline), "subhead": .string($0)] } ?? ["headline": .string(headline)]
         case .soundboardPlay(let asset): ["assetId": .string(asset)]
@@ -87,6 +96,7 @@ public enum ShellCommand: Equatable, Sendable {
         .previewSet(itemRef: "B2"), .take(transition: .cut, durationFrames: nil),
         .take(transition: .mix, durationFrames: 12), .cut(itemRef: "B3"),
         .elementToggle(elementId: "lt1", visible: true), .elementToggle(elementId: "lt1", visible: nil),
+        .graphicShow(templateId: "tpl_lt", fields: ["headline": "A headline"]), .graphicHide(templateId: "tpl_lt"),
         .breakingShow(headline: "BREAKING", subhead: "detail"), .breakingShow(headline: "BREAKING", subhead: nil),
         .breakingHide, .soundboardPlay(assetId: "stab"), .soundboardStopAll,
         .recordStart(outputId: "ep01"), .recordStart(outputId: nil), .recordStop,
@@ -115,7 +125,7 @@ public enum AC16Action: String, CaseIterable, Sendable {
         case .armFirstSequence: [.previewSet(itemRef: "S1")]
         case .startShow: [.showStart]
         case .takeBetweenItems: [.take(transition: .cut, durationFrames: nil)]
-        case .triggerLowerThird: [.elementToggle(elementId: "lowerThird", visible: true)]
+        case .triggerLowerThird: [.graphicShow(templateId: "tpl_lt", fields: ["headline": "A headline"]), .graphicHide(templateId: "tpl_lt")]
         case .triggerBreakingBanner: [.breakingShow(headline: "BREAKING", subhead: nil)]
         case .playSoundboardEffect: [.soundboardPlay(assetId: "stab")]
         case .startStopRecording: [.recordStart(outputId: nil), .recordStop]

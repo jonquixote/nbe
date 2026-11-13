@@ -80,6 +80,8 @@ export interface PackageInfo {
   elements: Map<string, PackageElement>;
   overlays: Set<string>;
   templates: Set<string>;
+  /** template id → its §6.5 class, for an operator surface's graphics buttons. */
+  templateKinds?: Map<string, string>;
   breakingTemplates: Set<string>;
   tickerExists: boolean;
   clockElements: Set<string>;
@@ -315,6 +317,11 @@ export class ControlPlaneState {
           }
         : null,
       elements: pkg ? [...pkg.elements.values()].map((e) => ({ id: e.id, kind: e.kind })) : null,
+      // The package's graphic templates and what is on air from them, so a
+      // shell can offer a lower third per template (sprint E, AC-16 item 6).
+      templates: pkg ? [...(pkg.templateKinds ?? new Map<string, string>())].map(([id, kind]) => ({ id, kind })) : null,
+      graphics: [...this.graphics].map(([elementId, g]) => ({ elementId, templateId: g.templateId })),
+      breakingVisible: this.breakingVisible,
       overlays: pkg ? [...pkg.overlays] : null,
       visibleOverlays: Array.from(this.visibleOverlays),
     };

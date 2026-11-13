@@ -68,6 +68,7 @@ struct ShellWindow: View {
                         RundownPanel(model: model)
                     }
                     VStack(spacing: 12) {
+                        MonitorPanel()
                         ShowPanel(model: model)
                         OutputsPanel(model: model)
                         HealthPanel(model: model)

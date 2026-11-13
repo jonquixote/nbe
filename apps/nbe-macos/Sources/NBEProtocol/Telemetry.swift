@@ -50,8 +50,21 @@ public struct Telemetry: Decodable, Equatable, Sendable {
     public var audioDevice: AudioDevice?
     public var recordTapPath: String?
     public var alerts: [Alert]?
+    /// What the engine itself has on air above the program (#102's
+    /// `engineOverlayState`); nil with no fresh engine report.
+    public var engineOverlayState: EngineOverlayState?
 
     public init() {}
+}
+
+/// The engine's on-air line (#102): overlays, runtime graphics, the banner,
+/// the ticker override, configured clocks, the Preview item.
+public struct EngineOverlayState: Decodable, Equatable, Sendable {
+    public var overlays: [String]?
+    public var graphics: [String]?
+    public var breaking: Bool?
+    public var tickerOverrideItems: Int?
+    public var previewItem: String?
 }
 
 /// The control plane's status snapshot (`system.status`'s `data`, and the

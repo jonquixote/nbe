@@ -83,6 +83,9 @@ final class ShellModel: ObservableObject {
                 let r = try await client.send(command, baseStateVersion: nil)
                 if let e = r.error { lastProblem = "\(command.name): \(e.code) \(e.message)" }
                 note("← \(command.name) \(r.status) sv \(r.stateVersion)")
+                // What the panels draw from show.getState (the rundown's
+                // states, the graphics on air) follows every accepted command.
+                if r.ok, command != .getState { await refreshShow() }
             } catch {
                 lastProblem = "\(command.name): \(error)"
             }

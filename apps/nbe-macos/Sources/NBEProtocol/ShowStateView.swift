@@ -21,6 +21,19 @@ public struct ShowStateView: Decodable, Equatable, Sendable {
         public let kind: String
     }
 
+    /// A §6.5 graphic template: its id and class (`lowerThirdHeadline`, …).
+    public struct Template: Decodable, Equatable, Sendable, Identifiable {
+        public let id: String
+        public let kind: String
+    }
+    public struct Graphic: Decodable, Equatable, Sendable {
+        public let elementId: String
+        public let templateId: String
+    }
+
+    public var templates: [Template]?
+    public var graphics: [Graphic]?
+    public var breakingVisible: Bool?
     public var stateVersion: Int?
     public var showState: String?
     public var rundown: Rundown?
