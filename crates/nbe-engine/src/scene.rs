@@ -82,6 +82,10 @@ pub struct TextLayer {
     pub element_id: String,
     pub content: TextContent,
     pub color: [f32; 4],
+    /// The backing fill drawn in the element's box under the text, RGBA with
+    /// the opacity in alpha (`fields.backingColor`, `fields.backingOpacity`;
+    /// [`backing_of`]). `None`: bare text, as before.
+    pub backing: Option<[f32; 4]>,
     /// Font asset ids, resolved from the element's template (§6.5's
     /// `fontAssetIds`). Empty means the package named no face, and the render
     /// loop draws nothing rather than reaching for a system one.
@@ -269,6 +273,9 @@ pub struct ElementSpec {
     /// level on its bus (D4; U2, which found it parsed and ignored).
     pub audio_gain_db: f32,
     pub color: Option<[f32; 4]>,
+    /// `fields.backingColor` at `fields.backingOpacity` ([`backing_of`]): a
+    /// fill under the element's text, in its box.
+    pub backing: Option<[f32; 4]>,
     pub rect: [f32; 4],
     pub opacity: f32,
     /// `enterAnimation.durationFrames`, if the element declares one. The
@@ -734,6 +741,7 @@ impl PackageIndex {
             element_id: e.id.clone(),
             content,
             color: e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+            backing: e.backing,
             font_asset_ids: fonts,
             scroll,
             speed_px_per_frame: e.speed_px_per_frame,
@@ -930,6 +938,7 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .unwrap_or(0.0)
             .clamp(-60.0, 12.0) as f32,
         color,
+        backing: backing_of(e.get("fields")),
         rect: rect_of(e.get("transform")),
         opacity,
         enter_frames: e
@@ -1010,6 +1019,22 @@ fn rect_of(transform: Option<&serde_json::Value>) -> [f32; 4] {
     let Some(t) = transform else { return FULL_RECT };
     let get = |k: &str, d: f64| t.get(k).and_then(|v| v.as_f64()).unwrap_or(d) as f32;
     [get("x", 0.0), get("y", 0.0), get("w", 1.0), get("h", 1.0)]
+}
+
+/// A text element's backing fill, from its fields: `backingColor` (`#rrggbb`)
+/// at `backingOpacity` (0 to 1, clamped; 1 when absent). No `backingColor`, or
+/// one that does not parse, is no backing: the text is drawn bare, as before.
+/// The same two fields on a declared element and on a `graphic.show`, read
+/// the way `color` is.
+pub fn backing_of(fields: Option<&serde_json::Value>) -> Option<[f32; 4]> {
+    let fields = fields?;
+    let [r, g, b, _] = parse_hex_rgb(fields.get("backingColor")?.as_str()?)?;
+    let opacity = fields
+        .get("backingOpacity")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0) as f32;
+    Some([r, g, b, opacity])
 }
 
 pub(crate) fn parse_hex_rgb(s: &str) -> Option<[f32; 4]> {

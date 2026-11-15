@@ -182,6 +182,7 @@ function writePackage(): string {
         { id: "tpl_banner", kind: "breakingBanner", fontAssetIds: ["amiri"], fields: [{ name: "headline" }] },
         { id: "tpl_ticker", kind: "ticker", fontAssetIds: ["amiri"], fields: [{ name: "text" }] },
         { id: "tpl_clock", kind: "generic", fontAssetIds: ["amiri"] },
+        { id: "tpl_plate", kind: "generic", fontAssetIds: ["amiri"], fields: [{ name: "headline" }] },
       ],
       scenes: [
         { id: "SCN_COUNTER", elements: [{ id: "main", kind: "clip", z: 1, assetId: "counter" }] },
@@ -206,6 +207,21 @@ function writePackage(): string {
               fields: { color: "#00ff00" },
               transform: { x: 0, y: 0.2, w: 1, h: 0.06 },
               clock: { mode: "showElapsed", format: "HH:mm:ss", blinkColon: false },
+            },
+          ],
+        },
+        {
+          // Item 6: a declared text element with a backing at half opacity,
+          // in a band nothing else draws in (shown by its own step).
+          id: "ol_backed",
+          elements: [
+            {
+              id: "plate_el",
+              kind: "graphic",
+              z: 6,
+              templateId: "tpl_plate",
+              fields: { headline: "ON A PLATE", color: "#ffffff", backingColor: "#0000ff", backingOpacity: 0.5 },
+              transform: { x: 0, y: 0, w: 0.5, h: 0.08 },
             },
           ],
         },
@@ -300,6 +316,15 @@ const BANNER: [number, number, number, number] = [0, 0.1, 1, 0.08];
 const TICKER: [number, number, number, number] = [0, 0.9, 1, 0.1];
 const CLOCK: [number, number, number, number] = [0, 0.2, 1, 0.06];
 const PICTURE: [number, number, number, number] = [0, 0.3, 1, 0.4];
+// Item 6's declared plate (ol_backed).
+const PLATE: [number, number, number, number] = [0, 0, 0.5, 0.08];
+/** The lower third's backing, #0000c0 at full opacity. */
+const BACKING_BLUE: Rgb = (r, g, b) => r < 60 && g < 60 && b > 150 && b < 230;
+/** #0000ff at half opacity over the dark scene's #101010: about (8, 8, 135). */
+const HALF_BLUE: Rgb = (r, g, b) => r < 50 && g < 50 && b > 95 && b < 175;
+/** Pixels in a normalized rect. */
+const area = (rect: [number, number, number, number]): number =>
+  (Math.ceil((rect[0] + rect[2]) * W) - Math.floor(rect[0] * W)) * (Math.ceil((rect[1] + rect[3]) * H) - Math.floor(rect[1] * H));
 
 before(async () => {
   assert.ok(existsSync(ENGINE_BIN), `the engine binary must be built: ${ENGINE_BIN} (cargo build --release -p nbe-engine)`);
@@ -398,6 +423,19 @@ before(async () => {
     (s["clocksConfigured"] as string[]).includes("clock_el"),
   );
   await step("preview", "preview.set", { itemRef: "A3" }, (s) => s["previewItem"] === "A3");
+
+  // Item 6 (the user's ruling of 2026-11-14 22:20): backing bars. A runtime
+  // graphic with its own backing, then a declared element with one at half
+  // opacity. Still over the dark A2.
+  await step(
+    "backed_show",
+    "graphic.show",
+    { templateId: "tpl_lt", fields: { headline: "BACKED", color: "#ff00ff", backingColor: "#0000c0", backingOpacity: 1 } },
+    (s) => (s["graphics"] as string[]).includes("tpl_lt-graphic"),
+  );
+  await step("backed_hide", "graphic.hide", { elementId: "tpl_lt-graphic" }, (s) => (s["graphics"] as string[]).length === 0);
+  await step("plate_show", "overlay.show", { overlayId: "ol_backed" }, () => true);
+  await step("plate_hide", "overlay.hide", { overlayId: "ol_backed" }, () => true);
 
   // #102's open question: the hold item.stop puts on A1 is released by a cut
   // and by a take. A cut back to A1 after a cut away, then a second stop and
@@ -587,6 +625,35 @@ test("[A] clock.configure: HH:mm:ss becomes HH:mm on air", (t) => {
   assert.ok(before > 500, `the declared clock is on air (${before})`);
   assert.ok(after > 200 && after < before * 0.85, `fewer digits after the reconfigure (before ${before}, after ${after})`);
   assert.deepEqual(reported["clock_configure"]?.["clocksConfigured"], ["clock_el"]);
+});
+
+test("[6] backing: a runtime graphic's backing fills its box under its text, and goes with it", (t) => {
+  if (skipIfNoRecording(t)) return;
+  const box = area(LOWER_THIRD);
+  const base = count(sample("preview"), LOWER_THIRD, BACKING_BLUE);
+  const shownFrame = sample("backed_show");
+  const shown = count(shownFrame, LOWER_THIRD, BACKING_BLUE);
+  const text = count(shownFrame, LOWER_THIRD, MAGENTA);
+  const hidden = count(sample("backed_hide"), LOWER_THIRD, BACKING_BLUE);
+  console.log(`backing (graphic.show): box ${box} px; backing-blue base ${base}, shown ${shown}, hidden ${hidden}; magenta text on it ${text}`);
+  // The fill covers the box except where the text is drawn over it.
+  assert.ok(shown > box * 0.6, `the backing fills the box (${shown} of ${box})`);
+  assert.ok(text > 500, `the text is drawn over the backing, not under it (${text})`);
+  assert.ok(base < 1000 && hidden < 1000, `no backing before the show or after the hide (base ${base}, hidden ${hidden})`);
+});
+
+test("[6] backing: a declared element's backing is drawn at its declared opacity", (t) => {
+  if (skipIfNoRecording(t)) return;
+  const box = area(PLATE);
+  const base = count(sample("backed_hide"), PLATE, HALF_BLUE);
+  const shownFrame = sample("plate_show");
+  const half = count(shownFrame, PLATE, HALF_BLUE);
+  const full = count(shownFrame, PLATE, (r, g, b) => r < 60 && g < 60 && b > 200);
+  const hidden = count(sample("plate_hide"), PLATE, HALF_BLUE);
+  console.log(`backing (declared, opacity 0.5): box ${box} px; half-blue base ${base}, shown ${half}, full-blue ${full}, hidden ${hidden}`);
+  assert.ok(half > box * 0.6, `the half-opacity backing fills the plate (${half} of ${box})`);
+  assert.ok(full < box * 0.05, `and it is not drawn opaque (${full} full-blue pixels)`);
+  assert.ok(base < 1000 && hidden < 1000, `no plate before its overlay shows or after it hides (base ${base}, hidden ${hidden})`);
 });
 
 test("[A] preview.set: the engine's Preview bus follows (reported; the Preview bus is not recorded)", (t) => {

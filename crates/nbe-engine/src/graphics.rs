@@ -47,6 +47,9 @@ pub struct RuntimeGraphic {
     pub z: i64,
     pub rect: [f32; 4],
     pub color: [f32; 4],
+    /// The host element's backing, if it declares one; the command's own
+    /// `fields.backingColor` overrides it ([`Self::effective_backing`]).
+    pub backing: Option<[f32; 4]>,
     pub font_asset_ids: Vec<String>,
 }
 
@@ -67,6 +70,13 @@ impl RuntimeGraphic {
             .unwrap_or(self.color)
     }
 
+    /// The backing: `fields.backingColor` (at `fields.backingOpacity`) when
+    /// the command set one, else the host element's, else none.
+    fn effective_backing(&self) -> Option<[f32; 4]> {
+        let fields = serde_json::Value::Object(self.fields.clone());
+        crate::scene::backing_of(Some(&fields)).or(self.backing)
+    }
+
     /// The layer this graphic draws: text when it has any, the solid fill a
     /// colour-only graphic always was otherwise.
     pub fn layer(&self) -> Option<Layer> {
@@ -75,6 +85,7 @@ impl RuntimeGraphic {
                 element_id: self.element_id.clone(),
                 content: TextContent::Static(text),
                 color: self.effective_color(),
+                backing: self.effective_backing(),
                 font_asset_ids: self.font_asset_ids.clone(),
                 scroll: false,
                 speed_px_per_frame: 0.0,
@@ -203,6 +214,7 @@ pub fn build_graphic(
         z: z.or(host.map(|h| h.z)).unwrap_or(100),
         rect: host.map(|h| h.rect).unwrap_or_else(|| default_rect(kind)),
         color: host.and_then(|h| h.color).unwrap_or([1.0, 1.0, 1.0, 1.0]),
+        backing: host.and_then(|h| h.backing),
         font_asset_ids,
     }
 }
@@ -228,6 +240,85 @@ pub fn merge_clock(base: &ClockSpec, patch: &serde_json::Value) -> ClockSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 6 (the user's ruling of 2026-11-14 22:20): a declared host's
+    /// backing reaches a runtime graphic drawn in its box; the command's own
+    /// `backingColor` overrides it; a graphic with neither has none.
+    #[test]
+    fn a_runtime_graphic_takes_its_host_s_backing_and_its_own_fields_override_it() {
+        let manifest = serde_json::json!({
+            "manifestVersion": "0.4",
+            "show": { "video": { "width": 1920, "height": 1080, "frameRate": 30 } },
+            "assets": [],
+            "templates": [
+                { "id": "tpl_banner", "kind": "breakingBanner" },
+                { "id": "tpl_lt", "kind": "lowerThirdHeadline" }
+            ],
+            "scenes": [],
+            "overlays": [{ "id": "host", "elements": [
+                { "id": "banner_host", "kind": "graphic", "z": 5, "templateId": "tpl_banner",
+                  "fields": { "color": "#ffffff", "backingColor": "#800000", "backingOpacity": 0.5 },
+                  "transform": { "x": 0, "y": 0.1, "w": 1, "h": 0.08 } }
+            ]}],
+            "rundown": { "id": "R", "items": [] }
+        });
+        let index = PackageIndex::build(&manifest, std::path::Path::new("/nonexistent"));
+        let text = |headline: &str| {
+            let mut f = serde_json::Map::new();
+            f.insert("headline".into(), headline.into());
+            f
+        };
+        let backing_of = |g: &RuntimeGraphic| match g.layer().map(|l| l.source) {
+            Some(LayerSource::Text(t)) => t.backing,
+            other => panic!("a text layer, got {other:?}"),
+        };
+
+        let banner = build_graphic(&index, "tpl_banner", BREAKING_ID, text("NEWS"), None);
+        assert_eq!(
+            backing_of(&banner),
+            Some([128.0 / 255.0, 0.0, 0.0, 0.5]),
+            "the host's backing, at its opacity"
+        );
+
+        let mut fields = text("NEWS");
+        fields.insert("backingColor".into(), "#0000ff".into());
+        let own = build_graphic(&index, "tpl_banner", BREAKING_ID, fields, None);
+        assert_eq!(
+            backing_of(&own),
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "the command's backingColor overrides the host's; its opacity defaults to 1"
+        );
+
+        let bare = build_graphic(&index, "tpl_lt", "tpl_lt-graphic", text("BARE"), None);
+        assert_eq!(
+            backing_of(&bare),
+            None,
+            "no host backing, no field: bare text"
+        );
+    }
+
+    #[test]
+    fn backing_fields_parse_clamp_and_ignore_what_is_not_a_colour() {
+        use crate::scene::backing_of;
+        let f = |v: serde_json::Value| backing_of(Some(&v));
+        assert_eq!(f(serde_json::json!({})), None);
+        assert_eq!(f(serde_json::json!({ "backingOpacity": 0.5 })), None);
+        assert_eq!(f(serde_json::json!({ "backingColor": "red" })), None);
+        assert_eq!(
+            f(serde_json::json!({ "backingColor": "#00ff00" })),
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            f(serde_json::json!({ "backingColor": "#00ff00", "backingOpacity": 3.0 })),
+            Some([0.0, 1.0, 0.0, 1.0]),
+            "opacity clamps to 1"
+        );
+        assert_eq!(
+            f(serde_json::json!({ "backingColor": "#00ff00", "backingOpacity": -1.0 })),
+            Some([0.0, 1.0, 0.0, 0.0]),
+            "and to 0"
+        );
+    }
 
     #[test]
     fn manual_override_replaces_the_declared_text_and_clears_back() {
