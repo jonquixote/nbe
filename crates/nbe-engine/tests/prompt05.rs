@@ -1177,13 +1177,16 @@ async fn a_take_at_a_nonzero_master_frame_starts_the_clip_at_its_own_frame_zero(
          got {px:?}"
     );
 
-    // And past its length it has run out rather than wrapping.
+    // And past its length it has run out rather than wrapping: on the View
+    // it holds its last frame, 29, blue (SPEC §12.8.1 rule 5 as amended on
+    // 2026-11-15). A wrapped clip would show frame 10, green; a dropped
+    // layer, black.
     render.render_frame(start + 40, None);
     let px = centre_px(&render.readback_view().await);
-    assert_eq!(
-        px,
-        [0, 0, 0, 255],
-        "a clip past its last frame renders nothing, not a wrapped frame"
+    assert!(
+        px[2] > 200 && px[0] < 60 && px[1] < 60,
+        "a clip past its last frame holds that frame (blue), not a wrapped frame (green) \
+         and not black, got {px:?}"
     );
 }
 

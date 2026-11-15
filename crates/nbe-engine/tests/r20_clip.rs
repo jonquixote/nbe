@@ -648,11 +648,12 @@ async fn r20_a_miss_holds_the_last_frame_counts_it_and_never_blocks() {
 }
 
 #[tokio::test]
-async fn r20_past_its_end_a_clip_draws_nothing() {
+async fn r20_past_its_end_a_clip_holds_its_last_frame_on_the_view() {
     let _lane = LANE.read().await;
     // M6. The clip's end is its metadata's length (§12.8.1 rule 5): frame 59
-    // is counter_60's last, and from frame 60 the clip has ended and its layer
-    // is not drawn. A clip that held past its end would show frame 59 there.
+    // is counter_60's last, and from frame 60 the clip has ended. Rule 5 as
+    // amended on 2026-11-15: on the View the layer holds frame 59 for as long
+    // as the item stays on air, never black and never a wrapped frame.
     let source = dress_media("counter_60.mp4");
     let decoded = decoded("counter_60.mp4");
     let last = { decoded[59].centre };
@@ -670,11 +671,56 @@ async fn r20_past_its_end_a_clip_draws_nothing() {
     );
     for n in [60u64, 75] {
         let got = rendered_centre(&mut render, n).await;
-        assert_eq!(
-            got,
-            [0, 0, 0],
-            "R20: at frame {n} counter_60 has ended and its layer must not be drawn \
-             (frame 59 {last:?}: held past its end), got {got:?}"
+        assert!(
+            close(got, last),
+            "R20: at frame {n} counter_60 has ended and holds its last frame, frame 59 {last:?}; \
+             got {got:?} (black: not drawn; frame {} {:?}: wrapped)",
+            n - 60,
+            decoded[(n - 60) as usize].centre
         );
     }
+}
+
+#[tokio::test]
+async fn r20_a_streamed_clip_held_past_its_end_keeps_its_last_frame_resident() {
+    let _lane = LANE.read().await;
+    // Rule 5's hold on a clip that streams (counter_150: 150 frames, past the
+    // head and the window, H + K = 90). The read-ahead must keep the held
+    // frame, 149, in its window: a window that went back to the head once the
+    // clip ended would evict 149 within a window's refill, and the hold would
+    // show another frame and count a miss every frame after.
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let last = { decoded[149].centre };
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(149, SETTLE),
+        "R20: the read-ahead did not settle at 149"
+    );
+    let at_last = rendered_centre(&mut render, 149).await;
+    assert!(
+        close(at_last, last),
+        "R20: frame 149 is the clip's last, {last:?}; got {at_last:?}"
+    );
+    let before = misses(&render);
+    // Each held frame first lets the read-ahead do all it wants (uncapped), so
+    // a window that wandered back to the head would have refilled and lost 149.
+    for n in 150u64..150 + 70 {
+        assert!(
+            render.settle_read_ahead(n, SETTLE),
+            "R20: the read-ahead did not settle at {n}"
+        );
+        let got = rendered_centre(&mut render, n).await;
+        assert!(
+            close(got, last),
+            "R20: at frame {n}, past its end, the clip holds frame 149 {last:?}; got {got:?}"
+        );
+    }
+    assert_eq!(
+        misses(&render),
+        before,
+        "R20: the held frame stays resident, so holding it is no miss"
+    );
 }
