@@ -57,6 +57,10 @@ let recordDir = "";
 let recording = "";
 let returnPcm: Float32Array = new Float32Array(0);
 let lostAfterLeave: boolean | null = null;
+/** Item 7a: the engine's children after the guest joined and left again and again. */
+let childrenAfterLeaves: Array<{ pid: number; stat: string; command: string }> | null = null;
+/** Item 7c: the guest's ffmpeg children at the kill -9, and those still running after it. */
+let killed: { children: number[]; survivors: number[]; goneMs: number } | null = null;
 let dropsAtStart = 0;
 let dropsAtEnd = 0;
 let skipReason: string | null = null;
@@ -111,6 +115,43 @@ async function until(what: string, ms: number, want: (d: Record<string, unknown>
 
 function guestLine(d: Record<string, unknown>): Record<string, unknown> | undefined {
   return (d["liveInputs"] as Array<Record<string, unknown>> | undefined)?.find((l) => l["source"] === "guest:g1");
+}
+
+/** A WHIP publisher, as the guest's browser would be: a test pattern and a 1 kHz tone. */
+function publisher(): ChildProcess {
+  return spawn(
+    FFMPEG,
+    [
+      "-v", "error", "-re",
+      "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
+      "-f", "lavfi", "-i", "aevalsrc=0.1*sin(2*PI*1000*t):s=48000:c=stereo",
+      "-t", "60",
+      "-c:v", "libx264", "-profile:v", "baseline", "-tune", "zerolatency", "-bf", "0", "-g", "30", "-pix_fmt", "yuv420p", "-b:v", "2500k",
+      "-c:a", "libopus", "-ar", "48000", "-ac", "2", "-b:a", "128k",
+      "-f", "whip", WHIP_URL,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+}
+
+/** The engine's direct children: pid, state, command line. */
+function engineChildren(): Array<{ pid: number; stat: string; command: string }> {
+  const out = spawnSync("ps", ["-A", "-o", "pid=,ppid=,stat=,command="]).stdout?.toString() ?? "";
+  return out
+    .split("\n")
+    .map((l) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(l))
+    .filter((m): m is RegExpExecArray => m !== null && Number(m[2]) === engine.pid)
+    .map((m) => ({ pid: Number(m[1]), stat: m[3]!, command: m[4]! }));
+}
+
+/** Whether a pid is still running (signal 0). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function droppedNow(): number {
@@ -287,19 +328,7 @@ before(async () => {
   assert.equal((await send("system.telemetry.subscribe", { intervalMs: 250 })).status, "ok");
 
   // The guest: a WHIP publisher, as the browser would be.
-  guest = spawn(
-    FFMPEG,
-    [
-      "-v", "error", "-re",
-      "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
-      "-f", "lavfi", "-i", "aevalsrc=0.1*sin(2*PI*1000*t):s=48000:c=stereo",
-      "-t", "60",
-      "-c:v", "libx264", "-profile:v", "baseline", "-tune", "zerolatency", "-bf", "0", "-g", "30", "-pix_fmt", "yuv420p", "-b:v", "2500k",
-      "-c:a", "libopus", "-ar", "48000", "-ac", "2", "-b:a", "128k",
-      "-f", "whip", WHIP_URL,
-    ],
-    { stdio: ["ignore", "ignore", "pipe"] },
-  );
+  guest = publisher();
 
   await applied("show.load", { packagePath: writePackage() });
   await applied("show.start", { startClock: true });
@@ -357,6 +386,43 @@ before(async () => {
   const keep = process.env.NBE_GUEST_E2E_KEEP;
   if (keep) copyFileSync(recording, keep);
   console.log(`guest e2e: View drops during the take ${dropsAtStart} -> ${dropsAtEnd}; guest line ${JSON.stringify(guestLine(ticks.at(-1)?.data ?? {}))}`);
+
+  // Item 7a (the user's ruling of 2026-11-14 22:20): the guest joins and
+  // leaves again and again, publishing throughout; then the engine has no
+  // ffmpeg child left, running or defunct.
+  guest = publisher();
+  for (let i = 0; i < 5; i++) {
+    await applied("guest.connect", { guestId: "g1", whipUrl: WHIP_URL });
+    await sleep(300 + 250 * i);
+    await applied("guest.disconnect", { guestId: "g1" });
+  }
+  await sleep(1000);
+  childrenAfterLeaves = engineChildren();
+
+  // Item 7c: a guest connected, its frames flowing, and the engine killed
+  // with SIGKILL (no drop runs): none of its ffmpeg children may outlive it.
+  await applied("guest.connect", { guestId: "g1", whipUrl: WHIP_URL });
+  const since = ticks.length;
+  await until("the guest's frames after the rejoin", 20_000, (d) => ticks.length > since + 2 && ((guestLine(d)?.["framesIn"] as number) ?? 0) > 30);
+  const children = engineChildren()
+    .filter((c) => c.command.includes("ffmpeg"))
+    .map((c) => c.pid);
+  const killedAt = Date.now();
+  engine.kill("SIGKILL");
+  let survivors = children;
+  while (survivors.length > 0 && Date.now() - killedAt < 15_000) {
+    await sleep(100);
+    survivors = survivors.filter(alive);
+  }
+  killed = { children, survivors, goneMs: Date.now() - killedAt };
+  for (const pid of survivors) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  }
+  console.log(`guest e2e: after the joins and leaves the engine's children were ${JSON.stringify(childrenAfterLeaves)}; at the kill -9, ffmpeg children ${JSON.stringify(children)}, still running after ${killed.goneMs} ms: ${JSON.stringify(survivors)}`);
 });
 
 after(async () => {
@@ -402,6 +468,20 @@ test("[D] AC-18: the guest's return carries the program and not the guest (1 kHz
   normativeOnly("the program in the return at -20 dBFS within 3 dB", () =>
     assert.ok(p > -23 && p < -17, `the program's level in the return (${p.toFixed(2)})`),
   );
+});
+
+test("[7a] a guest that joins and leaves again and again leaves the engine no ffmpeg child, running or defunct", (t) => {
+  if (skipReason) return t.skip(skipReason);
+  assert.ok(childrenAfterLeaves !== null, "the joins and leaves ran");
+  const left = childrenAfterLeaves.filter((c) => c.command.includes("ffmpeg") || c.stat.includes("Z"));
+  assert.deepEqual(left, [], `children left behind: ${JSON.stringify(left)}`);
+});
+
+test("[7c] kill -9 of the engine with a guest connected: none of its ffmpeg children outlives it", (t) => {
+  if (skipReason) return t.skip(skipReason);
+  assert.ok(killed !== null, "the kill ran");
+  assert.ok(killed.children.length >= 3, `the connected guest's children were running at the kill (video, audio, return): ${JSON.stringify(killed.children)}`);
+  assert.deepEqual(killed.survivors, [], `ffmpeg children still running 15 s after the engine was killed: ${JSON.stringify(killed.survivors)}`);
 });
 
 test("[D] when the guest leaves, the guest on the View is a lost live source: the slate", (t) => {

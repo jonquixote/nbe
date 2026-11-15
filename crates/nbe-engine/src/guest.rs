@@ -34,6 +34,8 @@ use std::time::Duration;
 
 /// How long a dead child waits before it is started again.
 pub const RESPAWN_DELAY: Duration = Duration::from_millis(500);
+/// A reader's RTSP socket timeout, in microseconds (ffmpeg's `-timeout`).
+const READER_TIMEOUT_US: &str = "5000000";
 /// The guest picture the engine works with.
 pub const GUEST_W: u32 = 1280;
 pub const GUEST_H: u32 = 720;
@@ -141,6 +143,12 @@ impl GuestSession {
                         "error",
                         "-rtsp_transport",
                         "tcp",
+                        // A reader whose input goes quiet for 5 s ends (and
+                        // is restarted while the session runs). It is also
+                        // how a reader left behind by a killed engine ends
+                        // when no data flows to fail its write (item 7c).
+                        "-timeout",
+                        READER_TIMEOUT_US,
                         "-fflags",
                         "nobuffer",
                         "-flags",
@@ -156,7 +164,10 @@ impl GuestSession {
                         "rawvideo",
                         "pipe:1",
                     ];
-                    let Some(mut out) = start_child(&slot, &args, true, false) else {
+                    let Some(mut out) = start_child(&slot, &stop, &args, true, false) else {
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
                         std::thread::sleep(RESPAWN_DELAY);
                         continue;
                     };
@@ -198,6 +209,12 @@ impl GuestSession {
                         "error",
                         "-rtsp_transport",
                         "tcp",
+                        // A reader whose input goes quiet for 5 s ends (and
+                        // is restarted while the session runs). It is also
+                        // how a reader left behind by a killed engine ends
+                        // when no data flows to fail its write (item 7c).
+                        "-timeout",
+                        READER_TIMEOUT_US,
                         "-fflags",
                         "nobuffer",
                         "-flags",
@@ -213,7 +230,10 @@ impl GuestSession {
                         "f32le",
                         "pipe:1",
                     ];
-                    let Some(mut out) = start_child(&slot, &args, true, false) else {
+                    let Some(mut out) = start_child(&slot, &stop, &args, true, false) else {
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
                         std::thread::sleep(RESPAWN_DELAY);
                         continue;
                     };
@@ -270,7 +290,10 @@ impl GuestSession {
                         "tcp",
                         &url,
                     ];
-                    let Some(mut stdin) = start_writer(&slot, &args) else {
+                    let Some(mut stdin) = start_writer(&slot, &stop, &args) else {
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
                         std::thread::sleep(RESPAWN_DELAY);
                         continue;
                     };
@@ -324,6 +347,14 @@ impl GuestSession {
 impl crate::live::CaptureHandle for GuestSession {}
 
 impl Drop for GuestSession {
+    /// Stops every child and reaps it (the second key's item 7a). The stop
+    /// flag is set before the slots are locked, and a thread stores a child
+    /// it spawned only under its slot's lock after checking the flag
+    /// ([`start_child`]): so a child is either in its slot when it is killed
+    /// here, or killed and reaped by the thread that spawned it. Each thread
+    /// reaps the child it ran when its read or write ends; any child still in
+    /// a slot after the joins is reaped here. None is left running or
+    /// defunct.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         for slot in &self.children {
@@ -333,6 +364,9 @@ impl Drop for GuestSession {
         }
         for t in self.threads.drain(..) {
             let _ = t.join();
+        }
+        for slot in &self.children {
+            reap(slot);
         }
         tracing::info!(guest = %self.guest_id, "guest session stopped");
     }
@@ -345,9 +379,23 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> std::thread::JoinHand
         .expect("spawn a guest thread")
 }
 
+/// Keep a child in its slot, unless the session is stopping: then it is
+/// killed and reaped here, never stored, so a session's drop cannot miss it.
+fn keep(slot: &Arc<Mutex<Option<Child>>>, stop: &AtomicBool, mut child: Child) -> bool {
+    let mut held = slot.lock().unwrap();
+    if stop.load(Ordering::SeqCst) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    }
+    *held = Some(child);
+    true
+}
+
 /// Start a reading child, keep it in `slot`, and hand back its stdout.
 fn start_child(
     slot: &Arc<Mutex<Option<Child>>>,
+    stop: &AtomicBool,
     args: &[&str],
     stdout: bool,
     stdin: bool,
@@ -366,13 +414,13 @@ fn start_child(
         .map_err(|e| tracing::warn!(error = %e, "ffmpeg would not start"))
         .ok()?;
     let out = child.stdout.take();
-    *slot.lock().unwrap() = Some(child);
-    out
+    keep(slot, stop, child).then_some(out).flatten()
 }
 
 /// Start a writing child (the return encoder) and hand back its stdin.
 fn start_writer(
     slot: &Arc<Mutex<Option<Child>>>,
+    stop: &AtomicBool,
     args: &[&str],
 ) -> Option<std::process::ChildStdin> {
     let mut child = Command::new(ffmpeg())
@@ -384,8 +432,7 @@ fn start_writer(
         .map_err(|e| tracing::warn!(error = %e, "ffmpeg would not start"))
         .ok()?;
     let input = child.stdin.take();
-    *slot.lock().unwrap() = Some(child);
-    input
+    keep(slot, stop, child).then_some(input).flatten()
 }
 
 fn reap(slot: &Arc<Mutex<Option<Child>>>) {
