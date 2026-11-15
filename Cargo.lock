@@ -1544,6 +1544,7 @@ name = "nbe-decode"
 version = "0.2.0"
 dependencies = [
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-audio-toolbox",
  "objc2-av-foundation",

@@ -8,6 +8,10 @@ description = "Hardware video decode (VideoToolbox via AVFoundation), shared by 
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+# `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` for `thread_time` (R21's
+# diagnostic). Already in the lock file through wgpu, cpal and tokio
+# (0.2.189, MIT OR Apache-2.0); this adds no crate to the build.
+libc = "0.2"
 objc2 = "0.6.4"
 objc2-core-foundation = { version = "0.3.2", features = ["CFArray", "CFBase", "CFDictionary", "CFNumber", "CFString"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError", "NSObject", "NSEnumerator"] }

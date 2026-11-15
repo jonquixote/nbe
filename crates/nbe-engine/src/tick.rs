@@ -32,12 +32,16 @@ use std::time::{Duration, Instant};
 use crate::record::{CountSkip, SkipPath};
 use crate::render::RenderLoop;
 use crate::state::{EngineState, RecordState, StreamState};
+use nbe_decode::thread_time::thread_cpu_time;
 
 /// Where one tick's time went. `total` is the loop's timed region (the tick,
 /// without the sleep to the next boundary).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TickReport {
     pub render: Duration,
+    /// The render thread's own CPU time over `render` (R21's diagnostic,
+    /// log-only): far below `render` means the thread waited, not worked.
+    pub render_cpu: Duration,
     /// Record handoff after the draw (the readback lives here on a CPU take).
     pub record: Duration,
     /// Stream work: the pre-draw surface loan plus the post-draw `try_send`.
@@ -307,14 +311,20 @@ impl Cadence {
                 woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
                 before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
                 render_ms = report.render.as_secs_f64() * 1000.0,
+                // R21's diagnostic: the render thread's own CPU time beside
+                // the wall time, whole and per phase (log-only; additive).
+                render_cpu_ms = ms(report.render_cpu),
                 // Step F: where render_ms went (log-only; additive fields).
                 sync_ms = ms(report.render_phases.sync),
                 read_ahead_ms = ms(report.render_phases.read_ahead),
+                read_ahead_cpu_ms = ms(report.render_phases.cpu.read_ahead),
                 preview_ms = ms(report.render_phases.preview.total()),
+                preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 view_build_ms = ms(report.render_phases.view.build),
                 view_encode_ms = ms(report.render_phases.view.encode),
                 view_finish_ms = ms(report.render_phases.view.finish),
                 view_submit_ms = ms(report.render_phases.view.submit),
+                view_cpu_ms = ms(report.render_phases.cpu.view),
                 dropped_total = state.dropped_frames_total.load(Ordering::SeqCst),
                 suppressed,
                 "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
@@ -453,9 +463,14 @@ pub async fn run_tick(
 
     let render_started = Instant::now();
     report.before_draw = render_started - tick_started;
+    let render_cpu = thread_cpu_time();
     let frame_report = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
+    report.render_cpu = thread_cpu_time().saturating_sub(render_cpu);
     report.render_phases = frame_report.phases;
+    if let Some(r) = report.render_phases.live_resync {
+        live_resync_line(&report, frame, r);
+    }
     // SPEC §10.2, as the user ruled on 2026-10-28: a View frame is dropped
     // when the master clock reaches the next frame's boundary before it was
     // submitted. Counted only while the clock runs, once per master frame: a
@@ -536,6 +551,23 @@ pub async fn run_tick(
     report
 }
 
+/// R21's diagnostic (log-only): the frame on which a live source joined or
+/// left. The render thread starts a joining source's upload thread and stops
+/// (joins) a leaving one's; this line gives that resync's wall and CPU time
+/// beside the whole frame's, so a stall there shows as wall far above CPU.
+fn live_resync_line(report: &TickReport, frame: u64, r: crate::render::LiveResync) {
+    tracing::info!(
+        frame,
+        render_ms = ms(report.render),
+        render_cpu_ms = ms(report.render_cpu),
+        resync_ms = ms(r.wall),
+        resync_cpu_ms = ms(r.cpu),
+        uploaders_before = r.uploaders_before,
+        uploaders_after = r.uploaders_after,
+        "live sources changed: the frame's render and the upload threads' resync, wall and render-thread CPU"
+    );
+}
+
 /// Step F (log-only): the first draw of a run, by phase. The first-tick
 /// sightings on CI (200 ms to 5.4 s) are first draws; this says where one's
 /// time went. Logged once a run, so the frame path stays quiet.
@@ -544,6 +576,7 @@ fn first_draw_line(report: &TickReport, previous_tick: Duration) {
     tracing::info!(
         master_frame = report.master_frame.unwrap_or_default(),
         render_ms = ms(report.render),
+        render_cpu_ms = ms(report.render_cpu),
         previous_tick_ms = ms(previous_tick),
         woke_late_ms = ms(report.woke_late),
         sync_ms = ms(p.sync),
