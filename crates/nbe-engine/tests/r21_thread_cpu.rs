@@ -154,15 +154,44 @@ async fn the_frame_a_live_source_joins_or_leaves_logs_the_resync_wall_and_cpu() 
         );
     }
 
-    // A leave's resync joins the leaving source's upload thread, which waits
-    // up to 50 ms on its mailbox before it sees the stop flag. That is a
-    // wait: its wall time shows and its render-thread CPU does not. Where
-    // the thread is in its wait is chance, so a source joins and leaves
-    // until one leave's join waited 20 ms or more (leaving one tick after
-    // joining, nearly every try does).
-    let mut waited = None;
-    for i in 0..20u64 {
-        let f = 4 + 2 * i;
+    // A resync that waits is wall time, not render-thread CPU. The wait is
+    // the test seam's sleep inside the measured resync (a leave no longer
+    // waits for its upload thread: the second key's item 7b, below).
+    render.injected_resync_delay = Some(Duration::from_millis(40));
+    state.live.add_video_source(
+        "guest:t1".into(),
+        Arc::new(FrameMailbox::default()),
+        Box::new(Idle),
+    );
+    let r = run_tick(&mut render, &state, 4, None)
+        .await
+        .render_phases
+        .live_resync
+        .expect("the frame after a source joined resyncs the upload threads");
+    render.injected_resync_delay = None;
+    assert!(r.wall >= Duration::from_millis(40), "{r:?}");
+    assert!(
+        r.cpu * 2 < r.wall,
+        "a resync that waited is wall time, not render-thread CPU: {r:?}"
+    );
+    assert!(state.live.remove_video_source("guest:t1"));
+    run_tick(&mut render, &state, 5, None).await;
+}
+
+/// The second key's item 7b: the frame a live source leaves does not wait for
+/// the source's upload thread. The thread sits in a mailbox wait of up to
+/// 50 ms; joining it on the render thread cost 49.5 to 54.4 ms of wall time
+/// on that frame (this file's demo, before the fix). Ten joins and leaves:
+/// the median leave's resync stays under 5 ms.
+#[tokio::test]
+async fn a_leaving_source_does_not_make_the_render_thread_wait_for_its_upload_thread() {
+    let Some((state, mut render)) = render_loop_or_skip().await else {
+        return;
+    };
+    run_tick(&mut render, &state, 0, None).await;
+    let mut leaves = Vec::new();
+    for i in 0..10u64 {
+        let f = 1 + 2 * i;
         state.live.add_video_source(
             "guest:t1".into(),
             Arc::new(FrameMailbox::default()),
@@ -175,15 +204,16 @@ async fn the_frame_a_live_source_joins_or_leaves_logs_the_resync_wall_and_cpu() 
             .render_phases
             .live_resync
             .expect("the frame after a source left resyncs the upload threads");
-        if r.wall >= Duration::from_millis(20) {
-            waited = Some(r);
-            break;
-        }
+        assert_eq!((r.uploaders_before, r.uploaders_after), (1, 0));
+        leaves.push(r.wall);
     }
-    let r = waited.expect("in 20 leaves, one join waited 20 ms or more");
+    let mut sorted = leaves.clone();
+    sorted.sort();
+    let median = sorted[sorted.len() / 2];
+    println!("item 7b: ten leaves' resync on the render thread, median {median:?}: {leaves:?}");
     assert!(
-        r.cpu * 2 < r.wall,
-        "a join that waited is wall time, not render-thread CPU: {r:?}"
+        median < Duration::from_millis(5),
+        "a leave stops its upload thread without waiting for it; median {median:?} of {leaves:?}"
     );
 }
 

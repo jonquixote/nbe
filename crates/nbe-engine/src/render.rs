@@ -371,6 +371,10 @@ pub struct RenderLoop {
     sampler: wgpu::Sampler,
     /// Test seam: extra work per View frame, to drive the deadline path.
     pub injected_view_delay: Option<Duration>,
+    /// Test seam: sleep inside the live sources' resync on the frame they
+    /// change, so a test knows the resync waited (R21's diagnostic reads its
+    /// wall and CPU time).
+    pub injected_resync_delay: Option<Duration>,
     /// Test seam: make the preview render fail.
     pub fail_preview: bool,
     /// Test seam: make the VIEW render fail.
@@ -490,6 +494,7 @@ impl RenderLoop {
             uniforms,
             sampler,
             injected_view_delay: None,
+            injected_resync_delay: None,
             fail_preview: false,
             fail_view: false,
             consecutive_late: 0,
@@ -1628,6 +1633,9 @@ impl RenderLoop {
             let wall = Instant::now();
             let cpu = thread_cpu_time();
             let uploaders_before = self.live_uploaders.len();
+            if let Some(d) = self.injected_resync_delay {
+                std::thread::sleep(d);
+            }
             self.sync_live_uploaders();
             resync = Some(LiveResync {
                 wall: wall.elapsed(),

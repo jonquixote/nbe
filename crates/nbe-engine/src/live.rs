@@ -234,7 +234,17 @@ pub fn live_audio(id: &str) -> Option<Arc<LiveAudio>> {
     if !id.starts_with("live:") {
         return None;
     }
-    live_audio_registry().lock().unwrap().get(id).cloned()
+    lookup_live_audio(live_audio_registry(), id)
+}
+
+/// A registry read that never panics (the second key's item 7d): the audio
+/// path calls it at a take, and a lock poisoned by a panic elsewhere is
+/// silence for that input, not a dead audio thread.
+fn lookup_live_audio(
+    registry: &Mutex<HashMap<String, Arc<LiveAudio>>>,
+    id: &str,
+) -> Option<Arc<LiveAudio>> {
+    registry.lock().ok()?.get(id).cloned()
 }
 
 /// `NBE_MICS`' mapping for one camera id: `default`, an input device name
@@ -1062,11 +1072,16 @@ impl LiveUploader {
 }
 
 impl Drop for LiveUploader {
+    /// Stops the upload thread without waiting for it (the second key's item
+    /// 7b). The thread sees the flag within one mailbox wait (50 ms), ends by
+    /// itself, and drops its ring and device handles. Joining it here made the
+    /// render thread, which drops an uploader on the frame a source leaves,
+    /// wait out that mailbox wait: R21's diagnostic measured 49.5 to 54.4 ms
+    /// of wall time for under 0.1 ms of CPU. Dropping the handle detaches the
+    /// thread.
     fn drop(&mut self) {
         self.ring.stop.store(true, Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        drop(self.thread.take());
     }
 }
 
@@ -1092,6 +1107,55 @@ fn make_live_texture(device: &wgpu::Device, width: u32, height: u32, label: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The second key's item 7d: a live input whose block lock was poisoned
+    /// (a panic while it was held) is read as silence by the audio thread,
+    /// never a panic. `mix_into` takes the lock with `try_lock`, so a poisoned
+    /// lock and a busy one both leave the block silent.
+    #[test]
+    fn a_poisoned_live_audio_block_is_silence_not_a_panic() {
+        let (audio, mut producer) = LiveAudio::new();
+        producer.push(&vec![0.5f32; 960 * crate::audio::CHANNELS]);
+        let held = audio.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = held.inner.lock().unwrap();
+            panic!("a panic while the block is held poisons its lock (expected in this test)");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(audio.inner.is_poisoned());
+
+        let mut out = vec![0.0f32; 960 * crate::audio::CHANNELS];
+        audio.mix_into(&mut out, 1.0, 0);
+        assert!(
+            out.iter().all(|s| *s == 0.0),
+            "a poisoned input adds nothing to the mix"
+        );
+    }
+
+    /// The same for the registry the audio path looks a camera's mic up in at
+    /// a take: poisoned, it answers "no such input" (silence), not a panic.
+    #[test]
+    fn a_poisoned_live_audio_registry_is_no_input_not_a_panic() {
+        let registry: Arc<Mutex<HashMap<String, Arc<LiveAudio>>>> = Arc::default();
+        let (audio, _producer) = LiveAudio::new();
+        registry
+            .lock()
+            .unwrap()
+            .insert("live:camera:main".into(), audio);
+        assert!(lookup_live_audio(&registry, "live:camera:main").is_some());
+
+        let held = registry.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            panic!("a panic while the registry is held poisons it (expected in this test)");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(registry.is_poisoned());
+        assert!(
+            lookup_live_audio(&registry, "live:camera:main").is_none(),
+            "a poisoned registry is no input, not a panic"
+        );
+    }
 
     #[test]
     fn a_frame_carries_its_sequence_number_in_the_code_blocks() {
