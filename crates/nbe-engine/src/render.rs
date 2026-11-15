@@ -12,6 +12,7 @@ use crate::read_ahead::{Delivery, ReadAhead};
 use crate::scene::{Layer, LayerSource, ResolvedScene, TransitionKind};
 use crate::state::EngineState;
 use crate::watchdog::Watchdog;
+use nbe_decode::thread_time::thread_cpu_time;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -294,6 +295,32 @@ pub struct RenderPhases {
     pub read_ahead: Duration,
     pub preview: BusPhases,
     pub view: BusPhases,
+    /// The render thread's own CPU time over the same spans (R21's
+    /// diagnostic, log-only). Beside the wall times above it says whether a
+    /// slow phase was working (CPU close to wall) or waiting: descheduled, or
+    /// blocked on a lock (CPU far below wall).
+    pub cpu: PhaseCpu,
+    /// Set on the frame a live source joined or left: the upload threads'
+    /// resync, wall and CPU (R21's diagnostic; the second key's item 7b).
+    pub live_resync: Option<LiveResync>,
+}
+
+/// The render thread's CPU time per phase (see [`RenderPhases::cpu`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PhaseCpu {
+    pub read_ahead: Duration,
+    pub preview: Duration,
+    pub view: Duration,
+}
+
+/// One resync of the live upload threads, on the render thread: starting a
+/// joining source's thread and stopping (joining) a leaving one's.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiveResync {
+    pub wall: Duration,
+    pub cpu: Duration,
+    pub uploaders_before: usize,
+    pub uploaders_after: usize,
 }
 
 pub struct RenderLoop {
@@ -952,11 +979,13 @@ impl RenderLoop {
             self.shed_off_air_loops(frame);
         }
         phases.reacquire = reacquire_started.elapsed();
-        self.check_live_loss(frame);
+        phases.live_resync = self.check_live_loss(frame);
         let read_ahead_started = Instant::now();
+        let read_ahead_cpu = thread_cpu_time();
         let read_ahead_uploads = self.pump_read_ahead(frame, false);
         let read_ahead = read_ahead_started.elapsed();
         phases.read_ahead = read_ahead;
+        phases.cpu.read_ahead = thread_cpu_time().saturating_sub(read_ahead_cpu);
 
         let preview_due = match rung {
             Rung::Nominal => true,
@@ -974,7 +1003,10 @@ impl RenderLoop {
         // never counted as dropped frames).
         let mut preview_failed = false;
         if preview_due {
-            if let Err(e) = self.render_bus(Bus::Preview, frame, &mut phases.preview) {
+            let preview_cpu = thread_cpu_time();
+            let preview = self.render_bus(Bus::Preview, frame, &mut phases.preview);
+            phases.cpu.preview = thread_cpu_time().saturating_sub(preview_cpu);
+            if let Err(e) = preview {
                 preview_failed = true;
                 self.state.preview_missed.fetch_add(1, Ordering::SeqCst);
                 tracing::warn!(err = %e, frame, "preview render missed (View unaffected)");
@@ -982,10 +1014,13 @@ impl RenderLoop {
         }
 
         let started = Instant::now();
+        let view_cpu = thread_cpu_time();
         if let Some(d) = self.injected_view_delay {
             std::thread::sleep(d);
         }
-        match self.render_bus(Bus::View, frame, &mut phases.view) {
+        let view = self.render_bus(Bus::View, frame, &mut phases.view);
+        phases.cpu.view = thread_cpu_time().saturating_sub(view_cpu);
+        match view {
             Ok(submission) => {
                 self.view_submission = Some(submission);
                 // Recovery is worth exactly one line too.
@@ -1548,11 +1583,23 @@ impl RenderLoop {
     /// SPEC §10.3 trigger 3: a live source on the View with no frame for
     /// `LIVE_LOSS_MS` puts the slate up; `LIVE_RECOVER_MS` of fresh frames
     /// (or no live source on the View any more) takes it down.
-    fn check_live_loss(&mut self, frame: u64) {
+    fn check_live_loss(&mut self, frame: u64) -> Option<LiveResync> {
         // A source started or stopped since the last frame (a guest joined or
         // left): one upload thread more or less, started here, off the draw.
+        // Its wall and CPU time are measured (R21's diagnostic): stopping a
+        // leaving source's thread joins it on this thread.
+        let mut resync = None;
         if self.state.live.generation.load(Ordering::SeqCst) != self.live_generation {
+            let wall = Instant::now();
+            let cpu = thread_cpu_time();
+            let uploaders_before = self.live_uploaders.len();
             self.sync_live_uploaders();
+            resync = Some(LiveResync {
+                wall: wall.elapsed(),
+                cpu: thread_cpu_time().saturating_sub(cpu),
+                uploaders_before,
+                uploaders_after: self.live_uploaders.len(),
+            });
         }
         let on_view: Vec<String> = self
             .scene_for(Bus::View, frame)
@@ -1640,10 +1687,10 @@ impl RenderLoop {
                 self.state
                     .engage_fallback(crate::state::FallbackSource::LiveLoss);
             }
-            return;
+            return resync;
         }
         if !held {
-            return;
+            return resync;
         }
         let since = *self.live_fresh_since.get_or_insert_with(Instant::now);
         if on_view.is_empty()
@@ -1657,6 +1704,7 @@ impl RenderLoop {
                 .release_fallback(crate::state::FallbackSource::LiveLoss);
             self.live_fresh_since = None;
         }
+        resync
     }
 
     /// The runtime graphics' draws (`graphic.show`, `breaking.show`;

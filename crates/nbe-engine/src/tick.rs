@@ -32,12 +32,16 @@ use std::time::{Duration, Instant};
 use crate::record::{CountSkip, SkipPath};
 use crate::render::RenderLoop;
 use crate::state::{EngineState, RecordState, StreamState};
+use nbe_decode::thread_time::thread_cpu_time;
 
 /// Where one tick's time went. `total` is the loop's timed region (the tick,
 /// without the sleep to the next boundary).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TickReport {
     pub render: Duration,
+    /// The render thread's own CPU time over `render` (R21's diagnostic,
+    /// log-only): far below `render` means the thread waited, not worked.
+    pub render_cpu: Duration,
     /// Record handoff after the draw (the readback lives here on a CPU take).
     pub record: Duration,
     /// Stream work: the pre-draw surface loan plus the post-draw `try_send`.
@@ -307,14 +311,20 @@ impl Cadence {
                 woke_late_ms = report.woke_late.as_secs_f64() * 1000.0,
                 before_draw_ms = report.before_draw.as_secs_f64() * 1000.0,
                 render_ms = report.render.as_secs_f64() * 1000.0,
+                // R21's diagnostic: the render thread's own CPU time beside
+                // the wall time, whole and per phase (log-only; additive).
+                render_cpu_ms = ms(report.render_cpu),
                 // Step F: where render_ms went (log-only; additive fields).
                 sync_ms = ms(report.render_phases.sync),
                 read_ahead_ms = ms(report.render_phases.read_ahead),
+                read_ahead_cpu_ms = ms(report.render_phases.cpu.read_ahead),
                 preview_ms = ms(report.render_phases.preview.total()),
+                preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 view_build_ms = ms(report.render_phases.view.build),
                 view_encode_ms = ms(report.render_phases.view.encode),
                 view_finish_ms = ms(report.render_phases.view.finish),
                 view_submit_ms = ms(report.render_phases.view.submit),
+                view_cpu_ms = ms(report.render_phases.cpu.view),
                 dropped_total = state.dropped_frames_total.load(Ordering::SeqCst),
                 suppressed,
                 "R21: master frame {f} was drawn but submitted after frame {}'s boundary",
@@ -453,9 +463,14 @@ pub async fn run_tick(
 
     let render_started = Instant::now();
     report.before_draw = render_started - tick_started;
+    let render_cpu = thread_cpu_time();
     let frame_report = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
+    report.render_cpu = thread_cpu_time().saturating_sub(render_cpu);
     report.render_phases = frame_report.phases;
+    if let Some(r) = report.render_phases.live_resync {
+        live_resync_line(&report, frame, r);
+    }
     // SPEC §10.2, as the user ruled on 2026-10-28: a View frame is dropped
     // when the master clock reaches the next frame's boundary before it was
     // submitted. Counted only while the clock runs, once per master frame: a
@@ -536,6 +551,23 @@ pub async fn run_tick(
     report
 }
 
+/// R21's diagnostic (log-only): the frame on which a live source joined or
+/// left. The render thread starts a joining source's upload thread and stops
+/// (joins) a leaving one's; this line gives that resync's wall and CPU time
+/// beside the whole frame's, so a stall there shows as wall far above CPU.
+fn live_resync_line(report: &TickReport, frame: u64, r: crate::render::LiveResync) {
+    tracing::info!(
+        frame,
+        render_ms = ms(report.render),
+        render_cpu_ms = ms(report.render_cpu),
+        resync_ms = ms(r.wall),
+        resync_cpu_ms = ms(r.cpu),
+        uploaders_before = r.uploaders_before,
+        uploaders_after = r.uploaders_after,
+        "live sources changed: the frame's render and the upload threads' resync, wall and render-thread CPU"
+    );
+}
+
 /// Step F (log-only): the first draw of a run, by phase. The first-tick
 /// sightings on CI (200 ms to 5.4 s) are first draws; this says where one's
 /// time went. Logged once a run, so the frame path stays quiet.
@@ -544,6 +576,7 @@ fn first_draw_line(report: &TickReport, previous_tick: Duration) {
     tracing::info!(
         master_frame = report.master_frame.unwrap_or_default(),
         render_ms = ms(report.render),
+        render_cpu_ms = ms(report.render_cpu),
         previous_tick_ms = ms(previous_tick),
         woke_late_ms = ms(report.woke_late),
         sync_ms = ms(p.sync),
@@ -908,7 +941,7 @@ mod tests {
     /// backstop reads past).
     #[test]
     fn the_late_submit_line_names_the_draw_s_phases() {
-        use crate::render::{BusPhases, RenderPhases};
+        use crate::render::{BusPhases, PhaseCpu, RenderPhases};
         let text = captured(|| {
             let state = EngineState::new(30);
             let mut cadence = Cadence::default();
@@ -918,6 +951,9 @@ mod tests {
                     master_frame: Some(143),
                     submitted_late: Some(Duration::from_micros(2_600)),
                     render: Duration::from_micros(33_760),
+                    // R21's diagnostic: CPU figures unlike every wall figure,
+                    // so a line that printed a wall time in a CPU field fails.
+                    render_cpu: Duration::from_micros(1_250),
                     render_phases: RenderPhases {
                         read_ahead: Duration::from_micros(400),
                         view: BusPhases {
@@ -925,6 +961,11 @@ mod tests {
                             encode: Duration::from_micros(500),
                             finish: Duration::from_micros(100),
                             submit: Duration::from_micros(32_500),
+                        },
+                        cpu: PhaseCpu {
+                            read_ahead: Duration::from_micros(200),
+                            preview: Duration::from_micros(450),
+                            view: Duration::from_micros(600),
                         },
                         ..Default::default()
                     },
@@ -936,11 +977,14 @@ mod tests {
             .lines()
             .find(|l| l.contains("R21: master frame 143"))
             .unwrap_or_else(|| panic!("no R21 line in:\n{text}"));
+        // Matched with the space before it: `view_cpu_ms=` is also the tail
+        // of `preview_cpu_ms=`.
         let value = |name: &str| -> f64 {
+            let key = format!(" {name}=");
             let at = line
-                .find(&format!("{name}="))
+                .find(&key)
                 .unwrap_or_else(|| panic!("{name} missing: {line}"));
-            line[at + name.len() + 1..]
+            line[at + key.len()..]
                 .split_whitespace()
                 .next()
                 .and_then(|v| v.parse().ok())
@@ -953,6 +997,10 @@ mod tests {
             ("view_finish_ms", 0.1),
             ("view_submit_ms", 32.5),
             ("render_ms", 33.76),
+            ("render_cpu_ms", 1.25),
+            ("read_ahead_cpu_ms", 0.2),
+            ("preview_cpu_ms", 0.45),
+            ("view_cpu_ms", 0.6),
         ] {
             assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
         }
