@@ -138,8 +138,64 @@ async fn the_frame_a_live_source_joins_or_leaves_logs_the_resync_wall_and_cpu() 
     );
     assert_eq!((r.uploaders_before, r.uploaders_after), (1, 0));
     assert!(r.cpu <= r.wall + Duration::from_millis(2), "{r:?}");
+    let line = log
+        .lines()
+        .find(|l| l.contains("live sources changed") && l.contains("uploaders_after=0"))
+        .unwrap_or_else(|| panic!("the leave's line:\n{log}"));
+    for (name, want) in [
+        ("resync_ms", r.wall),
+        ("resync_cpu_ms", r.cpu),
+        ("render_ms", left.render),
+        ("render_cpu_ms", left.render_cpu),
+    ] {
+        assert!(
+            (field_ms(line, name) - want.as_secs_f64() * 1000.0).abs() < 1e-6,
+            "{name} is the measured {want:?}: {line}"
+        );
+    }
+
+    // A leave's resync joins the leaving source's upload thread, which waits
+    // up to 50 ms on its mailbox before it sees the stop flag. That is a
+    // wait: its wall time shows and its render-thread CPU does not. Where
+    // the thread is in its wait is chance, so a source joins and leaves
+    // until one leave's join waited 20 ms or more (leaving one tick after
+    // joining, nearly every try does).
+    let mut waited = None;
+    for i in 0..20u64 {
+        let f = 4 + 2 * i;
+        state.live.add_video_source(
+            "guest:t1".into(),
+            Arc::new(FrameMailbox::default()),
+            Box::new(Idle),
+        );
+        run_tick(&mut render, &state, f, None).await;
+        assert!(state.live.remove_video_source("guest:t1"));
+        let r = run_tick(&mut render, &state, f + 1, None)
+            .await
+            .render_phases
+            .live_resync
+            .expect("the frame after a source left resyncs the upload threads");
+        if r.wall >= Duration::from_millis(20) {
+            waited = Some(r);
+            break;
+        }
+    }
+    let r = waited.expect("in 20 leaves, one join waited 20 ms or more");
     assert!(
-        log.contains("uploaders_after=0"),
-        "the leave's line:\n{log}"
+        r.cpu * 2 < r.wall,
+        "a join that waited is wall time, not render-thread CPU: {r:?}"
     );
+}
+
+/// A `name=value` field of a log line, in milliseconds.
+fn field_ms(line: &str, name: &str) -> f64 {
+    let key = format!(" {name}=");
+    let at = line
+        .find(&key)
+        .unwrap_or_else(|| panic!("{name} missing: {line}"));
+    line[at + key.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("{name} unreadable: {line}"))
 }

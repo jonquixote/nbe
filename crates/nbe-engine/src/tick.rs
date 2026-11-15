@@ -941,7 +941,7 @@ mod tests {
     /// backstop reads past).
     #[test]
     fn the_late_submit_line_names_the_draw_s_phases() {
-        use crate::render::{BusPhases, RenderPhases};
+        use crate::render::{BusPhases, PhaseCpu, RenderPhases};
         let text = captured(|| {
             let state = EngineState::new(30);
             let mut cadence = Cadence::default();
@@ -951,6 +951,9 @@ mod tests {
                     master_frame: Some(143),
                     submitted_late: Some(Duration::from_micros(2_600)),
                     render: Duration::from_micros(33_760),
+                    // R21's diagnostic: CPU figures unlike every wall figure,
+                    // so a line that printed a wall time in a CPU field fails.
+                    render_cpu: Duration::from_micros(1_250),
                     render_phases: RenderPhases {
                         read_ahead: Duration::from_micros(400),
                         view: BusPhases {
@@ -958,6 +961,11 @@ mod tests {
                             encode: Duration::from_micros(500),
                             finish: Duration::from_micros(100),
                             submit: Duration::from_micros(32_500),
+                        },
+                        cpu: PhaseCpu {
+                            read_ahead: Duration::from_micros(200),
+                            preview: Duration::from_micros(450),
+                            view: Duration::from_micros(600),
                         },
                         ..Default::default()
                     },
@@ -969,11 +977,14 @@ mod tests {
             .lines()
             .find(|l| l.contains("R21: master frame 143"))
             .unwrap_or_else(|| panic!("no R21 line in:\n{text}"));
+        // Matched with the space before it: `view_cpu_ms=` is also the tail
+        // of `preview_cpu_ms=`.
         let value = |name: &str| -> f64 {
+            let key = format!(" {name}=");
             let at = line
-                .find(&format!("{name}="))
+                .find(&key)
                 .unwrap_or_else(|| panic!("{name} missing: {line}"));
-            line[at + name.len() + 1..]
+            line[at + key.len()..]
                 .split_whitespace()
                 .next()
                 .and_then(|v| v.parse().ok())
@@ -986,6 +997,10 @@ mod tests {
             ("view_finish_ms", 0.1),
             ("view_submit_ms", 32.5),
             ("render_ms", 33.76),
+            ("render_cpu_ms", 1.25),
+            ("read_ahead_cpu_ms", 0.2),
+            ("preview_cpu_ms", 0.45),
+            ("view_cpu_ms", 0.6),
         ] {
             assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
         }
