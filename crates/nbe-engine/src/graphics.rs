@@ -50,6 +50,9 @@ pub struct RuntimeGraphic {
     /// The host element's backing, if it declares one; the command's own
     /// `fields.backingColor` overrides it ([`Self::effective_backing`]).
     pub backing: Option<[f32; 4]>,
+    /// The host element's `backingPadding`, if it declares one; the
+    /// command's own overrides it.
+    pub backing_padding_px: Option<f32>,
     pub font_asset_ids: Vec<String>,
 }
 
@@ -77,6 +80,14 @@ impl RuntimeGraphic {
         crate::scene::backing_of(Some(&fields)).or(self.backing)
     }
 
+    /// The text's inset inside its backing: `fields.backingPadding` when the
+    /// command set one, else the host element's; 0 without a backing.
+    fn effective_text_inset_px(&self) -> f32 {
+        let fields = serde_json::Value::Object(self.fields.clone());
+        let padding = crate::scene::backing_padding_of(Some(&fields)).or(self.backing_padding_px);
+        crate::scene::text_inset_px(self.effective_backing(), padding)
+    }
+
     /// The layer this graphic draws: text when it has any, the solid fill a
     /// colour-only graphic always was otherwise.
     pub fn layer(&self) -> Option<Layer> {
@@ -86,6 +97,7 @@ impl RuntimeGraphic {
                 content: TextContent::Static(text),
                 color: self.effective_color(),
                 backing: self.effective_backing(),
+                text_inset_px: self.effective_text_inset_px(),
                 font_asset_ids: self.font_asset_ids.clone(),
                 scroll: false,
                 speed_px_per_frame: 0.0,
@@ -215,6 +227,7 @@ pub fn build_graphic(
         rect: host.map(|h| h.rect).unwrap_or_else(|| default_rect(kind)),
         color: host.and_then(|h| h.color).unwrap_or([1.0, 1.0, 1.0, 1.0]),
         backing: host.and_then(|h| h.backing),
+        backing_padding_px: host.and_then(|h| h.backing_padding_px),
         font_asset_ids,
     }
 }
@@ -295,6 +308,99 @@ mod tests {
             None,
             "no host backing, no field: bare text"
         );
+    }
+
+    /// The #110 follow-up (the user's ruling of 2026-11-16 21:55, item 5):
+    /// `backingPadding` is the text's inset inside its bar, in View pixels. A
+    /// runtime graphic takes its host's padding with its host's backing; the
+    /// command's own overrides it; padding without a backing insets nothing;
+    /// no padding is no inset (existing output unchanged).
+    #[test]
+    fn backing_padding_insets_the_text_inside_its_bar_only() {
+        use crate::scene::{backing_padding_of, text_inset_px};
+        let manifest = serde_json::json!({
+            "manifestVersion": "0.4",
+            "show": { "video": { "width": 1920, "height": 1080, "frameRate": 30 } },
+            "assets": [],
+            "templates": [
+                { "id": "tpl_banner", "kind": "breakingBanner" },
+                { "id": "tpl_lt", "kind": "lowerThirdHeadline" }
+            ],
+            "scenes": [],
+            "overlays": [{ "id": "host", "elements": [
+                { "id": "banner_host", "kind": "graphic", "z": 5, "templateId": "tpl_banner",
+                  "fields": { "color": "#ffffff", "backingColor": "#800000", "backingPadding": 16 },
+                  "transform": { "x": 0, "y": 0.1, "w": 1, "h": 0.08 } }
+            ]}],
+            "rundown": { "id": "R", "items": [] }
+        });
+        let index = PackageIndex::build(&manifest, std::path::Path::new("/nonexistent"));
+        let text = |headline: &str| {
+            let mut f = serde_json::Map::new();
+            f.insert("headline".into(), headline.into());
+            f
+        };
+        let inset = |g: &RuntimeGraphic| match g.layer().map(|l| l.source) {
+            Some(LayerSource::Text(t)) => t.text_inset_px,
+            other => panic!("a text layer, got {other:?}"),
+        };
+
+        let banner = build_graphic(&index, "tpl_banner", BREAKING_ID, text("NEWS"), None);
+        assert_eq!(
+            inset(&banner),
+            16.0,
+            "the host's padding, with the host's backing"
+        );
+        let mut fields = text("NEWS");
+        fields.insert("backingPadding".into(), 24.into());
+        let own = build_graphic(&index, "tpl_banner", BREAKING_ID, fields, None);
+        assert_eq!(
+            inset(&own),
+            24.0,
+            "the command's padding overrides the host's"
+        );
+
+        let bare = build_graphic(&index, "tpl_lt", "lt", text("PLAIN"), None);
+        assert_eq!(inset(&bare), 0.0, "no backing, no padding: no inset");
+        let mut fields = text("PLAIN");
+        fields.insert("backingPadding".into(), 24.into());
+        let unbacked = build_graphic(&index, "tpl_lt", "lt", fields, None);
+        assert_eq!(
+            inset(&unbacked),
+            0.0,
+            "padding without a backing insets nothing"
+        );
+        let mut fields = text("BACKED");
+        fields.insert("backingColor".into(), "#0000c0".into());
+        let unpadded = build_graphic(&index, "tpl_lt", "lt", fields, None);
+        assert_eq!(
+            inset(&unpadded),
+            0.0,
+            "a backing without padding: no inset, as before"
+        );
+
+        let f = |v: serde_json::Value| backing_padding_of(Some(&v));
+        assert_eq!(f(serde_json::json!({})), None);
+        assert_eq!(f(serde_json::json!({ "backingPadding": 12 })), Some(12.0));
+        assert_eq!(f(serde_json::json!({ "backingPadding": 12.5 })), Some(12.5));
+        assert_eq!(
+            f(serde_json::json!({ "backingPadding": -4 })),
+            Some(0.0),
+            "clamps to 0"
+        );
+        assert_eq!(
+            f(serde_json::json!({ "backingPadding": 4096 })),
+            Some(512.0),
+            "and to 512"
+        );
+        assert_eq!(
+            f(serde_json::json!({ "backingPadding": "12" })),
+            None,
+            "a number, not a string"
+        );
+        assert_eq!(text_inset_px(Some([0.0; 4]), None), 0.0);
+        assert_eq!(text_inset_px(None, Some(8.0)), 0.0);
+        assert_eq!(text_inset_px(Some([0.0; 4]), Some(8.0)), 8.0);
     }
 
     #[test]

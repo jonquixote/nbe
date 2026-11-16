@@ -86,6 +86,10 @@ pub struct TextLayer {
     /// the opacity in alpha (`fields.backingColor`, `fields.backingOpacity`;
     /// [`backing_of`]). `None`: bare text, as before.
     pub backing: Option<[f32; 4]>,
+    /// How far the text sits inside its box, in View pixels, on every side:
+    /// `fields.backingPadding` when the text has a backing, else 0
+    /// ([`text_inset_px`]). The backing still fills the whole box.
+    pub text_inset_px: f32,
     /// Font asset ids, resolved from the element's template (§6.5's
     /// `fontAssetIds`). Empty means the package named no face, and the render
     /// loop draws nothing rather than reaching for a system one.
@@ -276,6 +280,8 @@ pub struct ElementSpec {
     /// `fields.backingColor` at `fields.backingOpacity` ([`backing_of`]): a
     /// fill under the element's text, in its box.
     pub backing: Option<[f32; 4]>,
+    /// `fields.backingPadding` ([`backing_padding_of`]), if declared.
+    pub backing_padding_px: Option<f32>,
     pub rect: [f32; 4],
     pub opacity: f32,
     /// `enterAnimation.durationFrames`, if the element declares one. The
@@ -742,6 +748,7 @@ impl PackageIndex {
             content,
             color: e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
             backing: e.backing,
+            text_inset_px: text_inset_px(e.backing, e.backing_padding_px),
             font_asset_ids: fonts,
             scroll,
             speed_px_per_frame: e.speed_px_per_frame,
@@ -939,6 +946,7 @@ fn element_spec(e: &serde_json::Value) -> Option<ElementSpec> {
             .clamp(-60.0, 12.0) as f32,
         color,
         backing: backing_of(e.get("fields")),
+        backing_padding_px: backing_padding_of(e.get("fields")),
         rect: rect_of(e.get("transform")),
         opacity,
         enter_frames: e
@@ -1035,6 +1043,23 @@ pub fn backing_of(fields: Option<&serde_json::Value>) -> Option<[f32; 4]> {
         .unwrap_or(1.0)
         .clamp(0.0, 1.0) as f32;
     Some([r, g, b, opacity])
+}
+
+/// The text's inset inside its backing, in View pixels: `fields.backingPadding`
+/// (a number, clamped to 0 to 512). Absent, or not a number: `None`.
+pub fn backing_padding_of(fields: Option<&serde_json::Value>) -> Option<f32> {
+    let p = fields?.get("backingPadding")?.as_f64()?;
+    p.is_finite().then(|| p.clamp(0.0, 512.0) as f32)
+}
+
+/// How far a text layer's text sits inside its box: the backing's padding
+/// when it has a backing, else 0. Padding without a backing does nothing:
+/// it is the text's offset inside the bar.
+pub fn text_inset_px(backing: Option<[f32; 4]>, padding_px: Option<f32>) -> f32 {
+    match backing {
+        Some(_) => padding_px.unwrap_or(0.0),
+        None => 0.0,
+    }
 }
 
 pub(crate) fn parse_hex_rgb(s: &str) -> Option<[f32; 4]> {
