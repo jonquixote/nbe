@@ -39,6 +39,10 @@ pub mod hal;
 /// `nbe-engine` (that crate denies `unsafe_code`).
 pub mod aac;
 
+/// The calling thread's own CPU time (R21's diagnostic): `clock_gettime` is
+/// FFI, so it sits under this crate's exception and hands out a `Duration`.
+pub mod thread_time;
+
 use objc2::rc::Retained;
 use objc2::AnyThread;
 use objc2_av_foundation::{
