@@ -9,6 +9,10 @@
 //! stopping would then block for good, and the session's drop would wait
 //! on the thread reading it: the race this guards.
 //!
+//! Item 4c of the user's ruling of 2026-11-15 20:55 is here too: an
+//! audio-only guest's video reader is not restarted while its audio arrives
+//! (a minimal RTSP server that sends audio only).
+//!
 //! Needs ffmpeg on PATH (or `NBE_FFMPEG`); without it the test says so and
 //! returns.
 
@@ -76,6 +80,171 @@ fn silent_server() -> GuestRoutes {
     }
 }
 
+/// A minimal RTSP server (TCP interleaved only) whose stream has audio and no
+/// video, or audio plus a declared video track that never carries a packet:
+/// the two shapes an audio-only guest's stream can take. Every client that
+/// PLAYs gets 48 kHz stereo L16 audio, one 10 ms RTP packet every 10 ms, on
+/// the channel it set the audio track up on.
+fn audio_only_server(declare_video: bool) -> GuestRoutes {
+    use std::io::Write;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let out = Arc::new(std::sync::Mutex::new(s.try_clone().unwrap()));
+                let send = |text: String| {
+                    let _ = out.lock().unwrap().write_all(text.as_bytes());
+                };
+                let mut reader = std::io::BufReader::new(s);
+                let mut audio_channel: Option<u8> = None;
+                loop {
+                    // One request: lines up to a blank line (no bodies).
+                    let mut head = Vec::new();
+                    loop {
+                        let mut line = String::new();
+                        match std::io::BufRead::read_line(&mut reader, &mut line) {
+                            Ok(0) | Err(_) => return,
+                            Ok(_) if line == "\r\n" || line == "\n" => break,
+                            Ok(_) => head.push(line.trim_end().to_string()),
+                        }
+                    }
+                    let Some(first) = head.first().cloned() else {
+                        continue;
+                    };
+                    let header = |name: &str| {
+                        head.iter().find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.trim()
+                                .eq_ignore_ascii_case(name)
+                                .then(|| v.trim().to_string())
+                        })
+                    };
+                    let cseq = header("CSeq").unwrap_or_default();
+                    let method = first.split_whitespace().next().unwrap_or("").to_string();
+                    let url = first.split_whitespace().nth(1).unwrap_or("").to_string();
+                    match method.as_str() {
+                        "DESCRIBE" => {
+                            let mut sdp = String::from(
+                                "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=nbe test\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
+                                 m=audio 0 RTP/AVP 97\r\na=rtpmap:97 L16/48000/2\r\na=control:trackID=0\r\n",
+                            );
+                            if declare_video {
+                                sdp.push_str(
+                                    "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n\
+                                     a=fmtp:96 packetization-mode=1\r\na=control:trackID=1\r\n",
+                                );
+                            }
+                            send(format!(
+                                "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Base: {url}/\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+                                sdp.len()
+                            ));
+                        }
+                        "SETUP" => {
+                            let transport = header("Transport").unwrap_or_default();
+                            if url.ends_with("trackID=0") {
+                                audio_channel = transport
+                                    .split(';')
+                                    .find_map(|p| p.strip_prefix("interleaved="))
+                                    .and_then(|r| r.split('-').next()?.parse().ok());
+                            }
+                            send(format!(
+                                "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nTransport: {transport}\r\nSession: 4c4c4c4c;timeout=60\r\n\r\n"
+                            ));
+                        }
+                        "PLAY" => {
+                            send(format!(
+                                "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nSession: 4c4c4c4c\r\nRange: npt=0.000-\r\n\r\n"
+                            ));
+                            if let Some(ch) = audio_channel {
+                                let out = out.clone();
+                                std::thread::spawn(move || {
+                                    let started = Instant::now();
+                                    for n in 0u32.. {
+                                        let mut packet = vec![b'$', ch, 0, 0];
+                                        let rtp_len = 12 + 480 * 2 * 2;
+                                        packet[2..4].copy_from_slice(&(rtp_len as u16).to_be_bytes());
+                                        packet.extend_from_slice(&[0x80, 97]);
+                                        packet.extend_from_slice(&(n as u16).to_be_bytes());
+                                        packet.extend_from_slice(&(n.wrapping_mul(480)).to_be_bytes());
+                                        packet.extend_from_slice(&0x4c4c_4c4cu32.to_be_bytes());
+                                        packet.resize(4 + rtp_len, 0);
+                                        if out.lock().unwrap().write_all(&packet).is_err() {
+                                            return;
+                                        }
+                                        let next = started + Duration::from_millis(10) * (n + 1);
+                                        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+                                    }
+                                });
+                            }
+                        }
+                        "TEARDOWN" => {
+                            send(format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n\r\n"));
+                            return;
+                        }
+                        _ => send(format!(
+                            "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n\r\n"
+                        )),
+                    }
+                }
+            });
+        }
+    });
+    GuestRoutes {
+        path: "g1".into(),
+        rtsp_in: format!("rtsp://127.0.0.1:{port}/g1"),
+        rtsp_return: format!("rtsp://127.0.0.1:{port}/g1-return"),
+        whep_return: format!("http://127.0.0.1:{port}/g1-return/whep"),
+    }
+}
+
+/// Item 4c (the user's ruling of 2026-11-15 20:55): an audio-only guest's
+/// video reader is not
+/// restarted while the guest's audio arrives. Without the wait it was: a
+/// stream with no video track ends the reader at once ("no stream", every
+/// ~0.6 s), and a declared video track that carries no packets ends it after
+/// a 5 s probe (every ~5.5 s). Both shapes run here at once for 20 s; the
+/// audio must have flowed for at least 10 s of them, or the test proves
+/// nothing. (With the declared video track, the audio reader's own probe
+/// also waits about 5 s for it before the first audio block.)
+#[test]
+fn an_audio_only_guest_s_video_reader_is_not_restarted_while_its_audio_arrives() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    if !ffmpeg_present() {
+        eprintln!("SKIP: no ffmpeg on PATH (or NBE_FFMPEG)");
+        return;
+    }
+    let sessions: Vec<_> = [false, true]
+        .into_iter()
+        .map(|declare_video| (declare_video, session(&audio_only_server(declare_video))))
+        .collect();
+    std::thread::sleep(Duration::from_secs(20));
+    let ord = std::sync::atomic::Ordering::Relaxed;
+    for (declare_video, s) in sessions {
+        let (video, audio, blocks) = (
+            s.stats.video_spawns.load(ord),
+            s.stats.audio_spawns.load(ord),
+            s.stats.audio_blocks_in.load(ord),
+        );
+        drop(s);
+        let shape = if declare_video {
+            "a declared video track with no packets"
+        } else {
+            "no video track"
+        };
+        println!("item 4c: audio only ({shape}), 20 s: video reader started {video} times, audio reader {audio}, {blocks} audio blocks of 10 ms");
+        assert!(
+            blocks >= 1_000,
+            "{shape}: the audio must flow for at least 10 of the 20 s ({blocks} blocks of 10 ms)"
+        );
+        assert_eq!(audio, 1, "{shape}: the audio reader runs throughout");
+        assert_eq!(
+            video, 1,
+            "{shape}: the video reader starts once and is not restarted while the audio arrives"
+        );
+    }
+}
+
 fn session(routes: &GuestRoutes) -> GuestSession {
     let (audio, producer) = LiveAudio::new();
     let (_return_in, return_out) = ring(9_600);
@@ -92,7 +261,9 @@ fn session(routes: &GuestRoutes) -> GuestSession {
 /// (ffmpeg's 5 s socket timeout) and is restarted. Data flowing, a reader
 /// left behind by a killed engine ends on its failed write (the guest e2e's
 /// kill -9 test); with nothing flowing, it ends on this timeout instead of
-/// waiting on the input for good.
+/// waiting on the input for good. Item 4c keeps it: no audio arrives on a
+/// quiet input either, so the video reader still starts again (after 1 s of
+/// quiet audio, at about 6 s), within the 7.5 s here.
 #[test]
 fn a_reader_on_a_quiet_input_ends_by_itself_and_is_restarted() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
