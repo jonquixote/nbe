@@ -375,6 +375,11 @@ pub struct RenderLoop {
     /// change, so a test knows the resync waited (R21's diagnostic reads its
     /// wall and CPU time).
     pub injected_resync_delay: Option<Duration>,
+    /// Test seam (item 3 of the user's ruling of 2026-11-16 00:25): while
+    /// set, the render loop does not publish its per-frame live telemetry
+    /// (`LiveInputs::sync`), as a render thread running late would not. It
+    /// changes nothing the engine does with frames.
+    pub injected_live_publish_hold: bool,
     /// Test seam: make the preview render fail.
     pub fail_preview: bool,
     /// Test seam: make the VIEW render fail.
@@ -495,6 +500,7 @@ impl RenderLoop {
             sampler,
             injected_view_delay: None,
             injected_resync_delay: None,
+            injected_live_publish_hold: false,
             fail_preview: false,
             fail_view: false,
             consecutive_late: 0,
@@ -1702,7 +1708,7 @@ impl RenderLoop {
                 (sync.clone(), up.ring.uploaded.load(Ordering::Relaxed)),
             ));
         }
-        if !published.is_empty() {
+        if !published.is_empty() && !self.injected_live_publish_hold {
             let mut out = self.state.live.sync.lock().unwrap();
             for (id, v) in published {
                 out.insert(id, v);
