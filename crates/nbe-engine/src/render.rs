@@ -1425,6 +1425,18 @@ impl RenderLoop {
         frame: u64,
         t0: u64,
     ) -> Option<(wgpu::Texture, LayerUniform)> {
+        // A text layer's text sits inside its box by its backing's padding
+        // (`TextLayer::text_inset_px`, in View pixels); every other layer, and
+        // text with no padding, is drawn in its box exactly as declared.
+        let rect = match &layer.source {
+            LayerSource::Text(t) => crate::text_prep::inset_rect(
+                layer.rect,
+                t.text_inset_px,
+                self.view_target().width(),
+                self.view_target().height(),
+            ),
+            _ => layer.rect,
+        };
         let (tex, mut color) = match &layer.source {
             LayerSource::Solid(c) => (self.white.clone(), *c),
             // Text is drawn from a raster produced off the frame path. The
@@ -1432,10 +1444,7 @@ impl RenderLoop {
             // layer's tint is white and the existing blend does the rest —
             // which is what keeps text on the same `draw_for` every other
             // element uses, rather than a second pipeline.
-            LayerSource::Text(t) => (
-                self.text_texture(t, frame, layer.rect)?,
-                [1.0, 1.0, 1.0, 1.0],
-            ),
+            LayerSource::Text(t) => (self.text_texture(t, frame, rect)?, [1.0, 1.0, 1.0, 1.0]),
             LayerSource::Image(asset) => (self.textures.get(asset)?.clone(), [1.0, 1.0, 1.0, 1.0]),
             // The newest uploaded frame: an atomic read of the ring, never a
             // wait or a copy (`live.rs`).
@@ -1522,17 +1531,10 @@ impl RenderLoop {
         // Only a scrolling ticker samples a window; everything else takes the
         // whole texture, which is what the shader did before uv existed.
         let uv = match &layer.source {
-            LayerSource::Text(t) if t.scroll => self.ticker_window(t, frame, layer.rect),
+            LayerSource::Text(t) if t.scroll => self.ticker_window(t, frame, rect),
             _ => UV_FULL,
         };
-        Some((
-            tex,
-            LayerUniform {
-                color,
-                rect: layer.rect,
-                uv,
-            },
-        ))
+        Some((tex, LayerUniform { color, rect, uv }))
     }
 
     /// Read the View target back as RGBA8. Inspection and test path only.

@@ -45,6 +45,34 @@ pub struct PreparedText {
 /// text's line count, a line being 1.25 of the size, filling 90% of the box.
 /// A ticker is one line at 72% of its band's height, laid out as wide as the
 /// text needs.
+/// Where a text is laid out: its element's box (normalized x, y, w, h) and
+/// how far inside it the text sits, in View pixels (its backing's padding).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextBox {
+    pub rect: [f32; 4],
+    pub inset_px: f32,
+}
+
+/// A text layer's box inset by `inset_px` View pixels on every side (its
+/// backing's padding): where its text is laid out and drawn. An inset of 0
+/// returns the box unchanged, so text without padding is drawn exactly as
+/// before. The inner box never goes below one pixel.
+pub fn inset_rect(rect: [f32; 4], inset_px: f32, view_w: u32, view_h: u32) -> [f32; 4] {
+    if inset_px <= 0.0 {
+        return rect;
+    }
+    let (vw, vh) = (view_w.max(1) as f32, view_h.max(1) as f32);
+    let (dx, dy) = (inset_px / vw, inset_px / vh);
+    let w = (rect[2] - 2.0 * dx).max(1.0 / vw);
+    let h = (rect[3] - 2.0 * dy).max(1.0 / vh);
+    [
+        rect[0] + (rect[2] - w) / 2.0,
+        rect[1] + (rect[3] - h) / 2.0,
+        w,
+        h,
+    ]
+}
+
 pub fn spec_for(
     content: &str,
     color: [f32; 4],
@@ -220,7 +248,9 @@ impl TextPrep {
         )
     }
 
-    /// The key and spec a string would be prepared under at the current View size.
+    /// The key and spec a string would be prepared under at the current View
+    /// size, laid out in its box inset by `inset_px` ([`inset_rect`]), as the
+    /// render loop draws it.
     pub fn key_and_spec(
         &self,
         element_id: &str,
@@ -228,9 +258,17 @@ impl TextPrep {
         color: [f32; 4],
         scroll: bool,
         rect: [f32; 4],
+        inset_px: f32,
     ) -> (String, TextSpec) {
         let (w, h) = self.view_size();
-        let spec = spec_for(content, color, scroll, w, h, rect);
+        let spec = spec_for(
+            content,
+            color,
+            scroll,
+            w,
+            h,
+            inset_rect(rect, inset_px, w, h),
+        );
         (key_for(element_id, &spec), spec)
     }
 
@@ -261,10 +299,11 @@ impl TextPrep {
         content: &str,
         color: [f32; 4],
         scroll: bool,
-        rect: [f32; 4],
+        text_box: TextBox,
         timeout: Duration,
     ) -> bool {
-        let (key, spec) = self.key_and_spec(element_id, content, color, scroll, rect);
+        let TextBox { rect, inset_px } = text_box;
+        let (key, spec) = self.key_and_spec(element_id, content, color, scroll, rect, inset_px);
         if self.ready.lock().unwrap().contains_key(&key) {
             return true;
         }
@@ -346,6 +385,35 @@ fn upload(queue: &wgpu::Queue, tex: &wgpu::Texture, width: u32, height: u32, rgb
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The #110 follow-up (ruling of 2026-11-16 21:55, item 5): the text's
+    /// box inside its bar. No padding returns the box bit for bit, so text
+    /// with no padding is laid out and drawn exactly as before; padding moves
+    /// every edge in by that many View pixels; the inner box never inverts.
+    #[test]
+    fn a_text_box_is_inset_by_its_padding_in_view_pixels() {
+        let lower_third = [0.05, 0.75, 0.9, 0.12];
+        assert_eq!(inset_rect(lower_third, 0.0, 1920, 1080), lower_third);
+        let r = inset_rect(lower_third, 24.0, 1920, 1080);
+        let near = |v: f32, n: u32, want: f32, what: &str| {
+            let got = v * n as f32;
+            assert!((got - want).abs() < 0.01, "{what}: {got} px, want {want}");
+        };
+        near(r[0], 1920, 96.0 + 24.0, "left edge 24 px in");
+        near(r[1], 1080, 810.0 + 24.0, "top edge 24 px in");
+        near(r[2], 1920, 1728.0 - 48.0, "24 px off each side");
+        near(r[3], 1080, 129.6 - 48.0, "24 px off top and bottom");
+        let s0 = spec_for("PADDED", [1.0; 4], false, 1920, 1080, lower_third);
+        let s24 = spec_for("PADDED", [1.0; 4], false, 1920, 1080, r);
+        assert_eq!((s0.width_px, s0.height_px), (1728, 130));
+        assert_eq!(
+            (s24.width_px, s24.height_px),
+            (1680, 82),
+            "laid out at the inner box"
+        );
+        let tiny = inset_rect([0.0, 0.0, 0.01, 0.01], 100.0, 1920, 1080);
+        assert!(tiny[2] > 0.0 && tiny[3] > 0.0, "never inverted: {tiny:?}");
+    }
 
     #[test]
     fn a_raster_is_its_box_and_its_font_fits_the_lines() {

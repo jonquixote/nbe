@@ -20,7 +20,8 @@ const DEFAULT_GOP_FRAMES: u32 = nbe_core::loop_cache::HOUSE_GOP_FRAMES;
 
 /// One string to shape off the render thread: element id, content, colour,
 /// whether it scrolls (a ticker), and the element's box (normalized x, y, w, h).
-type TextJob = (String, String, [f32; 4], bool, [f32; 4]);
+/// (element id, content, colour, scroll, box, the text's inset in px inside its backing).
+type TextJob = (String, String, [f32; 4], bool, [f32; 4], f32);
 
 /// How long a command waits for its text to be shaped and uploaded before it
 /// publishes anyway. Shaping a line is milliseconds; this bound only matters
@@ -1882,9 +1883,20 @@ impl DirectiveHandler {
         let started = std::time::Instant::now();
         let n = jobs.len();
         let ok = tokio::task::spawn_blocking(move || {
-            jobs.iter().all(|(id, content, color, scroll, rect)| {
-                prep.prepare_blocking(id, content, *color, *scroll, *rect, TEXT_PREP_TIMEOUT)
-            })
+            jobs.iter()
+                .all(|(id, content, color, scroll, rect, inset_px)| {
+                    prep.prepare_blocking(
+                        id,
+                        content,
+                        *color,
+                        *scroll,
+                        crate::text_prep::TextBox {
+                            rect: *rect,
+                            inset_px: *inset_px,
+                        },
+                        TEXT_PREP_TIMEOUT,
+                    )
+                })
         })
         .await
         .unwrap_or(false);
@@ -1911,7 +1923,14 @@ impl DirectiveHandler {
         }) = g.layer()
         {
             if let crate::scene::TextContent::Static(text) = &t.content {
-                jobs.push((t.element_id.clone(), text.clone(), t.color, false, rect));
+                jobs.push((
+                    t.element_id.clone(),
+                    text.clone(),
+                    t.color,
+                    false,
+                    rect,
+                    t.text_inset_px,
+                ));
             }
         }
         self.prepare_text(jobs).await;
@@ -2089,6 +2108,7 @@ impl DirectiveHandler {
                                     e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
                                     true,
                                     e.rect,
+                                    crate::scene::text_inset_px(e.backing, e.backing_padding_px),
                                 )
                             })
                         })
@@ -2112,7 +2132,7 @@ impl DirectiveHandler {
             ));
         };
         let patch = d.payload.get("clock").cloned().unwrap_or_default();
-        let (base, color, rect) = {
+        let (base, color, rect, inset_px) = {
             let pkg = self.state.package.lock().unwrap();
             let Some(e) = pkg
                 .as_ref()
@@ -2125,7 +2145,12 @@ impl DirectiveHandler {
                 debug!(element = element_id, "clock.configure: not a clock");
                 return Ok(());
             };
-            (declared, e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]), e.rect)
+            (
+                declared,
+                e.color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                e.rect,
+                crate::scene::text_inset_px(e.backing, e.backing_padding_px),
+            )
         };
         let current = self
             .state
@@ -2139,8 +2164,15 @@ impl DirectiveHandler {
         let spec = crate::graphics::merge_clock(&current, &patch);
         let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
         let face = crate::render::clock_face_for_test(&spec, next_frame, self.state.house_rate());
-        self.prepare_text(vec![(element_id.to_string(), face, color, false, rect)])
-            .await;
+        self.prepare_text(vec![(
+            element_id.to_string(),
+            face,
+            color,
+            false,
+            rect,
+            inset_px,
+        )])
+        .await;
         self.state
             .graphics
             .lock()
