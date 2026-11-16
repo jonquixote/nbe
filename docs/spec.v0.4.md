@@ -3368,7 +3368,7 @@ plays once, and it MUST play its full length:
 5. **The end.** A clip's length is its video track's duration times its
    nominal frame rate, rounded, from the container's metadata at load. It is
    not the count of frames decoded. At a source index at or past the length,
-   the clip has ended and its layer is not drawn.
+   the clip has ended: on the View its layer holds the clip's last frame while its item stays on the View (a take or a cut releases it; its audio ends with the clip), and on the Preview it is not drawn.
 6. **Audio is unchanged.** A clip's audio is decoded whole at `show.load`
    (§8.4). The read-ahead governs picture only, and with it picture and sound
    agree for the clip's full length.

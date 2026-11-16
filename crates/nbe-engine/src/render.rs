@@ -722,7 +722,10 @@ impl RenderLoop {
                     let Some(clip) = ring.clip.as_ref() else {
                         continue;
                     };
-                    if let Some(i) = crate::decode::clip_source_index(
+                    // What the draw path shows, held last frame included, so a
+                    // clip held past its end keeps that frame resident.
+                    if let Some(i) = clip_index_on(
+                        bus,
                         frame,
                         bus_scene.t0,
                         clip.length,
@@ -1444,8 +1447,8 @@ impl RenderLoop {
             // SPEC §12.8.1: a plain clip draws its head, then its window. A
             // frame not yet resident is a miss: the layer holds (rule 4), the
             // View counts it, and nothing waits on the decoder. At the clip's
-            // end `clip_source_index` refuses the index, and the layer is not
-            // drawn (rule 5).
+            // end it holds its last frame on the View and is not drawn on the
+            // Preview (rule 5, `clip_index_on`).
             LayerSource::Video {
                 asset_id,
                 looping: false,
@@ -1456,7 +1459,8 @@ impl RenderLoop {
             {
                 let ring = self.video_rings.get(asset_id)?;
                 let clip = ring.clip.as_ref()?;
-                let i = crate::decode::clip_source_index(
+                let i = clip_index_on(
+                    bus,
                     frame,
                     t0,
                     clip.length,
@@ -1495,7 +1499,8 @@ impl RenderLoop {
                         self.house_rate,
                     )?
                 } else {
-                    crate::decode::clip_source_index(
+                    clip_index_on(
+                        bus,
                         frame,
                         t0,
                         ring.period_frames as u64,
@@ -1770,6 +1775,30 @@ impl RenderLoop {
 /// frame it went on/off air (§7.10). `anim_start` is `master_frame + 1` as set
 /// by the directive, so the first animated frame is `anim_start` and completion
 /// lands at `anim_start + duration_frames - 1`.
+/// The source index a plain clip's layer shows on `bus` at master frame
+/// `frame`, for an item that went on air at `t0` (SPEC §12.8.1).
+///
+/// Inside its length: the master clock's index (§12.1). At or past its length
+/// the clip has ended (rule 5, amended 2026-11-15). On the View the layer
+/// holds the clip's last frame for as long as the item stays on the View, so
+/// a clip with nothing after it never cuts to black; a take or a cut changes
+/// the View's scene and so releases it. On the Preview an ended clip is not
+/// drawn. The clip's audio is not held: it ends with the clip (§8.4).
+fn clip_index_on(
+    bus: Bus,
+    frame: u64,
+    t0: u64,
+    length: u64,
+    source_rate: u32,
+    house_rate: u32,
+) -> Option<u64> {
+    match crate::decode::clip_source_index(frame, t0, length, source_rate, house_rate) {
+        Some(i) => Some(i),
+        None if bus == Bus::View && length > 0 && frame >= t0 => Some(length - 1),
+        None => None,
+    }
+}
+
 fn overlay_alpha(rt: crate::state::OverlayRuntime, frame: u64) -> f32 {
     use crate::state::OverlayPhase;
     match rt.phase {
