@@ -21,9 +21,9 @@
 //!
 //! A child that exits (the guest has not published yet, or left, or the
 //! server restarted) is restarted after [`RESPAWN_DELAY`], except a video
-//! reader that ended without a picture while the guest's audio arrives (an
-//! audio-only guest): it waits for the audio to stop ([`AUDIO_QUIET`]). A
-//! guest with no frames on the View is a lost live source: the fallback
+//! reader that ended without a picture: it waits for the guest's audio
+//! reader to restart ([`wait_for_audio_reader_restart`]). A guest with no
+//! frames on the View is a lost live source: the fallback
 //! slate, as for a camera. Nothing here runs on the render thread or the
 //! audio thread.
 
@@ -41,9 +41,6 @@ pub const RESPAWN_DELAY: Duration = Duration::from_millis(500);
 const READER_TIMEOUT_US: &str = "5000000";
 /// How long a killed child gets to exit before it is given up on.
 const REAP_DEADLINE: Duration = Duration::from_secs(2);
-/// How long a guest's audio must stay quiet before a video reader that
-/// ended without a picture is restarted ([`wait_while_audio_arrives`]).
-const AUDIO_QUIET: Duration = Duration::from_secs(1);
 /// The guest picture the engine works with.
 pub const GUEST_W: u32 = 1280;
 pub const GUEST_H: u32 = 720;
@@ -98,7 +95,8 @@ fn ffmpeg() -> String {
 pub struct GuestStats {
     pub video_spawns: AtomicU64,
     pub audio_spawns: AtomicU64,
-    /// 10 ms blocks the audio reader has read (pushed to the graph or not).
+    /// 10 ms blocks the audio reader has read (pushed to the graph or not):
+    /// for the log and the tests.
     pub audio_blocks_in: AtomicU64,
     pub return_spawns: AtomicU64,
     pub frames_in: AtomicU64,
@@ -203,7 +201,7 @@ impl GuestSession {
                         tracing::info!(guest = %gid, "guest video ended; restarting");
                         std::thread::sleep(RESPAWN_DELAY);
                     } else {
-                        wait_while_audio_arrives(&gid, &stop, &stats);
+                        wait_for_audio_reader_restart(&gid, &stop, &stats);
                     }
                 }
             }));
@@ -525,43 +523,32 @@ fn reap<C: Reap>(slot: &Mutex<Option<C>>) {
     }
 }
 
-/// A video reader that ended without a picture while the guest's audio still
-/// arrives met a stream with no video: an audio-only guest (ffmpeg ends at
-/// once, "Output file does not contain any stream"), or a video track that
-/// carries no packets (ffmpeg probes it for 5 s, then ends the same way).
-/// Restarting it would end the same way, every ~0.6 s or ~5.5 s (item 4c of
-/// the user's ruling of 2026-11-15 20:55). So the video thread waits
-/// instead, and its reader starts again once the guest's audio has been
-/// quiet for [`AUDIO_QUIET`] or the audio reader has restarted (the guest
-/// left, or published again, perhaps with video). On a fully quiet input no
-/// audio arrives either, and the reader starts again after [`AUDIO_QUIET`].
-fn wait_while_audio_arrives(gid: &str, stop: &AtomicBool, stats: &GuestStats) {
-    let spawns = stats.audio_spawns.load(Ordering::Relaxed);
-    let mut seen = stats.audio_blocks_in.load(Ordering::Relaxed);
-    let mut quiet = Duration::ZERO;
-    let mut said = false;
+/// A video reader that ended without a picture met a stream with no video:
+/// an audio-only guest (ffmpeg ends at once, "Output file does not contain
+/// any stream"), a video track that carries no packets (ffmpeg probes it for
+/// 5 s, then ends the same way), or a quiet input (its 5 s timeout).
+/// Restarting it at once would end the same way, every ~0.6 s or ~5.5 s
+/// (item 4c of the user's ruling of 2026-11-15 20:55). So the video thread
+/// waits for the guest's audio reader to restart: that reader ends when no
+/// packet has come on its track for 5 s (the same timeout), when the guest
+/// leaves, or when it publishes again (perhaps with video). While the
+/// guest's audio arrives, the video reader stays down. The audio reader's
+/// first start is not a restart.
+fn wait_for_audio_reader_restart(gid: &str, stop: &AtomicBool, stats: &GuestStats) {
+    tracing::info!(guest = %gid, "guest video: no picture; waiting for the guest's audio reader to restart");
+    let mut started = stats.audio_spawns.load(Ordering::Relaxed);
     loop {
         std::thread::sleep(RESPAWN_DELAY);
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        if spawns > 0 && stats.audio_spawns.load(Ordering::Relaxed) != spawns {
-            tracing::info!(guest = %gid, "guest audio reader restarted; restarting the video reader");
-            return;
-        }
-        let now = stats.audio_blocks_in.load(Ordering::Relaxed);
-        if now != seen {
-            seen = now;
-            quiet = Duration::ZERO;
-            if !said {
-                tracing::info!(guest = %gid, "guest video: no picture while its audio arrives; waiting (an audio-only guest, or a video track with no packets)");
-                said = true;
-            }
+        let now = stats.audio_spawns.load(Ordering::Relaxed);
+        if started == 0 {
+            started = now;
             continue;
         }
-        quiet += RESPAWN_DELAY;
-        if quiet >= AUDIO_QUIET {
-            tracing::info!(guest = %gid, "guest video ended; restarting");
+        if now != started {
+            tracing::info!(guest = %gid, "guest audio reader restarted; restarting the video reader");
             return;
         }
     }
@@ -643,6 +630,46 @@ mod tests {
         })
         .join();
         assert!(slot.is_poisoned());
+    }
+
+    /// Item 4c: a video reader that ended without a picture waits for the
+    /// guest's audio reader to restart, not for its first start (the audio
+    /// reader may start after the video reader has already ended), and a
+    /// stopping session ends the wait.
+    #[test]
+    fn the_video_wait_ends_on_an_audio_reader_restart_not_its_first_start() {
+        let stats = Arc::new(GuestStats::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (st, sp) = (stats.clone(), stop.clone());
+        std::thread::spawn(move || {
+            wait_for_audio_reader_restart("g", &sp, &st);
+            let _ = tx.send(());
+        });
+        std::thread::sleep(RESPAWN_DELAY * 2);
+        stats.audio_spawns.store(1, Ordering::Relaxed); // its first start
+        assert!(
+            rx.recv_timeout(RESPAWN_DELAY * 3).is_err(),
+            "the audio reader's first start is not a restart"
+        );
+        stats.audio_spawns.store(2, Ordering::Relaxed); // a restart
+        assert!(
+            rx.recv_timeout(RESPAWN_DELAY * 3).is_ok(),
+            "an audio reader restart ends the wait"
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (st, sp) = (stats.clone(), stop.clone());
+        std::thread::spawn(move || {
+            wait_for_audio_reader_restart("g", &sp, &st);
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(RESPAWN_DELAY * 3).is_err(), "it waits");
+        stop.store(true, Ordering::SeqCst);
+        assert!(
+            rx.recv_timeout(RESPAWN_DELAY * 3).is_ok(),
+            "a stopping session ends the wait"
+        );
     }
 
     /// Item 4a (the user's ruling of 2026-11-15 20:55): `reap` and `keep` kill

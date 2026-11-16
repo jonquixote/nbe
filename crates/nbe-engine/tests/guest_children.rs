@@ -261,9 +261,9 @@ fn session(routes: &GuestRoutes) -> GuestSession {
 /// (ffmpeg's 5 s socket timeout) and is restarted. Data flowing, a reader
 /// left behind by a killed engine ends on its failed write (the guest e2e's
 /// kill -9 test); with nothing flowing, it ends on this timeout instead of
-/// waiting on the input for good. Item 4c keeps it: no audio arrives on a
-/// quiet input either, so the video reader still starts again (after 1 s of
-/// quiet audio, at about 6 s), within the 7.5 s here.
+/// waiting on the input for good. Item 4c keeps it: on a quiet input the
+/// audio reader times out too, and its restart starts the video reader
+/// again (at about 5.5 to 6 s), within the 7.5 s here.
 #[test]
 fn a_reader_on_a_quiet_input_ends_by_itself_and_is_restarted() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
