@@ -322,6 +322,23 @@ const PLATE: [number, number, number, number] = [0, 0, 0.5, 0.08];
 const BACKING_BLUE: Rgb = (r, g, b) => r < 60 && g < 60 && b > 150 && b < 230;
 /** #0000ff at half opacity over the dark scene's #101010: about (8, 8, 135). */
 const HALF_BLUE: Rgb = (r, g, b) => r < 50 && g < 50 && b > 95 && b < 175;
+/** The padded lower third's backingPadding, in View pixels (the recording is the View's size). */
+const PAD_PX = 24;
+/**
+ * The band `px` pixels deep inside each edge of a normalized rect, as four
+ * strips: where a padded text must leave the bar bare.
+ */
+const band = (rect: [number, number, number, number], px: number): [number, number, number, number][] => {
+  const [x, y, w, h] = rect;
+  const dx = px / W;
+  const dy = px / H;
+  return [
+    [x, y, w, dy],
+    [x, y + h - dy, w, dy],
+    [x, y + dy, dx, h - 2 * dy],
+    [x + w - dx, y + dy, dx, h - 2 * dy],
+  ];
+};
 /** Pixels in a normalized rect. */
 const area = (rect: [number, number, number, number]): number =>
   (Math.ceil((rect[0] + rect[2]) * W) - Math.floor(rect[0] * W)) * (Math.ceil((rect[1] + rect[3]) * H) - Math.floor(rect[1] * H));
@@ -434,6 +451,19 @@ before(async () => {
     (s) => (s["graphics"] as string[]).includes("tpl_lt-graphic"),
   );
   await step("backed_hide", "graphic.hide", { elementId: "tpl_lt-graphic" }, (s) => (s["graphics"] as string[]).length === 0);
+  // The #110 follow-up (the user's ruling of 2026-11-16 21:55, item 5): the same
+  // backed lower third with backingPadding 24. The bar still fills the box; the
+  // text sits 24 View pixels inside it.
+  await step(
+    "padded_show",
+    "graphic.show",
+    {
+      templateId: "tpl_lt",
+      fields: { headline: "PADDED", color: "#ff00ff", backingColor: "#0000c0", backingOpacity: 1, backingPadding: PAD_PX },
+    },
+    (s) => (s["graphics"] as string[]).includes("tpl_lt-graphic"),
+  );
+  await step("padded_hide", "graphic.hide", { elementId: "tpl_lt-graphic" }, (s) => (s["graphics"] as string[]).length === 0);
   await step("plate_show", "overlay.show", { overlayId: "ol_backed" }, () => true);
   await step("plate_hide", "overlay.hide", { overlayId: "ol_backed" }, () => true);
 
@@ -640,6 +670,31 @@ test("[6] backing: a runtime graphic's backing fills its box under its text, and
   assert.ok(shown > box * 0.6, `the backing fills the box (${shown} of ${box})`);
   assert.ok(text > 500, `the text is drawn over the backing, not under it (${text})`);
   assert.ok(base < 1000 && hidden < 1000, `no backing before the show or after the hide (base ${base}, hidden ${hidden})`);
+});
+
+test("[6] backing padding: the bar still fills the box and the text sits backingPadding px inside it", (t) => {
+  if (skipIfNoRecording(t)) return;
+  // The band checked is 2 px shallower than the padding: the recording's
+  // 4:2:0 chroma blurs a colour edge by about a pixel.
+  const strips = band(LOWER_THIRD, PAD_PX - 2);
+  const inBand = (frame: Buffer, colour: Rgb) => strips.reduce((n, r) => n + count(frame, r, colour), 0);
+  const bandArea = strips.reduce((n, r) => n + area(r), 0);
+  const padded = sample("padded_show");
+  const unpadded = sample("backed_show");
+  const barInBand = inBand(padded, BACKING_BLUE);
+  const textInBand = inBand(padded, MAGENTA);
+  const textInBandUnpadded = inBand(unpadded, MAGENTA);
+  const text = count(padded, LOWER_THIRD, MAGENTA);
+  const bar = count(padded, LOWER_THIRD, BACKING_BLUE);
+  const box = area(LOWER_THIRD);
+  console.log(
+    `backing padding ${PAD_PX} px: band ${bandArea} px, bar in band ${barInBand}, text in band ${textInBand} (unpadded ${textInBandUnpadded}); text ${text}, bar ${bar} of box ${box}`,
+  );
+  assert.ok(textInBandUnpadded > 100, `without padding the text reaches into the band (${textInBandUnpadded}): the check below can fail`);
+  assert.ok(textInBand <= 10, `with padding no text is drawn in the band (${textInBand} magenta px)`);
+  assert.ok(barInBand > bandArea * 0.95, `the bar fills the band around the text (${barInBand} of ${bandArea})`);
+  assert.ok(text > 300, `the text is still drawn, inside the padding (${text})`);
+  assert.ok(bar > box * 0.6, `the bar still fills the whole box (${bar} of ${box})`);
 });
 
 test("[6] backing: a declared element's backing is drawn at its declared opacity", (t) => {

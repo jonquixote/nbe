@@ -4119,6 +4119,8 @@ Deleting a reserved hook is cheaper than maintaining a fiction. If nested rundow
 | `breaking.show` | `{ headline: string, subhead?: string }` | breaking template exists | breaking banner visible | `E_NOT_FOUND` |
 | `breaking.hide` | `{}` | breaking visible or hidden | breaking banner hidden | none |
 
+**Backing fill (added 2026-11-16; #110 and its follow-up).** A text element's fields, declared or in a `graphic.show`, MAY carry `backingColor` (`#rrggbb`), `backingOpacity` (0 to 1, clamped; 1 when absent) and `backingPadding` (View pixels, 0 to 512, clamped; 0 when absent). With a `backingColor`, a solid fill of the element's whole box is drawn under its text at `backingOpacity` times the element's opacity, and the text is laid out and drawn inset `backingPadding` pixels from every edge of the box. Without a `backingColor` (or with one that does not parse) there is no fill and no inset. A runtime graphic takes its host element's three values; its own fields override them.
+
 ## 16.6 Overlay commands
 
 | Command | Payload schema | Preconditions | State transitions | Failure modes |
