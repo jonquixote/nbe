@@ -78,3 +78,67 @@ async fn a_draw_that_waits_costs_wall_time_not_render_thread_cpu() {
         worked.render_cpu
     );
 }
+
+/// The A/B of the user's ruling of 2026-11-15 17:30 (log-only): each bus
+/// phase's CPU is measured over its own span. No phase's CPU exceeds its
+/// wall time, the phases' CPU never exceeds the draw's, the View's four are
+/// not all zero over a few real draws, and the render thread's system time
+/// is part of its CPU, not beside it.
+#[tokio::test]
+async fn each_phase_s_cpu_is_measured_over_its_own_span() {
+    let Some((state, mut render)) = render_loop_or_skip().await else {
+        return;
+    };
+    run_tick(&mut render, &state, 0, None).await;
+    let slack = Duration::from_millis(2);
+    let mut view_cpu_seen = Duration::ZERO;
+    for frame in 1..=10 {
+        let r = run_tick(&mut render, &state, frame, None).await;
+        let p = r.render_phases;
+        for (name, wall, cpu) in [
+            ("preview build", p.preview.build, p.preview.build_cpu),
+            ("preview encode", p.preview.encode, p.preview.encode_cpu),
+            ("preview finish", p.preview.finish, p.preview.finish_cpu),
+            ("preview submit", p.preview.submit, p.preview.submit_cpu),
+            ("view build", p.view.build, p.view.build_cpu),
+            ("view encode", p.view.encode, p.view.encode_cpu),
+            ("view finish", p.view.finish, p.view.finish_cpu),
+            ("view submit", p.view.submit, p.view.submit_cpu),
+            ("sync", p.sync, p.cpu.sync),
+            ("reacquire", p.reacquire, p.cpu.reacquire),
+        ] {
+            assert!(
+                cpu <= wall + slack,
+                "frame {frame}: {name}'s CPU {cpu:?} above its wall {wall:?}"
+            );
+        }
+        let phases_cpu = p.cpu.sync
+            + p.cpu.reacquire
+            + p.cpu.read_ahead
+            + p.preview.build_cpu
+            + p.preview.encode_cpu
+            + p.preview.finish_cpu
+            + p.preview.submit_cpu
+            + p.view.build_cpu
+            + p.view.encode_cpu
+            + p.view.finish_cpu
+            + p.view.submit_cpu;
+        assert!(
+            phases_cpu <= r.render_cpu + slack,
+            "frame {frame}: the phases' CPU {phases_cpu:?} above the draw's {:?}",
+            r.render_cpu
+        );
+        assert!(
+            r.render_sys <= r.render_cpu + slack,
+            "frame {frame}: system time {:?} above the thread's CPU {:?}",
+            r.render_sys,
+            r.render_cpu
+        );
+        view_cpu_seen +=
+            p.view.build_cpu + p.view.encode_cpu + p.view.finish_cpu + p.view.submit_cpu;
+    }
+    assert!(
+        view_cpu_seen > Duration::ZERO,
+        "ten real View draws measured no CPU in any of the View's phases"
+    );
+}

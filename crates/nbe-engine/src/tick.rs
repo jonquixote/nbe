@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use crate::record::{CountSkip, SkipPath};
 use crate::render::RenderLoop;
 use crate::state::{EngineState, RecordState, StreamState};
-use nbe_decode::thread_time::thread_cpu_time;
+use nbe_decode::thread_time::{process_counts, thread_cpu_time, thread_user_system, ProcessCounts};
 
 /// Where one tick's time went. `total` is the loop's timed region (the tick,
 /// without the sleep to the next boundary).
@@ -42,6 +42,14 @@ pub struct TickReport {
     /// The render thread's own CPU time over `render` (R21's diagnostic,
     /// log-only): far below `render` means the thread waited, not worked.
     pub render_cpu: Duration,
+    /// The A/B of the user's ruling of 2026-11-15 17:30 (log-only): the
+    /// render thread's system CPU over `render` (Mach, microsecond
+    /// resolution), and the whole process's faults and context switches
+    /// over it (macOS keeps no per-thread counts of those).
+    pub render_sys: Duration,
+    pub render_counts: ProcessCounts,
+    /// Window frames the read-ahead uploaded this frame.
+    pub read_ahead_uploads: usize,
     /// Record handoff after the draw (the readback lives here on a CPU take).
     pub record: Duration,
     /// Stream work: the pre-draw surface loan plus the post-draw `try_send`.
@@ -464,10 +472,15 @@ pub async fn run_tick(
     let render_started = Instant::now();
     report.before_draw = render_started - tick_started;
     let render_cpu = thread_cpu_time();
+    let (_, render_sys) = thread_user_system();
+    let render_counts = process_counts();
     let frame_report = render.render_frame(frame, deadline);
     report.render = render_started.elapsed();
     report.render_cpu = thread_cpu_time().saturating_sub(render_cpu);
+    report.render_sys = thread_user_system().1.saturating_sub(render_sys);
+    report.render_counts = process_counts().since(render_counts);
     report.render_phases = frame_report.phases;
+    report.read_ahead_uploads = frame_report.read_ahead_uploads;
     if let Some(r) = report.render_phases.live_resync {
         live_resync_line(&report, frame, r);
     }
@@ -565,6 +578,63 @@ fn live_resync_line(report: &TickReport, frame: u64, r: crate::render::LiveResyn
         uploaders_before = r.uploaders_before,
         uploaders_after = r.uploaders_after,
         "live sources changed: the frame's render and the upload threads' resync, wall and render-thread CPU"
+    );
+}
+
+/// The A/B's slow draw (the user's ruling of 2026-11-15 17:30): a draw of
+/// this long or longer is logged, late or not.
+pub const SLOW_DRAW: Duration = Duration::from_millis(25);
+
+/// The A/B of the user's ruling of 2026-11-15 17:30 (log-only): every draw
+/// of [`SLOW_DRAW`] or more, late or not and with no rate limit, so slow
+/// draws can be counted per run. Each phase's wall time beside the render
+/// thread's CPU time over it says which phases worked and which waited; the
+/// render thread's system time and the process's faults and context switches
+/// over the draw say how much of the CPU was the kernel's.
+fn slow_draw_line(state: &EngineState, report: &TickReport, frame: u64) {
+    if report.render < SLOW_DRAW {
+        return;
+    }
+    let p = report.render_phases;
+    let c = report.render_counts;
+    tracing::warn!(
+        frame,
+        master_frame = report.master_frame.map(|f| f as i64).unwrap_or(-1),
+        render_ms = ms(report.render),
+        render_cpu_ms = ms(report.render_cpu),
+        render_sys_ms = ms(report.render_sys),
+        proc_minflt = c.minor_faults,
+        proc_majflt = c.major_faults,
+        proc_nivcsw = c.involuntary_switches,
+        proc_nvcsw = c.voluntary_switches,
+        late = report.submitted_late.is_some(),
+        late_ms = ms(report.submitted_late.unwrap_or_default()),
+        woke_late_ms = ms(report.woke_late),
+        sync_ms = ms(p.sync),
+        sync_cpu_ms = ms(p.cpu.sync),
+        reacquire_ms = ms(p.reacquire),
+        reacquire_cpu_ms = ms(p.cpu.reacquire),
+        read_ahead_ms = ms(p.read_ahead),
+        read_ahead_cpu_ms = ms(p.cpu.read_ahead),
+        read_ahead_uploads = report.read_ahead_uploads,
+        preview_build_ms = ms(p.preview.build),
+        preview_build_cpu_ms = ms(p.preview.build_cpu),
+        preview_encode_ms = ms(p.preview.encode),
+        preview_encode_cpu_ms = ms(p.preview.encode_cpu),
+        preview_finish_ms = ms(p.preview.finish),
+        preview_finish_cpu_ms = ms(p.preview.finish_cpu),
+        preview_submit_ms = ms(p.preview.submit),
+        preview_submit_cpu_ms = ms(p.preview.submit_cpu),
+        view_build_ms = ms(p.view.build),
+        view_build_cpu_ms = ms(p.view.build_cpu),
+        view_encode_ms = ms(p.view.encode),
+        view_encode_cpu_ms = ms(p.view.encode_cpu),
+        view_finish_ms = ms(p.view.finish),
+        view_finish_cpu_ms = ms(p.view.finish_cpu),
+        view_submit_ms = ms(p.view.submit),
+        view_submit_cpu_ms = ms(p.view.submit_cpu),
+        dropped_total = state.dropped_frames_total.load(Ordering::SeqCst),
+        "A/B slow draw: frame {frame}"
     );
 }
 
@@ -711,6 +781,7 @@ pub async fn run_loop(
         report.master_frame = master;
         report.woke_late = woke_late;
         cadence.submitted_late(state, &report);
+        slow_draw_line(state, &report, frame);
         if first_of_run {
             first_draw_line(&report, cadence.last_tick);
         }
@@ -961,11 +1032,13 @@ mod tests {
                             encode: Duration::from_micros(500),
                             finish: Duration::from_micros(100),
                             submit: Duration::from_micros(32_500),
+                            ..Default::default()
                         },
                         cpu: PhaseCpu {
                             read_ahead: Duration::from_micros(200),
                             preview: Duration::from_micros(450),
                             view: Duration::from_micros(600),
+                            ..Default::default()
                         },
                         ..Default::default()
                     },
@@ -1004,6 +1077,126 @@ mod tests {
         ] {
             assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
         }
+    }
+
+    /// The A/B's slow-draw line (the user's ruling of 2026-11-15 17:30): a
+    /// draw of 25 ms or more is logged whether or not it was late, with each
+    /// phase's wall and CPU and the kernel's share; a 24.9 ms draw is not.
+    /// Every figure differs from every other, so a field that printed the
+    /// wrong one fails.
+    #[test]
+    fn the_slow_draw_line_logs_each_draw_of_25_ms_or_more_with_each_phase_s_cpu() {
+        use crate::render::{BusPhases, PhaseCpu, RenderPhases};
+        use nbe_decode::thread_time::ProcessCounts;
+        let us = Duration::from_micros;
+        let report = |render: Duration| TickReport {
+            master_frame: Some(77),
+            render,
+            render_cpu: us(21_010),
+            render_sys: us(4_020),
+            render_counts: ProcessCounts {
+                minor_faults: 1_234,
+                major_faults: 2,
+                involuntary_switches: 17,
+                voluntary_switches: 9,
+            },
+            read_ahead_uploads: 3,
+            woke_late: us(1_030),
+            render_phases: RenderPhases {
+                sync: us(110),
+                reacquire: us(120),
+                read_ahead: us(13_130),
+                preview: BusPhases {
+                    build: us(1_140),
+                    encode: us(1_150),
+                    finish: us(1_160),
+                    submit: us(1_170),
+                    build_cpu: us(240),
+                    encode_cpu: us(250),
+                    finish_cpu: us(260),
+                    submit_cpu: us(270),
+                },
+                view: BusPhases {
+                    build: us(1_180),
+                    encode: us(1_190),
+                    finish: us(1_200),
+                    submit: us(1_210),
+                    build_cpu: us(280),
+                    encode_cpu: us(290),
+                    finish_cpu: us(300),
+                    submit_cpu: us(310),
+                },
+                cpu: PhaseCpu {
+                    sync: us(220),
+                    reacquire: us(230),
+                    read_ahead: us(12_120),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let text = captured(|| {
+            let state = EngineState::new(30);
+            slow_draw_line(&state, &report(us(24_990)), 76);
+            slow_draw_line(&state, &report(us(25_000)), 77);
+        });
+        assert!(
+            !text.contains("slow draw: frame 76"),
+            "a 24.99 ms draw is not slow:\n{text}"
+        );
+        let line = text
+            .lines()
+            .find(|l| l.contains("A/B slow draw: frame 77"))
+            .unwrap_or_else(|| panic!("no slow-draw line in:\n{text}"));
+        let value = |name: &str| -> f64 {
+            let key = format!(" {name}=");
+            let at = line
+                .find(&key)
+                .unwrap_or_else(|| panic!("{name} missing: {line}"));
+            line[at + key.len()..]
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} unreadable: {line}"))
+        };
+        for (name, want) in [
+            ("master_frame", 77.0),
+            ("render_ms", 25.0),
+            ("render_cpu_ms", 21.01),
+            ("render_sys_ms", 4.02),
+            ("proc_minflt", 1234.0),
+            ("proc_majflt", 2.0),
+            ("proc_nivcsw", 17.0),
+            ("proc_nvcsw", 9.0),
+            ("woke_late_ms", 1.03),
+            ("sync_ms", 0.11),
+            ("sync_cpu_ms", 0.22),
+            ("reacquire_ms", 0.12),
+            ("reacquire_cpu_ms", 0.23),
+            ("read_ahead_ms", 13.13),
+            ("read_ahead_cpu_ms", 12.12),
+            ("read_ahead_uploads", 3.0),
+            ("preview_build_ms", 1.14),
+            ("preview_encode_ms", 1.15),
+            ("preview_finish_ms", 1.16),
+            ("preview_submit_ms", 1.17),
+            ("preview_build_cpu_ms", 0.24),
+            ("preview_encode_cpu_ms", 0.25),
+            ("preview_finish_cpu_ms", 0.26),
+            ("preview_submit_cpu_ms", 0.27),
+            ("view_build_ms", 1.18),
+            ("view_encode_ms", 1.19),
+            ("view_finish_ms", 1.2),
+            ("view_submit_ms", 1.21),
+            ("view_build_cpu_ms", 0.28),
+            ("view_encode_cpu_ms", 0.29),
+            ("view_finish_cpu_ms", 0.3),
+            ("view_submit_cpu_ms", 0.31),
+        ] {
+            assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
+        }
+        assert!(line.contains(" late=false"), "{line}");
     }
 
     /// A run edge's line names the `droppedFramesTotal` its own count

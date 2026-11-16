@@ -276,6 +276,12 @@ pub struct BusPhases {
     pub encode: Duration,
     pub finish: Duration,
     pub submit: Duration,
+    /// The render thread's CPU time over each of the four (the A/B of the
+    /// user's ruling of 2026-11-15 17:30, log-only).
+    pub build_cpu: Duration,
+    pub encode_cpu: Duration,
+    pub finish_cpu: Duration,
+    pub submit_cpu: Duration,
 }
 
 impl BusPhases {
@@ -308,6 +314,8 @@ pub struct RenderPhases {
 /// The render thread's CPU time per phase (see [`RenderPhases::cpu`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PhaseCpu {
+    pub sync: Duration,
+    pub reacquire: Duration,
     pub read_ahead: Duration,
     pub preview: Duration,
     pub view: Duration,
@@ -934,19 +942,23 @@ impl RenderLoop {
         let mut phases = RenderPhases::default();
         self.view_submission = None;
         let sync_started = Instant::now();
+        let sync_cpu = thread_cpu_time();
         self.sync_package();
         phases.sync = sync_started.elapsed();
+        phases.cpu.sync = thread_cpu_time().saturating_sub(sync_cpu);
 
         let rung = self.state.rung();
         // The View always has its loops: a take of a shed loop re-acquires it
         // here, before the View draws (rung 2 never sheds what is on air, so
         // this only ever re-uploads a loop that was off air when it was shed).
         let reacquire_started = Instant::now();
+        let reacquire_cpu = thread_cpu_time();
         self.reacquire_for(Bus::View, frame, "take");
         if rung >= Rung::LoopsShed {
             self.shed_off_air_loops(frame);
         }
         phases.reacquire = reacquire_started.elapsed();
+        phases.cpu.reacquire = thread_cpu_time().saturating_sub(reacquire_cpu);
         let read_ahead_started = Instant::now();
         let read_ahead_cpu = thread_cpu_time();
         let read_ahead_uploads = self.pump_read_ahead(frame, false);
@@ -1198,6 +1210,7 @@ impl RenderLoop {
         phases: &mut BusPhases,
     ) -> anyhow::Result<wgpu::SubmissionIndex> {
         let build_started = Instant::now();
+        let build_cpu = thread_cpu_time();
         if bus == Bus::Preview && self.fail_preview {
             anyhow::bail!("injected preview failure");
         }
@@ -1249,6 +1262,8 @@ impl RenderLoop {
         }
 
         phases.build = build_started.elapsed();
+        let encode_cpu = thread_cpu_time();
+        phases.build_cpu = encode_cpu.saturating_sub(build_cpu);
         let encode_started = Instant::now();
         let mut enc = self
             .gpu
@@ -1317,12 +1332,17 @@ impl RenderLoop {
             }
         }
         phases.encode = encode_started.elapsed();
+        let finish_cpu = thread_cpu_time();
+        phases.encode_cpu = finish_cpu.saturating_sub(encode_cpu);
         let finish_started = Instant::now();
         let commands = enc.finish();
         phases.finish = finish_started.elapsed();
+        let submit_cpu = thread_cpu_time();
+        phases.finish_cpu = submit_cpu.saturating_sub(finish_cpu);
         let submit_started = Instant::now();
         let submission = self.gpu.queue.submit([commands]);
         phases.submit = submit_started.elapsed();
+        phases.submit_cpu = thread_cpu_time().saturating_sub(submit_cpu);
         Ok(submission)
     }
 
