@@ -9,7 +9,7 @@
 use crate::decode::DecodedFrame;
 use crate::gpu::Gpu;
 use crate::read_ahead::{Delivery, ReadAhead};
-use crate::scene::{Layer, LayerSource, ResolvedScene, TransitionKind};
+use crate::scene::{Layer, LayerSource, ResolvedScene, TextLayer, TransitionKind};
 use crate::state::EngineState;
 use crate::watchdog::Watchdog;
 use nbe_decode::thread_time::thread_cpu_time;
@@ -1277,11 +1277,14 @@ impl RenderLoop {
         } else {
             for bus_scene in self.scene_for(bus, frame) {
                 for layer in bus_scene.scene.layers {
-                    if let Some(d) =
-                        self.draw_for(bus, &layer, bus_scene.alpha, frame, bus_scene.t0)
-                    {
-                        draws.push(d);
-                    }
+                    self.push_layer(
+                        bus,
+                        &layer,
+                        bus_scene.alpha,
+                        frame,
+                        bus_scene.t0,
+                        &mut draws,
+                    );
                 }
             }
             // §7.10: `View = overlay(transition(A, B))`. Overlay elements
@@ -1370,6 +1373,40 @@ impl RenderLoop {
         let submission = self.gpu.queue.submit([commands]);
         phases.submit = submit_started.elapsed();
         Ok(submission)
+    }
+
+    /// A layer's draws, appended in order. A text layer with a backing draws
+    /// the backing first: a solid fill of the layer's whole box, at the
+    /// backing's opacity times the layer's (an overlay's fade fades both),
+    /// directly under its text. A text layer that draws nothing this frame
+    /// draws no backing either.
+    fn push_layer(
+        &self,
+        bus: Bus,
+        layer: &Layer,
+        alpha: f32,
+        frame: u64,
+        t0: u64,
+        draws: &mut Vec<(wgpu::Texture, LayerUniform)>,
+    ) {
+        let Some(d) = self.draw_for(bus, layer, alpha, frame, t0) else {
+            return;
+        };
+        if let LayerSource::Text(TextLayer {
+            backing: Some([r, g, b, a]),
+            ..
+        }) = &layer.source
+        {
+            draws.push((
+                self.white.clone(),
+                LayerUniform {
+                    color: [*r, *g, *b, *a * layer.opacity * alpha],
+                    rect: layer.rect,
+                    uv: UV_FULL,
+                },
+            ));
+        }
+        draws.push(d);
     }
 
     fn draw_for(
@@ -1545,9 +1582,7 @@ impl RenderLoop {
                 // Overlay timelines key off the master clock. A video overlay
                 // reads from its own went-on-air frame (`anim_start`, the first
                 // frame it was visible), independent of any take — §12.1's t0.
-                if let Some(d) = self.draw_for(Bus::View, &layer, alpha, frame, t0) {
-                    draws.push(d);
-                }
+                self.push_layer(Bus::View, &layer, alpha, frame, t0, draws);
             }
         }
     }
@@ -1713,9 +1748,7 @@ impl RenderLoop {
     fn graphic_draws(&self, frame: u64, draws: &mut Vec<(wgpu::Texture, LayerUniform)>) {
         let layers = self.state.graphics.lock().unwrap().layers();
         for layer in layers {
-            if let Some(d) = self.draw_for(Bus::View, &layer, 1.0, frame, 0) {
-                draws.push(d);
-            }
+            self.push_layer(Bus::View, &layer, 1.0, frame, 0, draws);
         }
     }
 
