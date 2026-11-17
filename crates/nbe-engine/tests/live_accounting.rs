@@ -163,7 +163,8 @@ async fn the_camera_counts_add_up_while_the_render_loop_is_late_publishing() {
         "every frame published on time is counted in: {on_time:?}"
     );
     assert_eq!(
-        late.0, on_time.0 + LATE_STEPS,
+        late.0,
+        on_time.0 + LATE_STEPS,
         "frames kept arriving while late, one a step: {on_time:?} -> {late:?}"
     );
     assert_eq!(
