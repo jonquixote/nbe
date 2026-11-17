@@ -114,8 +114,9 @@ struct ClipRing {
     retry_at: Option<Instant>,
     /// Given up on: reported once, never respawned at this stall.
     failed: bool,
-    /// The missing frame the current decoder was (re)started at.
-    started_at: Option<u64>,
+    /// Whether the current decoder has delivered a frame: an early end after
+    /// a delivery is a new stall, retried anew; one before it is the same.
+    delivered: bool,
 }
 
 /// A clip that stopped decoding before its end is retried this long after
@@ -652,7 +653,7 @@ impl RenderLoop {
                 retries: 0,
                 retry_at: None,
                 failed: false,
-                started_at: None,
+                delivered: false,
             };
             // Through the staging pool, waiting for it when it is full: the
             // load boundary may wait, and `write_texture` would cost the prime
@@ -811,15 +812,20 @@ impl RenderLoop {
             // Its position is the frame held back, when one is.
             if let Some(m) = clip.first_missing() {
                 let restart = match clip.worker.as_ref() {
-                    None if clip.stalled_at != Some(m) => {
-                        // A first start, or the window moved past a stall (a
-                        // re-take, a reset): a fresh start, retries anew.
+                    // A first start, or the window moved back before a stall
+                    // (a re-take, a reset): a fresh start, retries anew.
+                    None if clip.stalled_at.is_none_or(|s| m < s) => {
                         clip.retries = 0;
                         clip.failed = false;
+                        clip.retry_at = None;
                         true
                     }
-                    // The same stall: retry on the backoff, until given up.
-                    None => !clip.failed && clip.retry_at.is_some_and(|t| Instant::now() >= t),
+                    // Given up on: the View holds; nothing is respawned while
+                    // the window moves forward (a thread a frame, otherwise).
+                    None if clip.failed => false,
+                    // A stall: retry on the backoff, at the first missing frame
+                    // as it stands then.
+                    None => clip.retry_at.is_some_and(|t| Instant::now() >= t),
                     Some(w) => {
                         let next = clip.pending.as_ref().map(|f| f.index).unwrap_or(w.next());
                         next > m || m > next + clip.window.len() as u64
@@ -832,7 +838,7 @@ impl RenderLoop {
                     }
                     clip.pending = None;
                     clip.stalled_at = None;
-                    clip.started_at = Some(m);
+                    clip.delivered = false;
                     clip.worker = Some(ReadAhead::spawn(&id, clip.path.clone(), m, clip.length));
                 }
             }
@@ -872,6 +878,7 @@ impl RenderLoop {
                             break;
                         }
                         clip.slot_frame[s] = Some(j);
+                        clip.delivered = true;
                         budget -= 1;
                         uploaded += 1;
                     }
@@ -882,9 +889,9 @@ impl RenderLoop {
                         // An early end (a decode failure or a file gone short):
                         // retry after a backoff; after the last, give up once.
                         if let Some(m) = early {
-                            // A decoder that got past the frame it started at
-                            // made progress: this is a new stall, retried anew.
-                            if clip.started_at.is_some_and(|s| m > s) {
+                            // A decoder that delivered a frame made progress:
+                            // this is a new stall, retried anew.
+                            if clip.delivered {
                                 clip.retries = 0;
                             }
                             if !clip.failed {

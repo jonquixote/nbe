@@ -209,15 +209,29 @@ async fn a_clip_cut_short_mid_play_is_retried_then_reported_held() {
     });
     assert!(fade, "its audio fades out over 500 ms");
 
-    // Given up on: no more retries at that stall, however long it plays on.
-    for _ in 0..30 {
-        render.settle_read_ahead(frame, Duration::ZERO);
+    // Given up on: no more retries and no second report, however long it
+    // plays on, through the dead region to the clip's end.
+    let mut f = frame;
+    for _ in 0..90 {
+        render.settle_read_ahead(f, Duration::ZERO);
+        f = (f + 1).min(149);
         std::thread::sleep(Duration::from_millis(33));
     }
+    println!(
+        "played on to master frame {f}: retries {}, failures {}, reports {}",
+        state.clip_retries_total.load(Ordering::SeqCst),
+        state.clip_failures_total.load(Ordering::SeqCst),
+        state.item_events.lock().unwrap().len()
+    );
     assert_eq!(
         state.clip_retries_total.load(Ordering::SeqCst),
         3,
         "no retry after giving up"
+    );
+    assert_eq!(
+        state.clip_failures_total.load(Ordering::SeqCst),
+        1,
+        "given up once"
     );
     assert_eq!(state.item_events.lock().unwrap().len(), 1, "reported once");
 }
