@@ -10,14 +10,23 @@
 //! were already uploaded counted as in flight.
 //!
 //! This makes that deterministic. A seam holds the render loop's per-frame
-//! publication (as a late render thread would not publish) while a capture
-//! side keeps publishing and the upload thread keeps uploading. The engine
-//! does nothing wrong. Every frame is still uploaded or overwritten, as the
-//! test checks once the capture side stops. The counts must add up all the same.
+//! publication (as a late render thread would not publish) while frames keep
+//! being published and the upload thread keeps uploading. The engine does
+//! nothing wrong. Every frame is still uploaded or overwritten, as the test
+//! checks once publishing stops. The counts must add up all the same.
+//!
+//! Publishes and ticks run in lockstep, and both are counted: each step
+//! publishes one frame, then draws one tick. No sleeps and no capture thread.
+//! The first form fed the mailbox from a thread sleeping 5 ms a frame and
+//! required more than 20 frames in the 300 ms late phase. On main's push run at
+//! 17e9d3d (runner load1 about 18 on 3 CPUs) that thread delivered 17 frames in
+//! the on-time phase and exactly 20 in the late one, and the test failed on its
+//! own precondition, with every count adding up (the user's ruling of
+//! 2026-11-16 18:40). Here the phases are counts of steps, so what each phase
+//! publishes is exact on any machine.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 
 use nbe_engine::live::{CaptureHandle, FrameMailbox, LiveFrame};
 use nbe_engine::render::RenderLoop;
@@ -41,6 +50,14 @@ impl CaptureHandle for Fed {}
 
 const SOURCE: &str = "camera:accounting";
 
+/// Steps (one publish, one tick) with the render loop on time.
+const ON_TIME_STEPS: u64 = 20;
+/// Steps with the render loop late publishing.
+const LATE_STEPS: u64 = 30;
+/// The most ticks the settling may take before the test calls it stuck. A
+/// count, not a time: the upload thread needs one wake to take the last frame.
+const SETTLE_TICKS: u64 = 600;
+
 /// (frames in, uploaded, overwritten) as telemetry reports them now, and
 /// what that leaves unaccounted for.
 fn counts(state: &EngineState) -> (u64, u64, u64, i64) {
@@ -58,6 +75,38 @@ fn counts(state: &EngineState) -> (u64, u64, u64, i64) {
     (i, u, o, i as i64 - u as i64 - o as i64)
 }
 
+/// The capture side and the render loop in lockstep: publish one frame,
+/// then draw one tick.
+struct Lockstep {
+    mailbox: Arc<FrameMailbox>,
+    /// Frames published so far (each one's sequence number).
+    published: u64,
+    /// Ticks drawn so far (the next master frame).
+    ticks: u64,
+}
+
+impl Lockstep {
+    fn publish(&mut self) {
+        self.published += 1;
+        self.mailbox.publish(LiveFrame {
+            width: 64,
+            height: 36,
+            bgra: vec![0u8; 64 * 36 * 4],
+            seq: self.published,
+        });
+    }
+
+    async fn tick(&mut self, render: &mut RenderLoop, state: &EngineState) {
+        run_tick(render, state, self.ticks, None).await;
+        self.ticks += 1;
+    }
+
+    async fn step(&mut self, render: &mut RenderLoop, state: &EngineState) {
+        self.publish();
+        self.tick(render, state).await;
+    }
+}
+
 #[tokio::test]
 async fn the_camera_counts_add_up_while_the_render_loop_is_late_publishing() {
     let Some((state, mut render)) = render_loop_or_skip().await else {
@@ -67,64 +116,60 @@ async fn the_camera_counts_add_up_while_the_render_loop_is_late_publishing() {
     state
         .live
         .add_video_source(SOURCE.into(), mailbox.clone(), Box::new(Fed));
-
-    // The capture side: a small frame every 5 ms until told to stop.
-    let stop = Arc::new(AtomicBool::new(false));
-    let feeder = {
-        let (stop, mailbox) = (stop.clone(), mailbox.clone());
-        std::thread::spawn(move || {
-            let mut seq = 0u64;
-            while !stop.load(Ordering::SeqCst) {
-                seq += 1;
-                mailbox.publish(LiveFrame {
-                    width: 64,
-                    height: 36,
-                    bgra: vec![0u8; 64 * 36 * 4],
-                    seq,
-                });
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        })
+    let mut ls = Lockstep {
+        mailbox,
+        published: 0,
+        ticks: 0,
     };
 
-    // The render loop on time: a tick every 10 ms for 200 ms.
-    let mut frame = 0u64;
-    for _ in 0..20 {
-        run_tick(&mut render, &state, frame, None).await;
-        frame += 1;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    // The render loop on time.
+    for _ in 0..ON_TIME_STEPS {
+        ls.step(&mut render, &state).await;
     }
     let on_time = counts(&state);
 
-    // The render loop late publishing for 300 ms; frames keep coming and
-    // keep being uploaded.
+    // The render loop late publishing; frames keep coming and keep being
+    // uploaded.
     render.injected_live_publish_hold = true;
-    for _ in 0..30 {
-        run_tick(&mut render, &state, frame, None).await;
-        frame += 1;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    for _ in 0..LATE_STEPS {
+        ls.step(&mut render, &state).await;
     }
     let late = counts(&state);
 
-    // No engine fault: with the capture side stopped and the uploader given
-    // time to take the last frame, every frame is uploaded or overwritten.
+    // No engine fault: with publishing stopped, the render loop on time again
+    // and the uploader given ticks to take the last frame, every frame is
+    // uploaded or overwritten. Ticks until the counts settle, at most
+    // SETTLE_TICKS of them; a wall-clock time is only reported.
     render.injected_live_publish_hold = false;
-    stop.store(true, Ordering::SeqCst);
-    feeder.join().unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    run_tick(&mut render, &state, frame, None).await;
-    let settled = counts(&state);
+    let settle_started = Instant::now();
+    let mut settle_ticks = 0u64;
+    let mut settled = counts(&state);
+    while settled.3 != 0 && settle_ticks < SETTLE_TICKS {
+        ls.tick(&mut render, &state).await;
+        tokio::task::yield_now().await;
+        settle_ticks += 1;
+        settled = counts(&state);
+    }
+    let settle_ms = settle_started.elapsed().as_secs_f64() * 1000.0;
 
     println!(
-        "item 3: (in, uploaded, overwritten, unaccounted) on time {on_time:?}; late publishing {late:?}; settled {settled:?}"
+        "item 3: (in, uploaded, overwritten, unaccounted) on time {on_time:?}; \
+         late publishing {late:?}; settled {settled:?} (published {}, ticks {}, \
+         settled after {settle_ticks} ticks, {settle_ms:.2} ms)",
+        ls.published, ls.ticks
     );
-    assert!(
-        late.0 > on_time.0 + 20,
-        "frames kept arriving while late: {on_time:?} -> {late:?}"
+    assert_eq!(
+        on_time.0, ON_TIME_STEPS,
+        "every frame published on time is counted in: {on_time:?}"
+    );
+    assert_eq!(
+        late.0,
+        on_time.0 + LATE_STEPS,
+        "frames kept arriving while late, one a step: {on_time:?} -> {late:?}"
     );
     assert_eq!(
         settled.3, 0,
-        "settled, every frame was uploaded or overwritten: {settled:?}"
+        "settled, every frame was uploaded or overwritten: {settled:?} after {settle_ticks} ticks"
     );
     assert!(
         (0..=2).contains(&on_time.3),
