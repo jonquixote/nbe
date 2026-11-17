@@ -86,10 +86,9 @@ async fn a_ticker_too_wide_to_draw_is_refused_and_the_worker_goes_on() {
     let refused = prep.prepare_checked("tick", &long, WHITE, true, boxed(BAND), WAIT);
     println!("400-character ticker: {refused:?}");
     match &refused {
-        PrepOutcome::Refused(why) => assert!(
-            why.contains("8192"),
-            "the refusal names the limit: {why}"
-        ),
+        PrepOutcome::Refused(why) => {
+            assert!(why.contains("8192"), "the refusal names the limit: {why}")
+        }
         other => panic!("a ticker too wide to draw must be refused, got {other:?}"),
     }
     assert_eq!(prep.refused_total.load(Ordering::SeqCst), 1);
@@ -132,7 +131,9 @@ async fn a_texture_the_device_refuses_is_an_error_not_a_panic() {
     let made = make_texture_checked(&gpu.device, &gpu.queue, w, 1, &rgba, "too-wide");
     println!(
         "a {w}x1 texture: {}",
-        made.as_ref().map(|_| "made".to_string()).unwrap_or_else(|e| e.clone())
+        made.as_ref()
+            .map(|_| "made".to_string())
+            .unwrap_or_else(|e| e.clone())
     );
     assert!(made.is_err(), "the device's limit is refused as an error");
 }
