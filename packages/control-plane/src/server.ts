@@ -287,14 +287,20 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       payload: { items: tickerDirectiveItems(state.tickerItems), mode: "replace" },
       stateVersion: sv,
     });
-    audit.record({
-      kind: "command",
-      command: "system:ticker.expire",
-      event: "ticker.expired",
-      detail: { expired, remaining: state.tickerItems.length },
-      stateVersionBefore: before,
-      stateVersionAfter: sv,
-    });
+    try {
+      audit.record({
+        kind: "command",
+        command: "system:ticker.expire",
+        event: "ticker.expired",
+        detail: { expired, remaining: state.tickerItems.length },
+        stateVersionBefore: before,
+        stateVersionAfter: sv,
+      });
+    } catch {
+      // A throw here would leave the timer callback and end the process. A
+      // sink that cannot be written is R18's alert to announce (the signal
+      // lane reads `audit.sinkOk`); the expiry has happened and stands.
+    }
   }, 1000);
   tickerTimer.unref?.();
   const wsBridge = new WsRenderBridge();
