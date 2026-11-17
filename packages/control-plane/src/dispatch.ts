@@ -29,6 +29,9 @@ import type { ControlPlaneState } from "./state.js";
 export interface PersistHooks {
   onDirty(): void;
   flushNow(): void;
+  /** After an accepted command (review4 step 4): on-air intent is written
+   * before the response is sent. Without it, `onDirty`. */
+  onCommitted?(command: string): void;
 }
 
 export interface ShowStopWarning {
@@ -409,6 +412,7 @@ export async function dispatch(
   // the send (show.stop's acknowledgement, §5.9.5)
   const after = out.afterForward ? await out.afterForward(sv) : {};
 
-  deps.persistence.onDirty();
+  if (deps.persistence.onCommitted) deps.persistence.onCommitted(command);
+  else deps.persistence.onDirty();
   return { data: { ...(out.data ?? {}), ...(after.data ?? {}) }, stateVersion: sv };
 }

@@ -5,8 +5,9 @@ import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
 import { StatePersistence } from "./persistence.js";
 import { DEFAULT_PORT, RoleSchema, type Role } from "./protocol.js";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
 
 async function main(): Promise<void> {
   const tokensRaw = process.env.NBE_TOKENS;
@@ -35,10 +36,27 @@ async function main(): Promise<void> {
   }
 
   const state = new ControlPlaneState();
-  const stateFile = join(process.env.NBE_STATE_DIR ?? join(tmpdir(), "nbe"), "control-plane-state.json");
+  // Review4 step 4: the journal lives where a reboot does not clear it.
+  // The OS temp directory is refused (the default used to be there), unless
+  // a test says otherwise (NBE_ALLOW_TEMP_STATE=1).
+  const stateDir = resolve(process.env.NBE_STATE_DIR ?? join(homedir(), "Library", "Application Support", "nbe"));
+  const temp = resolve(tmpdir());
+  const realTemp = existsSync(temp) ? realpathSync(temp) : temp;
+  const underTemp = [temp, realTemp].some((t) => stateDir === t || stateDir.startsWith(t + sep));
+  if (underTemp && process.env.NBE_ALLOW_TEMP_STATE !== "1") {
+    console.error(
+      `refusing to keep the control plane's journal under the OS temp directory (${stateDir}); set NBE_STATE_DIR to a durable directory`,
+    );
+    process.exit(1);
+  }
+  const stateFile = join(stateDir, "control-plane-state.json");
   const persistence = new StatePersistence(state, stateFile);
   if (persistence.restore()) {
-    console.log("recovered prior control-plane state version", state.stateVersion);
+    console.log(
+      "recovered prior control-plane state version",
+      state.stateVersion,
+      persistence.restoredFrom === "previous" ? "(from the previous journal: the newest did not verify)" : "",
+    );
   }
 
   const server = await createControlPlaneServer({

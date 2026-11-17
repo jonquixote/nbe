@@ -18,7 +18,9 @@ op="op-$(uuidgen)"
 admin="admin-$(uuidgen)"
 render="render-$(uuidgen)"
 export NBE_TOKENS="{\"$op\":\"operator\",\"$admin\":\"admin\",\"$render\":\"render\"}"
-export NBE_AUDIT_LOG="$work/audit.jsonl" NBE_STATE_DIR="$work/state" NBE_PORT="$port"
+# The journal is refused under the OS temp directory (review4 step 4); this
+# throwaway control plane keeps it in its mktemp directory on purpose.
+export NBE_AUDIT_LOG="$work/audit.jsonl" NBE_STATE_DIR="$work/state" NBE_ALLOW_TEMP_STATE=1 NBE_PORT="$port"
 (cd "$cp_dir" && exec perl -e 'alarm 900; exec @ARGV' npx tsx src/index.ts) > "$work/cp.log" 2>&1 &
 cp_pid=$!
 engine_pid=""
