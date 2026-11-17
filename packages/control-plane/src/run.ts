@@ -13,7 +13,7 @@
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DEFAULT_PORT } from "./protocol.js";
 import { Supervisor, type ChildSpec } from "./supervisor.js";
 
@@ -27,14 +27,29 @@ function pick(names: string[]): Record<string, string> {
   return out;
 }
 
-/** Every NBE_ variable except the ones holding other roles' secrets, and
- * RUST_LOG: what the engine reads (NBE_AUDIO_SINK, NBE_CAMERAS,
- * NBE_MEDIA_SERVER, …). Never NBE_TOKENS (every role's token). */
-function engineEnv(): Record<string, string> {
+/** The variables the engine reads (every `env::var` in nbe-engine and
+ * nbe-decode, 2026-11-17), less the two run.ts sets itself (NBE_CP_URL,
+ * NBE_RENDER_TOKEN) and the synthetic-camera test seams. An allow-list, not
+ * "every NBE_ but the secrets": a variable added later is not forwarded
+ * until it is named here. */
+export const ENGINE_ENV = [
+  "NBE_AUDIO_SINK",
+  "NBE_CAMERAS",
+  "NBE_MICS",
+  "NBE_HOUSE_RATE",
+  "NBE_MEDIA_SERVER",
+  "NBE_MEDIA_RTSP_PORT",
+  "NBE_FFMPEG",
+  "NBE_RECORD_TRACE",
+  "RUST_LOG",
+] as const;
+
+/** The engine's variables from `from` that are set. */
+export function engineEnv(from: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined) continue;
-    if ((k.startsWith("NBE_") && k !== "NBE_TOKENS" && k !== "NBE_AUDIT_LOG") || k === "RUST_LOG") out[k] = v;
+  for (const k of ENGINE_ENV) {
+    const v = from[k];
+    if (v !== undefined) out[k] = v;
   }
   return out;
 }
@@ -144,4 +159,5 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ ts: new Date().toISOString(), kind: "running", pids: sup.pids(), caffeinate: sup.caffeinatePid ?? null }));
 }
 
-void main();
+// Run when executed (`node --import tsx src/run.ts`), not when imported by a test.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) void main();
