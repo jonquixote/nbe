@@ -25,7 +25,7 @@ function journalAt(path: string): Record<string, unknown> {
   return body.journal;
 }
 
-test("an on-air command is in the journal before the command returns", () => {
+test("an on-air command is in the journal when its commit settles", async () => {
   const dir = tempDir("nbe-journal-");
   const path = join(dir, "control-plane-state.json");
   const state = new ControlPlaneState();
@@ -34,8 +34,14 @@ test("an on-air command is in the journal before the command returns", () => {
   state.itemStates.set("A2", "LIVE");
   state.tickerItems = [{ text: "BREAKING", priority: 5, ttlSec: 30 }];
   state.bump();
-  p.onCommitted("view.take");
-  // No await: the write happened inside onCommitted.
+  // The write runs off the event loop: other work proceeds while it is on
+  // its way to disk (a synchronous write held every connection ~40 ms).
+  let loopRan = false;
+  setImmediate(() => {
+    loopRan = true;
+  });
+  await p.onCommitted("view.take");
+  assert.ok(loopRan, "the event loop ran while the journal was written");
   const j = journalAt(path);
   assert.equal(j["viewItem"], "A2");
   assert.deepEqual(j["itemStates"], { A2: "LIVE" });
@@ -55,15 +61,15 @@ test("anything else is written within the 50 ms debounce, not before the respons
   assert.equal(journalAt(path)["automationHold"], true, "written within the debounce");
 });
 
-test("a corrupted journal falls back to the previous one; a parseable but altered one too", () => {
+test("a corrupted journal falls back to the previous one; a parseable but altered one too", async () => {
   const dir = tempDir("nbe-journal-");
   const path = join(dir, "control-plane-state.json");
   const state = new ControlPlaneState();
   const p = new StatePersistence(state, path);
   state.stateVersion = 5;
-  p.onCommitted("view.take");
+  await p.onCommitted("view.take");
   state.stateVersion = 6;
-  p.onCommitted("view.take");
+  await p.onCommitted("view.take");
   assert.equal((readJournal(prevPath(path)) as JournalBody).stateVersion, 5, "the previous journal is kept");
 
   // Torn: the newest file cut in half.
@@ -93,13 +99,13 @@ test("a corrupted journal falls back to the previous one; a parseable but altere
   assert.equal(c.showState, "UNLOADED", "Rule 10: never RUNNING from the file alone");
 });
 
-test("a write cut off before its rename leaves the last good journal readable", () => {
+test("a write cut off before its rename leaves the last good journal readable", async () => {
   const dir = tempDir("nbe-journal-");
   const path = join(dir, "control-plane-state.json");
   const state = new ControlPlaneState();
   const p = new StatePersistence(state, path);
   state.stateVersion = 8;
-  p.onCommitted("view.take");
+  await p.onCommitted("view.take");
   // A crash mid-write: a partial temp file, never renamed.
   writeFileSync(path + ".tmp", '{"schema":2,"checksum":"ab');
   const a = new ControlPlaneState();

@@ -13,23 +13,21 @@
 //! record, stream, guest) is written before its response is sent; anything
 //! else within 50 ms.
 //!
-//! How: the body and its SHA-256 go to `<file>.tmp`, which is fsynced and
+//! How: the body and its SHA-256 go to a temp file, which is fsynced and
 //! renamed over the file after the previous file is renamed to
 //! `<file minus .json>.prev.json`; the directory is fsynced. On start the
 //! newest file whose checksum holds is read (the file, then the previous
 //! one). A torn or corrupted file is skipped, never half-read.
+//!
+//! The writes are asynchronous and run one at a time, in order. Each fsync
+//! costs about 20 ms on the reference Mac, so a write is about 40 ms. Done
+//! synchronously, it held the whole event loop (every connection, every
+//! telemetry tick) for that long on every take; now only the take's own
+//! response waits for it.
 
 import { createHash } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  writeSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, open, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ControlPlaneState, ManifestIdentity } from "./state.js";
 
@@ -54,8 +52,9 @@ interface JournalFile {
 export interface PersistenceHooks {
   onDirty(): void;
   flushNow(): void;
-  /** After an accepted command: on-air intent is written before the response. */
-  onCommitted?(command: string): void;
+  /** After an accepted command: on-air intent is written before the response
+   * (the returned promise settles once it is on disk). */
+  onCommitted?(command: string): void | Promise<void>;
 }
 
 /** Commands whose effect is on air: written before their response. */
@@ -121,8 +120,13 @@ export function readJournal(path: string): JournalBody | PersistedSnapshot | nul
 export class StatePersistence implements PersistenceHooks {
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** The writes, one at a time, in order. */
+  private chain: Promise<void> = Promise.resolve();
+  private seq = 0;
   /** Which file the last restore read ("current", "previous" or null). */
   restoredFrom: "current" | "previous" | null = null;
+  /** The last write's failure, if any (the next one tries again). */
+  lastError: unknown = null;
 
   constructor(
     private readonly state: ControlPlaneState,
@@ -130,7 +134,7 @@ export class StatePersistence implements PersistenceHooks {
     private readonly debounceMs = 50,
   ) {}
 
-  /** Mark dirty; write after a debounce window (no sync write on the command path). */
+  /** Mark dirty; write after a debounce window. */
   onDirty(): void {
     this.dirty = true;
     if (this.timer) return;
@@ -141,23 +145,41 @@ export class StatePersistence implements PersistenceHooks {
     this.timer.unref?.();
   }
 
-  /** After an accepted command: an on-air command is written now, before
-   * its response is sent; anything else within the debounce. */
-  onCommitted(command: string): void {
+  /** After an accepted command: an on-air command is written now and the
+   * promise settles once it is on disk (the response waits for it);
+   * anything else within the debounce. */
+  onCommitted(command: string): void | Promise<void> {
     if (changesOnAirIntent(command)) {
       this.dirty = true;
-      this.flushNow();
-    } else {
-      this.onDirty();
+      return this.flush();
     }
+    this.onDirty();
   }
 
-  /** Immediate write (show-state transitions and on-air commands). */
+  /** Queue a write now (show-state transitions call it). Does not wait. */
   flushNow(): void {
+    void this.flush();
+  }
+
+  /** Queue a write now; settles once it is on disk. */
+  flush(): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    const next = this.chain.then(() => this.write());
+    this.chain = next.catch((e: unknown) => {
+      // A failed write never fails the command (review4 step 5's rule; its
+      // alert is that step's). The next write tries again.
+      this.lastError = e;
+      console.error(`control-plane journal: write failed: ${String(e)}`);
+    });
+    return this.chain;
+  }
+
+  /** One write: the state as it is now, so a later write never holds older
+   * state than an earlier one. */
+  private async write(): Promise<void> {
     if (!this.dirty) return;
     this.dirty = false;
     const body: JournalBody = {
@@ -168,18 +190,24 @@ export class StatePersistence implements PersistenceHooks {
     };
     const file: JournalFile = { schema: 2, checksum: sha256(JSON.stringify(body)), body };
     const dir = dirname(this.path);
-    mkdirSync(dir, { recursive: true });
-    const tmp = this.path + ".tmp";
-    const fd = openSync(tmp, "w");
+    await mkdir(dir, { recursive: true });
+    const tmp = `${this.path}.tmp-${process.pid}-${++this.seq}`;
+    const fh = await open(tmp, "w");
     try {
-      writeSync(fd, JSON.stringify(file));
-      fsyncSync(fd);
+      await fh.writeFile(JSON.stringify(file));
+      await fh.sync();
     } finally {
-      closeSync(fd);
+      await fh.close();
     }
-    if (existsSync(this.path)) renameSync(this.path, prevPath(this.path));
-    renameSync(tmp, this.path);
-    fsyncDir(dir);
+    if (existsSync(this.path)) await rename(this.path, prevPath(this.path));
+    await rename(tmp, this.path);
+    await fsyncDir(dir);
+    this.lastError = null;
+  }
+
+  /** Settle once every queued write is on disk (tests, shutdown). */
+  settled(): Promise<void> {
+    return this.chain;
   }
 
   /**
@@ -207,15 +235,16 @@ export class StatePersistence implements PersistenceHooks {
 }
 
 /** Make a rename durable: fsync the directory that holds it. */
-function fsyncDir(dir: string): void {
-  let fd: number | null = null;
+async function fsyncDir(dir: string): Promise<void> {
   try {
-    fd = openSync(dir, "r");
-    fsyncSync(fd);
+    const fh = await open(dir, "r");
+    try {
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
   } catch {
     // A filesystem that cannot fsync a directory still has the file's own
     // fsync; the rename is then as durable as that filesystem makes it.
-  } finally {
-    if (fd !== null) closeSync(fd);
   }
 }
