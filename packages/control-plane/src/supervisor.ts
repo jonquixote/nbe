@@ -24,7 +24,7 @@
 //!   five old files kept.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, type WriteStream } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 export interface ChildSpec {
@@ -242,9 +242,11 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-/** `<dir>/<name>.log`, rotated to `<name>.1.log` … `<name>.<keep>.log`. */
+/** `<dir>/<name>.log`, rotated to `<name>.1.log` … `<name>.<keep>.log`.
+ * Written synchronously: the file exists from construction, so a rotation
+ * never races its own open, and a reader sees what was written. */
 export class RotatingLog {
-  private stream: WriteStream;
+  private fd: number;
   private bytes = 0;
 
   constructor(
@@ -253,7 +255,7 @@ export class RotatingLog {
     private readonly rotateBytes: number,
     private readonly keep: number,
   ) {
-    this.stream = createWriteStream(this.path(0), { flags: "a" });
+    this.fd = openSync(this.path(0), "a");
   }
 
   private path(n: number): string {
@@ -261,23 +263,26 @@ export class RotatingLog {
   }
 
   write(b: Buffer): void {
-    this.stream.write(b);
+    if (this.fd < 0) return;
+    writeSync(this.fd, b);
     this.bytes += b.length;
     if (this.bytes >= this.rotateBytes) this.rotate();
   }
 
   private rotate(): void {
-    this.stream.end();
+    closeSync(this.fd);
     const oldest = this.path(this.keep);
     if (existsSync(oldest)) rmSync(oldest);
     for (let n = this.keep - 1; n >= 0; n--) {
       if (existsSync(this.path(n))) renameSync(this.path(n), this.path(n + 1));
     }
-    this.stream = createWriteStream(this.path(0), { flags: "a" });
+    this.fd = openSync(this.path(0), "a");
     this.bytes = 0;
   }
 
   close(): void {
-    this.stream.end();
+    if (this.fd < 0) return;
+    closeSync(this.fd);
+    this.fd = -1;
   }
 }

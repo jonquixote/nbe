@@ -84,7 +84,7 @@ test("five failures within the window stop the retries", async (t) => {
   assert.equal(events.filter((e) => e.kind === "started").length, 5, "five starts, then no more");
 });
 
-test("stopping leaves no child and no grandchild: each child's process group goes", async () => {
+test("stopping leaves no child and no grandchild: each child's process group goes", async (t) => {
   const dir = tempDir("nbe-sup-");
   // The child starts a grandchild (as the engine starts ffmpeg) and prints its pid.
   const parent: ChildSpec = {
@@ -97,6 +97,7 @@ test("stopping leaves no child and no grandchild: each child's process group goe
     restart: true,
   };
   const sup = new Supervisor([parent], { logDir: dir, caffeinate: false });
+  t.after(() => sup.stop());
   await sup.start();
   const pid = sup.pids()["engine"]!;
   let grandchild = 0;
@@ -123,7 +124,7 @@ test("a child not ready in time fails the start by name", async (t) => {
   await assert.rejects(sup.start(), /engine: not ready within 300 ms/);
 });
 
-test("each child's output is logged, rotated, and the old files are capped", async () => {
+test("each child's output is logged, rotated, and the old files are capped", async (t) => {
   const dir = tempDir("nbe-sup-");
   const chatty: ChildSpec = {
     name: "engine",
@@ -133,6 +134,7 @@ test("each child's output is logged, rotated, and the old files are capped", asy
     restart: true,
   };
   const sup = new Supervisor([chatty], { logDir: dir, caffeinate: false, rotateBytes: 1000, keepLogs: 3 });
+  t.after(() => sup.stop());
   await sup.start();
   await sleep(800);
   await sup.stop();
@@ -140,8 +142,9 @@ test("each child's output is logged, rotated, and the old files are capped", asy
   assert.deepEqual(files, ["engine.1.log", "engine.2.log", "engine.3.log", "engine.log"], `rotated and capped: ${files.join(", ")}`);
 });
 
-test("on macOS it keeps the Mac awake while it runs (caffeinate), and lets go when it stops", { skip: process.platform !== "darwin" }, async () => {
+test("on macOS it keeps the Mac awake while it runs (caffeinate), and lets go when it stops", { skip: process.platform !== "darwin" }, async (t) => {
   const sup = new Supervisor([forever("engine", true)], { logDir: tempDir("nbe-sup-"), caffeinate: true });
+  t.after(() => sup.stop());
   await sup.start();
   const pid = sup.caffeinatePid;
   assert.ok(pid !== undefined && alive(pid), "caffeinate is running");
