@@ -265,7 +265,12 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
     } else {
         let p = &d.params;
         match EncodeSession::open(p.width, p.height, p.fps, RECORD_BITRATE) {
-            Ok(enc) => d.encoder = Some(enc),
+            Ok(mut enc) => {
+                // A take consumes its units as they arrive: the session must
+                // not keep the whole compressed take in memory.
+                enc.set_drain_delivered(true);
+                d.encoder = Some(enc);
+            }
             Err(e) => d.setup_err = Some(e.to_string()),
         }
     }
@@ -496,6 +501,24 @@ impl Drive {
     fn finish_take(&mut self) -> SessionResult {
         if let Some(t) = self.trace.as_mut() {
             t.flush();
+        }
+        // The frames the encoder still holds at stop: complete them and write
+        // them, so every frame handed off before the stop is in the file.
+        // A failed flush loses only that tail; the take still finishes.
+        if let Some(enc) = self.encoder.as_mut() {
+            match enc.flush() {
+                Ok(tail) => {
+                    if !tail.is_empty() {
+                        self.capture_sets();
+                    }
+                    for u in &tail {
+                        self.push_video(u)?;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(err = %e, "record: the encoder's flush at stop failed; the take ends without its last frames");
+                }
+            }
         }
         // Drain the tail audio the take actually captured before finalizing.
         if let Some(w) = self.writer.as_mut() {

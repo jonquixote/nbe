@@ -108,18 +108,29 @@ fn no_hardware(detail: impl Into<String>) -> EncodeError {
 /// The callback runs on a VideoToolbox thread, so everything behind the
 /// mutexes must be `Send + Sync` — plain data only, no session handles.
 ///
-/// `units` is append-only: [`EncodeSession::encode_rgba`] reports newly
-/// arrived units via the `delivered` cursor, and [`EncodeSession::finish`]
-/// replays the whole stream. Nothing is ever removed, so a caller that only
-/// reads `finish` still sees every frame — including the opening IDR, which
-/// typically arrives while later frames are still being fed.
+/// By default `units` is append-only: [`EncodeSession::encode_rgba`] reports
+/// newly arrived units via the `delivered` cursor, and
+/// [`EncodeSession::finish`] replays the whole stream. Nothing is removed, so
+/// a caller that only reads `finish` still sees every frame — including the
+/// opening IDR, which typically arrives while later frames are still being
+/// fed. That is the one-shot roundtrip's contract.
+///
+/// A live take or stream cannot keep its whole compressed stream in memory
+/// (about 2.3 GB an hour per output on real content). With `drain` set
+/// ([`EncodeSession::set_drain_delivered`]) a unit is released as soon as it
+/// is reported, so the session holds only units not yet delivered, and
+/// [`EncodeSession::flush`] returns the tail at stop.
 #[derive(Debug, Default)]
 struct CallbackState {
-    /// Every unit received, in callback (decode) order. Reordering is
-    /// disabled on the session, so this is display order.
+    /// Units received and still held, in callback (decode) order. Reordering
+    /// is disabled on the session, so this is display order. With `drain`,
+    /// only units not yet delivered.
     units: Mutex<Vec<EncodedUnit>>,
-    /// How many of `units` have been reported through `encode_rgba`.
+    /// How many of `units` have been reported through `encode_rgba` and are
+    /// still held. Always 0 with `drain`.
     delivered: Mutex<usize>,
+    /// Release each unit once it is reported (live sessions).
+    drain: std::sync::atomic::AtomicBool,
     /// First callback-side failure, if any. Surfaced by `finish` only when
     /// no units arrived at all.
     first_error: Mutex<Option<String>>,
@@ -500,7 +511,8 @@ impl EncodeSession {
     /// Feed one tightly packed RGBA frame. Returns the access units that
     /// arrived since the previous call — often empty, since encode runs
     /// asynchronously. Units are also retained: [`Self::finish`] replays the
-    /// complete stream regardless of what was already reported here.
+    /// complete stream regardless of what was already reported here, unless
+    /// the session drains ([`Self::set_drain_delivered`]).
     pub fn encode_rgba(&mut self, rgba: &[u8]) -> Result<Vec<EncodedUnit>, EncodeError> {
         let expected = (self.width as usize)
             .checked_mul(self.height as usize)
@@ -605,6 +617,8 @@ impl EncodeSession {
 
     /// Flush all pending frames and return every access unit of the stream,
     /// in PTS order — including units already reported by [`Self::encode_rgba`].
+    /// A draining session holds only unreported units, so this returns those;
+    /// a live take ends with [`Self::flush`] instead.
     pub fn finish(mut self) -> Result<Vec<EncodedUnit>, EncodeError> {
         if let Some(session) = self.session.take() {
             let status = unsafe { session.complete_frames(kCMTimeInvalid) };
@@ -631,6 +645,55 @@ impl EncodeSession {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(units)
+    }
+
+    /// Release every unit once it has been reported by `encode_rgba` /
+    /// `encode_pixel_buffer` / `encode_pixel_buffer_at`, instead of keeping
+    /// the whole stream for [`finish`](Self::finish). For live takes and
+    /// streams, which consume units as they arrive. Units already reported
+    /// before this call are released at the next report.
+    pub fn set_drain_delivered(&mut self, drain: bool) {
+        self.state
+            .drain
+            .store(drain, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Units that were already reported to the caller and are still held in
+    /// memory: the reported count with the default (replaying) session, 0
+    /// with [`set_drain_delivered`](Self::set_drain_delivered).
+    pub fn retained_delivered_units(&self) -> usize {
+        *self
+            .state
+            .delivered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// End the session at a take's stop: complete every frame the encoder
+    /// still holds and return the units not yet reported, in PTS order.
+    /// Unlike [`finish`](Self::finish) it never replays units already
+    /// delivered, and an empty tail is not an error. The session is closed
+    /// after it: a later encode call is refused.
+    pub fn flush(&mut self) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if let Some(session) = self.session.take() {
+            let status = unsafe { session.complete_frames(kCMTimeInvalid) };
+            // Deterministic teardown before the retain is released.
+            unsafe {
+                session.invalidate();
+            }
+            if status != 0 {
+                return Err(no_hardware(format!(
+                    "flushing pending frames failed (OSStatus {status})"
+                )));
+            }
+        }
+        let mut tail = take_new_units(&self.state);
+        tail.sort_by(|a, b| {
+            a.pts_seconds
+                .partial_cmp(&b.pts_seconds)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(tail)
     }
 
     /// SPS + PPS captured from the first keyframe's format description, if
@@ -681,13 +744,21 @@ fn all_units(state: &CallbackState) -> Vec<EncodedUnit> {
         .clone()
 }
 
-/// Units that arrived since the last call, advancing the cursor.
+/// Units that arrived since the last call, advancing the cursor. With
+/// `drain`, the reported units leave the session (and any reported before
+/// `drain` was set go with them).
 fn take_new_units(state: &CallbackState) -> Vec<EncodedUnit> {
-    let units = state.units.lock().unwrap_or_else(|e| e.into_inner());
+    let mut units = state.units.lock().unwrap_or_else(|e| e.into_inner());
     let mut delivered = state.delivered.lock().unwrap_or_else(|e| e.into_inner());
-    let fresh = units[*delivered..].to_vec();
-    *delivered = units.len();
-    fresh
+    if state.drain.load(std::sync::atomic::Ordering::SeqCst) {
+        let fresh: Vec<EncodedUnit> = units.drain(..).skip(*delivered).collect();
+        *delivered = 0;
+        fresh
+    } else {
+        let fresh = units[*delivered..].to_vec();
+        *delivered = units.len();
+        fresh
+    }
 }
 
 /// Read back whether the session actually selected a hardware encoder.
