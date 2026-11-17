@@ -37,7 +37,7 @@ fn encoder_or_skip() -> bool {
 /// real unit.
 fn frame_rgba(i: u32) -> Vec<u8> {
     let mut rgba = vec![0u8; (W * H * 4) as usize];
-    for (p, px) in rgba.chunks_exact_mut(4).enumerate() {
+    for (p, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = (p as u32) % W;
         let y = (p as u32) / W;
         px[0] = ((x + i * 7) % 256) as u8;
@@ -60,7 +60,9 @@ fn a_draining_session_holds_no_unit_it_has_delivered() {
         delivered += enc.encode_rgba(&frame_rgba(i)).expect("encode").len();
     }
     let held = enc.retained_delivered_units();
-    println!("drain: 60 frames fed, {delivered} units delivered, {held} delivered units still held");
+    println!(
+        "drain: 60 frames fed, {delivered} units delivered, {held} delivered units still held"
+    );
     assert!(
         delivered >= 50,
         "precondition: the encoder delivered units while fed ({delivered} of 60)"
