@@ -194,7 +194,13 @@ test("with the audit file unwritable, a new connection is refused with 503 E_DIS
   const r = await rig(t);
   chmodSync(r.auditPath, 0o444);
   const refused = r.conn("admin", ADMIN);
-  const err = await new Promise<Error>((resolve) => refused.once("error", resolve));
+  // A timeout of its own: node:test catches an uncaught throw and blames the
+  // running test, so without this a throw in the upgrade listener (which ends
+  // a real control plane) would leave this wait hanging, not failing.
+  const err = await Promise.race([
+    new Promise<Error>((resolve) => refused.once("error", resolve)),
+    new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("no response within 3 s: the upgrade listener threw")), 3000)),
+  ]);
   assert.match(err.message, /503/, err.message);
   assert.equal((await r.status()).ok, true, "the control plane still answers");
   assert.ok(await until(() => alertIds(r.state).includes("audit.sinkFailed")), "the alert raises");
