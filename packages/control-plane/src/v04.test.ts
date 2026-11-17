@@ -278,8 +278,7 @@ test("the recovery record carries the LOADED package's manifest version, not a c
   // package was recorded — and reported — as v0.3. The identity block is what
   // an operator and a crash recovery both read to answer "what is actually
   // loaded", and a constant there is a lie with an audience.
-  const { StatePersistence } = await import("./persistence.js");
-  const { readFileSync } = await import("node:fs");
+  const { readJournal, StatePersistence } = await import("./persistence.js");
   const { join } = await import("node:path");
 
   const state = new ControlPlaneState();
@@ -289,10 +288,13 @@ test("the recovery record carries the LOADED package's manifest version, not a c
   const file = join(tempDir("nbe-ident-"), "state.json");
   const persistence = new StatePersistence(state, file);
   persistence.onDirty();
-  persistence.flushNow();
-  const snapshot = JSON.parse(readFileSync(file, "utf8")) as {
+  // The journal (review4 step 4) is written asynchronously, with a checksum:
+  // wait for the write, and read it through its verifier.
+  await persistence.flush();
+  const snapshot = readJournal(file) as {
     manifestIdentity: { manifestVersion?: string } | null;
-  };
+  } | null;
+  assert.ok(snapshot, "a verified journal was written");
   assert.equal(
     snapshot.manifestIdentity?.manifestVersion,
     "0.4",

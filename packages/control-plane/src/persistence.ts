@@ -26,9 +26,10 @@
 //! response waits for it.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, open, rename } from "node:fs/promises";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { ControlPlaneState, ManifestIdentity } from "./state.js";
 
 export interface PersistedSnapshot {
@@ -98,23 +99,56 @@ export function journalOf(state: ControlPlaneState): Record<string, unknown> {
   };
 }
 
-/** Read one journal file: its body if the checksum holds (or it is the
- * pre-journal format), else null. */
-export function readJournal(path: string): JournalBody | PersistedSnapshot | null {
+/** A version a journal may carry: a safe, non-negative integer. */
+const validVersion = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+function parseFile(path: string): (Partial<JournalFile> & Partial<PersistedSnapshot>) | null {
   if (!existsSync(path)) return null;
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8")) as Partial<JournalFile> & Partial<PersistedSnapshot>;
   } catch {
     return null;
   }
-  const f = parsed as Partial<JournalFile> & Partial<PersistedSnapshot>;
+}
+
+/** Read one journal file: its body if the checksum holds, else null. The
+ * pre-journal format (version, identity, time; no checksum) is read only
+ * with `allowLegacy`.
+ *
+ * The checksum detects a torn or corrupted file. It is not authentication:
+ * anyone who can write the file can write a matching checksum. */
+export function readJournal(path: string, opts: { allowLegacy?: boolean } = {}): JournalBody | PersistedSnapshot | null {
+  const f = parseFile(path);
+  if (f === null) return null;
   if (f.schema === 2) {
     if (typeof f.checksum !== "string" || f.body === undefined) return null;
-    return sha256(JSON.stringify(f.body)) === f.checksum ? f.body : null;
+    if (sha256(JSON.stringify(f.body)) !== f.checksum) return null;
+    return validVersion(f.body.stateVersion) ? f.body : null;
   }
-  // The pre-journal file (version, identity, time; no checksum).
-  return typeof f.stateVersion === "number" ? (f as PersistedSnapshot) : null;
+  if (!opts.allowLegacy) return null;
+  return validVersion(f.stateVersion) ? (f as PersistedSnapshot) : null;
+}
+
+/** Whether `dir` is, or is inside, the OS temp directory, with symbolic
+ * links resolved on both sides (a link elsewhere into the temp directory is
+ * still the temp directory). A path that does not exist yet is resolved
+ * through its nearest existing ancestor. */
+export function isUnderTemp(dir: string, temp: string = tmpdir()): boolean {
+  const real = (p: string): string => {
+    let cur = resolve(p);
+    const rest: string[] = [];
+    while (!existsSync(cur)) {
+      const parent = dirname(cur);
+      if (parent === cur) break;
+      rest.unshift(basename(cur));
+      cur = parent;
+    }
+    const base = existsSync(cur) ? realpathSync(cur) : cur;
+    return join(base, ...rest);
+  };
+  const dirs = [resolve(dir), real(dir)];
+  const temps = [resolve(temp), real(temp)];
+  return dirs.some((d) => temps.some((t) => d === t || d.startsWith(t + sep)));
 }
 
 export class StatePersistence implements PersistenceHooks {
@@ -218,11 +252,15 @@ export class StatePersistence implements PersistenceHooks {
    */
   restore(): boolean {
     this.restoredFrom = null;
-    for (const [which, p] of [
+    const files = [
       ["current", this.path],
       ["previous", prevPath(this.path)],
-    ] as const) {
-      const data = readJournal(p);
+    ] as const;
+    // A one-way ratchet: once a journal (schema 2) has been written here, a
+    // file in the pre-journal format beside it is not ours to trust.
+    const allowLegacy = !files.some(([, p]) => parseFile(p)?.schema === 2);
+    for (const [which, p] of files) {
+      const data = readJournal(p, { allowLegacy });
       if (data === null) continue;
       this.state.stateVersion = data.stateVersion;
       this.state.showState = "UNLOADED";

@@ -7,11 +7,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
-import { prevPath, readJournal, StatePersistence, type JournalBody } from "./persistence.js";
+import { isUnderTemp, prevPath, readJournal, StatePersistence, type JournalBody } from "./persistence.js";
 import { MockRenderBridge } from "./render-bridge.js";
 import { CpError } from "./protocol.js";
 import { ControlPlaneState } from "./state.js";
@@ -121,6 +121,52 @@ test("the pre-journal file (version, identity, time) still restores", () => {
   const a = new ControlPlaneState();
   new StatePersistence(a, path).restore();
   assert.equal(a.stateVersion, 41);
+});
+
+test("once a journal has been written, a pre-journal file beside it is not trusted", async () => {
+  const dir = tempDir("nbe-journal-");
+  const path = join(dir, "control-plane-state.json");
+  const state = new ControlPlaneState();
+  const p = new StatePersistence(state, path);
+  state.stateVersion = 12;
+  await p.onCommitted("view.take");
+  state.stateVersion = 13;
+  await p.onCommitted("view.take"); // the previous (12) is now a journal too
+  // The newest replaced by a legacy-shaped file, as a stray or hostile write would.
+  writeFileSync(path, JSON.stringify({ stateVersion: 9999, manifestIdentity: null, recoveredAt: 1 }));
+  const a = new ControlPlaneState();
+  const r = new StatePersistence(a, path);
+  r.restore();
+  assert.equal(a.stateVersion, 12, "the legacy-shaped newest is refused; the previous journal is read");
+  assert.equal(r.restoredFrom, "previous");
+});
+
+test("a version that is not a safe non-negative integer is refused", () => {
+  const dir = tempDir("nbe-journal-");
+  const path = join(dir, "control-plane-state.json");
+  mkdirSync(dir, { recursive: true });
+  for (const bad of [-1, 1.5, 2 ** 60, "7"]) {
+    writeFileSync(path, JSON.stringify({ stateVersion: bad, manifestIdentity: null, recoveredAt: 1 }));
+    const a = new ControlPlaneState();
+    assert.equal(new StatePersistence(a, path).restore(), false);
+    assert.equal(a.stateVersion, 0, `version ${String(bad)} refused`);
+  }
+});
+
+test("the temp-directory check sees through a symbolic link into it", () => {
+  const tmp = tempDir("nbe-journal-tmp-");
+  assert.ok(isUnderTemp(join(tmp, "state")), "a directory under the temp directory");
+  // A link that lives outside the temp directory and points into it.
+  const outside = mkdtempSync(join(process.cwd(), ".nbe-journal-link-"));
+  try {
+    const link = join(outside, "state-link");
+    symlinkSync(tmp, link);
+    assert.ok(isUnderTemp(link), "a link into the temp directory is the temp directory");
+    assert.ok(isUnderTemp(join(link, "not-yet", "made")), "and so is a path below it that does not exist yet");
+    assert.equal(isUnderTemp(join(outside, "real-dir")), false, "a real directory outside it is not");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 // The command path: a real dispatch of view.take with the real journal.
