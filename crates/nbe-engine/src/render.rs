@@ -356,6 +356,10 @@ pub struct RenderLoop {
     /// because the texture-discipline test asserts on it: a second of scrolling
     /// must add zero.
     pub text_rasterizations: std::sync::atomic::AtomicU64,
+    /// Declared texts this loop could not make into a texture (too large, or
+    /// refused by the GPU): drawn as nothing, and never shaped again until
+    /// the package changes (review4 step 1).
+    text_refused: std::sync::Mutex<std::collections::HashSet<String>>,
     loaded_generation: u64,
     /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
     /// frame path, where `write_texture`'s per-call staging costs the deadline.
@@ -490,6 +494,7 @@ impl RenderLoop {
             text_cache: std::sync::Mutex::new(HashMap::new()),
             text_prep,
             text_rasterizations: std::sync::atomic::AtomicU64::new(0),
+            text_refused: std::sync::Mutex::new(std::collections::HashSet::new()),
             loaded_generation: u64::MAX,
             uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
             house_rate,
@@ -545,6 +550,7 @@ impl RenderLoop {
             *self.fonts.lock().unwrap() = crate::text::FontBook::from_packaged(faces);
         }
         self.text_cache.lock().unwrap().clear();
+        self.text_refused.lock().unwrap().clear();
         self.sync_live_uploaders();
 
         {
@@ -1883,18 +1889,42 @@ impl RenderLoop {
         }
 
         // Declared text (the package's own strings, clock faces): shaped here
-        // on the frame its content first appears, as before this worker.
-        let raster = {
+        // on the frame its content first appears, as before this worker. A
+        // text that cannot become a texture is drawn as nothing and
+        // remembered, so this frame path does not reshape it every frame.
+        if self.text_refused.lock().unwrap().contains(&key) {
+            return None;
+        }
+        let shaped = {
             let mut book = self.fonts.lock().unwrap();
-            crate::text::TextRaster::rasterize(&mut book, &spec)?
+            crate::text::TextRaster::rasterize_checked(&mut book, &spec)
+        };
+        let raster = match shaped {
+            Ok(r) => r,
+            Err(crate::text::TextRefusal::Nothing) => return None,
+            Err(too_large) => {
+                tracing::warn!(element = %t.element_id, reason = %too_large, "declared text refused; the layer draws nothing");
+                self.text_refused.lock().unwrap().insert(key);
+                return None;
+            }
         };
         self.text_rasterizations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let tex = self
-            .gpu
-            .make_texture(raster.width, raster.height, &t.element_id);
-        self.gpu
-            .upload_rgba(&tex, raster.width, raster.height, &raster.rgba);
+        let tex = match crate::text_prep::make_texture_checked(
+            &self.gpu.device,
+            &self.gpu.queue,
+            raster.width,
+            raster.height,
+            &raster.rgba,
+            &t.element_id,
+        ) {
+            Ok(tex) => tex,
+            Err(why) => {
+                tracing::warn!(element = %t.element_id, reason = %why, "declared text refused; the layer draws nothing");
+                self.text_refused.lock().unwrap().insert(key);
+                return None;
+            }
+        };
         // Two copies went in, so one period is half the shaped width.
         let period_px = if t.scroll {
             crate::text::ticker_period_px(raster.text_width)
