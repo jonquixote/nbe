@@ -152,6 +152,11 @@ const chromaKeyPatchSchema = z
 // Command payload schemas (Section 16 — one entry per command)
 // ---------------------------------------------------------------------------
 
+/** Review4 step 2: the ticker's caps (§16.7, the user's ruling of
+ * 2026-11-16 23:45). */
+export const TICKER_MAX_ITEMS = 30;
+export const TICKER_MAX_CHARS = 120;
+
 export const CommandPayloadSchemas = {
   // 16.1 show
   "show.load": z.object({ packagePath: z.string().min(1), mode: z.enum(["load", "reload"]).optional() }).strict(),
@@ -233,16 +238,20 @@ export const CommandPayloadSchemas = {
   "ticker.setSource": z.object({ source: z.enum(["manual", "rss", "mixed"]) }).strict(),
   "ticker.override": z
     .object({
-      items: z.array(
-        z
-          .object({
-            text: z.string().min(1),
-            language: z.string().optional(),
-            priority: z.number().int().min(0).max(100000).default(0),
-            ttlSec: z.number().int().min(1).optional(),
-          })
-          .strict(),
-      ),
+      // Review4 step 2 (the user's ruling of 2026-11-16 23:45): at most 30
+      // items of at most 120 characters, refused by name, never truncated.
+      items: z
+        .array(
+          z
+            .object({
+              text: z.string().min(1).max(TICKER_MAX_CHARS, `a ticker item is at most ${TICKER_MAX_CHARS} characters`),
+              language: z.string().optional(),
+              priority: z.number().int().min(0).max(100000).default(0),
+              ttlSec: z.number().int().min(1).optional(),
+            })
+            .strict(),
+        )
+        .max(TICKER_MAX_ITEMS, `the ticker holds at most ${TICKER_MAX_ITEMS} items`),
       mode: z.enum(["replace", "prepend", "append"]).default("replace"),
     })
     .strict(),
