@@ -13,6 +13,7 @@ import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import {
   EngineFrameSchema,
   HELD_DETAIL_PREFIX,
+  type EngineHelloFrame,
   EnvelopeSchema,
   type AudioLevelCrossingFrame,
   type Envelope,
@@ -141,6 +142,8 @@ interface ClientSession {
     acked: number[];
     /** The versions this session was sent `show.resync` at, most recent last. */
     resyncs: number[];
+    /** Review4 step 7a: this connection's `engineHello`, once it arrives. */
+    hello?: EngineHelloFrame;
   } | null;
   /** Deprecation warnings this subscriber has not yet been shown. */
   pendingDeprecations: DeprecationRecord[];
@@ -275,6 +278,39 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const signalTimer = setInterval(() => signals.evaluate(), 250);
   signalTimer.unref?.();
   const wsBridge = new WsRenderBridge();
+
+  // -- Review4 step 7a: the engine's hello ----------------------------------
+  // The instance the last hello named, and when an engine that had said hello
+  // last went away. A new instance id is a new engine process: review4's case
+  // E, audited here as `engine.restarted`. A reconnect of the same process is
+  // not. (Adoption, case B, and what a restarted engine is re-issued, are
+  // steps 7b and 7c.)
+  let lastEngineInstanceId: string | null = null;
+  let engineGoneAt: number | null = null;
+  function noteHello(render: { hello?: EngineHelloFrame }, hello: EngineHelloFrame): void {
+    render.hello = hello;
+    const previous = lastEngineInstanceId;
+    lastEngineInstanceId = hello.engineInstanceId;
+    if (previous === null || previous === hello.engineInstanceId) return;
+    try {
+      audit.record({
+        kind: "command",
+        command: "engine:hello",
+        event: "engine.restarted",
+        detail: {
+          previousInstanceId: previous,
+          instanceId: hello.engineInstanceId,
+          startedAtMs: hello.startedAtMs,
+          downMs: engineGoneAt === null ? null : Math.max(0, Date.now() - engineGoneAt),
+        },
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+      });
+    } catch {
+      // A row that cannot be written is R18's alert to announce; it must not
+      // leave the engine's frame handler.
+    }
+  }
   const bridge: RenderBridge = opts.bridge ?? wsBridge;
   const rateLimiter = new RateLimiter();
 
@@ -751,6 +787,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
      * handshake and the close that follows it both call it.
      */
     const forget = (): void => {
+      if (session.render !== null && session.render.hello !== undefined) engineGoneAt = Date.now();
       session.closed = true;
       stopTelemetry();
       session.render?.registration.unregister();
@@ -927,6 +964,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         } else if (frame.kind === "appliedStateVersion") {
           // SPEC §5.9.5: the signal show.stop's grace window waits for.
           noteApplied(session, frame.stateVersion);
+        } else if (frame.kind === "engineHello") {
+          // Review4 step 7a: what the engine holds, first on every connection.
+          if (session.render !== null) noteHello(session.render, frame);
         } else if (frame.kind === "resyncRequest") {
           // SPEC §5.9.4 rule 5: the engine lost continuity; hand it the
           // snapshot, and never fail silently (v0.4.8 row 7).

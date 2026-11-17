@@ -850,6 +850,47 @@ pub enum CrossingDirection {
     Falling,
 }
 
+/// Review4 step 7a (the user's ruling of 2026-11-16 23:45): what a render
+/// node holds, sent as the first frame on every connection, before anything
+/// else. A restarted control plane adopts from it (step 7b); any control
+/// plane tells an engine restart from a reconnect by `engine_instance_id`
+/// (review4 case E). A fact the engine does not hold is `null`, never a
+/// placeholder. Mirrored by TypeScript's `EngineHelloFrameSchema`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineHello {
+    /// Fixed for the life of the engine process; a new one means a new
+    /// process (a restart), the same one a reconnect.
+    pub engine_instance_id: String,
+    /// Unix milliseconds at the process's start.
+    pub started_at_ms: f64,
+    /// The master clock is running.
+    pub show_running: bool,
+    /// `null` while the clock has never started.
+    pub master_frame: Option<u64>,
+    pub last_applied_state_version: u64,
+    /// The load the engine applied (§5.9.4's load identity), `null` with none.
+    pub package: Option<HelloPackage>,
+    pub view_item: Option<String>,
+    /// `null` exactly when `view_item` is.
+    pub view_item_start_frame: Option<u64>,
+    pub preview_item: Option<String>,
+    /// On air, sorted.
+    pub visible_overlays: Vec<String>,
+    pub fallback_active: bool,
+    pub recording: bool,
+    /// The telemetry tick's token (§10.1, v0.4.6), including `"none"`.
+    pub stream_transport_state: String,
+}
+
+/// `engineHello`'s package: the load identity §5.9.4's resync compares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelloPackage {
+    pub path: String,
+    pub load_state_version: u64,
+}
+
 /// Render node → control plane (SPEC 5.9.3). Accepted only from `render`-role
 /// sessions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -883,6 +924,13 @@ pub enum EngineFrame {
     },
     #[serde(rename = "resyncRequest")]
     ResyncRequest { v: String, reason: ResyncReason },
+    /// Review4 step 7a: first on every connection (`EngineHello`).
+    #[serde(rename = "engineHello")]
+    EngineHello {
+        v: String,
+        #[serde(flatten)]
+        fields: Box<EngineHello>,
+    },
     /// A bus level crossed an `audioLevel` rule's threshold (SPEC v0.4.7,
     /// candidate B1 — ratified by the user's merge of Prompt 11's PR, never
     /// inside it). The crossing is computed in the engine, on the audio block
@@ -923,5 +971,6 @@ impl EngineFrame {
         "itemEvent",
         "resyncRequest",
         "audioLevelCrossing",
+        "engineHello",
     ];
 }

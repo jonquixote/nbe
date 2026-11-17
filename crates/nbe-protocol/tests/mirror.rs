@@ -173,6 +173,20 @@ fn render_channel_frames_round_trip() {
     for direction in [CrossingDirection::Rising, CrossingDirection::Falling] {
         round_trip(&audio_level_crossing(direction));
     }
+    // Review4 step 7a: populated, and with every nullable fact null.
+    round_trip(&engine_hello());
+    round_trip(&EngineFrame::EngineHello {
+        v: PROTOCOL_VERSION.into(),
+        fields: Box::new(EngineHello {
+            master_frame: None,
+            package: None,
+            view_item: None,
+            view_item_start_frame: None,
+            preview_item: None,
+            visible_overlays: vec![],
+            ..*hello_fields()
+        }),
+    });
     round_trip(&EngineFrame::EngineTelemetry {
         v: PROTOCOL_VERSION.into(),
         ts: 1768000000000.0,
@@ -615,6 +629,7 @@ fn rust_and_typescript_agree_on_the_engine_frame_kinds() {
         "itemEvent",
         "resyncRequest",
         "audioLevelCrossing",
+        "engineHello",
     ]
     .into_iter()
     .filter(|k| ts.contains(&format!("z.literal(\"{k}\")")))
@@ -1034,4 +1049,129 @@ fn rust_and_typescript_agree_on_the_show_state_item_fields() {
         ours.contains("heldFailure"),
         "the held failure is on the wire"
     );
+}
+
+/// A fully populated `engineHello` (review4 step 7a).
+fn hello_fields() -> Box<EngineHello> {
+    Box::new(EngineHello {
+        engine_instance_id: "18a2b3c4d5e6f708-4d2".into(),
+        started_at_ms: 1_768_000_000_123.5,
+        show_running: true,
+        master_frame: Some(54_012),
+        last_applied_state_version: 413,
+        package: Some(HelloPackage {
+            path: "/shows/evening".into(),
+            load_state_version: 12,
+        }),
+        view_item: Some("A1".into()),
+        view_item_start_frame: Some(53_900),
+        preview_item: Some("A2".into()),
+        visible_overlays: vec!["lower_third".into(), "ticker".into()],
+        fallback_active: false,
+        recording: true,
+        stream_transport_state: "publishing".into(),
+    })
+}
+
+fn engine_hello() -> EngineFrame {
+    EngineFrame::EngineHello {
+        v: PROTOCOL_VERSION.into(),
+        fields: hello_fields(),
+    }
+}
+
+/// One TypeScript schema block, comments dropped, up to its `.strict()`.
+fn ts_block(ts: &str, marker: &str) -> String {
+    let start = ts
+        .find(marker)
+        .unwrap_or_else(|| panic!("TypeScript has {marker}"));
+    let uncommented: String = ts[start..]
+        .lines()
+        .map(|l| match l.trim_start().starts_with("//") {
+            true => "",
+            false => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    uncommented[..uncommented.find(".strict()").expect("schema terminates")].to_string()
+}
+
+/// Review4 step 7a: every key Rust sends in `engineHello`, and in its package,
+/// is named in the TypeScript schema (`.strict()` would drop the frame whole).
+/// A null is sent as `null`, never omitted.
+#[test]
+fn rust_and_typescript_agree_on_the_engine_hello_fields() {
+    let ts = ts_protocol();
+    let empty = serde_json::to_value(EngineFrame::EngineHello {
+        v: PROTOCOL_VERSION.into(),
+        fields: Box::new(EngineHello {
+            master_frame: None,
+            package: None,
+            view_item: None,
+            view_item_start_frame: None,
+            preview_item: None,
+            ..*hello_fields()
+        }),
+    })
+    .unwrap();
+    for key in [
+        "masterFrame",
+        "package",
+        "viewItem",
+        "viewItemStartFrame",
+        "previewItem",
+    ] {
+        assert_eq!(
+            empty.get(key),
+            Some(&serde_json::Value::Null),
+            "`{key}` is sent as null"
+        );
+    }
+    let value = serde_json::to_value(engine_hello()).unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        ours,
+        [
+            "engineInstanceId",
+            "fallbackActive",
+            "kind",
+            "lastAppliedStateVersion",
+            "masterFrame",
+            "package",
+            "previewItem",
+            "recording",
+            "showRunning",
+            "startedAtMs",
+            "streamTransportState",
+            "v",
+            "viewItem",
+            "viewItemStartFrame",
+            "visibleOverlays",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<BTreeSet<_>>(),
+        "the Rust frame's wire keys"
+    );
+    let block = ts_block(&ts, "EngineHelloFrameSchema = z");
+    for field in &ours {
+        assert!(
+            block.contains(&format!("{field}:")),
+            "TypeScript engineHello has no `{field}` field"
+        );
+    }
+    let pkg: BTreeSet<String> = value["package"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let block = ts_block(&ts, "EngineHelloPackageSchema = z");
+    for field in &pkg {
+        assert!(
+            block.contains(&format!("{field}:")),
+            "TypeScript engineHello.package has no `{field}` field"
+        );
+    }
+    assert_eq!(pkg.len(), 2, "path and loadStateVersion");
 }

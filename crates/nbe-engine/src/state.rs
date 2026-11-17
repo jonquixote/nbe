@@ -55,6 +55,11 @@ pub struct EngineState {
     pub read_ahead_misses_total: AtomicU64,
     /// engine start time (telemetry)
     pub started_at: Instant,
+    /// Review4 step 7a: this process's identity for `engineHello`, fixed for
+    /// its life (start time in nanoseconds and pid, so two engines never
+    /// share one), and its start in Unix milliseconds.
+    pub instance_id: String,
+    pub started_at_unix_ms: f64,
     /// The effective quality profile: probe capped by request. Written only
     /// by `publish_quality_profile`.
     pub quality_profile: std::sync::Mutex<Option<nbe_protocol::QualityProfile>>,
@@ -334,6 +339,17 @@ impl EngineState {
             watchdog_clears_total: AtomicU64::new(0),
             read_ahead_misses_total: AtomicU64::new(0),
             started_at: Instant::now(),
+            instance_id: {
+                let since = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                format!("{:x}-{:x}", since.as_nanos(), std::process::id())
+            },
+            started_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
+                * 1000.0,
             quality_profile: std::sync::Mutex::new(None),
             probed_quality: std::sync::Mutex::new(None),
             render_device: std::sync::Mutex::new(None),
