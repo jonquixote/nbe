@@ -44,6 +44,7 @@ struct HeaderBar: View {
         case .disconnected: "disconnected"
         case .connecting: "connecting…"
         case .connected(let role): "connected as \(role.rawValue)"
+        case .lost(let since): "LOST CONTACT since \(since.formatted(date: .omitted, time: .standard))"
         case .failed(let why): "failed: \(why)"
         case .fixture: "fixture (no control plane)"
         }

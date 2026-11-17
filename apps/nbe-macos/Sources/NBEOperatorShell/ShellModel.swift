@@ -12,6 +12,10 @@ final class ShellModel: ObservableObject {
         case disconnected
         case connecting
         case connected(role: Role)
+        /// The session ended under a connected shell (the control plane died
+        /// or the socket dropped): the values shown are from before `since`,
+        /// and no command can be sent.
+        case lost(since: Date)
         case failed(String)
         case fixture
     }
@@ -60,7 +64,7 @@ final class ShellModel: ObservableObject {
                 _ = try? await client.send(.telemetrySubscribe(intervalMs: 100))
                 await refreshShow()
                 for await frame in client.pushes { fold(frame) }
-                connection = .disconnected
+                connection = .lost(since: Date())
             } catch {
                 connection = .failed(String(describing: error))
             }

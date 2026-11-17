@@ -87,6 +87,16 @@ public actor ControlPlaneClient {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         failAll(ClientError.closed)
+        endPushes()
+    }
+
+    /// The push stream ends when the session does: a `for await` over
+    /// `pushes` returns, so a caller learns the socket is gone instead of
+    /// waiting on a stream that will never yield again (operator failure
+    /// design, build step 1).
+    private func endPushes() {
+        pushContinuation?.finish()
+        pushContinuation = nil
     }
 
     /// Send one bound command and await its response. The catalog check runs
@@ -139,7 +149,9 @@ public actor ControlPlaneClient {
         while true {
             let message: URLSessionWebSocketTask.Message
             do { message = try await task.receive() } catch {
+                if self.task === task { self.task = nil }
                 failAll(error)
+                endPushes()
                 return
             }
             let data: Data
