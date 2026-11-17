@@ -201,6 +201,9 @@ test("with the audit file unwritable, a new connection is refused with 503 E_DIS
     new Promise<Error>((resolve) => refused.once("error", resolve)),
     new Promise<Error>((resolve) => setTimeout(() => resolve(new Error("no response within 3 s: the upgrade listener threw")), 3000)),
   ]);
+  // Its own socket goes now: one the server left half-open would hold the
+  // teardown's http.close() forever.
+  refused.terminate();
   assert.match(err.message, /503/, err.message);
   assert.equal((await r.status()).ok, true, "the control plane still answers");
   assert.ok(await until(() => alertIds(r.state).includes("audit.sinkFailed")), "the alert raises");
