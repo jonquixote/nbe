@@ -896,6 +896,9 @@ impl DirectiveHandler {
                     crossfade_frames,
                 },
             );
+            // A take starts the item anew: a clip that failed on an earlier
+            // take of it may end normally this time (review4 step 8).
+            self.state.failed_items.lock().unwrap().remove(r);
             let generation = self.playing.begin(r);
             // SPEC v0.4.8 row 2: a timed item ends at ITS duration, counted
             // from the apply point (the take and the recall start the item
@@ -2347,6 +2350,11 @@ impl DirectiveHandler {
             }
             // A superseding take bumped the generation; do not emit a stale end.
             if !tracker.is_current(&item_ref, generation) {
+                return;
+            }
+            // Its clip failed on the View (review4 step 8): the item is in
+            // ERROR, and an `end` for a dead clip would only contradict it.
+            if state.failed_items.lock().unwrap().contains(&item_ref) {
                 return;
             }
             outgoing.push(EngineFrame::ItemEvent {

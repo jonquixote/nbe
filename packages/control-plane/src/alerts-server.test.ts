@@ -394,3 +394,37 @@ test("additive: the snapshot keeps every field it had, with the same meaning; la
   );
   assert.equal(data.lastError, null, "preflight still writes lastError (a pass clears it)");
 });
+
+test("review4 step 8: a clip the engine gave up on, held on the View, is ERROR without the fallback and raises item.failed until the View moves on", async (t) => {
+  const { ws } = await engine(t, () => "none", new Set());
+  state.viewItem = "A1";
+  ws.send(
+    JSON.stringify({
+      v: "0.3",
+      kind: "itemEvent",
+      itemRef: "A1",
+      event: "decodeError",
+      detail: "held: E_CLIP_DECODE: clip clip stopped decoding at source frame 61; the View holds its last frame",
+    }),
+  );
+  assert.ok(await until(() => idsOf(state.alerts).includes("item.failed")), "item.failed raises");
+  const alert = state.alerts.find((a) => a.id === "item.failed")!;
+  assert.equal(alert.severity, "critical");
+  assert.match(alert.reason, /A1 failed on air: held: E_CLIP_DECODE/);
+  assert.equal(state.itemStateOf("A1"), "ERROR");
+  assert.equal(state.fallbackActive, false, "held: the slate is not up, so the fallback flag is not set");
+  assert.ok(
+    rows().some((r) => r["event"] === "item.failed" && (r["detail"] as Record<string, unknown> | undefined)?.["edge"] === "raised"),
+    "the raise has its audit row",
+  );
+
+  // The View moves on (a take of another item): the alert clears.
+  state.viewItem = "A2";
+  assert.ok(await until(() => !idsOf(state.alerts).includes("item.failed")), "item.failed clears");
+
+  // A decodeError without the held detail keeps today's meaning: ERROR and the fallback flag.
+  ws.send(JSON.stringify({ v: "0.3", kind: "itemEvent", itemRef: "A2", event: "decodeError" }));
+  assert.ok(await until(() => state.itemStateOf("A2") === "ERROR"));
+  assert.equal(state.fallbackActive, true);
+  assert.ok(!idsOf(state.alerts).includes("item.failed"), "no held failure, no item.failed");
+});

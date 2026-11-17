@@ -169,6 +169,18 @@ impl RenderChannel {
         let pump = tokio::spawn(async move {
             let mut next_tick = tokio::time::Instant::now();
             loop {
+                // Item events the render loop observed (a clip given up on,
+                // review4 step 8): onto the wire with the queued frames, at
+                // the latest one telemetry interval after they happened.
+                let observed: Vec<_> = std::mem::take(&mut *pump_state.item_events.lock().unwrap());
+                for (item_ref, event, detail) in observed {
+                    pump_outgoing.push(nbe_protocol::EngineFrame::ItemEvent {
+                        v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+                        item_ref,
+                        event,
+                        detail,
+                    });
+                }
                 for frame in pump_outgoing.drain() {
                     if let Ok(s) = serde_json::to_string(&frame) {
                         let _ = out_tx.send(s).await;

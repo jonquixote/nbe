@@ -163,6 +163,16 @@ pub struct EngineState {
     /// Audio intents published by the directive path and drained by whoever
     /// owns the graph. The directive thread never touches the graph itself.
     pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
+    /// Item events observed off the directive path (a clip that failed mid-
+    /// play, review4 step 8), drained by the outbound pump onto the wire.
+    pub item_events: Mutex<Vec<(String, nbe_protocol::ItemEvent, Option<String>)>>,
+    /// Items whose clip failed while on the View: no `itemEvent end` is sent
+    /// for them until they are taken again (the dead clip's end timer).
+    pub failed_items: Mutex<std::collections::HashSet<String>>,
+    /// Read-ahead decoders respawned after a clip stopped decoding early.
+    pub clip_retries_total: AtomicU64,
+    /// Clips given up on after their retries (each reported once).
+    pub clip_failures_total: AtomicU64,
     /// Soundboard samples, resident from `show.load` (SPEC §8.4). RAM-resident
     /// is the requirement: a trigger that reads disk cannot meet AC-13.
     pub audio_assets: Mutex<std::collections::BTreeMap<String, Arc<Vec<f32>>>>,
@@ -320,6 +330,10 @@ impl EngineState {
             }),
             audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
+            item_events: Mutex::new(Vec::new()),
+            failed_items: Mutex::new(std::collections::HashSet::new()),
+            clip_retries_total: AtomicU64::new(0),
+            clip_failures_total: AtomicU64::new(0),
             audio_assets: Mutex::new(std::collections::BTreeMap::new()),
             item_audio: Mutex::new(std::collections::BTreeMap::new()),
             overlays: Mutex::new(std::collections::BTreeMap::new()),

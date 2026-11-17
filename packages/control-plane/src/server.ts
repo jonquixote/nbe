@@ -926,7 +926,12 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           const snapBefore = snapshot(state);
           if (frame.event === "end") state.markDone(frame.itemRef);
           else if (frame.event === "missing") state.markMissing(frame.itemRef);
-          else state.markError(frame.itemRef);
+          // A clip that failed mid-play while the View holds its last frame
+          // (review4 step 8): ERROR without the fallback flag, and the alert.
+          else if (frame.event === "decodeError" && frame.detail?.startsWith("held")) {
+            state.markErrorHeld(frame.itemRef, frame.detail);
+            signals.evaluate();
+          } else state.markError(frame.itemRef);
           state.bump();
           opts.persistence.onDirty();
           audit.record({
