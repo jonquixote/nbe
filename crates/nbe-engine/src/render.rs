@@ -1703,7 +1703,10 @@ impl RenderLoop {
                     self.live_now.remove(id);
                 }
             }
-            published.push((id.clone(), (sync.clone(), up.ring.clone())));
+            published.push((
+                id.clone(),
+                (sync.clone(), up.ring.uploaded.load(Ordering::Relaxed)),
+            ));
         }
         if !published.is_empty() && !self.injected_live_publish_hold {
             let mut out = self.state.live.sync.lock().unwrap();

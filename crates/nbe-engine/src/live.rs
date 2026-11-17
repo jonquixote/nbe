@@ -79,15 +79,12 @@ impl FrameMailbox {
     /// The capture side: replace the newest frame.
     pub fn publish(&self, frame: LiveFrame) {
         let mut slot = self.slot.lock().unwrap();
-        // Counted in before the uploader can see it, so a telemetry read
-        // (uploaded, then overwritten, then in) never finds a frame uploaded
-        // or overwritten that is not yet counted in.
-        self.frames_in.fetch_add(1, Ordering::Release);
         if slot.is_some() {
-            self.frames_overwritten.fetch_add(1, Ordering::Release);
+            self.frames_overwritten.fetch_add(1, Ordering::Relaxed);
         }
         *slot = Some(frame);
         drop(slot);
+        self.frames_in.fetch_add(1, Ordering::Relaxed);
         self.last_at_ms
             .store(self.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
         self.ready.notify_one();
@@ -485,12 +482,8 @@ pub struct LiveInputs {
     /// for the telemetry line (PR D).
     pub guest_audio: Mutex<HashMap<String, Arc<LiveAudio>>>,
     /// The render loop's frame synchronisers, published once a frame for
-    /// telemetry: source id → (sync, its upload ring). The ring, not a copy
-    /// of its count: telemetry reads the ring's live upload count beside the
-    /// mailbox's live counts, so a render frame published late cannot leave
-    /// uploaded frames counted as in flight (item 3 of the user's ruling of
-    /// 2026-11-16 00:25).
-    pub sync: Mutex<std::collections::BTreeMap<String, (FrameSync, Arc<LiveTextureRing>)>>,
+    /// telemetry: source id → (sync, frames uploaded).
+    pub sync: Mutex<std::collections::BTreeMap<String, (FrameSync, u64)>>,
     /// Bumped whenever a video source starts or stops, so the render loop
     /// resyncs its upload threads at the next frame (a guest joins mid-show).
     pub generation: AtomicU64,
@@ -649,21 +642,7 @@ impl LiveInputs {
             .unwrap()
             .iter()
             .map(|(id, (m, _))| {
-                let (fs, ring) = match sync.get(id) {
-                    Some((fs, ring)) => (fs.clone(), Some(ring.clone())),
-                    None => (FrameSync::default(), None),
-                };
-                // One snapshot, in the order that keeps it honest: uploaded,
-                // then overwritten, then in. Each only grows, and a frame is
-                // counted in before it can be uploaded or overwritten, so
-                // reading `frames_in` last never leaves it short of the other
-                // two.
-                let uploaded = ring
-                    .as_ref()
-                    .map(|r| r.uploaded.load(Ordering::SeqCst))
-                    .unwrap_or(0);
-                let overwritten = m.frames_overwritten.load(Ordering::SeqCst);
-                let frames_in = m.frames_in.load(Ordering::SeqCst);
+                let (fs, uploaded) = sync.get(id).cloned().unwrap_or_default();
                 let mic = self
                     .mics
                     .lock()
@@ -682,8 +661,8 @@ impl LiveInputs {
                     mic_underrun_frames: read(|a| &a.underrun_frames),
                     mic_trimmed_frames: read(|a| &a.trimmed_frames),
                     source: id.clone(),
-                    frames_in,
-                    frames_overwritten: overwritten,
+                    frames_in: m.frames_in.load(Ordering::Relaxed),
+                    frames_overwritten: m.frames_overwritten.load(Ordering::Relaxed),
                     frames_uploaded: uploaded,
                     drawn_seq: fs.drawn_seq,
                     repeats: fs.repeats,
@@ -1081,7 +1060,7 @@ impl LiveUploader {
                     let seq = frame.seq.max(1);
                     r.slot_seq[slot].store(seq, Ordering::SeqCst);
                     r.newest.store(seq, Ordering::SeqCst);
-                    r.uploaded.fetch_add(1, Ordering::Release);
+                    r.uploaded.fetch_add(1, Ordering::Relaxed);
                 }
             })
             .expect("spawn a live upload thread");
