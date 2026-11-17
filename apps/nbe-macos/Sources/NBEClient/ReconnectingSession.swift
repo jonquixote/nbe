@@ -48,7 +48,7 @@ public actor ReconnectingSession {
         config: ControlPlaneClient.Config,
         catalog: CommandCatalog? = try? .bundled(),
         subscribeIntervalMs: Int = 100,
-        backoff: @escaping @Sendable (Int) -> Duration = Backoff.delay
+        backoff: @escaping @Sendable (Int) -> Duration = { Backoff.delay(attempt: $0) }
     ) {
         self.config = config
         self.catalog = catalog
@@ -126,7 +126,7 @@ public actor ReconnectingSession {
             wake = cont
             Task {
                 try? await Task.sleep(for: delay)
-                await self.timerFired(generation)
+                self.timerFired(generation)
             }
         }
     }
