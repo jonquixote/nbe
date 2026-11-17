@@ -17,6 +17,28 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_PORT } from "./protocol.js";
 import { Supervisor, type ChildSpec } from "./supervisor.js";
 
+/** The named variables of this process's environment that are set. */
+function pick(names: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const n of names) {
+    const v = process.env[n];
+    if (v !== undefined) out[n] = v;
+  }
+  return out;
+}
+
+/** Every NBE_ variable except the ones holding other roles' secrets, and
+ * RUST_LOG: what the engine reads (NBE_AUDIO_SINK, NBE_CAMERAS,
+ * NBE_MEDIA_SERVER, …). Never NBE_TOKENS (every role's token). */
+function engineEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if ((k.startsWith("NBE_") && k !== "NBE_TOKENS" && k !== "NBE_AUDIT_LOG") || k === "RUST_LOG") out[k] = v;
+  }
+  return out;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.NBE_PORT ?? DEFAULT_PORT);
 const statusUrl = `http://127.0.0.1:${port}/nbe/v0.3/status`;
@@ -72,6 +94,16 @@ async function main(): Promise<void> {
     command: process.execPath,
     args: ["--import", "tsx", join(here, "index.ts")],
     cwd: resolve(here, ".."),
+    env: pick([
+      "NBE_TOKENS",
+      "NBE_AUDIT_LOG",
+      "NBE_STATE_DIR",
+      "NBE_ALLOW_TEMP_STATE",
+      "NBE_PORT",
+      "NBE_HOST",
+      "NBE_HOUSE_RATE",
+      "NBE_PREFLIGHT_BIN",
+    ]),
     // NOT until review4 step 7: restarted today it would resync a running
     // engine to UNLOADED and stop the show.
     restart: false,
@@ -80,7 +112,7 @@ async function main(): Promise<void> {
   specs.push({
     name: "engine",
     command: engineBin,
-    env: { NBE_CP_URL: `ws://127.0.0.1:${port}/nbe/v0.3`, NBE_RENDER_TOKEN: renderToken },
+    env: { ...engineEnv(), NBE_CP_URL: `ws://127.0.0.1:${port}/nbe/v0.3`, NBE_RENDER_TOKEN: renderToken },
     restart: true,
     ready: async () => {
       const s = await status();

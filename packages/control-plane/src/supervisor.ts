@@ -31,6 +31,10 @@ export interface ChildSpec {
   name: string;
   command: string;
   args?: string[];
+  /** The child's own variables. A child gets these and `BASE_ENV` only,
+   * never the supervisor's whole environment: the supervisor holds every
+   * role's token (NBE_TOKENS), and the engine and the media server need none
+   * of them. */
   env?: Record<string, string>;
   cwd?: string;
   /** Restart when it exits. The control plane's is false until review4 step 7. */
@@ -60,6 +64,20 @@ export interface SupervisorOptions {
   /** Hold `caffeinate` (macOS). Default: on macOS. */
   caffeinate?: boolean;
   onEvent?: (e: SupervisorEvent) => void;
+}
+
+/** What every child inherits from the supervisor: the basics a process
+ * needs to run, and nothing that could carry a secret. */
+export const BASE_ENV = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ"] as const;
+
+/** The base variables from `from` that are set. */
+export function baseEnv(from: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of BASE_ENV) {
+    const v = from[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 /** At once, then 0.5 s doubling to 5 s. */
@@ -157,7 +175,7 @@ export class Supervisor {
     r.attempt += 1;
     const child = spawn(r.spec.command, r.spec.args ?? [], {
       cwd: r.spec.cwd,
-      env: { ...process.env, ...(r.spec.env ?? {}) },
+      env: { ...baseEnv(), ...(r.spec.env ?? {}) },
       stdio: ["ignore", "pipe", "pipe"],
       // Its own process group, so a stop takes its children with it.
       detached: true,

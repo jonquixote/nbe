@@ -155,3 +155,30 @@ test("on macOS it keeps the Mac awake while it runs (caffeinate), and lets go wh
   await sup.stop();
   assert.ok(await until(() => !alive(pid!), 2000), "released on stop");
 });
+
+test("a child gets the base environment and its own variables, never the supervisor's secrets", async (t) => {
+  const dir = tempDir("nbe-sup-");
+  process.env.NBE_TOKENS_FOR_TEST = "admin-secret";
+  t.after(() => delete process.env.NBE_TOKENS_FOR_TEST);
+  const child: ChildSpec = {
+    name: "engine",
+    command: NODE,
+    args: ["-e", "console.log('secret=' + process.env.NBE_TOKENS_FOR_TEST + ' own=' + process.env.NBE_OWN + ' path=' + (process.env.PATH ? 'set' : 'unset')); setInterval(() => {}, 1000);"],
+    env: { NBE_OWN: "mine" },
+    restart: true,
+  };
+  const sup = new Supervisor([child], { logDir: dir, caffeinate: false });
+  t.after(() => sup.stop());
+  await sup.start();
+  let line = "";
+  assert.ok(
+    await until(() => {
+      line = readFileSync(join(dir, "engine.log"), "utf8");
+      return line.includes("secret=");
+    }, 3000),
+    "the child reported its environment",
+  );
+  assert.match(line, /secret=undefined/, `the supervisor's secret is not passed on: ${line}`);
+  assert.match(line, /own=mine/, "its own variable is");
+  assert.match(line, /path=set/, "and the base (PATH)");
+});
