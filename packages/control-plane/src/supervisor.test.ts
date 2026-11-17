@@ -136,9 +136,11 @@ test("each child's output is logged, rotated, and the old files are capped", asy
   const sup = new Supervisor([chatty], { logDir: dir, caffeinate: false, rotateBytes: 1000, keepLogs: 3 });
   t.after(() => sup.stop());
   await sup.start();
-  await sleep(800);
+  // Until the child has written its 8,000 bytes (a hang guard, not a measurement).
+  const logs = (): string[] => readdirSync(dir).filter((f) => f.startsWith("engine")).sort();
+  await until(() => logs().length === 4, 5000);
   await sup.stop();
-  const files = readdirSync(dir).filter((f) => f.startsWith("engine")).sort();
+  const files = logs();
   assert.deepEqual(files, ["engine.1.log", "engine.2.log", "engine.3.log", "engine.log"], `rotated and capped: ${files.join(", ")}`);
 });
 
