@@ -56,6 +56,9 @@ export interface PersistenceHooks {
   /** After an accepted command: on-air intent is written before the response
    * (the returned promise settles once it is on disk). */
   onCommitted?(command: string): void | Promise<void>;
+  /** False from a failed journal write until the next write succeeds
+   * (review4 step 5: the signal lane raises `audit.sinkFailed` on it). */
+  writeOk?(): boolean;
 }
 
 /** Commands whose effect is on air: written before their response. */
@@ -190,6 +193,10 @@ export class StatePersistence implements PersistenceHooks {
     this.onDirty();
   }
 
+  writeOk(): boolean {
+    return this.lastError === null;
+  }
+
   /** Queue a write now (show-state transitions call it). Does not wait. */
   flushNow(): void {
     void this.flush();
@@ -203,9 +210,11 @@ export class StatePersistence implements PersistenceHooks {
     }
     const next = this.chain.then(() => this.write());
     this.chain = next.catch((e: unknown) => {
-      // A failed write never fails the command (review4 step 5's rule; its
-      // alert is that step's). The next write tries again.
+      // A failed write never fails the command (review4 step 5): the signal
+      // lane raises `audit.sinkFailed` from `writeOk()`. The state is still
+      // not on disk, so the next write writes it.
       this.lastError = e;
+      this.dirty = true;
       console.error(`control-plane journal: write failed: ${String(e)}`);
     });
     return this.chain;
