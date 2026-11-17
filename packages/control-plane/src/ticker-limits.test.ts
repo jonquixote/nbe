@@ -5,6 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { AuditLog } from "./audit.js";
@@ -145,4 +146,23 @@ test("the server's 1 s timer expires an item and sends the engine the resolved q
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0]!.payload, { items: [{ text: "STAYS", priority: 0 }], mode: "replace" });
   assert.equal(sent[0]!.stateVersion, v0 + 1);
+});
+
+test("with the audit file unwritable, the timer still expires the item, and the process lives (a throw would leave the timer and end it)", async (t) => {
+  const state = new ControlPlaneState();
+  const bridge = new MockRenderBridge();
+  const auditPath = join(tempDir("nbe-ticker-ttl-ro-"), "audit.jsonl");
+  writeFileSync(auditPath, "");
+  chmodSync(auditPath, 0o444);
+  t.after(() => chmodSync(auditPath, 0o644));
+  const audit = new AuditLog(auditPath);
+  const server = await createControlPlaneServer({ port: 0, auth: { tokens: {} }, audit, state, bridge, persistence: noPersist });
+  t.after(() => server.close());
+  state.tickerItems = [{ text: "GOES", priority: 0, ttlSec: 1, expiresAtMs: Date.now() + 200 }];
+  const deadline = Date.now() + 3000;
+  while (state.tickerItems.length !== 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(state.tickerItems.length, 0, "expired by the timer");
+  assert.equal(audit.sinkOk, false, "its audit row failed, as arranged");
+  await new Promise((r) => setTimeout(r, 1200)); // one more timer tick, alive
+  assert.deepEqual(bridge.drain().filter((d) => d.command === "ticker.override").length, 1);
 });
