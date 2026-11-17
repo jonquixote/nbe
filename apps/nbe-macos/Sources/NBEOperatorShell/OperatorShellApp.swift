@@ -57,7 +57,8 @@ struct ShellWindow: View {
     @ObservedObject var model: ShellModel
 
     var body: some View {
-        ZStack {
+        // Top-aligned: a curtain coming up must not move what is beneath it.
+        ZStack(alignment: .top) {
             VStack(spacing: 0) {
                 HeaderBar(model: model)
                 AlertsBanner(model: model)
