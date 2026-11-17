@@ -90,9 +90,15 @@ struct ShellWindow: View {
             // Rule 1: a stale value is never shown as live.
             .saturation(model.noContact ? 0 : 1)
             .opacity(model.noContact ? 0.55 : 1)
+            // `R`: reconnect now (rule 3: the curtain names one key). Acts
+            // only while the shell window is key.
+            Button("Reconnect now") { model.retryNow() }
+                .keyboardShortcut("r", modifiers: [])
+                .opacity(0)
+                .frame(width: 0, height: 0)
             // Rule 4: one curtain at a time, by rank; NO CONTACT first.
             if model.noContact {
-                NoContactCurtain(seconds: model.contactAgeSeconds)
+                NoContactCurtain(seconds: model.contactAgeSeconds, retryAttempt: model.retryAttempt)
             } else if model.status.fallbackActive == true || model.telemetry.fallbackActive == true {
                 FallbackCurtain()
             }

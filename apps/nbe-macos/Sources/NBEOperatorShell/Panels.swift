@@ -300,6 +300,8 @@ struct AlertsBanner: View {
 /// other curtain; the last values stay visible beneath it, greyed.
 struct NoContactCurtain: View {
     let seconds: Int
+    /// The next reconnect attempt, when the session is retrying (step 3).
+    var retryAttempt: Int?
 
     var body: some View {
         ZStack {
@@ -310,6 +312,8 @@ struct NoContactCurtain: View {
                     .font(.title2.bold()).foregroundStyle(.white)
                 Text("Values beneath are from \(seconds) s ago. No command can be sent.")
                     .font(.title3).foregroundStyle(.white.opacity(0.9))
+                Text(retryAttempt.map { "Reconnecting by itself (attempt \($0)). R: try now." } ?? "R: reconnect now.")
+                    .font(.title3.bold()).foregroundStyle(.white)
             }
         }
         .ignoresSafeArea()
