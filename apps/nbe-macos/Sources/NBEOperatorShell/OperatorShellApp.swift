@@ -16,7 +16,11 @@ struct OperatorShellApp: App {
         // with no window and no control plane (a look at the layout).
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
-            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]))
+            // `--stale N`: the fixture as last heard N seconds ago.
+            let stale = args.firstIndex(of: "--stale").flatMap { j in
+                j + 1 < args.count ? Double(args[j + 1]) : nil
+            }
+            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]), staleSeconds: stale)
             exit(0)
         }
         // Run from `swift run`, with no app bundle: become a regular app with
@@ -82,7 +86,13 @@ struct ShellWindow: View {
                         .frame(height: 110)
                 }
             }
-            if model.status.fallbackActive == true || model.telemetry.fallbackActive == true {
+            // Rule 1: a stale value is never shown as live.
+            .saturation(model.noContact ? 0 : 1)
+            .opacity(model.noContact ? 0.55 : 1)
+            // Rule 4: one curtain at a time, by rank; NO CONTACT first.
+            if model.noContact {
+                NoContactCurtain(seconds: model.contactAgeSeconds)
+            } else if model.status.fallbackActive == true || model.telemetry.fallbackActive == true {
                 FallbackCurtain()
             }
         }
@@ -93,10 +103,10 @@ struct ShellWindow: View {
 /// (`cacheDisplay`), so controls draw as they do in a window. No server.
 @MainActor
 enum Snapshot {
-    static func write(to url: URL) {
+    static func write(to url: URL, staleSeconds: Double? = nil) {
         _ = NSApplication.shared
         let model = ShellModel()
-        model.loadFixture()
+        model.loadFixture(staleSeconds: staleSeconds)
         let size = NSSize(width: 1280, height: 820)
         let root = ShellWindow(model: model)
             .frame(width: size.width, height: size.height, alignment: .top)

@@ -28,6 +28,12 @@ final class ShellModel: ObservableObject {
     @Published var showNote: String?
     /// The last refusal or failure, as the server or the catalog worded it.
     @Published var lastProblem: String?
+    /// When the newest frame from the control plane was received (build
+    /// step 2): past `ContactAge.limit` the NO CONTACT curtain is up, values
+    /// are greyed, and no command can be sent.
+    @Published var contact = ContactAge()
+    /// The shell's own clock, advanced four times a second so the age counts.
+    @Published var now = Date()
     @Published var log: [String] = []
 
     let catalog: CommandCatalog?
@@ -36,13 +42,26 @@ final class ShellModel: ObservableObject {
 
     init() {
         catalog = try? CommandCatalog.bundled()
+        Task { [weak self] in
+            while let self {
+                self.now = Date()
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
+
+    /// The NO CONTACT rule (build step 2): a session that has received
+    /// nothing for `ContactAge.limit`.
+    var noContact: Bool { contact.isStale(now: now) }
+
+    /// Seconds since the last frame, for the curtain's count.
+    var contactAgeSeconds: Int { Int((contact.age(now: now) ?? 0).rounded(.down)) }
 
     /// Whether this session's role may issue `command` (the §16.0 matrix, as
     /// exported). A button the role may not press is shown disabled, with why.
     func may(_ command: ShellCommand) -> Bool {
-        if case .fixture = connection { return true }
-        guard case .connected = connection else { return false }
+        if case .fixture = connection { return !noContact }
+        guard case .connected = connection, !noContact else { return false }
         return catalog?[command.name]?.allows(role) ?? false
     }
 
@@ -59,6 +78,7 @@ final class ShellModel: ObservableObject {
         Task {
             do {
                 let response = try await client.connect()
+                contact.received(at: Date())
                 if let data = response.data, let snap = try? data.decode(StatusSnapshot.self) { status = snap }
                 connection = .connected(role: role)
                 _ = try? await client.send(.telemetrySubscribe(intervalMs: 100))
@@ -71,7 +91,11 @@ final class ShellModel: ObservableObject {
         }
     }
 
-    func loadFixture() {
+    /// The fixture as last heard `staleSeconds` ago (the snapshot's
+    /// `--stale N`, a look at the NO CONTACT curtain); nil leaves the fixture
+    /// untracked, so an open `--fixture` window never goes stale.
+    func loadFixture(staleSeconds: Double? = nil) {
+        if let staleSeconds { contact.received(at: Date().addingTimeInterval(-staleSeconds)) }
         connection = .fixture
         status = Fixture.status
         telemetry = Fixture.telemetry
@@ -112,11 +136,14 @@ final class ShellModel: ObservableObject {
     private func fold(_ frame: InboundFrame) {
         switch frame {
         case .stateChange(let change):
+            contact.received(at: Date())
             status.apply(change)
             if change.changed?.contains(where: { ["itemStates", "package", "showState"].contains($0) }) ?? true {
                 Task { await refreshShow() }
             }
-        case .telemetry(let t): telemetry = t.data
+        case .telemetry(let t):
+            contact.received(tickTs: t.data.ts, at: Date())
+            telemetry = t.data
         case .response, .unknown: break
         }
     }
