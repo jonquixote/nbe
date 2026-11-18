@@ -507,7 +507,9 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
     const cutV = await ok(s, "view.cut", { itemRef: "A1" });
     assert.equal(cutV, cutExpected, "precondition: the cut is the version the tap holds the ack of");
     assert.ok(await s.server.awaitApplied(cutV, APPLY_MS), "the engine applies view.cut: its ack crosses before the stop's window opens");
-    s.tap.holdUp = null;
+    // The hold stays armed (it matches the cut's one version only): clearing
+    // it here would let an unwaited ack through unheld, and the race it forces
+    // would not happen.
 
     // The outputs, with the dress rehearsal's capability gate: a refusal is
     // told from a wedged pipeline by the engine's own log.
