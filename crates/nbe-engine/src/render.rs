@@ -125,9 +125,9 @@ pub fn may_stage(
 ) -> StageDecision {
     if spent < caps.time && staged_bytes + frame_bytes <= caps.bytes {
         StageDecision::Yes
-    } else if floor_due {
-        StageDecision::Floor
     } else {
+        // MUTANT Mb2 (stage (b), do not merge): the floor removed.
+        let _ = floor_due;
         StageDecision::No
     }
 }
