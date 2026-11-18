@@ -8,7 +8,13 @@
 //! - No mutate-then-throw: every precondition check runs before any write.
 //! - Persistance lives in `persistence.ts` (async, dirty-flag + debounce).
 
-import { CpError, ResyncPackageSchema, ResyncViewItemEndSchema, type ResyncViewItemEnd } from "./protocol.js";
+import {
+  CpError,
+  ResyncPackageSchema,
+  ResyncViewItemEndSchema,
+  type EngineHelloFrame,
+  type ResyncViewItemEnd,
+} from "./protocol.js";
 import type { Alert } from "./alerts.js";
 
 export type ItemState = "READY" | "ARMED" | "LIVE" | "PLAYING" | "DONE" | "MISSING" | "ERROR";
@@ -566,6 +572,79 @@ export class ControlPlaneState {
     // `enabled` is honoured (Prompt 11 WU1). It used to be ignored: every
     // rule loaded enabled, whatever the manifest said.
     for (const r of pkg.automation) this.automationRules.set(r.id, r.enabled);
+  }
+
+  /**
+   * Review4 step 7b (the user's ruling of 2026-11-16 23:45 on step 7): a
+   * restarted control plane adopts the show a running engine is playing.
+   * Review4 1.2's split: the engine's hello is the truth for what is on air
+   * (the clock, the View and Preview items, the overlays, the slate, whether
+   * it records); the journal for the rundown (item states, graphics, ticker,
+   * buses, guests, automation, snapshots, markers, the commanded stream).
+   * Corrections: the View item is PLAYING (LIVE if the journal had it so);
+   * any other PLAYING item is DONE, since its end may have passed unheard.
+   * The version is max(journal, engine's last applied) + 1, so it never goes
+   * back for the shell, the bridge or the audit log. Returns what it
+   * corrected, for the adoption's audit row.
+   */
+  adopt(pkg: PackageInfo, hello: EngineHelloFrame, journal: Record<string, unknown>, nowMs: number): {
+    correctedToDone: string[];
+    recordMismatch: boolean;
+  } {
+    const j = journal;
+    const journalVersion = this.stateVersion;
+    this.loadPackage(pkg);
+    this.showState = "RUNNING";
+    this.packageLoadStateVersion = hello.package?.loadStateVersion ?? null;
+    this.preflightWarnings = ["preflight not re-run: the show was adopted from a running engine after a control-plane restart"];
+    // On air: the engine's.
+    this.viewItem = hello.viewItem;
+    this.viewItemStartFrame = hello.viewItem === null ? null : hello.viewItemStartFrame;
+    this.previewItem = hello.previewItem;
+    this.visibleOverlays = new Set(hello.visibleOverlays);
+    this.fallbackActive = hello.fallbackActive;
+    if (hello.masterFrame !== null) this.lastKnownMasterFrame = hello.masterFrame;
+    // The take's wall time, back-computed from the engine's clock, so a
+    // later resync's viewItemEnd is right (the adopting one sends none).
+    this.viewItemTakenAtMs =
+      hello.viewItem !== null && hello.masterFrame !== null && hello.viewItemStartFrame !== null
+        ? nowMs - ((hello.masterFrame - hello.viewItemStartFrame) * 1000) / pkg.houseRate
+        : null;
+    // The rundown: the journal's, corrected.
+    const correctedToDone: string[] = [];
+    const states = (j.itemStates ?? {}) as Record<string, ItemState>;
+    for (const [id, st] of Object.entries(states)) {
+      if (!pkg.items.has(id) || id === hello.viewItem) continue;
+      if (st === "PLAYING") {
+        this.itemStates.set(id, "DONE");
+        correctedToDone.push(id);
+      } else this.itemStates.set(id, st);
+    }
+    if (hello.viewItem !== null && pkg.items.has(hello.viewItem)) {
+      this.itemStates.set(hello.viewItem, states[hello.viewItem] === "LIVE" ? "LIVE" : "PLAYING");
+    }
+    const map = <V>(v: unknown): Map<string, V> => new Map(Object.entries((v ?? {}) as Record<string, V>));
+    this.graphics = map(j.graphics);
+    this.breakingVisible = j.breakingVisible === true;
+    this.breakingFields = (j.breakingFields ?? null) as typeof this.breakingFields;
+    if (j.tickerSource === "manual" || j.tickerSource === "rss" || j.tickerSource === "mixed") this.tickerSource = j.tickerSource;
+    if (Array.isArray(j.tickerItems)) this.tickerItems = j.tickerItems as typeof this.tickerItems;
+    this.audioBuses = map(j.audioBuses);
+    this.guests = map(j.guests);
+    this.automationHold = j.automationHold === true;
+    for (const [id, on] of Object.entries((j.automationRules ?? {}) as Record<string, boolean>)) {
+      if (this.automationRules.has(id)) this.automationRules.set(id, on === true);
+    }
+    this.snapshots = map(j.snapshots);
+    if (Array.isArray(j.markers)) this.markers = j.markers as typeof this.markers;
+    // Outputs: what the engine does is the truth for recording; the stream's
+    // commanded state is the journal's, and §10.1.4's correction reconciles
+    // it against the engine's reports as it would any belief.
+    const journalRecording = j.recordState === "recording";
+    this.recordState = hello.recording ? "recording" : "idle";
+    if (j.streamState === "idle" || j.streamState === "live" || j.streamState === "held") this.streamState = j.streamState as StreamState;
+    this.stateVersion = Math.max(journalVersion, hello.lastAppliedStateVersion) + 1;
+    return { correctedToDone, recordMismatch: journalRecording !== hello.recording };
   }
 
   unloadPackage(): void {

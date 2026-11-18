@@ -33,7 +33,7 @@ import {
   type RenderDirective,
   type RenderRegistration,
 } from "./render-bridge.js";
-import type { ControlPlaneState, DeprecationRecord } from "./state.js";
+import type { ControlPlaneState, DeprecationRecord, PackageInfo } from "./state.js";
 import type { SystemHooks } from "./commands/system.js";
 import {
   AutomationEvaluator,
@@ -44,7 +44,8 @@ import {
   type Cause,
   type Snapshot,
 } from "./automation.js";
-import type { PersistenceHooks } from "./persistence.js";
+import type { JournalBody, PersistenceHooks } from "./persistence.js";
+import { indexPackage } from "./package.js";
 import { buildTick, ENGINE_TELEMETRY_TTL_MS, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
 import { AlertLane, OperatorSignals } from "./alerts.js";
 
@@ -122,6 +123,9 @@ export class RateLimiter {
 // ---------------------------------------------------------------------------
 
 interface ClientSession {
+  /** Review4 step 7b: a render connection to a restarted control plane,
+   * holding its handshake until the engine's hello arrives (or a timeout). */
+  awaitingHello?: { handshake: (adopted: boolean) => void; timer: ReturnType<typeof setTimeout> } | null;
   role: Role;
   tokenId: string;
   telemetryTimer: ReturnType<typeof setInterval> | null;
@@ -189,6 +193,15 @@ export interface ServerOptions {
   audit: AuditLog;
   state: ControlPlaneState;
   persistence: PersistenceHooks;
+  /**
+   * Review4 step 7b (the user's ruling of 2026-11-16 23:45 on step 7): this
+   * control plane restarted and restored a journal. It waits for the
+   * engine's hello before resyncing it, and adopts a running show whose
+   * package identity matches the journal's. While the journal says a show
+   * was running, commands are refused for up to `lockMs` (15 s) or until the
+   * hello arrives.
+   */
+  restart?: { journal: JournalBody; lockMs?: number; helloWaitMs?: number };
   /** Inject a specific bridge (tests use MockRenderBridge); defaults to the production WsRenderBridge fan-out. */
   bridge?: RenderBridge;
   /** SPEC §16.1 graceful window; shortened in tests. Default 2000 ms. */
@@ -278,6 +291,112 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   const signalTimer = setInterval(() => signals.evaluate(), 250);
   signalTimer.unref?.();
   const wsBridge = new WsRenderBridge();
+
+  // -- Review4 step 7b: adoption after a control-plane restart -------------
+  // Present only when this process restored a journal. `resolved` once the
+  // first engine has said hello (or never did, within the wait): from then
+  // on every connection is review4's case A or E, as before.
+  const recovery = opts.restart
+    ? {
+        journal: opts.restart.journal,
+        // Commands wait for the hello only when the journal says a show was
+        // running: there is then a show that a command could disturb before
+        // it is adopted. The timer only unlocks commands; a hello after it
+        // still adopts (review4 1.3).
+        lockedUntil:
+          opts.restart.journal.journal["showState"] === "RUNNING" ? Date.now() + (opts.restart.lockMs ?? 15_000) : 0,
+        resolved: false,
+      }
+    : null;
+  const recovering = (): boolean => recovery !== null && !recovery.resolved;
+  const commandsLocked = (): boolean => recovering() && Date.now() < recovery!.lockedUntil;
+  /** Read-only commands are answered while recovering. */
+  const RECOVERY_EXEMPT = new Set(["system.status", "show.getState", "system.telemetry.subscribe", "system.telemetry.unsubscribe"]);
+
+  function recoveryRow(event: string, detail: Record<string, unknown>, before: number): void {
+    try {
+      audit.record({
+        kind: "command",
+        command: "engine:hello",
+        event,
+        detail,
+        stateVersionBefore: before,
+        stateVersionAfter: state.stateVersion,
+      });
+    } catch {
+      // R18's alert announces a sink that cannot be written; the adoption,
+      // or its refusal, stands.
+    }
+  }
+
+  function notAdopted(reason: string, detail: Record<string, unknown>): void {
+    recovery!.resolved = true;
+    recoveryRow("controlPlane.notAdopted", { reason, ...detail }, state.stateVersion);
+    if (reason !== "engineNotRunning") {
+      opts.warn?.(`the restarted control plane did not adopt the engine's show (${reason}); it resyncs as before`);
+    }
+  }
+
+  /**
+   * Review4 1.3, decided on the first hello after a restart. Adopts (case B)
+   * when the engine is running the package the journal names, at the same
+   * load generation, and the journal says a show was running. Otherwise the
+   * engine gets today's resync, and why is audited: an engine not running is
+   * case D (UNLOADED; a saved file alone never starts a show), anything else
+   * case C, whose refusal is a later PR's (7b-ii). Returns whether it adopted.
+   */
+  function recover(hello: EngineHelloFrame): boolean {
+    const j = recovery!.journal;
+    const body = j.journal;
+    const reason = !hello.showRunning
+      ? "engineNotRunning"
+      : body["showState"] !== "RUNNING"
+        ? "journalNotRunning"
+        : hello.package === null
+          ? "engineHasNoPackage"
+          : j.manifestIdentity?.packagePath !== hello.package.path ||
+              body["packageLoadStateVersion"] !== hello.package.loadStateVersion
+            ? "identity"
+            : null;
+    const identities = {
+      journal: { path: j.manifestIdentity?.packagePath ?? null, loadStateVersion: body["packageLoadStateVersion"] ?? null },
+      engine: hello.package,
+    };
+    if (reason !== null) {
+      notAdopted(reason, identities);
+      return false;
+    }
+    let pkg: PackageInfo;
+    try {
+      pkg = indexPackage(hello.package!.path);
+    } catch (err) {
+      notAdopted("index", { ...identities, error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+    const before = state.stateVersion;
+    const out = state.adopt(pkg, hello, body, Date.now());
+    automation.load(pkg);
+    recovery!.resolved = true;
+    opts.persistence.flushNow();
+    recoveryRow(
+      "controlPlane.adopted",
+      {
+        journalVersion: before,
+        engineLastApplied: hello.lastAppliedStateVersion,
+        adoptedVersion: state.stateVersion,
+        journalAgeMs: Math.max(0, Date.now() - j.recoveredAt),
+        // Rule actions queued or timed at the crash: dropped, never fired
+        // late (the user's ruling of 2026-11-16 23:45).
+        automationDropped: typeof body["automationBacklog"] === "number" ? body["automationBacklog"] : null,
+        correctedToDone: out.correctedToDone,
+        recordMismatch: out.recordMismatch,
+        preflight: "not re-run",
+        package: hello.package,
+      },
+      before,
+    );
+    return true;
+  }
 
   // -- Review4 step 7a: the engine's hello ----------------------------------
   // The instance the last hello named, and when an engine that had said hello
@@ -441,6 +560,19 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       else audit.record(rec);
     };
     try {
+      // Review4 step 7b: while a restarted control plane waits for the
+      // engine's hello, a command could disturb the show it is about to
+      // adopt. The code is E_RECOVERING's once SPEC §16 names it (drafted for
+      // the user); until then E_FORBIDDEN_STATE, with the reason.
+      const name = resolveCommand(envelope.command)?.command ?? envelope.command;
+      if (commandsLocked() && !RECOVERY_EXEMPT.has(name)) {
+        const leftS = Math.ceil((recovery!.lockedUntil - Date.now()) / 1000);
+        throw new CpError(
+          "E_FORBIDDEN_STATE",
+          `the control plane restarted and is waiting for the engine's hello to adopt its show (up to ${leftS} s more)`,
+          { reason: "recovering" },
+        );
+      }
       const out = await dispatch(run.automation ? automationDeps : deps, registry, {
         connectionId: run.connectionId,
         role: run.role,
@@ -530,6 +662,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         stateVersionAfter: state.stateVersion,
       }),
   });
+  // Review4 step 7b: the journal carries the automation backlog, so an
+  // adoption can say how many rule actions a crash dropped.
+  opts.persistence.journalExtras?.(() => ({ automationBacklog: automation.backlog() }));
 
   /**
    * An accepted command changed state: keep the evaluator's lifecycle in step,
@@ -623,9 +758,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
    * send), so a caller that ignores the result cannot tell a resync that went
    * out from one that did not.
    */
-  function sendResync(session: ClientSession): boolean {
+  function sendResync(session: ClientSession, omitViewItemEnd = false): boolean {
     const now = Date.now();
     const payload = state.resyncSnapshot(now);
+    // Review4 step 7b: the adopting resync sends no end, so the engine keeps
+    // the one it has pending (a resync without one never cancels it, §5.9.4)
+    // rather than a control-plane estimate of it.
+    if (omitViewItemEnd) delete payload.viewItemEnd;
     // Noted before the send: the acknowledgement can only follow it.
     if (session.render) {
       session.render.resyncs.push(state.stateVersion);
@@ -787,6 +926,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
      * handshake and the close that follows it both call it.
      */
     const forget = (): void => {
+      if (session.awaitingHello) clearTimeout(session.awaitingHello.timer);
+      session.awaitingHello = null;
       if (session.render !== null && session.render.hello !== undefined) engineGoneAt = Date.now();
       session.closed = true;
       stopTelemetry();
@@ -835,10 +976,12 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         ws.send(JSON.stringify(frame));
         return true;
       };
+      const handshake = (adopted: boolean): void => {
       try {
         session.render = { registration: wsBridge.register(renderSender), lastApplied: null, acked: [], resyncs: [] };
-        if (!sendResync(session)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
+        if (!sendResync(session, adopted)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
         signals.onRegistered();
+        if (adopted) broadcastStateChange(state.stateVersion, ["engine:adopted"]);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         forget();
@@ -856,6 +999,23 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         deps.warn?.(`show.resync handshake failed; the render connection is closed and holds no registration: ${error}`);
         ws.close(1011, "show.resync handshake failed");
       }
+      };
+      if (recovering()) {
+        // Review4 step 7b: a restarted control plane resyncs nothing until
+        // the engine says what it holds. The engine holds its output until a
+        // resync (§5.9.4 rule 2), and this connection is not registered, so
+        // no directive reaches it first (rule 1). An engine that never says
+        // hello gets today's resync after the wait.
+        session.awaitingHello = {
+          handshake,
+          timer: setTimeout(() => {
+            if (!session.awaitingHello) return;
+            session.awaitingHello = null;
+            if (recovering()) notAdopted("noHello", {});
+            handshake(false);
+          }, opts.restart?.helloWaitMs ?? 2000),
+        };
+      } else handshake(false);
     }
 
     /**
@@ -966,6 +1126,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           noteApplied(session, frame.stateVersion);
         } else if (frame.kind === "engineHello") {
           // Review4 step 7a: what the engine holds, first on every connection.
+          // Step 7b: to a restarted control plane, it decides the handshake.
+          const waiting = session.awaitingHello;
+          if (waiting) {
+            session.awaitingHello = null;
+            clearTimeout(waiting.timer);
+            waiting.handshake(recovering() ? recover(frame) : false);
+          }
           if (session.render !== null) noteHello(session.render, frame);
         } else if (frame.kind === "resyncRequest") {
           // SPEC §5.9.4 rule 5: the engine lost continuity; hand it the

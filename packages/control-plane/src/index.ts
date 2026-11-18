@@ -62,6 +62,12 @@ async function main(): Promise<void> {
     audit,
     state,
     persistence,
+    // Review4 step 7b: a restored journal makes this a restarted control
+    // plane, which waits for the engine's hello and adopts a running show.
+    ...(() => {
+      const journal = persistence.restoredJournal();
+      return journal === null ? {} : { restart: { journal } };
+    })(),
     // SPEC §7.15: the control plane is the side that knows BOTH the package
     // and the running engine, so it is the side that refuses. It reads the
     // same variable the engine does, because a control plane that guessed the
