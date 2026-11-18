@@ -195,6 +195,12 @@ test("[review4 step 7b] a control-plane restart mid-show: the clock never stops,
   );
   assert.equal(b.state.showState, "RUNNING");
   assert.equal(b.state.viewItem, "U1");
+  // The engine's own start frame, from restart 1's hello. (Control plane 1
+  // believed `startFrame`, its last known master frame at the take; the
+  // engine starts a take on its next frame, so the two can differ by one.
+  // That predates adoption; the comparison below is engine with engine.)
+  const engineStart = b.state.viewItemStartFrame;
+  assert.ok(engineStart !== null && Math.abs(engineStart - startFrame) <= 1, `the engine's start ${engineStart}, believed ${startFrame}`);
   // The clock never stopped: two reports after the adoption, each later.
   const f1Seen = b.state.lastKnownMasterFrame;
   assert.ok(await until(() => b.state.lastKnownMasterFrame > Math.max(f1Seen, beforeFrame) + FPS / 2, REPORT_MS), "the clock advances after the adoption");
@@ -209,7 +215,7 @@ test("[review4 step 7b] a control-plane restart mid-show: the clock never stops,
   cp = c;
   assert.ok(await until(() => rows().filter((r) => r["event"] === "controlPlane.adopted").length === 2, REPORT_MS), "adopted again");
   assert.equal(c.state.viewItem, "U1", "the engine's View item after the first adoption");
-  assert.equal(c.state.viewItemStartFrame, startFrame, "from the same start frame: no jump, no restart");
+  assert.equal(c.state.viewItemStartFrame, engineStart, "from the same start frame: no jump, no restart");
 
   // The next take applies.
   await ok(c.admin, "preview.set", { itemRef: "U2" });
