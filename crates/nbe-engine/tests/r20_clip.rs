@@ -346,7 +346,11 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
     write_clip_package(dir.path(), &source, 150);
     let mut render = on_air(dir.path()).await;
     let (mut uploads, mut bytes) = (0usize, 0u64);
-    for f in 0..120u64 {
+    // Paced near the house rate: the load primes frames 0-89, and the
+    // worker that streams 90 on only delivers in time if the frames do not
+    // race ahead of it.
+    for f in 0..150u64 {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         let r = render.render_frame(f, None);
         let d = r.phases.read_ahead_detail;
         assert_eq!(d.uploads, r.read_ahead_uploads, "frame {f}: one count");
@@ -364,7 +368,7 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
         uploads += d.uploads;
         bytes += d.bytes;
     }
-    println!("read-ahead stage (a): 120 frames, {uploads} uploads, {bytes} bytes");
+    println!("read-ahead stage (a): 150 frames, {uploads} uploads, {bytes} bytes");
     assert!(uploads > 0, "the read-ahead uploaded past the head");
 }
 
