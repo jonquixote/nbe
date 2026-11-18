@@ -359,6 +359,20 @@ impl Cadence {
                     .render_phases
                     .read_ahead
                     .saturating_sub(report.render_phases.read_ahead_detail.timed())),
+                // Stage (a3): the tick's stages split, its slowest stage, and
+                // the staging buffers created.
+                read_ahead_stage_create_ms =
+                    ms(report.render_phases.read_ahead_detail.stage_split.create),
+                read_ahead_stage_map_ms =
+                    ms(report.render_phases.read_ahead_detail.stage_split.map),
+                read_ahead_stage_copy_ms =
+                    ms(report.render_phases.read_ahead_detail.stage_split.copy),
+                read_ahead_stage_unmap_ms =
+                    ms(report.render_phases.read_ahead_detail.stage_split.unmap),
+                read_ahead_stage_record_ms =
+                    ms(report.render_phases.read_ahead_detail.stage_split.record),
+                read_ahead_stage_max_ms = ms(report.render_phases.read_ahead_detail.stage_max),
+                read_ahead_created = report.render_phases.read_ahead_detail.created,
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 // Read-ahead stage (a): the Preview's own phases, as the View's.
@@ -418,6 +432,14 @@ impl Cadence {
             max_spawn_ms = ms(w.max_split.spawn),
             max_poll_ms = ms(w.max_split.poll),
             max_rest_ms = ms(w.max.saturating_sub(w.max_split.timed())),
+            // Stage (a3): the slowest tick's stage split and single stage.
+            max_stage_create_ms = ms(w.max_split.stage_split.create),
+            max_stage_map_ms = ms(w.max_split.stage_split.map),
+            max_stage_copy_ms = ms(w.max_split.stage_split.copy),
+            max_stage_unmap_ms = ms(w.max_split.stage_split.unmap),
+            max_stage_record_ms = ms(w.max_split.stage_split.record),
+            max_single_stage_ms = ms(w.max_split.stage_max),
+            max_created = w.max_split.created,
             max_tick_uploads = w.max_split.uploads,
             uploads = w.uploads,
             bytes = w.bytes,
@@ -1064,6 +1086,18 @@ mod tests {
                             poll: Duration::from_micros(8),
                             uploads: 3,
                             bytes: 24_883_200,
+                            // Stage (a3): 260 of stage split 9 + 11 + 200 +
+                            // 13 + 17, its slowest stage 120, one created.
+                            stage_split: crate::gpu::StageSplit {
+                                create: Duration::from_micros(9),
+                                map: Duration::from_micros(11),
+                                copy: Duration::from_micros(200),
+                                unmap: Duration::from_micros(13),
+                                record: Duration::from_micros(17),
+                                created: true,
+                            },
+                            stage_max: Duration::from_micros(120),
+                            created: 1,
                         },
                         preview: BusPhases {
                             build: Duration::from_micros(11),
@@ -1127,6 +1161,13 @@ mod tests {
             ("read_ahead_poll_ms", 0.008),
             ("read_ahead_outside_ms", 0.026),
             ("read_ahead_rest_ms", 0.004),
+            ("read_ahead_stage_create_ms", 0.009),
+            ("read_ahead_stage_map_ms", 0.011),
+            ("read_ahead_stage_copy_ms", 0.2),
+            ("read_ahead_stage_unmap_ms", 0.013),
+            ("read_ahead_stage_record_ms", 0.017),
+            ("read_ahead_stage_max_ms", 0.12),
+            ("read_ahead_created", 1.0),
             ("preview_build_ms", 0.011),
             ("preview_encode_ms", 0.022),
             ("preview_finish_ms", 0.033),
@@ -1166,6 +1207,18 @@ mod tests {
                                 encoder: Duration::from_micros(if slow { 150 } else { 20 }),
                                 spawn: Duration::from_micros(if slow { 90 } else { 0 }),
                                 poll: Duration::from_micros(if slow { 50 } else { 5 }),
+                                // Stage (a3): the slow tick's 2.5 ms stage
+                                // split, its slowest single stage 1.9 ms.
+                                stage_split: crate::gpu::StageSplit {
+                                    create: Duration::from_micros(if slow { 30 } else { 0 }),
+                                    map: Duration::from_micros(if slow { 40 } else { 5 }),
+                                    copy: Duration::from_micros(if slow { 2_300 } else { 700 }),
+                                    unmap: Duration::from_micros(if slow { 60 } else { 5 }),
+                                    record: Duration::from_micros(if slow { 70 } else { 5 }),
+                                    created: slow,
+                                },
+                                stage_max: Duration::from_micros(if slow { 1_900 } else { 800 }),
+                                created: usize::from(slow),
                                 uploads,
                                 bytes: uploads as u64 * 8_294_400,
                             },
@@ -1211,6 +1264,13 @@ mod tests {
             ("max_spawn_ms", 0.09),
             ("max_poll_ms", 0.05),
             ("max_rest_ms", 0.07),
+            ("max_stage_create_ms", 0.03),
+            ("max_stage_map_ms", 0.04),
+            ("max_stage_copy_ms", 2.3),
+            ("max_stage_unmap_ms", 0.06),
+            ("max_stage_record_ms", 0.07),
+            ("max_single_stage_ms", 1.9),
+            ("max_created", 1.0),
             ("max_tick_uploads", 4.0),
             ("uploads", 33.0),
             ("bytes", 33.0 * 8_294_400.0),

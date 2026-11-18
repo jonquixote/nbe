@@ -366,6 +366,18 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
             "frame {f}: the split, the fourth phase included, fits inside the read-ahead phase: {d:?} against {:?}",
             r.phases.read_ahead
         );
+        // Stage (a3): the stage's split fits inside it, and a tick that
+        // uploaded copied bytes, so its copy time is never zero.
+        assert!(
+            d.stage_split.total() <= d.stage,
+            "frame {f}: the stage split fits inside the stage: {d:?}"
+        );
+        if d.uploads > 0 {
+            assert!(
+                d.stage_split.copy > std::time::Duration::ZERO,
+                "frame {f}: an upload copied bytes, so its copy time is above zero: {d:?}"
+            );
+        }
         // Stage (a2): the encoder is created every tick, so its time is never
         // zero: a pump that stopped timing it would read zero here.
         assert!(

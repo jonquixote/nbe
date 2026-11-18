@@ -353,6 +353,11 @@ pub struct ReadAheadPhases {
     pub poll: Duration,
     pub uploads: usize,
     pub bytes: u64,
+    /// Stage (a3): the tick's stages split and summed, the slowest single
+    /// stage, and the staging buffers created this tick.
+    pub stage_split: crate::gpu::StageSplit,
+    pub stage_max: Duration,
+    pub created: usize,
 }
 
 impl ReadAheadPhases {
@@ -706,9 +711,10 @@ impl RenderLoop {
                 if f.index >= head && f.index < ring.window_end() {
                     let s = ring.slot(f.index);
                     let tex = &ring.window[s];
-                    if !self
+                    if self
                         .uploads
                         .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
+                        .is_none()
                     {
                         let full = std::mem::replace(
                             &mut enc,
@@ -717,9 +723,10 @@ impl RenderLoop {
                         self.gpu.queue.submit([full.finish()]);
                         self.uploads.submitted();
                         self.uploads.reclaim_waiting(&self.gpu);
-                        if !self
+                        if self
                             .uploads
                             .stage(&self.gpu, &mut enc, tex, f.width, f.height, &f.rgba)
+                            .is_none()
                         {
                             self.gpu.upload_rgba(tex, f.width, f.height, &f.rgba);
                         }
@@ -930,8 +937,20 @@ impl RenderLoop {
                             clip.height,
                             &f.rgba,
                         );
-                        detail.stage += stage_started.elapsed();
-                        if !staged {
+                        let one_stage = stage_started.elapsed();
+                        detail.stage += one_stage;
+                        if let Some(split) = staged {
+                            // Stage (a3): summed, the slowest kept whole.
+                            let sum = &mut detail.stage_split;
+                            sum.create += split.create;
+                            sum.map += split.map;
+                            sum.copy += split.copy;
+                            sum.unmap += split.unmap;
+                            sum.record += split.record;
+                            detail.stage_max = detail.stage_max.max(one_stage);
+                            detail.created += usize::from(split.created);
+                        }
+                        if staged.is_none() {
                             // Every staging buffer is in flight: the frame
                             // waits for a later tick, held like one past the
                             // window.
