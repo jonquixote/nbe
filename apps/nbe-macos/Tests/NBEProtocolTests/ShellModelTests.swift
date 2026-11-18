@@ -55,6 +55,109 @@ final class ShellModelTests: XCTestCase {
         XCTAssertTrue(model.log.contains { $0.contains("lost contact") }, "the log notes it: \(model.log)")
     }
 
+    /// A command in flight is pending: may() refuses it, why() says so, and a
+    /// second press sends nothing. The server answers show.start after 0.5 s.
+    func testACommandInFlightIsPendingAndIsNotSentTwice() async throws {
+        let server = try DelayingServer(slow: "show.start", delay: 0.5)
+        let port = try await server.start()
+        defer { server.stop() }
+        let model = ShellModel()
+        let url = try XCTUnwrap(URL(string: "ws://127.0.0.1:\(port)/nbe/v0.3"))
+        model.connect(url: url, token: "t", role: .admin)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if case .connected = model.connection { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard case .connected = model.connection else { return XCTFail("never connected: \(model.connection)") }
+        model.now = Date()
+        XCTAssertTrue(model.may(.showStart), "admin, in contact, nothing pending: \(model.why(.showStart))")
+        model.run(.showStart)
+        XCTAssertFalse(model.may(.showStart), "show.start is in flight")
+        XCTAssertTrue(model.why(.showStart).contains("pending"), model.why(.showStart))
+        model.run(.showStart)
+        let until = Date().addingTimeInterval(3)
+        while Date() < until, !model.inFlight.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(model.inFlight.isEmpty, "the answer came: \(model.inFlight)")
+        XCTAssertEqual(server.count("show.start"), 1, "the second press sent nothing")
+        model.now = Date()
+        XCTAssertTrue(model.may(.showStart), "answered, it may be sent again: \(model.why(.showStart))")
+    }
+
+    /// Answers every command ok with a tick beside it (so contact stays
+    /// fresh), the `slow` one after `delay`; counts each command it receives.
+    private final class DelayingServer: @unchecked Sendable {
+        let listener: NWListener
+        private let queue = DispatchQueue(label: "nbe-test-model-pending")
+        private var connections: [NWConnection] = []
+        private var counts: [String: Int] = [:]
+        private let slow: String
+        private let delay: TimeInterval
+
+        init(slow: String, delay: TimeInterval) throws {
+            self.slow = slow
+            self.delay = delay
+            let params = NWParameters.tcp
+            params.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+            listener = try NWListener(using: params)
+        }
+
+        func count(_ command: String) -> Int { queue.sync { counts[command] ?? 0 } }
+
+        func start() async throws -> UInt16 {
+            listener.newConnectionHandler = { [weak self] conn in
+                guard let self else { return }
+                self.connections.append(conn)
+                conn.start(queue: self.queue)
+                self.serve(conn)
+            }
+            let box = Once()
+            return try await withCheckedThrowingContinuation { cont in
+                listener.stateUpdateHandler = { [listener] state in
+                    switch state {
+                    case .ready: box.run { cont.resume(returning: listener.port?.rawValue ?? 0) }
+                    case .failed(let e): box.run { cont.resume(throwing: e) }
+                    default: break
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        }
+
+        private func send(_ conn: NWConnection, _ text: String) {
+            let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+            let ctx = NWConnection.ContentContext(identifier: "msg", metadata: [meta])
+            conn.send(content: Data(text.utf8), contentContext: ctx, isComplete: true, completion: .idempotent)
+        }
+
+        private func serve(_ conn: NWConnection) {
+            conn.receiveMessage { [weak self] data, _, _, error in
+                guard let self else { return }
+                guard error == nil, let data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let id = obj["id"] as? String, let command = obj["command"] as? String
+                else { return }
+                self.counts[command, default: 0] += 1
+                let answer = {
+                    self.send(conn, #"{"v":"0.3","requestId":"\#(id)","status":"ok","stateVersion":1,"data":{}}"#)
+                    self.send(conn, #"{"v":"0.3","kind":"telemetry","data":{"masterClockFrame":1}}"#)
+                }
+                if command == self.slow {
+                    self.queue.asyncAfter(deadline: .now() + self.delay, execute: answer)
+                } else {
+                    answer()
+                }
+                self.serve(conn)
+            }
+        }
+
+        func stop() {
+            queue.sync { for c in connections { c.cancel() } }
+            listener.cancel()
+        }
+    }
+
     /// Answers every command ok, sends one tick after the subscription, and
     /// drops the FIRST connection 0.3 s after that tick (ReconnectTests'
     /// scripted server, cut down).
