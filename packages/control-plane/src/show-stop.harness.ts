@@ -149,6 +149,14 @@ interface Tap {
   frames: TapFrame[];
   /** Called as a frame is relayed, after it is recorded. */
   onFrame: ((f: TapFrame) => void) | null;
+  /**
+   * Determinism item 9 (the user's ruling of 2026-11-17 20:55): hold an
+   * engine frame for `ms` before relaying it, when this returns ms > 0. A held
+   * frame is recorded when it is relayed: that is when it crosses the wire
+   * to the control plane. E4 holds the cut's acknowledgement, so the race
+   * that once failed it on CI happens on every run.
+   */
+  holdUp: ((msg: Record<string, unknown>) => number) | null;
   close: () => void;
 }
 
@@ -159,6 +167,7 @@ async function startTap(cpPort: number): Promise<Tap> {
     port: (wss.address() as { port: number }).port,
     frames: [],
     onFrame: null,
+    holdUp: null,
     close: () => {
       for (const c of wss.clients) c.terminate();
       wss.close();
@@ -187,10 +196,22 @@ async function startTap(cpPort: number): Promise<Tap> {
       for (const [d, b] of early) cp.send(d as Buffer, { binary: b });
       early.length = 0;
     });
-    engineWs.on("message", (data, isBinary) => {
+    const relayUp = (data: unknown, isBinary: boolean): void => {
       record("up", data);
-      if (cp.readyState === WebSocket.OPEN) cp.send(data, { binary: isBinary });
+      if (cp.readyState === WebSocket.OPEN) cp.send(data as Buffer, { binary: isBinary });
       else early.push([data, isBinary]);
+    };
+    engineWs.on("message", (data, isBinary) => {
+      let held = 0;
+      if (tap.holdUp) {
+        try {
+          held = tap.holdUp(JSON.parse(String(data)) as Record<string, unknown>);
+        } catch {
+          held = 0;
+        }
+      }
+      if (held > 0) setTimeout(() => relayUp(data, isBinary), held);
+      else relayUp(data, isBinary);
     });
     cp.on("message", (data, isBinary) => {
       record("down", data);
@@ -394,6 +415,11 @@ export interface LegOptions extends Outputs {
   /** The record directory goes read-only before the stop, so the finalize's
    * sidecar write fails: a real quiesce failure, and the engine withholds the ack. */
   failRecordFinalize?: boolean;
+  /** Determinism item 9: the tap holds the opening cut's acknowledgement
+   * this long (longer than the run before the stop), so an ack from before
+   * the stop is in flight when the stop's window opens unless the harness
+   * waits for it. */
+  slowCutAckMs?: number;
 }
 
 /** What one leg observed, as one value: a failure shows everything at once. */
@@ -468,7 +494,22 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
     assert.ok(await s.server.awaitApplied(loadV, APPLY_MS), "the engine applies show.load");
     const startV = await ok(s, "show.start", { startClock: true });
     assert.ok(await s.server.awaitApplied(startV, APPLY_MS), "the engine applies show.start");
-    await ok(s, "view.cut", { itemRef: "A1" });
+    // Determinism item 9 (the user's ruling of 2026-11-17 20:15 and 20:55):
+    // the stop's window counts every ack after it opens, so every earlier ack
+    // must have crossed the wire first. The cut's was never waited for, and
+    // once crossed more than RUN_MS late (#119's CI, E4). It is waited for.
+    const cutExpected = s.state.stateVersion + 1;
+    if (opts.slowCutAckMs) {
+      const ms = opts.slowCutAckMs;
+      s.tap.holdUp = (msg) => (msg["kind"] === "appliedStateVersion" && msg["stateVersion"] === cutExpected ? ms : 0);
+    }
+    const cutAt = Date.now();
+    const cutV = await ok(s, "view.cut", { itemRef: "A1" });
+    assert.equal(cutV, cutExpected, "precondition: the cut is the version the tap holds the ack of");
+    assert.ok(await s.server.awaitApplied(cutV, APPLY_MS), "the engine applies view.cut: its ack crosses before the stop's window opens");
+    // The hold stays armed (it matches the cut's one version only): clearing
+    // it here would let an unwaited ack through unheld, and the race it forces
+    // would not happen.
 
     // The outputs, with the dress rehearsal's capability gate: a refusal is
     // told from a wedged pipeline by the engine's own log.
@@ -499,7 +540,10 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
         await sleep(RUN_MS / 2);
       }
     } else {
-      await sleep(RUN_MS);
+      // The run counts from the cut, so waiting for its ack does not carry
+      // the stop past A1's end (150 frames, 5 s): an item end inside the
+      // stop's window would be a version of its own.
+      await sleep(Math.max(0, RUN_MS - (Date.now() - cutAt)));
     }
     if (sink) assert.ok(sink.bytes() > 0, "precondition: the stream is on air before the stop");
     if (opts.failRecordFinalize) chmodSync(staged.rec, 0o555);
