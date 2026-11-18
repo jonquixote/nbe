@@ -1,4 +1,5 @@
 import NBEProtocol
+import NBEShell
 import SwiftUI
 
 /// §10.8 / §17.1: the indications the operator UI must show.
