@@ -19,11 +19,31 @@
 //! ([`key_for`] over [`spec_for`]), so the two sides cannot disagree about
 //! which pixels a string needs.
 
-use crate::text::{FontBook, TextRaster, TextSpec};
+use crate::text::{FontBook, TextRaster, TextRefusal, TextSpec};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+/// A lock whose holder panicked is still usable: the maps behind these locks
+/// hold whole entries, and the worker's panic guard (review4 step 1) must not
+/// turn one failed job into a panic on the render thread's next lookup.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What became of one request to prepare a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepOutcome {
+    /// The texture exists.
+    Ready,
+    /// The worker will not make it: the text does not fit a texture, the GPU
+    /// refused the texture, or the job panicked. The reason is for the
+    /// operator and the log.
+    Refused(String),
+    /// Not finished within the bound (or the worker is gone).
+    TimedOut,
+}
 
 /// A texture ready to draw, with what the ticker's window needs to slide it.
 #[derive(Debug, Clone)]
@@ -121,7 +141,7 @@ enum Msg {
         element_id: String,
         spec: TextSpec,
         scroll: bool,
-        done: Option<mpsc::SyncSender<bool>>,
+        done: Option<mpsc::SyncSender<PrepOutcome>>,
     },
 }
 
@@ -137,6 +157,18 @@ pub struct TextPrep {
     /// Frames on which the render loop needed a prepared-only texture that was
     /// not ready, and drew that layer as nothing rather than shape it inline.
     pub misses_total: AtomicU64,
+    /// Keys the worker refused. A refused key is never queued again, so the
+    /// render loop's per-frame `request` for a layer it cannot draw does not
+    /// reshape the same text every frame.
+    refused: Arc<Mutex<HashSet<String>>>,
+    /// Texts refused (too large for a texture, or a GPU validation error).
+    pub refused_total: Arc<AtomicU64>,
+    /// Jobs that panicked; each one rebuilt the worker's font book and the
+    /// worker went on.
+    pub restarts_total: Arc<AtomicU64>,
+    /// TEST SEAM: the next job panics inside the worker, as a shaping or GPU
+    /// fault would. Production never sets it.
+    pub injected_panic_next_job: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for TextPrep {
@@ -152,24 +184,35 @@ impl TextPrep {
         let ready: Arc<Mutex<HashMap<String, PreparedText>>> = Arc::default();
         let pending: Arc<Mutex<HashSet<String>>> = Arc::default();
         let shaped_total = Arc::new(AtomicU64::new(0));
+        let refused: Arc<Mutex<HashSet<String>>> = Arc::default();
+        let refused_total = Arc::new(AtomicU64::new(0));
+        let restarts_total = Arc::new(AtomicU64::new(0));
+        let injected_panic_next_job = Arc::new(AtomicBool::new(false));
         {
             let ready = ready.clone();
             let pending = pending.clone();
             let shaped_total = shaped_total.clone();
+            let refused = refused.clone();
+            let refused_total = refused_total.clone();
+            let restarts_total = restarts_total.clone();
+            let injected = injected_panic_next_job.clone();
             std::thread::Builder::new()
                 .name("nbe-text-prep".into())
                 .spawn(move || {
+                    let mut faces: Vec<Vec<u8>> = Vec::new();
                     let mut book = FontBook::from_packaged(Vec::new());
                     let mut generation: Option<u64> = None;
                     while let Ok(msg) = rx.recv() {
                         match msg {
-                            Msg::Fonts(g, faces) => {
+                            Msg::Fonts(g, new_faces) => {
                                 if generation.is_some_and(|cur| g <= cur) {
                                     continue;
                                 }
                                 generation = Some(g);
-                                book = FontBook::from_packaged(faces);
-                                ready.lock().unwrap().clear();
+                                faces = new_faces;
+                                book = FontBook::from_packaged(faces.clone());
+                                lock(&ready).clear();
+                                lock(&refused).clear();
                             }
                             Msg::Job {
                                 key,
@@ -178,38 +221,50 @@ impl TextPrep {
                                 scroll,
                                 done,
                             } => {
-                                let made = if ready.lock().unwrap().contains_key(&key) {
-                                    true
-                                } else if let Some(raster) = TextRaster::rasterize(&mut book, &spec)
-                                {
-                                    shaped_total.fetch_add(1, Ordering::SeqCst);
-                                    let tex = make_texture(
-                                        &device,
-                                        raster.width,
-                                        raster.height,
-                                        &element_id,
-                                    );
-                                    upload(&queue, &tex, raster.width, raster.height, &raster.rgba);
-                                    let period_px = if scroll {
-                                        crate::text::ticker_period_px(raster.text_width)
-                                    } else {
-                                        raster.text_width.max(1)
-                                    };
-                                    ready.lock().unwrap().insert(
-                                        key.clone(),
-                                        PreparedText {
-                                            tex,
-                                            period_px,
-                                            width: raster.width,
-                                        },
-                                    );
-                                    true
-                                } else {
-                                    false
+                                // One job cannot take the worker down: a panic
+                                // in shaping or in a GPU call fails that job,
+                                // the font book is rebuilt from the package's
+                                // faces, and the next job runs (review4 step 1).
+                                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                    || {
+                                        if injected.swap(false, Ordering::SeqCst) {
+                                            panic!("injected text-prep panic (test seam)");
+                                        }
+                                        prepare_one(
+                                            &device,
+                                            &queue,
+                                            &mut book,
+                                            &ready,
+                                            &shaped_total,
+                                            &key,
+                                            &element_id,
+                                            &spec,
+                                            scroll,
+                                        )
+                                    },
+                                ));
+                                let outcome = match ran {
+                                    Ok(outcome) => outcome,
+                                    Err(_) => {
+                                        restarts_total.fetch_add(1, Ordering::SeqCst);
+                                        book = FontBook::from_packaged(faces.clone());
+                                        tracing::error!(
+                                            element = %element_id,
+                                            "text prep: a job panicked; the worker rebuilt its fonts and goes on"
+                                        );
+                                        PrepOutcome::Refused(
+                                            "the text worker failed on this text and restarted".into(),
+                                        )
+                                    }
                                 };
-                                pending.lock().unwrap().remove(&key);
+                                if let PrepOutcome::Refused(why) = &outcome {
+                                    refused_total.fetch_add(1, Ordering::SeqCst);
+                                    lock(&refused).insert(key.clone());
+                                    tracing::warn!(element = %element_id, reason = %why, "text prep: refused");
+                                }
+                                lock(&pending).remove(&key);
                                 if let Some(done) = done {
-                                    let _ = done.send(made);
+                                    let _ = done.send(outcome);
                                 }
                             }
                         }
@@ -225,6 +280,10 @@ impl TextPrep {
             view_h: AtomicU32::new(view_h),
             shaped_total,
             misses_total: AtomicU64::new(0),
+            refused,
+            refused_total,
+            restarts_total,
+            injected_panic_next_job,
         })
     }
 
@@ -232,7 +291,7 @@ impl TextPrep {
     /// `generation`. A newer generation clears every prepared texture (new
     /// faces, stale pixels); a repeat of the current one changes nothing.
     pub fn set_fonts(&self, generation: u64, faces: Vec<Vec<u8>>) {
-        let _ = self.tx.lock().unwrap().send(Msg::Fonts(generation, faces));
+        let _ = lock(&self.tx).send(Msg::Fonts(generation, faces));
     }
 
     /// The View size specs are computed against.
@@ -275,13 +334,13 @@ impl TextPrep {
     /// Ask for a texture without waiting. A request already queued is not
     /// queued twice.
     pub fn request(&self, key: String, element_id: &str, spec: TextSpec, scroll: bool) {
-        if self.ready.lock().unwrap().contains_key(&key) {
+        if lock(&self.ready).contains_key(&key) || lock(&self.refused).contains(&key) {
             return;
         }
-        if !self.pending.lock().unwrap().insert(key.clone()) {
+        if !lock(&self.pending).insert(key.clone()) {
             return;
         }
-        let _ = self.tx.lock().unwrap().send(Msg::Job {
+        let _ = lock(&self.tx).send(Msg::Job {
             key,
             element_id: element_id.to_string(),
             spec,
@@ -302,17 +361,29 @@ impl TextPrep {
         text_box: TextBox,
         timeout: Duration,
     ) -> bool {
+        self.prepare_checked(element_id, content, color, scroll, text_box, timeout)
+            == PrepOutcome::Ready
+    }
+
+    /// [`prepare_blocking`](Self::prepare_blocking), saying why a text is not
+    /// ready: refused (it will never be) or not yet.
+    pub fn prepare_checked(
+        &self,
+        element_id: &str,
+        content: &str,
+        color: [f32; 4],
+        scroll: bool,
+        text_box: TextBox,
+        timeout: Duration,
+    ) -> PrepOutcome {
         let TextBox { rect, inset_px } = text_box;
         let (key, spec) = self.key_and_spec(element_id, content, color, scroll, rect, inset_px);
-        if self.ready.lock().unwrap().contains_key(&key) {
-            return true;
+        if lock(&self.ready).contains_key(&key) {
+            return PrepOutcome::Ready;
         }
         let (done_tx, done_rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(key.clone());
-        if self
-            .tx
-            .lock()
-            .unwrap()
+        lock(&self.pending).insert(key.clone());
+        if lock(&self.tx)
             .send(Msg::Job {
                 key,
                 element_id: element_id.to_string(),
@@ -322,22 +393,115 @@ impl TextPrep {
             })
             .is_err()
         {
-            return false;
+            return PrepOutcome::TimedOut;
         }
-        done_rx.recv_timeout(timeout).unwrap_or(false)
+        done_rx
+            .recv_timeout(timeout)
+            .unwrap_or(PrepOutcome::TimedOut)
     }
 
     /// The prepared texture for a key, if the worker has made it.
     pub fn get(&self, key: &str) -> Option<PreparedText> {
-        self.ready.lock().unwrap().get(key).cloned()
+        lock(&self.ready).get(key).cloned()
     }
 
     /// Hand a prepared texture over to the render loop's own cache, removing
     /// it here, so a stream of clock faces or ticker overrides does not
     /// accumulate textures in two places.
     pub fn take(&self, key: &str) -> Option<PreparedText> {
-        self.ready.lock().unwrap().remove(key)
+        lock(&self.ready).remove(key)
     }
+}
+
+/// One job: shape, check, make the texture inside an error scope, upload.
+#[allow(clippy::too_many_arguments)]
+fn prepare_one(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    book: &mut FontBook,
+    ready: &Mutex<HashMap<String, PreparedText>>,
+    shaped_total: &AtomicU64,
+    key: &str,
+    element_id: &str,
+    spec: &TextSpec,
+    scroll: bool,
+) -> PrepOutcome {
+    if lock(ready).contains_key(key) {
+        return PrepOutcome::Ready;
+    }
+    let raster = match TextRaster::rasterize_checked(book, spec) {
+        Ok(r) => r,
+        // Nothing to draw is not a refusal: the caller sees "not ready", as
+        // before this check existed.
+        Err(TextRefusal::Nothing) => return PrepOutcome::TimedOut,
+        Err(too_large) => return PrepOutcome::Refused(too_large.to_string()),
+    };
+    shaped_total.fetch_add(1, Ordering::SeqCst);
+    let tex = match make_texture_checked(
+        device,
+        queue,
+        raster.width,
+        raster.height,
+        &raster.rgba,
+        element_id,
+    ) {
+        Ok(tex) => tex,
+        Err(why) => return PrepOutcome::Refused(why),
+    };
+    let period_px = if scroll {
+        crate::text::ticker_period_px(raster.text_width)
+    } else {
+        raster.text_width.max(1)
+    };
+    lock(ready).insert(
+        key.to_string(),
+        PreparedText {
+            tex,
+            period_px,
+            width: raster.width,
+        },
+    );
+    PrepOutcome::Ready
+}
+
+/// Make a text texture and upload its pixels inside wgpu error scopes, so a
+/// texture the device cannot make is an `Err` here instead of the device's
+/// uncaptured-error handler, which panics the calling thread (review4
+/// step 1). The size check in [`TextRaster::rasterize_checked`] refuses the
+/// known case first; this catches whatever else the device refuses.
+pub fn make_texture_checked(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    label: &str,
+) -> Result<wgpu::Texture, String> {
+    let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let tex = make_texture(device, width, height, label);
+    upload(queue, &tex, width, height, rgba);
+    let invalid = pop_now(validation.pop());
+    let out_of_memory = pop_now(oom.pop());
+    match invalid.or(out_of_memory) {
+        None => Ok(tex),
+        Some(e) => Err(format!(
+            "the GPU refused a {width}x{height} text texture: {e}"
+        )),
+    }
+}
+
+/// An error scope's result. On native wgpu the pop resolves at once; a scope
+/// that has not resolved after a few polls is read as no error.
+fn pop_now(fut: impl std::future::Future<Output = Option<wgpu::Error>>) -> Option<wgpu::Error> {
+    let mut fut = std::pin::pin!(fut);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for _ in 0..8 {
+        if let std::task::Poll::Ready(e) = fut.as_mut().poll(&mut cx) {
+            return e;
+        }
+    }
+    None
 }
 
 fn make_texture(device: &wgpu::Device, width: u32, height: u32, label: &str) -> wgpu::Texture {

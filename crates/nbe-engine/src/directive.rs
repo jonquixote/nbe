@@ -1873,35 +1873,49 @@ impl DirectiveHandler {
     /// when any job did not finish within its bound; the caller publishes
     /// anyway, and the render loop draws that layer as nothing and counts it
     /// rather than shaping on the frame path.
-    async fn prepare_text(&self, jobs: Vec<TextJob>) -> bool {
+    ///
+    /// `Err` when the worker REFUSED a job (review4 step 1: a text too large
+    /// for a texture, or one the GPU or the worker failed on): it will never
+    /// be ready, and a caller that can refuse its command does.
+    async fn prepare_text(&self, jobs: Vec<TextJob>) -> Result<bool, String> {
         let Some(prep) = self.state.text_prep() else {
-            return true;
+            return Ok(true);
         };
         if jobs.is_empty() {
-            return true;
+            return Ok(true);
         }
         let started = std::time::Instant::now();
         let n = jobs.len();
-        let ok = tokio::task::spawn_blocking(move || {
-            jobs.iter()
-                .all(|(id, content, color, scroll, rect, inset_px)| {
-                    prep.prepare_blocking(
-                        id,
-                        content,
-                        *color,
-                        *scroll,
-                        crate::text_prep::TextBox {
-                            rect: *rect,
-                            inset_px: *inset_px,
-                        },
-                        TEXT_PREP_TIMEOUT,
-                    )
-                })
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut all_ready = true;
+            for (id, content, color, scroll, rect, inset_px) in &jobs {
+                match prep.prepare_checked(
+                    id,
+                    content,
+                    *color,
+                    *scroll,
+                    crate::text_prep::TextBox {
+                        rect: *rect,
+                        inset_px: *inset_px,
+                    },
+                    TEXT_PREP_TIMEOUT,
+                ) {
+                    crate::text_prep::PrepOutcome::Ready => {}
+                    crate::text_prep::PrepOutcome::TimedOut => all_ready = false,
+                    crate::text_prep::PrepOutcome::Refused(why) => {
+                        return Err(format!("{id}: {why}"));
+                    }
+                }
+            }
+            Ok(all_ready)
         })
         .await
-        .unwrap_or(false);
+        .unwrap_or(Ok(false));
+        let ok = matches!(outcome, Ok(true));
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        if ok {
+        if let Err(why) = &outcome {
+            tracing::warn!(jobs = n, elapsed_ms, reason = %why, "text refused; nothing changed on air");
+        } else if ok {
             info!(jobs = n, elapsed_ms, "text prepared off the render thread");
         } else {
             tracing::warn!(
@@ -1910,7 +1924,7 @@ impl DirectiveHandler {
                 "text not prepared within its bound; the layer draws nothing until it is"
             );
         }
-        ok
+        outcome
     }
 
     /// Publish a runtime graphic once its text exists.
@@ -1933,7 +1947,11 @@ impl DirectiveHandler {
                 ));
             }
         }
-        self.prepare_text(jobs).await;
+        // A graphic's raster is its box (at most the View), so a size refusal
+        // cannot happen here; a GPU or worker failure is logged by
+        // `prepare_text`, and the graphic is published as before: the layer
+        // draws nothing rather than the command failing.
+        let _ = self.prepare_text(jobs).await;
         info!(element = %g.element_id, template = %g.template_id, "graphic on air");
         self.state
             .graphics
@@ -2116,7 +2134,16 @@ impl DirectiveHandler {
                 })
                 .unwrap_or_default()
         };
-        self.prepare_text(jobs).await;
+        // A ticker whose text cannot be drawn is refused before anything is
+        // published: the list on air does not change (review4 step 1). A
+        // text that is merely late is published as before, and the layer
+        // draws nothing until it is ready.
+        if let Err(why) = self.prepare_text(jobs).await {
+            return Err(DirectiveError::Invalid(format!(
+                "{} refused, nothing changed on air: {why}",
+                d.command
+            )));
+        }
         let mut rt = self.state.graphics.lock().unwrap();
         rt.ticker_override = next.ticker_override;
         rt.ticker_source = next.ticker_source;
@@ -2164,15 +2191,18 @@ impl DirectiveHandler {
         let spec = crate::graphics::merge_clock(&current, &patch);
         let next_frame = self.state.master_frame().map(|f| f + 1).unwrap_or(0);
         let face = crate::render::clock_face_for_test(&spec, next_frame, self.state.house_rate());
-        self.prepare_text(vec![(
-            element_id.to_string(),
-            face,
-            color,
-            false,
-            rect,
-            inset_px,
-        )])
-        .await;
+        // A clock face is one short line in its box; as for a graphic, a
+        // refusal is logged and the configuration still applies.
+        let _ = self
+            .prepare_text(vec![(
+                element_id.to_string(),
+                face,
+                color,
+                false,
+                rect,
+                inset_px,
+            )])
+            .await;
         self.state
             .graphics
             .lock()

@@ -130,17 +130,54 @@ pub struct TextRaster {
     pub text_width: u32,
 }
 
+/// The largest text raster, either side, in pixels: the device's
+/// `max_texture_dimension_2d`. The engine requests the default limits
+/// (`gpu.rs`, `DeviceDescriptor::default()`), whose 2D limit is 8192; a
+/// raster wider than that cannot become a texture, and wgpu's validation
+/// error for it panics the thread that made it (review4 step 1).
+pub const MAX_TEXT_RASTER_PX: u32 = 8192;
+
+/// Why a text was not rasterized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextRefusal {
+    /// No face in the book, or a zero-area box: nothing to draw.
+    Nothing,
+    /// The shaped text needs a raster larger than a texture may be.
+    TooLarge { width: u32, height: u32, max: u32 },
+}
+
+impl std::fmt::Display for TextRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nothing => write!(f, "no face or an empty box"),
+            Self::TooLarge { width, height, max } => write!(
+                f,
+                "the text needs a {width}x{height} px raster; the limit is {max} px a side"
+            ),
+        }
+    }
+}
+
 impl TextRaster {
-    /// Shape and rasterize. `None` when the book has no face, or the spec asks
-    /// for a zero-area raster.
+    /// Shape and rasterize. `None` when the book has no face, the spec asks
+    /// for a zero-area raster, or the text would not fit a texture
+    /// ([`MAX_TEXT_RASTER_PX`]); [`rasterize_checked`](Self::rasterize_checked)
+    /// says which.
     ///
     /// Called on content change only. Never call this from the frame path.
     pub fn rasterize(book: &mut FontBook, spec: &TextSpec) -> Option<Self> {
+        Self::rasterize_checked(book, spec).ok()
+    }
+
+    /// [`rasterize`](Self::rasterize), with the reason when there is no
+    /// raster. A text too large for a texture is refused after shaping and
+    /// before its pixels are allocated.
+    pub fn rasterize_checked(book: &mut FontBook, spec: &TextSpec) -> Result<Self, TextRefusal> {
         if book.is_empty() || spec.width_px == 0 || spec.height_px == 0 {
-            return None;
+            return Err(TextRefusal::Nothing);
         }
 
-        let family = book.families.first()?.clone();
+        let family = book.families.first().ok_or(TextRefusal::Nothing)?.clone();
         let attrs = Attrs::new().family(Family::Name(&family));
         let metrics = Metrics::new(spec.size_px, spec.size_px * 1.25);
         let mut buffer = Buffer::new(&mut book.system, metrics);
@@ -177,6 +214,13 @@ impl TextRaster {
             spec.width_px
         };
         let height = spec.height_px;
+        if width > MAX_TEXT_RASTER_PX || height > MAX_TEXT_RASTER_PX {
+            return Err(TextRefusal::TooLarge {
+                width,
+                height,
+                max: MAX_TEXT_RASTER_PX,
+            });
+        }
         let mut rgba = vec![0u8; (width as usize) * (height as usize) * 4];
 
         let [r, g, b, a] = spec.color;
@@ -227,7 +271,7 @@ impl TextRaster {
             },
         );
 
-        Some(Self {
+        Ok(Self {
             width,
             height,
             rgba,
