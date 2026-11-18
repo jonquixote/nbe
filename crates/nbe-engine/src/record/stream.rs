@@ -945,7 +945,10 @@ impl StreamThread {
         } else {
             let started = Instant::now();
             match EncodeSession::open(p.width, p.height, p.fps, p.video_bitrate_bps) {
-                Ok(enc) => {
+                Ok(mut enc) => {
+                    // A stream consumes its units as they arrive: the session
+                    // must not keep the whole compressed stream in memory.
+                    enc.set_drain_delivered(true);
                     a.stats
                         .encoder_open_us
                         .store(started.elapsed().as_micros() as u64, Ordering::SeqCst);
