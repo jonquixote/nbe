@@ -39,6 +39,19 @@ final class ShellModelTests: XCTestCase {
         XCTAssertEqual(AlertFeed.current(status: model.status, telemetry: model.telemetry), [])
     }
 
+    /// Only the costly stops ask for confirmation; TAKE, CUT and the rest
+    /// are one press.
+    func testOnlyTheCostlyStopsAskForConfirmation() {
+        let model = ShellModel()
+        let costly: [ShellCommand] = [.showStop(force: false), .showStop(force: true), .recordStop, .streamStop]
+        for c in costly {
+            XCTAssertNotNil(model.confirmation(for: c), "\(c.name) must ask first")
+        }
+        for c in ShellCommand.samples where !costly.contains(c) {
+            XCTAssertNil(model.confirmation(for: c), "\(c.name) must be one press")
+        }
+    }
+
     /// #120's untested part: the model's `.lost` state. A loopback control
     /// plane answers, sends a tick, then drops the first connection; the
     /// model must pass through `.lost(since:)` and note "lost contact"

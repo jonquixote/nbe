@@ -126,7 +126,7 @@ struct ShowPanel: View {
     }
 
     private func action(_ title: String, _ command: ShellCommand) -> some View {
-        Button(title) { model.run(command) }.disabled(!model.may(command)).help(model.why(command))
+        Button(title) { model.press(command) }.disabled(!model.may(command)).help(model.why(command))
     }
 }
 
@@ -203,14 +203,14 @@ struct OutputsPanel: View {
                     Text("Record")
                     state(model.status.recordState ?? model.telemetry.recordState)
                     Button("Start") { model.run(.recordStart(outputId: nil)) }.disabled(!model.may(.recordStart(outputId: nil)))
-                    Button("Stop") { model.run(.recordStop) }.disabled(!model.may(.recordStop))
+                    Button("Stop") { model.press(.recordStop) }.disabled(!model.may(.recordStop))
                     Text(model.telemetry.recordSpaceMib.map { "\(Int($0)) MiB free" } ?? "").font(.caption)
                 }
                 GridRow {
                     Text("Stream")
                     state(model.status.streamState ?? model.telemetry.streamState)
                     Button("Start") { model.run(.streamStart(outputId: nil)) }.disabled(!model.may(.streamStart(outputId: nil)))
-                    Button("Stop") { model.run(.streamStop) }.disabled(!model.may(.streamStop))
+                    Button("Stop") { model.press(.streamStop) }.disabled(!model.may(.streamStop))
                     Text(model.telemetry.streamBufferMs.map { "buffer \(Int($0)) ms" } ?? "").font(.caption)
                 }
             }
