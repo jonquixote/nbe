@@ -30,7 +30,17 @@ import { tempDir } from "./test-tmp.js";
 import { loadComplete, residency } from "./load-residency.js";
 import { R20_FRAMES, R20_ITEM, r20Classify } from "./r20-counter.js";
 import { ENGINE_TELEMETRY_TTL_MS } from "./telemetry.js";
-import { R21_LINE, R33_LINE, accountDrops, lineFields } from "./drop-account.js";
+import {
+  R21_LINE,
+  R33_LINE,
+  SECOND_READING_CEILINGS,
+  SECOND_READING_SPAN_CEILING,
+  accountDrops,
+  judgeSecondReading,
+  lineFields,
+  secondReading,
+  type StepDrops,
+} from "./drop-account.js";
 
 // --- Thresholds, measured from the code (charter [RI-1]) -------------------
 
@@ -1149,6 +1159,21 @@ interface GateCounts {
   engineConnected: unknown;
 }
 let gateSnapshot: GateCounts | null = null;
+/** How many ticks the gate read: item 10's second reading counts from there. */
+let gateTicks = Number.NaN;
+
+/**
+ * Item 10 (the user's ruling of 2026-11-18 04:20, ruling 3): each step from 10
+ * to 12c, the drop count at its start. Step 10 starts at the gate's own count;
+ * each later step reads its start after one telemetry tick, so a drop in the
+ * step before it has reached the tick. The second reading after 12c closes the
+ * last step.
+ */
+const stepStarts: { step: string; before: number }[] = [];
+async function markStepStart(step: string): Promise<void> {
+  await new Promise((r) => setTimeout(r, TICK_MS));
+  stepStarts.push({ step, before: (ticks.at(-1)?.["data"] as Record<string, unknown> | undefined)?.["droppedFramesTotal"] as number ?? Number.NaN });
+}
 
 /**
  * The show as the gate sees it, read ONCE so every gate test judges the same
@@ -1170,6 +1195,7 @@ function gate(): GateCounts {
     // Finding R12.
     if (!(num(d["watchdogTripsTotal"]) > num(d["watchdogClearsTotal"]))) outside.push(i);
   });
+  gateTicks = ticks.length;
   gateSnapshot = {
     drops: num(last["droppedFramesTotal"]),
     underruns: num(last["audioUnderrunsTotal"]),
@@ -1316,6 +1342,7 @@ test("[R13] step 6 (normative): the sfx bus rose within 3000 ms", () => {
 });
 
 test("[RI-1] step 10: show.stop acknowledges inside the grace window and the clock stops", async () => {
+  stepStarts.push({ step: "step 10", before: gate().drops });
   const started = Date.now();
   const reply = await ok("show.stop", {});
   const elapsed = Date.now() - started;
@@ -1553,6 +1580,7 @@ function soleRecording(dir: string): string {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () => {
+  await markStepStart("step 11");
   const ffprobe = ffprobeOrSkip();
   if (ffprobe === null) return;
   const { pkgDir, recordDir } = stageRecordPackage();
@@ -1793,6 +1821,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
 });
 
 test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async () => {
+  await markStepStart("step 12");
   const ffprobe = ffprobeOrSkip();
   if (ffprobe === null) return;
   if (recordFile === null) {
@@ -1863,6 +1892,7 @@ test("[RI-1] step 12: the take lands at file zero in sync within 20 ms", async (
 let r20PictureFile: string | null = null;
 
 test("[R20] step 12b: the counter clip plays on air, and its read-ahead misses nothing", async () => {
+  await markStepStart("step 12b");
   const missesNow = (): number =>
     ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["readAheadMissesTotal"] ?? 0) as number;
   const ffprobe = resolveFfprobe();
@@ -1934,7 +1964,8 @@ test("[R20] step 12b: the counter clip plays on air, and its read-ahead misses n
   }
 });
 
-test("[R20] step 12c: a clip plays past its first second, read back from the picture", () => {
+test("[R20] step 12c: a clip plays past its first second, read back from the picture", async () => {
+  await markStepStart("step 12c");
   const ffprobe = resolveFfprobe();
   const ffmpeg = ffprobe === null ? null : ffprobe.replace(/ffprobe$/, "ffmpeg");
   const pictureFile = r20PictureFile;
@@ -1991,6 +2022,53 @@ test("[R20] step 12c: a clip plays past its first second, read back from the pic
     0,
     `R20: no black frame between the counter's first and last recorded frames; saw ${blackOnAir.length} at ${JSON.stringify(blackOnAir.slice(0, 5).map((f) => f.t))}`,
   );
+});
+
+test("[item 10] gate 2: the drops from the gate to the end of step 12c, per step, inside their ceilings", async () => {
+  // The last tick of 12c reaches the telemetry, then the second reading: the
+  // same engine process as the gate (step 13 kills it), its counter running on.
+  await new Promise((r) => setTimeout(r, TICK_MS));
+  const reading = secondReading(ticks, gateTicks);
+  const ends = [...stepStarts.slice(1).map((s) => s.before), reading.atEnd.drops];
+  if (Number.isFinite(reading.atEnd.drops)) await dropLinesArrived(reading.atEnd.drops);
+  const lines = dropLines(0);
+  const steps: StepDrops[] = stepStarts.map((s, i) => ({
+    step: s.step,
+    before: s.before,
+    after: ends[i] ?? Number.NaN,
+    account: accountDrops(lines, s.before, ends[i] ?? Number.NaN, HOUSE_RATE),
+  }));
+  const perStep = steps.map((s) => ({
+    step: s.step,
+    drops: s.after - s.before,
+    tied: s.account.tied.length,
+    untied: s.account.untied.length,
+    unexplained: s.account.unexplained.length,
+  }));
+  console.log(
+    `DRESS-COUNTS-2 ${JSON.stringify({
+      machine: whichMachine().kind,
+      run: process.env["GITHUB_RUN_ID"] ?? null,
+      sha: process.env["DRESS_HEAD_SHA"] ?? process.env["GITHUB_SHA"] ?? null,
+      span: reading.span,
+      atGate: reading.atGate,
+      atEnd: reading.atEnd,
+      steps: perStep,
+      showTiedBeforeSpan: tiedDrops,
+      ceilings: SECOND_READING_CEILINGS,
+      spanCeiling: SECOND_READING_SPAN_CEILING,
+      provisional: true,
+    })}`,
+  );
+  // The engine's own drops per step (not tied to a late wake): stage (b)'s read.
+  console.log(`DRESS-ENGINE-DROPS ${JSON.stringify(Object.fromEntries(perStep.map((s) => [s.step, s.untied + s.unexplained])))}`);
+  assert.ok(Number.isFinite(reading.span.drops), `the second reading must be measured, saw ${JSON.stringify(reading)}`);
+  if (whichMachine().kind === "ci") {
+    assert.deepEqual(judgeSecondReading(steps, tiedDrops, TIED_DROPS_CAP), [], `the second reading: ${JSON.stringify(perStep)}`);
+  }
+  normativeOnly("zero drops from the gate to the end of step 12c", () => {
+    assert.equal(reading.span.drops, 0, "zero drops from the gate to the end of step 12c");
+  });
 });
 
 test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable", async () => {
