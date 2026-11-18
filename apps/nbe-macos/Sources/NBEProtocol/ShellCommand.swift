@@ -31,6 +31,8 @@ public enum ShellCommand: Equatable, Sendable {
     case recordStop
     case streamStart(outputId: String?)
     case streamStop
+    /// The fallback slate to air (design rule 3: the F key).
+    case viewFallback(reason: String?)
     // 16.15 system
     case status
     case telemetrySubscribe(intervalMs: Int)
@@ -58,6 +60,7 @@ public enum ShellCommand: Equatable, Sendable {
         case .recordStop: "record.stop"
         case .streamStart: "stream.start"
         case .streamStop: "stream.stop"
+        case .viewFallback: "view.fallback"
         case .status: "system.status"
         case .telemetrySubscribe: "system.telemetry.subscribe"
         }
@@ -69,6 +72,7 @@ public enum ShellCommand: Equatable, Sendable {
         case .showPreflight, .showStart, .getState, .breakingHide, .soundboardStopAll, .recordStop, .streamStop, .status: [:]
         case .showStop(let force): ["force": .bool(force)]
         case .previewSet(let ref): ["itemRef": .string(ref)]
+        case .viewFallback(let reason): reason.map { ["reason": .string($0)] } ?? [:]
         case .take(let t, let frames):
             frames.map { ["transition": .string(t.rawValue), "durationFrames": .number(Double($0))] }
                 ?? ["transition": .string(t.rawValue)]
@@ -98,6 +102,7 @@ public enum ShellCommand: Equatable, Sendable {
         .elementToggle(elementId: "lt1", visible: true), .elementToggle(elementId: "lt1", visible: nil),
         .graphicShow(templateId: "tpl_lt", fields: ["headline": "A headline"]), .graphicHide(templateId: "tpl_lt"),
         .breakingShow(headline: "BREAKING", subhead: "detail"), .breakingShow(headline: "BREAKING", subhead: nil),
+        .viewFallback(reason: "operator key F"), .viewFallback(reason: nil),
         .breakingHide, .soundboardPlay(assetId: "stab"), .soundboardStopAll,
         .recordStart(outputId: "ep01"), .recordStart(outputId: nil), .recordStop,
         .streamStart(outputId: nil), .streamStop, .status, .telemetrySubscribe(intervalMs: 100),
