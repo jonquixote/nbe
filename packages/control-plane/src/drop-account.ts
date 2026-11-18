@@ -146,7 +146,8 @@ export function secondReading(
   gateTicks: number,
 ): { atGate: ShowCounts; atEnd: ShowCounts; span: ShowCounts } {
   const atGate = countsAt(ticks.slice(0, gateTicks));
-  const atEnd = countsAt(ticks);
+  // MUTANT M1 (item 10, do not merge): the end read at the gate's tick.
+  const atEnd = countsAt(ticks.slice(0, gateTicks));
   return {
     atGate,
     atEnd,
@@ -199,7 +200,8 @@ export function judgeSecondReading(
         failures.push(`${step}: drop count(s) ${JSON.stringify(s.account.untied)} are not tied to a late wake`);
       }
       tied += s.account.tied.length;
-    } else if (n > ceiling) {
+    } else if (n > ceiling + 1) {
+      // MUTANT M2 (item 10, do not merge): a ceiling admitting one more.
       failures.push(`${step}: ${n} drops, over its ceiling of ${ceiling}`);
     }
   }
