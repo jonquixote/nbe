@@ -503,6 +503,7 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
       const ms = opts.slowCutAckMs;
       s.tap.holdUp = (msg) => (msg["kind"] === "appliedStateVersion" && msg["stateVersion"] === cutExpected ? ms : 0);
     }
+    const cutAt = Date.now();
     const cutV = await ok(s, "view.cut", { itemRef: "A1" });
     assert.equal(cutV, cutExpected, "precondition: the cut is the version the tap holds the ack of");
     assert.ok(await s.server.awaitApplied(cutV, APPLY_MS), "the engine applies view.cut: its ack crosses before the stop's window opens");
@@ -537,7 +538,10 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
         await sleep(RUN_MS / 2);
       }
     } else {
-      await sleep(RUN_MS);
+      // The run counts from the cut, so waiting for its ack does not carry
+      // the stop past A1's end (150 frames, 5 s): an item end inside the
+      // stop's window would be a version of its own.
+      await sleep(Math.max(0, RUN_MS - (Date.now() - cutAt)));
     }
     if (sink) assert.ok(sink.bytes() > 0, "precondition: the stream is on air before the stop");
     if (opts.failRecordFinalize) chmodSync(staged.rec, 0o555);
