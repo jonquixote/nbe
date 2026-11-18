@@ -323,6 +323,25 @@ pub struct RenderPhases {
     /// Set on the frame a live source joined or left: the upload threads'
     /// resync, wall and CPU (R21's diagnostic; the second key's item 7b).
     pub live_resync: Option<LiveResync>,
+    /// Read-ahead stage (a), log-only: the read-ahead's own split, its
+    /// uploads and its bytes.
+    pub read_ahead_detail: ReadAheadPhases,
+}
+
+/// Where the read-ahead's time went in one frame (read-ahead stage (a), the
+/// user's ruling of 2026-11-18 01:15; log-only). `reclaim` is
+/// `UploadPool::reclaim` (a `device.poll` when buffers are in flight);
+/// `stage` is every `UploadPool::stage` (the copy into a mapped staging
+/// buffer, a buffer's creation when the pool grows, and the recorded
+/// `copy_buffer_to_texture`); `submit` is the upload encoder's `queue.submit`.
+/// `bytes` is the decoded frames' bytes copied.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ReadAheadPhases {
+    pub reclaim: Duration,
+    pub stage: Duration,
+    pub submit: Duration,
+    pub uploads: usize,
+    pub bytes: u64,
 }
 
 /// The render thread's CPU time per phase (see [`RenderPhases::cpu`]).
@@ -736,7 +755,7 @@ impl RenderLoop {
     /// clip only the Preview shows; a clip on neither rests at its head's end,
     /// primed for the next take. `uncapped` lifts the per-frame upload budget
     /// (the settle seam only). Returns the window frames uploaded.
-    fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) -> usize {
+    fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) -> ReadAheadPhases {
         let mut wanted: HashMap<String, u64> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         for bus in [Bus::View, Bus::Preview] {
@@ -790,7 +809,11 @@ impl RenderLoop {
         // on the View is reported (review4 step 8).
         let view_assets = self.video_assets_for(Bus::View, frame);
         let mut given_up: Vec<(String, u64, bool)> = Vec::new();
+        // Read-ahead stage (a), log-only: where the read-ahead's time goes.
+        let mut detail = ReadAheadPhases::default();
+        let reclaim_started = Instant::now();
         self.uploads.reclaim(&self.gpu);
+        detail.reclaim = reclaim_started.elapsed();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         for id in order {
             let Some(ring) = self.video_rings.get_mut(&id) else {
@@ -862,14 +885,17 @@ impl RenderLoop {
                         }
                         let s = clip.slot(j);
                         let tex = &clip.window[s];
-                        if !self.uploads.stage(
+                        let stage_started = Instant::now();
+                        let staged = self.uploads.stage(
                             &self.gpu,
                             &mut enc,
                             tex,
                             clip.width,
                             clip.height,
                             &f.rgba,
-                        ) {
+                        );
+                        detail.stage += stage_started.elapsed();
+                        if !staged {
                             // Every staging buffer is in flight: the frame
                             // waits for a later tick, held like one past the
                             // window.
@@ -881,6 +907,7 @@ impl RenderLoop {
                         clip.delivered = true;
                         budget -= 1;
                         uploaded += 1;
+                        detail.bytes += f.rgba.len() as u64;
                     }
                     Delivery::Pending => break,
                     Delivery::Done => {
@@ -913,13 +940,16 @@ impl RenderLoop {
         // Before the frame's draw is submitted, so the draw samples the
         // uploaded frames.
         if self.uploads.has_staged() {
+            let submit_started = Instant::now();
             self.gpu.queue.submit([enc.finish()]);
+            detail.submit = submit_started.elapsed();
             self.uploads.submitted();
         }
         for (asset, at, file_exists) in given_up {
             self.clip_given_up(&asset, at, file_exists, frame, &view_assets);
         }
-        uploaded
+        detail.uploads = uploaded;
+        detail
     }
 
     /// A clip given up on after its retries (review4 step 8, design (c),
@@ -1125,7 +1155,8 @@ impl RenderLoop {
         phases.live_resync = self.check_live_loss(frame);
         let read_ahead_started = Instant::now();
         let read_ahead_cpu = thread_cpu_time();
-        let read_ahead_uploads = self.pump_read_ahead(frame, false);
+        phases.read_ahead_detail = self.pump_read_ahead(frame, false);
+        let read_ahead_uploads = phases.read_ahead_detail.uploads;
         let read_ahead = read_ahead_started.elapsed();
         phases.read_ahead = read_ahead;
         phases.cpu.read_ahead = thread_cpu_time().saturating_sub(read_ahead_cpu);

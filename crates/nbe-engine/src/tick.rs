@@ -199,7 +199,32 @@ struct Cadence {
     /// skip, R21's late submit) says whether the tick before it overran or
     /// the wake came late.
     last_tick: Duration,
+    /// Read-ahead stage (a): one second of ticks, summed for the `RA:` line.
+    read_ahead: ReadAheadWindow,
 }
+
+/// One second of the read-ahead (read-ahead stage (a), the user's ruling of
+/// 2026-11-18 01:15; log-only): what every tick spent, not only the slow
+/// ones the R21 line names.
+#[derive(Default)]
+struct ReadAheadWindow {
+    ticks: u32,
+    sum: Duration,
+    cpu_sum: Duration,
+    /// The slowest tick's read-ahead, and its split.
+    max: Duration,
+    max_split: crate::render::ReadAheadPhases,
+    uploads: u64,
+    bytes: u64,
+    max_uploads: usize,
+    render_max: Duration,
+    /// Ticks whose read-ahead took more than 4 ms (stage (b)'s proposed cap).
+    over_4ms: u32,
+}
+
+/// Stage (b)'s proposed per-tick time cap, named here so the `RA:` line
+/// counts what it would have cut.
+const READ_AHEAD_LOG_CAP: Duration = Duration::from_millis(4);
 
 impl Cadence {
     fn tick(
@@ -318,8 +343,19 @@ impl Cadence {
                 sync_ms = ms(report.render_phases.sync),
                 read_ahead_ms = ms(report.render_phases.read_ahead),
                 read_ahead_cpu_ms = ms(report.render_phases.cpu.read_ahead),
+                // Read-ahead stage (a): its split, uploads and bytes.
+                read_ahead_reclaim_ms = ms(report.render_phases.read_ahead_detail.reclaim),
+                read_ahead_stage_ms = ms(report.render_phases.read_ahead_detail.stage),
+                read_ahead_submit_ms = ms(report.render_phases.read_ahead_detail.submit),
+                read_ahead_uploads = report.render_phases.read_ahead_detail.uploads,
+                read_ahead_bytes = report.render_phases.read_ahead_detail.bytes,
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
+                // Read-ahead stage (a): the Preview's own phases, as the View's.
+                preview_build_ms = ms(report.render_phases.preview.build),
+                preview_encode_ms = ms(report.render_phases.preview.encode),
+                preview_finish_ms = ms(report.render_phases.preview.finish),
+                preview_submit_ms = ms(report.render_phases.preview.submit),
                 view_build_ms = ms(report.render_phases.view.build),
                 view_encode_ms = ms(report.render_phases.view.encode),
                 view_finish_ms = ms(report.render_phases.view.finish),
@@ -335,6 +371,47 @@ impl Cadence {
 
     /// The clock restarted between two ticks (a new epoch): the run so far
     /// ends, and the next frame starts the new run's count.
+    /// Read-ahead stage (a): fold one tick into the second's window; at
+    /// `per_second` ticks, print the `RA:` line and start again.
+    fn read_ahead_tick(&mut self, report: &TickReport, per_second: u32) {
+        let p = &report.render_phases;
+        let w = &mut self.read_ahead;
+        w.ticks += 1;
+        w.sum += p.read_ahead;
+        w.cpu_sum += p.cpu.read_ahead;
+        if p.read_ahead >= w.max {
+            w.max = p.read_ahead;
+            w.max_split = p.read_ahead_detail;
+        }
+        w.uploads += p.read_ahead_detail.uploads as u64;
+        w.bytes += p.read_ahead_detail.bytes;
+        w.max_uploads = w.max_uploads.max(p.read_ahead_detail.uploads);
+        w.render_max = w.render_max.max(report.render);
+        if p.read_ahead > READ_AHEAD_LOG_CAP {
+            w.over_4ms += 1;
+        }
+        if w.ticks < per_second.max(1) {
+            return;
+        }
+        let w = std::mem::take(&mut self.read_ahead);
+        tracing::info!(
+            ticks = w.ticks,
+            read_ahead_ms_sum = ms(w.sum),
+            read_ahead_cpu_ms_sum = ms(w.cpu_sum),
+            read_ahead_ms_max = ms(w.max),
+            max_reclaim_ms = ms(w.max_split.reclaim),
+            max_stage_ms = ms(w.max_split.stage),
+            max_submit_ms = ms(w.max_split.submit),
+            max_tick_uploads = w.max_split.uploads,
+            uploads = w.uploads,
+            bytes = w.bytes,
+            most_uploads_in_a_tick = w.max_uploads,
+            render_ms_max = ms(w.render_max),
+            ticks_over_4ms = w.over_4ms,
+            "RA: one second of the read-ahead"
+        );
+    }
+
     fn new_run(&mut self, state: &EngineState) {
         if let Some(run) = self.run.take() {
             tracing::info!("{}", run.summary("run", state));
@@ -711,6 +788,7 @@ pub async fn run_loop(
         report.master_frame = master;
         report.woke_late = woke_late;
         cadence.submitted_late(state, &report);
+        cadence.read_ahead_tick(&report, house_rate);
         if first_of_run {
             first_draw_line(&report, cadence.last_tick);
         }
@@ -956,6 +1034,21 @@ mod tests {
                     render_cpu: Duration::from_micros(1_250),
                     render_phases: RenderPhases {
                         read_ahead: Duration::from_micros(400),
+                        // Read-ahead stage (a): figures unlike every other,
+                        // so a field printed from the wrong source fails.
+                        read_ahead_detail: crate::render::ReadAheadPhases {
+                            reclaim: Duration::from_micros(70),
+                            stage: Duration::from_micros(260),
+                            submit: Duration::from_micros(40),
+                            uploads: 3,
+                            bytes: 24_883_200,
+                        },
+                        preview: BusPhases {
+                            build: Duration::from_micros(11),
+                            encode: Duration::from_micros(22),
+                            finish: Duration::from_micros(33),
+                            submit: Duration::from_micros(44),
+                        },
                         view: BusPhases {
                             build: Duration::from_micros(300),
                             encode: Duration::from_micros(500),
@@ -1001,6 +1094,90 @@ mod tests {
             ("read_ahead_cpu_ms", 0.2),
             ("preview_cpu_ms", 0.45),
             ("view_cpu_ms", 0.6),
+            ("read_ahead_reclaim_ms", 0.07),
+            ("read_ahead_stage_ms", 0.26),
+            ("read_ahead_submit_ms", 0.04),
+            ("read_ahead_uploads", 3.0),
+            ("read_ahead_bytes", 24_883_200.0),
+            ("preview_build_ms", 0.011),
+            ("preview_encode_ms", 0.022),
+            ("preview_finish_ms", 0.033),
+            ("preview_submit_ms", 0.044),
+        ] {
+            assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
+        }
+    }
+
+    /// Read-ahead stage (a): one `RA:` line per second of ticks (30 at 30
+    /// fps), with that second's sums, its slowest tick and that tick's split,
+    /// and none before the second is full.
+    #[test]
+    fn the_read_ahead_line_is_one_per_second_of_ticks_with_its_sums() {
+        use crate::render::{PhaseCpu, ReadAheadPhases, RenderPhases};
+        let text = captured(|| {
+            let mut cadence = Cadence::default();
+            for i in 0..59u32 {
+                let slow = i == 7;
+                let uploads = if slow { 4 } else { 1 };
+                cadence.read_ahead_tick(
+                    &TickReport {
+                        render: Duration::from_micros(if slow { 12_000 } else { 3_000 }),
+                        render_phases: RenderPhases {
+                            read_ahead: Duration::from_micros(if slow { 9_000 } else { 1_000 }),
+                            cpu: PhaseCpu {
+                                read_ahead: Duration::from_micros(500),
+                                ..Default::default()
+                            },
+                            read_ahead_detail: ReadAheadPhases {
+                                reclaim: Duration::from_micros(if slow { 6_000 } else { 100 }),
+                                stage: Duration::from_micros(if slow { 2_500 } else { 800 }),
+                                submit: Duration::from_micros(100),
+                                uploads,
+                                bytes: uploads as u64 * 8_294_400,
+                            },
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    30,
+                );
+            }
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("RA: one second"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one line for the first 30 ticks; the next 29 are not a second yet:\n{text}"
+        );
+        let line = lines[0];
+        let value = |name: &str| -> f64 {
+            let key = format!(" {name}=");
+            let at = line
+                .find(&key)
+                .unwrap_or_else(|| panic!("{name} missing: {line}"));
+            line[at + key.len()..]
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} unreadable: {line}"))
+        };
+        for (name, want) in [
+            ("ticks", 30.0),
+            ("read_ahead_ms_sum", 38.0),
+            ("read_ahead_cpu_ms_sum", 15.0),
+            ("read_ahead_ms_max", 9.0),
+            ("max_reclaim_ms", 6.0),
+            ("max_stage_ms", 2.5),
+            ("max_submit_ms", 0.1),
+            ("max_tick_uploads", 4.0),
+            ("uploads", 33.0),
+            ("bytes", 33.0 * 8_294_400.0),
+            ("most_uploads_in_a_tick", 4.0),
+            ("render_ms_max", 12.0),
+            ("ticks_over_4ms", 1.0),
         ] {
             assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
         }

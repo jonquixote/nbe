@@ -334,6 +334,44 @@ async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
     );
 }
 
+/// Read-ahead stage (a) (the user's ruling of 2026-11-18 01:15, log-only):
+/// each frame's report says what the read-ahead uploaded, in whole 1080p
+/// frames (1920 x 1080 x 4 bytes each), within the count budget, and its
+/// split (reclaim, stage, submit) fits inside the phase it splits.
+#[tokio::test]
+async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
+    let _lane = LANE.read().await;
+    let source = dress_media("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, 150);
+    let mut render = on_air(dir.path()).await;
+    let (mut uploads, mut bytes) = (0usize, 0u64);
+    // Paced near the house rate: the load primes frames 0-89, and the
+    // worker that streams 90 on only delivers in time if the frames do not
+    // race ahead of it.
+    for f in 0..150u64 {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let r = render.render_frame(f, None);
+        let d = r.phases.read_ahead_detail;
+        assert_eq!(d.uploads, r.read_ahead_uploads, "frame {f}: one count");
+        assert_eq!(
+            d.bytes,
+            d.uploads as u64 * 1920 * 1080 * 4,
+            "frame {f}: whole 1080p frames"
+        );
+        assert!(d.uploads <= 4, "frame {f}: the count budget");
+        assert!(
+            d.reclaim + d.stage + d.submit <= r.phases.read_ahead,
+            "frame {f}: the split fits inside the read-ahead phase: {d:?} against {:?}",
+            r.phases.read_ahead
+        );
+        uploads += d.uploads;
+        bytes += d.bytes;
+    }
+    println!("read-ahead stage (a): 150 frames, {uploads} uploads, {bytes} bytes");
+    assert!(uploads > 0, "the read-ahead uploaded past the head");
+}
+
 /// R47: rounds of the settle, a count, never a deadline (R39; R48's form).
 /// Each round pumps the read-ahead once, uncapped, and reads whether the
 /// window is settled; rounds are 2 ms apart, so 15,000 is 30 s or more, and a
