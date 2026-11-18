@@ -1147,6 +1147,8 @@ Accepted only from `render`-role sessions; from any other role they MUST be igno
 
 Without `itemEvent`, the `PLAYING → DONE` and `→ MISSING`/`ERROR` rows of Section 17.3 are unreachable: no other actor observes media completion or decode failure.
 
+A `decodeError` whose `detail` begins `held:` reports a clip that stopped decoding while playing, after the render node's retries (100, 300 and 900 ms), with the View holding its last frame. The item goes `ERROR`. `fallbackActive` is not raised, because the slate is not on air. The detail carries `E_CLIP_DECODE` or `E_CLIP_MISSING` and the source frame, for example `held: E_CLIP_DECODE: clip clip_a stopped decoding at source frame 412; the View holds its last frame`.
+
 ### 5.9.4 Reconnect and resync
 
 A bounded, fire-and-forget channel plus a reconnecting engine means directives issued during an outage are gone. Guessing is not acceptable on air. Therefore:
@@ -2653,6 +2655,7 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 | `audit.sinkFailed` | the audit sink cannot be written (R18's fallback, below) | `critical` | none |
 | `audio.device` | a show is loaded and no output device carries program audio: the tick's `audioDevice` reads `absent` or `lost`. A configured null sink is not a fault. It never refuses a load (v0.4.8 row 15; the device-audio record's D6) | `warning` (`absent`), `critical` (`lost`) | `audio.device` |
 | `audio.underrun` | with a device open, the engine's underrun count rose in 3 consecutive fresh reports (§8.10's sustained underruns); it clears after 10 quiet ones (v0.4.8 row 15) | `warning` | `audio.underrun` |
+| `item.failed` | The item on the View failed mid-play after the render node's retries, and the View holds its last frame: an `itemEvent decodeError` whose `detail` begins `held:`. Cleared when a take or a cut moves the View on, or the item is reset. | `critical` | `item.failed` |
 
 **Two mechanisms, one question each.** Both are needed:
 - **(b) Command confirmation.** `stream.start`, `stream.stop`, `record.start` and `record.stop`, when given no exact acknowledgement within §5.9.5's window (2000 ms), raise `command.unacknowledged`. A refused or skipped directive is never acknowledged: the render node acknowledges only a directive it applied. So the absence is the signal. `show.stop` is excluded, because it has its own exact wait and `outputs.held` is its surface.
