@@ -977,3 +977,18 @@ fn rust_and_typescript_agree_on_the_resync_package_fields() {
         "Rust's and TypeScript's pair have the same keys"
     );
 }
+
+/// Review4 step 8 (#126): the engine writes, and the control plane reads, one
+/// prefix for a held decode failure. Both sides name it as a constant, and
+/// they are the same string.
+#[test]
+fn rust_and_typescript_agree_on_the_held_detail_prefix() {
+    assert_eq!(HELD_DETAIL_PREFIX, "held:");
+    let ts = ts_protocol();
+    assert!(
+        ts.contains(&format!(
+            "export const HELD_DETAIL_PREFIX = \"{HELD_DETAIL_PREFIX}\";"
+        )),
+        "TypeScript's HELD_DETAIL_PREFIX must be exactly {HELD_DETAIL_PREFIX:?}"
+    );
+}

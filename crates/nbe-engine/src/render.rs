@@ -970,7 +970,8 @@ impl RenderLoop {
             item,
             nbe_protocol::ItemEvent::DecodeError,
             Some(format!(
-                "held: {code}: clip {asset} stopped decoding at source frame {at}; the View holds its last frame"
+                "{} {code}: clip {asset} stopped decoding at source frame {at}; the View holds its last frame",
+                nbe_protocol::HELD_DETAIL_PREFIX
             )),
         ));
     }

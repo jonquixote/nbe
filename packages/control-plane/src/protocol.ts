@@ -536,6 +536,14 @@ export const AppliedStateVersionFrameSchema = z
   .strict();
 export type AppliedStateVersionFrame = z.infer<typeof AppliedStateVersionFrameSchema>;
 
+/**
+ * Review4 step 8 (#126): the `detail` prefix of an `itemEvent decodeError`
+ * for a clip that stopped decoding mid-play after the engine's retries, the
+ * View holding its last frame. Mirrored by `nbe_protocol::HELD_DETAIL_PREFIX`
+ * (the mirror audit reads this line).
+ */
+export const HELD_DETAIL_PREFIX = "held:";
+
 export const ItemLifecycleFrameSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
