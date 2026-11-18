@@ -12,6 +12,7 @@ import { AuditLog } from "./audit.js";
 import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import {
   EngineFrameSchema,
+  HELD_DETAIL_PREFIX,
   EnvelopeSchema,
   type AudioLevelCrossingFrame,
   type Envelope,
@@ -928,7 +929,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           else if (frame.event === "missing") state.markMissing(frame.itemRef);
           // A clip that failed mid-play while the View holds its last frame
           // (review4 step 8): ERROR without the fallback flag, and the alert.
-          else if (frame.event === "decodeError" && frame.detail?.startsWith("held")) {
+          else if (frame.event === "decodeError" && frame.detail?.startsWith(HELD_DETAIL_PREFIX)) {
             state.markErrorHeld(frame.itemRef, frame.detail);
             signals.evaluate();
           } else state.markError(frame.itemRef);

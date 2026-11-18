@@ -194,6 +194,12 @@ async fn a_clip_cut_short_mid_play_is_retried_then_reported_held() {
     assert_eq!(item, "C1");
     assert_eq!(event, ItemEvent::DecodeError);
     let detail = detail.unwrap_or_default();
+    // The prefix the control plane reads (nbe_protocol::HELD_DETAIL_PREFIX),
+    // then the code.
+    assert!(
+        detail.starts_with(nbe_protocol::HELD_DETAIL_PREFIX),
+        "a held decode failure begins with the shared prefix: {detail}"
+    );
     assert!(
         detail.starts_with("held: E_CLIP_DECODE"),
         "a held decode failure: {detail}"

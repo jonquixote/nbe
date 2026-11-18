@@ -801,6 +801,13 @@ pub enum ResyncReason {
     Internal,
 }
 
+/// Review4 step 8 (#126): the `detail` prefix of an `itemEvent decodeError`
+/// for a clip that stopped decoding mid-play, after the engine's retries,
+/// with the View holding its last frame. The control plane reads this exact
+/// prefix to mark the item ERROR without the fallback (TypeScript's
+/// `HELD_DETAIL_PREFIX`, pinned equal by the mirror audit).
+pub const HELD_DETAIL_PREFIX: &str = "held:";
+
 /// Item lifecycle events only the engine can observe (SPEC 5.9.3). Without
 /// these, the `PLAYING -> DONE` and `-> MISSING`/`ERROR` rows of Section 17.3
 /// are unreachable.
