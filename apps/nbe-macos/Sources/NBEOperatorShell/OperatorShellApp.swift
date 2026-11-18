@@ -21,7 +21,8 @@ struct OperatorShellApp: App {
             let stale = args.firstIndex(of: "--stale").flatMap { j in
                 j + 1 < args.count ? Double(args[j + 1]) : nil
             }
-            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]), staleSeconds: stale)
+            // `--alerts`: the fixture carries three sample alerts.
+            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]), staleSeconds: stale, alerts: args.contains("--alerts"))
             exit(0)
         }
         // Run from `swift run`, with no app bundle: become a regular app with
@@ -41,7 +42,7 @@ struct OperatorShellApp: App {
     @MainActor private func start() {
         let env = ProcessInfo.processInfo.environment
         if CommandLine.arguments.contains("--fixture") {
-            model.loadFixture()
+            model.loadFixture(alerts: CommandLine.arguments.contains("--alerts"))
             return
         }
         guard let token = env["NBE_SHELL_TOKEN"], !token.isEmpty else {
@@ -111,10 +112,10 @@ struct ShellWindow: View {
 /// (`cacheDisplay`), so controls draw as they do in a window. No server.
 @MainActor
 enum Snapshot {
-    static func write(to url: URL, staleSeconds: Double? = nil) {
+    static func write(to url: URL, staleSeconds: Double? = nil, alerts: Bool = false) {
         _ = NSApplication.shared
         let model = ShellModel()
-        model.loadFixture(staleSeconds: staleSeconds)
+        model.loadFixture(staleSeconds: staleSeconds, alerts: alerts)
         let size = NSSize(width: 1280, height: 820)
         let root = ShellWindow(model: model)
             .frame(width: size.width, height: size.height, alignment: .top)

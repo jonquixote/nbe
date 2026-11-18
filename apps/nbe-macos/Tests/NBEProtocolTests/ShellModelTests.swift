@@ -29,6 +29,16 @@ final class ShellModelTests: XCTestCase {
         )
     }
 
+    /// The fixture's sample alerts (`--alerts`): three, by id; none without.
+    func testTheFixtureCarriesItsSampleAlertsOnlyWhenAsked() {
+        let model = ShellModel()
+        model.loadFixture(alerts: true)
+        let ids = AlertFeed.current(status: model.status, telemetry: model.telemetry).map(\.id)
+        XCTAssertEqual(ids, ["item.failed", "audio.underrun", "sample.unknown"])
+        model.loadFixture()
+        XCTAssertEqual(AlertFeed.current(status: model.status, telemetry: model.telemetry), [])
+    }
+
     /// #120's untested part: the model's `.lost` state. A loopback control
     /// plane answers, sends a tick, then drops the first connection; the
     /// model must pass through `.lost(since:)` and note "lost contact"
