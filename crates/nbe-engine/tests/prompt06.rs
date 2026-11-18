@@ -334,6 +334,178 @@ fn a_guests_own_audio_is_absent_from_its_return_and_present_in_others() {
     );
 }
 
+/// One channel's level at `hz`, in dBFS of a full-scale sine (Goertzel over
+/// the whole buffer): what a return carries of one tone among others.
+fn tone_dbfs(buf: &[f32], hz: f32) -> f32 {
+    let n = buf.len() / CHANNELS;
+    let w = 2.0 * std::f64::consts::PI * hz as f64 / SAMPLE_RATE as f64;
+    let (mut s1, mut s2) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let s0 = buf[i * CHANNELS] as f64 + 2.0 * w.cos() * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    let power = s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+    linear_to_db((2.0 * power.sqrt() / n as f64) as f32)
+}
+
+/// A guest with a return feed, rendered the way the audio driver does: each
+/// program block, then every return for the same position. Returns the
+/// program and the guest's return, concatenated over `blocks` blocks.
+fn program_and_return(g: &mut AudioGraph, gid: &str, blocks: u64) -> (Vec<f32>, Vec<f32>) {
+    let (producer, mut consumer) = nbe_engine::audio_ring::ring(BLOCK * 64);
+    g.set_guest_return(gid, producer);
+    let (mut program, mut ret) = (Vec::new(), Vec::new());
+    let mut buf = buffer(BLOCK);
+    let mut got = buffer(BLOCK);
+    for frame in 0..blocks {
+        g.render(&mut buf, frame);
+        g.render_returns(g.sample_for_master_frame(frame, 0), buf.len());
+        program.extend_from_slice(&buf);
+        let n = consumer.pop_into(&mut got);
+        ret.extend_from_slice(&got[..n]);
+    }
+    (program, ret)
+}
+
+/// The guest return carries the soundboard (the user's ruling of 2026-11-15
+/// 17:30, item 7b): a stab on the program's sfx bus is in the guest's return
+/// at the program's level, while the guest's own tone still is not (AC-18).
+/// And the voices advance once: the program a graph with a return feed
+/// renders is the same, sample for sample, as one without.
+#[test]
+fn a_soundboard_voice_is_in_the_guests_return_once_and_the_guest_is_not() {
+    let setup = || {
+        let mut g = AudioGraph::new(HOUSE_RATE);
+        g.upsert_guest(
+            "G",
+            vec![Source::Tone {
+                hz: 1000.0,
+                amplitude: db_to_linear(-20.0),
+            }],
+        );
+        g.trigger("stab", tone_samples(440.0, 0.5, SAMPLE_RATE as usize), 0.0);
+        g
+    };
+    let mut with_return = setup();
+    let (program, ret) = program_and_return(&mut with_return, "G", 8);
+    assert_eq!(
+        ret.len(),
+        program.len(),
+        "a return block for every program block"
+    );
+    // Past the trigger's ramp-in: blocks 2 to 7.
+    let settled = |b: &[f32]| b[2 * BLOCK * CHANNELS..].to_vec();
+    let stab_in_return = tone_dbfs(&settled(&ret), 440.0);
+    let stab_in_program = tone_dbfs(&settled(&program), 440.0);
+    let guest_in_return = tone_dbfs(&settled(&ret), 1000.0);
+    println!(
+        "item 7b: stab 440 Hz in the program {stab_in_program:.2} dBFS, in G's return {stab_in_return:.2} dBFS; G's own 1 kHz in its return {guest_in_return:.2} dBFS"
+    );
+    assert!(
+        (stab_in_return - stab_in_program).abs() < 0.5,
+        "the return holds the stab at the program's level: {stab_in_return:.2} vs {stab_in_program:.2} dBFS"
+    );
+    assert!(
+        stab_in_return > -10.0,
+        "the stab is there: {stab_in_return:.2} dBFS"
+    );
+    assert!(
+        guest_in_return <= -80.0,
+        "AC-18: the guest's own tone at most -80 dBFS in its return: {guest_in_return:.1} dBFS"
+    );
+
+    // Voices advance once: rendering returns changes nothing in the program.
+    let mut without = setup();
+    let mut buf = buffer(BLOCK);
+    let mut alone = Vec::new();
+    for frame in 0..8 {
+        without.render(&mut buf, frame);
+        alone.extend_from_slice(&buf);
+    }
+    assert!(
+        alone == program,
+        "the program is identical with and without a return feed: the voices advanced once"
+    );
+}
+
+/// The guest return is metered (item 7a): each return as rendered, under
+/// `guestReturn:<id>`, and `guestReturn` the loudest. A return carrying only
+/// the host mic's tone reads that tone's level, within 1 dB.
+#[test]
+fn each_guest_return_is_metered_and_guest_return_is_the_loudest() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.set_source(
+        BusId::Mic,
+        vec![Source::Tone {
+            hz: 440.0,
+            amplitude: db_to_linear(-20.0),
+        }],
+    );
+    g.upsert_guest(
+        "G",
+        vec![Source::Tone {
+            hz: 1000.0,
+            amplitude: db_to_linear(-12.0),
+        }],
+    );
+    g.upsert_guest("H", vec![]);
+    let (p_g, mut c_g) = nbe_engine::audio_ring::ring(BLOCK * 8);
+    let (p_h, mut c_h) = nbe_engine::audio_ring::ring(BLOCK * 8);
+    g.set_guest_return("G", p_g);
+    g.set_guest_return("H", p_h);
+    let mut buf = buffer(BLOCK);
+    let mut sink = buffer(BLOCK);
+    for frame in 0..4 {
+        g.reset_meters();
+        g.render(&mut buf, frame);
+        g.render_returns(g.sample_for_master_frame(frame, 0), buf.len());
+        c_g.pop_into(&mut sink);
+        c_h.pop_into(&mut sink);
+    }
+    let peaks = g.bus_peaks();
+    let (rg, rh, loudest) = (
+        peaks["guestReturn:G"],
+        peaks["guestReturn:H"],
+        peaks["guestReturn"],
+    );
+    println!("item 7a: guestReturn:G {rg:.2}, guestReturn:H {rh:.2}, guestReturn {loudest:.2} dBFS (host mic tone -20)");
+    assert!(
+        (rg + 20.0).abs() <= 1.0,
+        "G's return is the host mic only: {rg:.2} dBFS, within 1 dB of -20"
+    );
+    assert!(
+        rh > rg + 3.0,
+        "H's return also carries G (-12 dBFS): {rh:.2} vs {rg:.2}"
+    );
+    assert_eq!(loudest, rh.max(rg), "guestReturn is the loudest return");
+}
+
+/// Item 7b's buffer is preallocated: the program and every return, with a
+/// voice sounding, allocate nothing in the steady state (SPEC §8.9).
+#[test]
+fn the_returns_with_a_voice_allocate_nothing() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    g.upsert_guest("G", vec![]);
+    g.trigger("stab", tone_samples(880.0, 0.5, 48_000), 0.0);
+    let (producer, mut consumer) = nbe_engine::audio_ring::ring(BLOCK * 8);
+    g.set_guest_return("G", producer);
+    let mut buf = buffer(BLOCK);
+    let mut sink = buffer(BLOCK);
+    g.render(&mut buf, 0);
+    g.render_returns(g.sample_for_master_frame(0, 0), buf.len());
+    consumer.pop_into(&mut sink);
+    let base = g.sample_for_master_frame(1, 0);
+    let allocs = allocations_during(|| {
+        g.render(&mut buf, 1);
+        g.render_returns(base, buf.len());
+    });
+    assert_eq!(
+        allocs, 0,
+        "a voice in the program and the return allocates nothing; it made {allocs}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC-13 — soundboard latency (SPEC §8.4). Path: AudioGraph::trigger.
 // ---------------------------------------------------------------------------

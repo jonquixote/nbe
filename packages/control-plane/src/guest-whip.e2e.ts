@@ -56,6 +56,10 @@ const ticks: Array<{ at: number; data: Record<string, unknown> }> = [];
 let recordDir = "";
 let recording = "";
 let returnPcm: Float32Array = new Float32Array(0);
+/** When the soundboard stab was played (item 7): the meter is read before it. */
+let stabAt = 0;
+/** The soundboard stab's tone (item 7 of the ruling of 2026-11-15 17:30). */
+const STAB_HZ = 2500;
 let lostAfterLeave: boolean | null = null;
 /** Item 7a: the engine's children after the guest joined and left again and again. */
 let childrenAfterLeaves: Array<{ pid: number; stat: string; command: string }> | null = null;
@@ -164,6 +168,13 @@ function writePackage(): string {
   recordDir = join(dir, "record-out");
   mkdirSync(recordDir, { recursive: true });
   copyFileSync(join(REPO, "tests/fixtures/dress_show/media/fallback.png"), join(dir, "media", "fallback.png"));
+  // A soundboard stab (item 7b): a 5 s tone at STAB_HZ, long enough to span
+  // the 4 s the return is read for.
+  const stab = spawnSync(FFMPEG, [
+    "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=${STAB_HZ}:duration=5:sample_rate=48000`,
+    "-ac", "2", join(dir, "media", "stab.wav"),
+  ]);
+  assert.equal(stab.status, 0, `the stab: ${stab.stderr?.toString()}`);
   writeFileSync(
     join(dir, "manifest.json"),
     JSON.stringify({
@@ -178,7 +189,10 @@ function writePackage(): string {
         outputs: { record: { directory: recordDir } },
       },
       qualityProfile: "consumer",
-      assets: [{ id: "fallback", kind: "image", source: "media/fallback.png" }],
+      assets: [
+        { id: "fallback", kind: "image", source: "media/fallback.png" },
+        { id: "stab", kind: "audio", source: "media/stab.wav" },
+      ],
       scenes: [
         {
           id: "SCN_G",
@@ -348,6 +362,11 @@ before(async () => {
   dropsAtStart = droppedNow();
   // The guest's return, read back from the media server while the take runs.
   // A return that never reaches the server fails the AC-18 test, not the file.
+  // Item 7b: a soundboard stab on the program's sfx bus, played just before
+  // the return is read, so the 4 s read spans it. The meter is read from the
+  // ticks before it (item 7a).
+  stabAt = Date.now();
+  await applied("soundboard.play", { assetId: "stab" });
   try {
     returnPcm = pcm(["-rtsp_transport", "tcp", "-i", `rtsp://127.0.0.1:${RTSP_PORT}/g1-return`], ["-t", "4"]);
   } catch (e) {
@@ -468,6 +487,36 @@ test("[D] AC-18: the guest's return carries the program and not the guest (1 kHz
   normativeOnly("the program in the return at -20 dBFS within 3 dB", () =>
     assert.ok(p > -23 && p < -17, `the program's level in the return (${p.toFixed(2)})`),
   );
+});
+
+test("[GR-b] the guest's return carries a soundboard stab, read back over RTSP", (t) => {
+  if (skipReason) return t.skip(skipReason);
+  const x = returnPcm.subarray(Math.min(returnPcm.length, 24_000));
+  const stab = toneDbfs(x, STAB_HZ);
+  const g = toneDbfs(x, 1000);
+  console.log(`return during the stab: stab ${STAB_HZ} Hz ${stab.toFixed(2)} dBFS, guest 1 kHz ${g.toFixed(2)} dBFS`);
+  assert.ok(x.length > 48_000, `at least a second of return audio arrived (${x.length} samples)`);
+  assert.ok(stab > -40, `the stab is in the guest's return (${stab.toFixed(2)} dBFS)`);
+  assert.ok(g <= -80, `and the guest's own tone still is not (${g.toFixed(2)} dBFS)`);
+});
+
+test("[GR-a] the guest's return is metered: guestReturn:g1 within 1 dB of the host mic's tone", (t) => {
+  if (skipReason) return t.skip(skipReason);
+  // The last ticks before the stab, with the return running: the return then
+  // carries the program, whose sound is the host mic's tone alone.
+  const before = ticks
+    .filter((k) => k.at < stabAt)
+    .map((k) => (k.data["busPeakDbfs"] ?? {}) as Record<string, number>)
+    .filter((b) => Number.isFinite(b["guestReturn:g1"]) && Number.isFinite(b["mic"]))
+    .slice(-3);
+  assert.ok(before.length > 0, "telemetry reported guestReturn:g1 before the stab");
+  for (const b of before) {
+    const ret = b["guestReturn:g1"]!;
+    const mic = b["mic"]!;
+    console.log(`meter: guestReturn:g1 ${ret.toFixed(2)} dBFS, guestReturn ${b["guestReturn"]?.toFixed(2)}, mic ${mic.toFixed(2)} dBFS`);
+    assert.ok(Math.abs(ret - mic) <= 1, `the return's meter reads the host mic's tone within 1 dB (${ret.toFixed(2)} vs ${mic.toFixed(2)})`);
+    assert.equal(b["guestReturn"], ret, "guestReturn is the loudest return: the only one here");
+  }
 });
 
 test("[7a] a guest that joins and leaves again and again leaves the engine no ffmpeg child, running or defunct", (t) => {

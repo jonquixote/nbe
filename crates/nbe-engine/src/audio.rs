@@ -338,8 +338,18 @@ pub struct AudioGraph {
     /// Scratch buffers, allocated once so `render` allocates nothing.
     scratch: Vec<f32>,
     guest_scratch: BTreeMap<String, Vec<f32>>,
-    /// Per-guest return feeds and their scratch (PR D).
-    returns: BTreeMap<String, (crate::audio_ring::RingProducer, Vec<f32>)>,
+    /// Per-guest return feeds, their scratch, and each return's peak (linear)
+    /// since the meters were last reset (PR D; the guest return's meter, the
+    /// user's ruling of 2026-11-15 17:30, item 7a).
+    returns: BTreeMap<String, (crate::audio_ring::RingProducer, Vec<f32>, f32)>,
+    /// The soundboard voices' sum for the block `render_at` last mixed, before
+    /// the sfx bus's gain, so each guest's return adds the same samples to its
+    /// sfx share without advancing the voices a second time (item 7b).
+    /// Allocated like `scratch`; `voice_block` is how much of it holds that
+    /// block (0: no voice sounded), and `voice_base` where the block began.
+    voice_scratch: Vec<f32>,
+    voice_block: usize,
+    voice_base: i64,
     /// Master-bus record tap (WU34, SPSC rewrite): `None` until `set_record_tap`. When
     /// present, `render` pushes a copy of the post-master mix into it via the
     /// tap's lock-free `push` (atomic head publish, preallocated ring, no
@@ -372,6 +382,9 @@ impl AudioGraph {
             underruns: 0,
             pending_swaps: Vec::with_capacity(8),
             scratch: vec![0.0; 8192],
+            voice_scratch: vec![0.0; 8192],
+            voice_block: 0,
+            voice_base: 0,
             guest_scratch: BTreeMap::new(),
             returns: BTreeMap::new(),
             record_tap: None,
@@ -623,6 +636,9 @@ impl AudioGraph {
         if self.scratch.len() < samples {
             self.scratch.resize(samples, 0.0);
         }
+        if self.voice_scratch.len() < samples {
+            self.voice_scratch.resize(samples, 0.0);
+        }
         // `values_mut` rather than collecting keys: this runs on the callback's
         // path, and cloning a key per guest per block is exactly the kind of
         // allocation §8.9 forbids.
@@ -641,7 +657,7 @@ impl AudioGraph {
                 bus.trace.resize(frames, 0.0);
             }
         }
-        for (_, buf) in self.returns.values_mut() {
+        for (_, buf, _) in self.returns.values_mut() {
             if buf.len() < samples {
                 buf.resize(samples, 0.0);
             }
@@ -680,6 +696,9 @@ impl AudioGraph {
             voices,
             ducker,
             scratch,
+            voice_scratch,
+            voice_block,
+            voice_base,
             guest_scratch,
             house_frame_rate,
             rendered_samples,
@@ -689,6 +708,8 @@ impl AudioGraph {
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
+        *voice_block = 0;
+        *voice_base = base;
 
         // Program buses, in the fixed §8.1 order — no key collection needed.
         //
@@ -716,18 +737,26 @@ impl AudioGraph {
                 render_sources(bus_sources, scratch, base, *house_frame_rate);
             }
             if with_voices {
+                // The voices' sum, kept for the guests' returns
+                // (`render_guest_return_at`): they advance here, once.
+                let vsum = &mut voice_scratch[..out.len()];
+                vsum.fill(0.0);
                 for v in voices.iter_mut() {
                     for f in 0..frames {
                         let g = v.gain.advance();
                         for c in 0..CHANNELS {
                             let idx = v.position + f * CHANNELS + c;
                             if idx < v.samples.len() {
-                                scratch[f * CHANNELS + c] += v.samples[idx] * g;
+                                vsum[f * CHANNELS + c] += v.samples[idx] * g;
                             }
                         }
                     }
                     v.position += frames * CHANNELS;
                 }
+                for (s, v) in scratch.iter_mut().zip(vsum.iter()) {
+                    *s += *v;
+                }
+                *voice_block = out.len();
                 // A voice is done when it runs out or its stop ramp reached zero.
                 voices.retain(|v| {
                     v.position < v.samples.len() && !(v.stopping && v.gain.value() <= 0.0)
@@ -849,21 +878,38 @@ impl AudioGraph {
             sources,
             guests,
             scratch,
+            voice_scratch,
+            voice_block,
+            voice_base,
             guest_scratch,
             house_frame_rate,
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
+        // The soundboard voices sounded in the program block rendered at this
+        // same position: their sum joins the sfx share (item 7b). A return
+        // rendered anywhere else has none.
+        let voices =
+            (*voice_block == out.len() && *voice_base == base).then(|| &voice_scratch[..out.len()]);
 
         // Program contributions. Ramps advance per sample here too: applying a
         // bus's gain once per buffer means a mute landing mid-buffer steps, and
         // the IFB path is the one output AC-18's own test does not listen to.
         for id in [BusId::Mic, BusId::Clip, BusId::Music, BusId::Sfx] {
-            let Some(bus_sources) = sources.get(&id) else {
+            let bus_sources = sources.get(&id);
+            let with_voices = id == BusId::Sfx && voices.is_some();
+            if bus_sources.is_none() && !with_voices {
                 continue;
-            };
+            }
             scratch.fill(0.0);
-            render_sources(bus_sources, scratch, base, *house_frame_rate);
+            if let Some(bus_sources) = bus_sources {
+                render_sources(bus_sources, scratch, base, *house_frame_rate);
+            }
+            if let (true, Some(vsum)) = (with_voices, voices) {
+                for (s, v) in scratch.iter_mut().zip(vsum.iter()) {
+                    *s += *v;
+                }
+            }
             let bus = buses.get_mut(&id).expect("every BusId has a Bus");
             for f in 0..frames {
                 let g = bus.return_gain(f, frames);
@@ -901,7 +947,7 @@ impl AudioGraph {
     pub fn set_guest_return(&mut self, guest_id: &str, producer: crate::audio_ring::RingProducer) {
         let width = self.scratch.len();
         self.returns
-            .insert(guest_id.to_string(), (producer, vec![0.0; width]));
+            .insert(guest_id.to_string(), (producer, vec![0.0; width], 0.0));
     }
 
     /// Remove a guest: its bus, its sources and its return feed.
@@ -919,12 +965,19 @@ impl AudioGraph {
             return;
         }
         let mut returns = std::mem::take(&mut self.returns);
-        for (gid, (producer, buf)) in returns.iter_mut() {
+        for (gid, (producer, buf, peak)) in returns.iter_mut() {
             if buf.len() < samples {
                 continue;
             }
             let out = &mut buf[..samples];
             self.render_guest_return_at(gid, out, base);
+            // The return's meter, as rendered (item 7a): what the guest hears.
+            for s in out.iter() {
+                let a = s.abs();
+                if a > *peak {
+                    *peak = a;
+                }
+            }
             producer.push(out);
         }
         self.returns = returns;
@@ -961,6 +1014,20 @@ impl AudioGraph {
         for (gid, (bus, _)) in &self.guests {
             out.insert(format!("guest:{gid}"), bus.peak_dbfs() as f64);
         }
+        // Each guest's return as rendered (item 7a), and `guestReturn` the
+        // loudest of them. With no return feed, `guestReturn` stays the bus's
+        // own reading, as before.
+        let mut loudest: Option<f32> = None;
+        for (gid, (_, _, peak)) in &self.returns {
+            out.insert(format!("guestReturn:{gid}"), linear_to_db(*peak) as f64);
+            loudest = Some(loudest.map_or(*peak, |l| l.max(*peak)));
+        }
+        if let Some(l) = loudest {
+            out.insert(
+                BusId::GuestReturn.as_str().to_string(),
+                linear_to_db(l) as f64,
+            );
+        }
         out
     }
 
@@ -970,6 +1037,9 @@ impl AudioGraph {
         }
         for (bus, _) in self.guests.values_mut() {
             bus.reset_meters();
+        }
+        for (_, _, peak) in self.returns.values_mut() {
+            *peak = 0.0;
         }
     }
 }
