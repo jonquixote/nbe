@@ -841,9 +841,8 @@ impl RenderLoop {
         let reclaim_started = Instant::now();
         self.uploads.reclaim(&self.gpu);
         detail.reclaim = reclaim_started.elapsed();
-        let encoder_started = Instant::now();
+        // MUTANT Ma1 (stage (a2), do not merge): the encoder's creation untimed.
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        detail.encoder = encoder_started.elapsed();
         for id in order {
             let Some(ring) = self.video_rings.get_mut(&id) else {
                 continue;
@@ -983,9 +982,7 @@ impl RenderLoop {
         } else {
             // Nothing staged: the encoder is dropped unsubmitted, timed with
             // its creation (stage (a2)).
-            let drop_started = Instant::now();
             drop(enc);
-            detail.encoder += drop_started.elapsed();
         }
         for (asset, at, file_exists) in given_up {
             self.clip_given_up(&asset, at, file_exists, frame, &view_assets);
