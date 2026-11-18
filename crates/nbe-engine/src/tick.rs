@@ -220,6 +220,11 @@ struct ReadAheadWindow {
     render_max: Duration,
     /// Ticks whose read-ahead took more than 4 ms (stage (b)'s proposed cap).
     over_4ms: u32,
+    /// Stage (b): ticks a cap stopped staging, and frames the floor staged
+    /// past a cap.
+    capped_by_time: u32,
+    capped_by_bytes: u32,
+    floor_uploads: u64,
 }
 
 /// Stage (b)'s proposed per-tick time cap, named here so the `RA:` line
@@ -373,6 +378,11 @@ impl Cadence {
                     ms(report.render_phases.read_ahead_detail.stage_split.record),
                 read_ahead_stage_max_ms = ms(report.render_phases.read_ahead_detail.stage_max),
                 read_ahead_created = report.render_phases.read_ahead_detail.created,
+                // Stage (b): whether a cap stopped a frame this tick, and the
+                // floor's frames.
+                read_ahead_capped_by_time = report.render_phases.read_ahead_detail.capped_by_time,
+                read_ahead_capped_by_bytes = report.render_phases.read_ahead_detail.capped_by_bytes,
+                read_ahead_floor_uploads = report.render_phases.read_ahead_detail.floor_uploads,
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 // Read-ahead stage (a): the Preview's own phases, as the View's.
@@ -414,6 +424,9 @@ impl Cadence {
         if p.read_ahead > READ_AHEAD_LOG_CAP {
             w.over_4ms += 1;
         }
+        w.capped_by_time += u32::from(p.read_ahead_detail.capped_by_time);
+        w.capped_by_bytes += u32::from(p.read_ahead_detail.capped_by_bytes);
+        w.floor_uploads += p.read_ahead_detail.floor_uploads as u64;
         if w.ticks < per_second.max(1) {
             return;
         }
@@ -446,6 +459,9 @@ impl Cadence {
             most_uploads_in_a_tick = w.max_uploads,
             render_ms_max = ms(w.render_max),
             ticks_over_4ms = w.over_4ms,
+            ticks_capped_by_time = w.capped_by_time,
+            ticks_capped_by_bytes = w.capped_by_bytes,
+            floor_uploads = w.floor_uploads,
             "RA: one second of the read-ahead"
         );
     }
@@ -1106,6 +1122,11 @@ mod tests {
                             },
                             stage_max: Duration::from_micros(120),
                             created: 1,
+                            // Stage (b): the byte cap stopped a frame, and
+                            // the floor staged 2.
+                            capped_by_time: false,
+                            capped_by_bytes: true,
+                            floor_uploads: 2,
                         },
                         preview: BusPhases {
                             build: Duration::from_micros(11),
@@ -1176,6 +1197,7 @@ mod tests {
             ("read_ahead_stage_record_ms", 0.017),
             ("read_ahead_stage_max_ms", 0.12),
             ("read_ahead_created", 1.0),
+            ("read_ahead_floor_uploads", 2.0),
             ("preview_build_ms", 0.011),
             ("preview_encode_ms", 0.022),
             ("preview_finish_ms", 0.033),
@@ -1227,6 +1249,11 @@ mod tests {
                                 },
                                 stage_max: Duration::from_micros(if slow { 1_900 } else { 800 }),
                                 created: usize::from(slow),
+                                // Stage (b): the slow tick is the one capped by
+                                // time, with one floor frame; no tick by bytes.
+                                capped_by_time: slow,
+                                capped_by_bytes: false,
+                                floor_uploads: usize::from(slow),
                                 uploads,
                                 bytes: uploads as u64 * 8_294_400,
                             },
@@ -1279,6 +1306,9 @@ mod tests {
             ("max_stage_record_ms", 0.07),
             ("max_single_stage_ms", 1.9),
             ("max_created", 1.0),
+            ("ticks_capped_by_time", 1.0),
+            ("ticks_capped_by_bytes", 0.0),
+            ("floor_uploads", 1.0),
             ("max_tick_uploads", 4.0),
             ("uploads", 33.0),
             ("bytes", 33.0 * 8_294_400.0),
