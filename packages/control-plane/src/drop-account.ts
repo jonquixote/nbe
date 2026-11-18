@@ -89,3 +89,121 @@ export function accountDrops(
   }
   return account;
 }
+
+// --- Item 10: the dress count's second reading --------------------------------
+//
+// The user's ruling of 2026-11-18 04:20 (ruling 3), approved as proposed: the
+// gate reads the show once, after step 9, so the drops of steps 10 to 12c
+// (step 11's and 12b's Preview, View and read-ahead waits among them) were
+// never counted. A second reading at the end of step 12c, the last step on the
+// same engine process (step 13 kills it), counts them per step against
+// ceilings taken from ten CI runs (1.25 x the ten-run maximum, rounded up).
+// PROVISIONAL: re-derived after ten main runs of the new line, tightened after
+// read-ahead stage (b).
+
+/** A step's ceiling: a count, or R21's rule (only drops tied to a late wake). */
+export type StepCeiling = number | "tied";
+
+/** Steps 10 to 12c. Ten runs read step 11 at most 7 and step 12b at most 8; the rest 0. */
+export const SECOND_READING_CEILINGS: Readonly<Record<string, StepCeiling>> = {
+  "step 10": "tied",
+  "step 11": 9,
+  "step 12": "tied",
+  "step 12b": 10,
+  "step 12c": "tied",
+};
+
+/** The span's own ceiling: the sum of the steps' (9 + 10). */
+export const SECOND_READING_SPAN_CEILING = 19;
+
+/** The show's counts on a tick. A field the tick lacks reads NaN, which no gate accepts. */
+export interface ShowCounts {
+  drops: number;
+  underruns: number;
+  watchdogTrips: number;
+  fallbackTicks: number;
+}
+
+/** The show's counts on the last of `ticks` (the §10.1 telemetry frames, in arrival order). */
+export function countsAt(ticks: readonly Record<string, unknown>[]): ShowCounts {
+  const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
+  const last = data.at(-1) ?? {};
+  const num = (v: unknown): number => (typeof v === "number" ? v : Number.NaN);
+  return {
+    drops: num(last["droppedFramesTotal"]),
+    underruns: num(last["audioUnderrunsTotal"]),
+    watchdogTrips: num(last["watchdogTripsTotal"]),
+    fallbackTicks: data.filter((d) => d["fallbackActive"] === true).length,
+  };
+}
+
+/**
+ * The second reading: the counts at the gate's tick (the first `gateTicks`
+ * ticks, what the gate read), at the last tick, and the span between them.
+ */
+export function secondReading(
+  ticks: readonly Record<string, unknown>[],
+  gateTicks: number,
+): { atGate: ShowCounts; atEnd: ShowCounts; span: ShowCounts } {
+  const atGate = countsAt(ticks.slice(0, gateTicks));
+  const atEnd = countsAt(ticks);
+  return {
+    atGate,
+    atEnd,
+    span: {
+      drops: atEnd.drops - atGate.drops,
+      underruns: atEnd.underruns - atGate.underruns,
+      watchdogTrips: atEnd.watchdogTrips - atGate.watchdogTrips,
+      fallbackTicks: atEnd.fallbackTicks - atGate.fallbackTicks,
+    },
+  };
+}
+
+/** One step's drops: the counts in (before, after], accounted against the engine's lines. */
+export interface StepDrops {
+  step: string;
+  before: number;
+  after: number;
+  account: DropAccount;
+}
+
+/**
+ * The second reading's verdict on a runner: every ceiling's step measured,
+ * each inside its ceiling, a tied-only step's drops all tied to a late wake
+ * and, with the show's earlier tied drops, inside the show's tied cap, and the
+ * span inside its own ceiling. Returns the failures; none is a pass.
+ */
+export function judgeSecondReading(
+  steps: readonly StepDrops[],
+  showTiedBefore: number,
+  tiedCap: number,
+  ceilings: Readonly<Record<string, StepCeiling>> = SECOND_READING_CEILINGS,
+  spanCeiling: number = SECOND_READING_SPAN_CEILING,
+): string[] {
+  const failures: string[] = [];
+  let total = 0;
+  let tied = showTiedBefore;
+  for (const [step, ceiling] of Object.entries(ceilings)) {
+    const s = steps.find((x) => x.step === step);
+    const n = s === undefined ? Number.NaN : s.after - s.before;
+    if (s === undefined || !Number.isInteger(n) || n < 0) {
+      failures.push(`${step}: its drops were not measured (${s === undefined ? "no reading" : `${s.before} -> ${s.after}`})`);
+      continue;
+    }
+    total += n;
+    if (ceiling === "tied") {
+      if (s.account.unexplained.length > 0) {
+        failures.push(`${step}: no engine line explains drop count(s) ${JSON.stringify(s.account.unexplained)}`);
+      }
+      if (s.account.untied.length > 0) {
+        failures.push(`${step}: drop count(s) ${JSON.stringify(s.account.untied)} are not tied to a late wake`);
+      }
+      tied += s.account.tied.length;
+    } else if (n > ceiling) {
+      failures.push(`${step}: ${n} drops, over its ceiling of ${ceiling}`);
+    }
+  }
+  if (total > spanCeiling) failures.push(`steps 10 to 12c: ${total} drops, over the span's ceiling of ${spanCeiling}`);
+  if (tied > tiedCap) failures.push(`${tied} drops tied to a late wake this show, over the cap of ${tiedCap}`);
+  return failures;
+}
