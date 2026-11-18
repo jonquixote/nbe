@@ -337,7 +337,8 @@ async fn r20_a_clip_plays_its_full_length_frame_for_frame() {
 /// Read-ahead stage (a) (the user's ruling of 2026-11-18 01:15, log-only):
 /// each frame's report says what the read-ahead uploaded, in whole 1080p
 /// frames (1920 x 1080 x 4 bytes each), within the count budget, and its
-/// split (reclaim, stage, submit) fits inside the phase it splits.
+/// split (reclaim, stage, submit, and stage (a2)'s fourth phase: walk,
+/// encoder, spawn, poll) fits inside the phase it splits.
 #[tokio::test]
 async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
     let _lane = LANE.read().await;
@@ -361,9 +362,15 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
         );
         assert!(d.uploads <= 4, "frame {f}: the count budget");
         assert!(
-            d.reclaim + d.stage + d.submit <= r.phases.read_ahead,
-            "frame {f}: the split fits inside the read-ahead phase: {d:?} against {:?}",
+            d.timed() <= r.phases.read_ahead,
+            "frame {f}: the split, the fourth phase included, fits inside the read-ahead phase: {d:?} against {:?}",
             r.phases.read_ahead
+        );
+        // Stage (a2): the encoder is created every tick, so its time is never
+        // zero: a pump that stopped timing it would read zero here.
+        assert!(
+            d.encoder > std::time::Duration::ZERO,
+            "frame {f}: the encoder is created every tick, so its time is never zero: {d:?}"
         );
         uploads += d.uploads;
         bytes += d.bytes;

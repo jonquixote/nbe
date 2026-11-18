@@ -335,13 +335,36 @@ pub struct RenderPhases {
 /// buffer, a buffer's creation when the pool grows, and the recorded
 /// `copy_buffer_to_texture`); `submit` is the upload encoder's `queue.submit`.
 /// `bytes` is the decoded frames' bytes copied.
+///
+/// Stage (a2): the fourth phase, everything else the pump times. `walk` is the
+/// scene walk (what each bus shows, the on-air order, the View's assets);
+/// `encoder` is `create_command_encoder` and, on a tick that staged nothing,
+/// the unsubmitted encoder's drop; `spawn` is the decoder workers started
+/// (`ReadAhead::spawn`); `poll` is the workers' `poll`. What the phase holds
+/// beyond all seven is the rest, printed as such.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ReadAheadPhases {
     pub reclaim: Duration,
     pub stage: Duration,
     pub submit: Duration,
+    pub walk: Duration,
+    pub encoder: Duration,
+    pub spawn: Duration,
+    pub poll: Duration,
     pub uploads: usize,
     pub bytes: u64,
+}
+
+impl ReadAheadPhases {
+    /// The fourth phase: the parts outside reclaim, stage and submit.
+    pub fn outside(&self) -> Duration {
+        self.walk + self.encoder + self.spawn + self.poll
+    }
+
+    /// Every part the pump times.
+    pub fn timed(&self) -> Duration {
+        self.reclaim + self.stage + self.submit + self.outside()
+    }
 }
 
 /// The render thread's CPU time per phase (see [`RenderPhases::cpu`]).
@@ -756,6 +779,7 @@ impl RenderLoop {
     /// primed for the next take. `uncapped` lifts the per-frame upload budget
     /// (the settle seam only). Returns the window frames uploaded.
     fn pump_read_ahead(&mut self, frame: u64, uncapped: bool) -> ReadAheadPhases {
+        let walk_started = Instant::now();
         let mut wanted: HashMap<String, u64> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         for bus in [Bus::View, Bus::Preview] {
@@ -810,11 +834,16 @@ impl RenderLoop {
         let view_assets = self.video_assets_for(Bus::View, frame);
         let mut given_up: Vec<(String, u64, bool)> = Vec::new();
         // Read-ahead stage (a), log-only: where the read-ahead's time goes.
-        let mut detail = ReadAheadPhases::default();
+        let mut detail = ReadAheadPhases {
+            walk: walk_started.elapsed(),
+            ..Default::default()
+        };
         let reclaim_started = Instant::now();
         self.uploads.reclaim(&self.gpu);
         detail.reclaim = reclaim_started.elapsed();
+        let encoder_started = Instant::now();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        detail.encoder = encoder_started.elapsed();
         for id in order {
             let Some(ring) = self.video_rings.get_mut(&id) else {
                 continue;
@@ -862,14 +891,21 @@ impl RenderLoop {
                     clip.pending = None;
                     clip.stalled_at = None;
                     clip.delivered = false;
+                    let spawn_started = Instant::now();
                     clip.worker = Some(ReadAhead::spawn(&id, clip.path.clone(), m, clip.length));
+                    detail.spawn += spawn_started.elapsed();
                 }
             }
             while budget > 0 {
                 let delivered = match clip.pending.take() {
                     Some(f) => Delivery::Frame(f),
                     None => match clip.worker.as_mut() {
-                        Some(w) => w.poll(),
+                        Some(w) => {
+                            let poll_started = Instant::now();
+                            let polled = w.poll();
+                            detail.poll += poll_started.elapsed();
+                            polled
+                        }
                         None => break,
                     },
                 };
@@ -944,6 +980,12 @@ impl RenderLoop {
             self.gpu.queue.submit([enc.finish()]);
             detail.submit = submit_started.elapsed();
             self.uploads.submitted();
+        } else {
+            // Nothing staged: the encoder is dropped unsubmitted, timed with
+            // its creation (stage (a2)).
+            let drop_started = Instant::now();
+            drop(enc);
+            detail.encoder += drop_started.elapsed();
         }
         for (asset, at, file_exists) in given_up {
             self.clip_given_up(&asset, at, file_exists, frame, &view_assets);

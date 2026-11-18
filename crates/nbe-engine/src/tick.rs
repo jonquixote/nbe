@@ -349,6 +349,16 @@ impl Cadence {
                 read_ahead_submit_ms = ms(report.render_phases.read_ahead_detail.submit),
                 read_ahead_uploads = report.render_phases.read_ahead_detail.uploads,
                 read_ahead_bytes = report.render_phases.read_ahead_detail.bytes,
+                // Stage (a2): the fourth phase's parts, and what no part holds.
+                read_ahead_walk_ms = ms(report.render_phases.read_ahead_detail.walk),
+                read_ahead_encoder_ms = ms(report.render_phases.read_ahead_detail.encoder),
+                read_ahead_spawn_ms = ms(report.render_phases.read_ahead_detail.spawn),
+                read_ahead_poll_ms = ms(report.render_phases.read_ahead_detail.poll),
+                read_ahead_outside_ms = ms(report.render_phases.read_ahead_detail.outside()),
+                read_ahead_rest_ms = ms(report
+                    .render_phases
+                    .read_ahead
+                    .saturating_sub(report.render_phases.read_ahead_detail.timed())),
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 // Read-ahead stage (a): the Preview's own phases, as the View's.
@@ -402,6 +412,12 @@ impl Cadence {
             max_reclaim_ms = ms(w.max_split.reclaim),
             max_stage_ms = ms(w.max_split.stage),
             max_submit_ms = ms(w.max_split.submit),
+            // Stage (a2): the slowest tick's fourth phase, and its rest.
+            max_walk_ms = ms(w.max_split.walk),
+            max_encoder_ms = ms(w.max_split.encoder),
+            max_spawn_ms = ms(w.max_split.spawn),
+            max_poll_ms = ms(w.max_split.poll),
+            max_rest_ms = ms(w.max.saturating_sub(w.max_split.timed())),
             max_tick_uploads = w.max_split.uploads,
             uploads = w.uploads,
             bytes = w.bytes,
@@ -1040,6 +1056,12 @@ mod tests {
                             reclaim: Duration::from_micros(70),
                             stage: Duration::from_micros(260),
                             submit: Duration::from_micros(40),
+                            // Stage (a2): 5 + 6 + 7 + 8 = 26 outside; the
+                            // phase's 400 leaves a rest of 4.
+                            walk: Duration::from_micros(5),
+                            encoder: Duration::from_micros(6),
+                            spawn: Duration::from_micros(7),
+                            poll: Duration::from_micros(8),
                             uploads: 3,
                             bytes: 24_883_200,
                         },
@@ -1099,6 +1121,12 @@ mod tests {
             ("read_ahead_submit_ms", 0.04),
             ("read_ahead_uploads", 3.0),
             ("read_ahead_bytes", 24_883_200.0),
+            ("read_ahead_walk_ms", 0.005),
+            ("read_ahead_encoder_ms", 0.006),
+            ("read_ahead_spawn_ms", 0.007),
+            ("read_ahead_poll_ms", 0.008),
+            ("read_ahead_outside_ms", 0.026),
+            ("read_ahead_rest_ms", 0.004),
             ("preview_build_ms", 0.011),
             ("preview_encode_ms", 0.022),
             ("preview_finish_ms", 0.033),
@@ -1132,6 +1160,12 @@ mod tests {
                                 reclaim: Duration::from_micros(if slow { 6_000 } else { 100 }),
                                 stage: Duration::from_micros(if slow { 2_500 } else { 800 }),
                                 submit: Duration::from_micros(100),
+                                // Stage (a2): the slow tick's 9 ms holds 8.6
+                                // above, 0.33 here, and a rest of 0.07.
+                                walk: Duration::from_micros(if slow { 40 } else { 10 }),
+                                encoder: Duration::from_micros(if slow { 150 } else { 20 }),
+                                spawn: Duration::from_micros(if slow { 90 } else { 0 }),
+                                poll: Duration::from_micros(if slow { 50 } else { 5 }),
                                 uploads,
                                 bytes: uploads as u64 * 8_294_400,
                             },
@@ -1172,6 +1206,11 @@ mod tests {
             ("max_reclaim_ms", 6.0),
             ("max_stage_ms", 2.5),
             ("max_submit_ms", 0.1),
+            ("max_walk_ms", 0.04),
+            ("max_encoder_ms", 0.15),
+            ("max_spawn_ms", 0.09),
+            ("max_poll_ms", 0.05),
+            ("max_rest_ms", 0.07),
             ("max_tick_uploads", 4.0),
             ("uploads", 33.0),
             ("bytes", 33.0 * 8_294_400.0),
