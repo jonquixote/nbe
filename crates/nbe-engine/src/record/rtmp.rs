@@ -29,8 +29,10 @@
 //! ## Buffer accounting
 //!
 //! `buffered` is admitted-but-unwritten, EXACT: the feeder-side `send()`
-//! credits on `try_send` success (so bytes sitting in the mpsc channel count),
-//! the publisher task debits on socket write (or on stale-drain drop). The
+//! credits BEFORE `try_send` and refunds a frame the channel refuses (so bytes
+//! sitting in the mpsc channel count, and the task can never debit a frame
+//! before its credit lands: [`admit`]), the publisher task debits on socket
+//! write (or on stale-drain drop) through [`debit`]. The
 //! channel backlog is therefore INCLUDED, not hidden — telemetry's
 //! `streamBufferMs` divides this counter, so a stalled peer shows growth even
 //! before the task's `recv` fires. Kernel/socket buffers are invisible by
@@ -331,11 +333,8 @@ impl PublisherHandle {
         }
         let len = frame.payload.len();
         self.last_ts.fetch_max(frame.ts_ms, Ordering::SeqCst);
-        match self.tx.try_send(frame) {
-            Ok(()) => {
-                self.buffered.fetch_add(len, Ordering::SeqCst);
-                true
-            }
+        match admit(&self.buffered, len, || self.tx.try_send(frame)) {
+            Ok(()) => true,
             Err(tokio::sync::mpsc::error::TrySendError::Full(frame)) => {
                 self.shed.fetch_add(1, Ordering::SeqCst);
                 let _ = frame;
@@ -709,8 +708,39 @@ fn drain_stale(
     }
     if n > 0 {
         shed.fetch_add(n, Ordering::SeqCst);
-        buffered.fetch_sub(bytes.min(buffered.load(Ordering::SeqCst)), Ordering::SeqCst);
+        debit(buffered, bytes);
     }
+}
+
+/// Admit `len` bytes into the publisher's accounting around `send`, the
+/// channel hand-off: the credit lands BEFORE the frame can reach the task, and
+/// a frame the channel refuses is refunded.
+///
+/// The order is the point (determinism item 11). Credited after a successful
+/// `try_send`, a frame the task received, wrote and debited first was debited
+/// against a counter that did not yet hold it: [`debit`]'s clamp took off
+/// nothing, the late credit then stayed, and `streamBufferMs` read that frame
+/// high for the life of the publisher (CI run 44282172045: 60,005 bytes,
+/// 78.3355 ms, left after the peer had drained).
+fn admit<E>(
+    buffered: &AtomicUsize,
+    len: usize,
+    send: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    buffered.fetch_add(len, Ordering::SeqCst);
+    let sent = send();
+    if sent.is_err() {
+        // Never in the channel, so never debited: this credit is still whole.
+        buffered.fetch_sub(len, Ordering::SeqCst);
+    }
+    sent
+}
+
+/// The task's side of [`admit`]: `len` bytes left our hands (written, failed,
+/// abandoned or drained stale). Clamped so the counter can never wrap below
+/// zero; with the credit admitted first the clamp never has to act.
+fn debit(buffered: &AtomicUsize, len: usize) {
+    buffered.fetch_sub(len.min(buffered.load(Ordering::SeqCst)), Ordering::SeqCst);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -867,10 +897,7 @@ async fn live_loop(
                 // bytes left our hands either way (failure redials and
                 // re-announces from the seq cache; abandon closes the
                 // socket). Never leak the counter upward.
-                buffered.fetch_sub(
-                    len.min(buffered.load(Ordering::SeqCst)),
-                    Ordering::SeqCst,
-                );
+                debit(buffered, len);
                 match write {
                     None => return LoopEnd::Shutdown,
                     Some(Err(_)) => return LoopEnd::Transport,
@@ -1767,5 +1794,49 @@ mod tests {
             (ms - 1000.0).abs() < 1e-6,
             "1_024_000 bytes at 8.192 Mbps is 1 s"
         );
+    }
+
+    /// One test frame of CI run 44282172045: a 5-byte FLV video header and
+    /// 60,000 bytes of picture, the 78.3355 ms that stayed counted.
+    const FRAME: usize = 60_005;
+
+    /// Determinism item 11. The publisher task wins the race: it receives the
+    /// frame, writes it and debits it before the sender's hand-off returns.
+    /// The counter must still read zero once the frame is written.
+    #[test]
+    fn a_frame_written_before_its_send_returns_is_not_left_counted() {
+        let buffered = AtomicUsize::new(0);
+        let sent = admit(&buffered, FRAME, || {
+            // The task's whole turn, inside the hand-off: received, written,
+            // debited exactly as the live loop debits.
+            debit(&buffered, FRAME);
+            Ok::<(), ()>(())
+        });
+        assert_eq!(sent, Ok(()));
+        assert_eq!(
+            buffered.load(Ordering::SeqCst),
+            0,
+            "a frame the task wrote before the send returned is left counted"
+        );
+    }
+
+    /// A frame the channel refuses (full or closed) was never queued, so its
+    /// credit is taken back: the counter reads what it read before.
+    #[test]
+    fn a_frame_the_channel_refuses_is_refunded() {
+        let buffered = AtomicUsize::new(FRAME);
+        let sent = admit(&buffered, FRAME, || Err::<(), &str>("full"));
+        assert_eq!(sent, Err("full"));
+        assert_eq!(buffered.load(Ordering::SeqCst), FRAME);
+    }
+
+    /// A frame still in the channel counts: admitted, not yet written.
+    #[test]
+    fn a_frame_still_queued_counts() {
+        let buffered = AtomicUsize::new(0);
+        assert_eq!(admit(&buffered, FRAME, || Ok::<(), ()>(())), Ok(()));
+        assert_eq!(buffered.load(Ordering::SeqCst), FRAME);
+        debit(&buffered, FRAME);
+        assert_eq!(buffered.load(Ordering::SeqCst), 0);
     }
 }
