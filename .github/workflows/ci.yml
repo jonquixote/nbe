@@ -406,6 +406,31 @@ jobs:
           done
           exit "$fail"
         timeout-minutes: 5
+      - name: "the encoder-drain suite actually ran (review4 step 3)"
+        # The 09 gate's two-floor shape, for #118's three tests
+        # (tests/encoder_drain.rs): each is gated by `encoder_or_skip`, prints
+        # "SKIP: no hardware H.264 encoder" and returns `ok` without one, so
+        # the workspace run's "3 passed" cannot tell a run from a skip. Here
+        # they run with --nocapture, so a skip is counted and their measured
+        # lines (units delivered, held, flushed, in the file) are in the log.
+        # Floors: ran 3, exercised 3 (the user's ruling of 2026-11-17 20:15).
+        # This runner has a hardware H.264 encoder (the 09 gate exercises it),
+        # so a skip here is a failure, not a runner fact.
+        run: |
+          set -u
+          out=$(cargo test -p nbe-engine --test encoder_drain -- --nocapture 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then echo "FAIL encoder_drain: cargo test exited $rc (the output is above)"; exit "$rc"; fi
+          line=$(echo "$out" | grep "test result: ok" || true)
+          ran=$(echo "$line" | sed -E 's/^test result: ok[.] ([0-9]+) passed.*/\1/')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          skipped=$(echo "$out" | grep -c '^SKIP' || true)
+          case "$skipped" in ''|*[!0-9]*) skipped=0 ;; esac
+          exercised=$((ran - skipped))
+          echo "encoder_drain: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=3 exercised>=3)"
+          if [ "$ran" -lt 3 ]; then echo "FAIL encoder_drain: expected at least 3 tests to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 3 ]; then echo "FAIL encoder_drain: expected 3 tests to actually execute rather than skip, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: the zero-copy tap suite ran, and its runner-independent part is intact
         # Same two-floor shape as the 09 gate, for the same reason. Eight of
         # this suite's twelve tests need a wgpu adapter and skip loudly without
