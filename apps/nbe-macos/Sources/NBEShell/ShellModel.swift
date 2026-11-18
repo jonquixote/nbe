@@ -7,8 +7,8 @@ import SwiftUI
 /// telemetry tick, as the control plane sent them. It decides nothing; a
 /// button calls `run`, and what changes arrives as a `stateChange`.
 @MainActor
-final class ShellModel: ObservableObject {
-    enum Connection: Equatable {
+public final class ShellModel: ObservableObject {
+    public enum Connection: Equatable {
         case disconnected
         case connecting
         case connected(role: Role)
@@ -20,29 +20,29 @@ final class ShellModel: ObservableObject {
         case fixture
     }
 
-    @Published var connection: Connection = .disconnected
-    @Published var status = StatusSnapshot()
-    @Published var telemetry = Telemetry()
+    @Published public var connection: Connection = .disconnected
+    @Published public var status = StatusSnapshot()
+    @Published public var telemetry = Telemetry()
     /// From `show.getState` (finding 1's proposal); nil until it answers.
-    @Published var show: ShowStateView?
-    @Published var showNote: String?
+    @Published public var show: ShowStateView?
+    @Published public var showNote: String?
     /// The last refusal or failure, as the server or the catalog worded it.
-    @Published var lastProblem: String?
+    @Published public var lastProblem: String?
     /// When the newest frame from the control plane was received (build
     /// step 2): past `ContactAge.limit` the NO CONTACT curtain is up, values
     /// are greyed, and no command can be sent.
-    @Published var contact = ContactAge()
+    @Published public var contact = ContactAge()
     /// The shell's own clock, advanced four times a second so the age counts.
-    @Published var now = Date()
+    @Published public var now = Date()
     /// The next reconnect attempt while lost (build step 3), for the curtain.
-    @Published var retryAttempt: Int?
-    @Published var log: [String] = []
+    @Published public var retryAttempt: Int?
+    @Published public var log: [String] = []
 
-    let catalog: CommandCatalog?
+    public let catalog: CommandCatalog?
     private var session: ReconnectingSession?
-    private(set) var role: Role = .operator
+    public private(set) var role: Role = .operator
 
-    init() {
+    public init() {
         catalog = try? CommandCatalog.bundled()
         Task { [weak self] in
             while let self {
@@ -54,20 +54,20 @@ final class ShellModel: ObservableObject {
 
     /// The NO CONTACT rule (build step 2): a session that has received
     /// nothing for `ContactAge.limit`.
-    var noContact: Bool { contact.isStale(now: now) }
+    public var noContact: Bool { contact.isStale(now: now) }
 
     /// Seconds since the last frame, for the curtain's count.
-    var contactAgeSeconds: Int { Int((contact.age(now: now) ?? 0).rounded(.down)) }
+    public var contactAgeSeconds: Int { Int((contact.age(now: now) ?? 0).rounded(.down)) }
 
     /// Whether this session's role may issue `command` (the §16.0 matrix, as
     /// exported). A button the role may not press is shown disabled, with why.
-    func may(_ command: ShellCommand) -> Bool {
+    public func may(_ command: ShellCommand) -> Bool {
         if case .fixture = connection { return !noContact }
         guard case .connected = connection, !noContact else { return false }
         return catalog?[command.name]?.allows(role) ?? false
     }
 
-    func why(_ command: ShellCommand) -> String {
+    public func why(_ command: ShellCommand) -> String {
         guard let desc = catalog?[command.name] else { return "\(command.name): not in the catalog" }
         return "\(command.name) — \(desc.roles.joined(separator: ", ")) (this session: \(role.rawValue))"
     }
@@ -75,7 +75,7 @@ final class ShellModel: ObservableObject {
     /// Connect, and keep reconnecting (build step 3): 0.25 s doubling to 2 s
     /// between attempts; on each return `system.status`, the telemetry
     /// subscription again (the session does both), then `show.getState`.
-    func connect(url: URL, token: String, role: Role) {
+    public func connect(url: URL, token: String, role: Role) {
         self.role = role
         connection = .connecting
         if (try? ControlPlaneClient.checkTransport(url)) == nil {
@@ -110,7 +110,7 @@ final class ShellModel: ObservableObject {
     }
 
     /// The `R` key: try again now instead of waiting out the backoff.
-    func retryNow() {
+    public func retryNow() {
         guard let session else { return }
         Task { await session.retryNow() }
     }
@@ -118,7 +118,7 @@ final class ShellModel: ObservableObject {
     /// The fixture as last heard `staleSeconds` ago (the snapshot's
     /// `--stale N`, a look at the NO CONTACT curtain); nil leaves the fixture
     /// untracked, so an open `--fixture` window never goes stale.
-    func loadFixture(staleSeconds: Double? = nil) {
+    public func loadFixture(staleSeconds: Double? = nil) {
         if let staleSeconds { contact.received(at: Date().addingTimeInterval(-staleSeconds)) }
         connection = .fixture
         status = Fixture.status
@@ -126,7 +126,7 @@ final class ShellModel: ObservableObject {
         show = Fixture.show
     }
 
-    func run(_ command: ShellCommand) {
+    public func run(_ command: ShellCommand) {
         note("→ \(command.name) \(command.payload.isEmpty ? "" : String(describing: command.payload))")
         if case .fixture = connection { return }
         guard let session else { return }
@@ -146,7 +146,7 @@ final class ShellModel: ObservableObject {
 
     /// Ask `show.getState` again (after connect, and when a stateChange names
     /// the items or the package). A control plane without it says so once.
-    func refreshShow() async {
+    public func refreshShow() async {
         guard let session else { return }
         guard let r = try? await session.send(.getState) else { return }
         if r.ok, let data = r.data, let view = try? data.decode(ShowStateView.self) {
@@ -180,8 +180,8 @@ final class ShellModel: ObservableObject {
 
 /// What the shell draws with no control plane (`--fixture`): the spec's own
 /// §10.1 example and a running show's snapshot.
-enum Fixture {
-    static let telemetry: Telemetry = {
+public enum Fixture {
+    public static let telemetry: Telemetry = {
         let json = """
         {"ts":1768000000000,"showState":"RUNNING","masterClockFrame":54000,"viewItem":"B2","previewItem":"B3",
          "droppedFramesTotal":0,"renderGpuTimeMs":4.7,"decodeSessions":4,"streamState":"live","streamBufferMs":210,
@@ -195,7 +195,7 @@ enum Fixture {
         return (try? JSONDecoder().decode(Telemetry.self, from: Data(json.utf8))) ?? Telemetry()
     }()
 
-    static let show: ShowStateView = {
+    public static let show: ShowStateView = {
         let json = """
         {"stateVersion":413,"showState":"RUNNING","rundown":{"id":"rundown","items":[
           {"id":"A1","kind":"clip","durationFrames":150,"autoFollow":true,"state":"DONE"},
@@ -208,7 +208,7 @@ enum Fixture {
         return (try? JSONDecoder().decode(ShowStateView.self, from: Data(json.utf8))) ?? ShowStateView()
     }()
 
-    static let status: StatusSnapshot = {
+    public static let status: StatusSnapshot = {
         let json = """
         {"showState":"RUNNING","package":{"path":"/shows/dress"},"preflightPassed":true,"masterClockState":"RUNNING",
          "stateVersion":413,"viewItem":"B2","previewItem":"B3","visibleOverlays":["lt1"],"fallbackActive":false,

@@ -19,10 +19,13 @@ let package = Package(
             resources: [.copy("Resources/commands.v0.4.json")]
         ),
         .target(name: "NBEClient", dependencies: ["NBEProtocol"]),
-        .executableTarget(name: "NBEOperatorShell", dependencies: ["NBEProtocol", "NBEClient"]),
+        // The operator shell's model and its pure logic, in a library so the
+        // tests can import it (the executable target cannot be imported).
+        .target(name: "NBEShell", dependencies: ["NBEProtocol", "NBEClient"]),
+        .executableTarget(name: "NBEOperatorShell", dependencies: ["NBEProtocol", "NBEClient", "NBEShell"]),
         .testTarget(
             name: "NBEProtocolTests",
-            dependencies: ["NBEProtocol", "NBEClient"],
+            dependencies: ["NBEProtocol", "NBEClient", "NBEShell"],
             resources: [.copy("Fixtures")]
         ),
     ]
