@@ -1695,6 +1695,30 @@ jobs:
           if [ "$ran" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 3 ]; then echo "FAIL resync-end e2e: expected at least 3 tests to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the adoption end-to-end actually ran (review4 step 7b)"
+        if: ${{ !cancelled() }}
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
+        # failures. 1 test (new), on the real engine built above: a show on
+        # air, the control plane restarted twice on one port and one journal.
+        # The engine is adopted each time; its clock never stops; restart 2's
+        # hello shows the View item and its start frame unchanged by restart
+        # 1's resync; the next take is applied. The file never skips: a
+        # missing binary fails its `before`.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/adoption.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL adoption.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "adoption e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=1 exercised>=1)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL adoption e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 1 ]; then echo "FAIL adoption e2e: expected at least 1 test to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 1 ]; then echo "FAIL adoption e2e: expected at least 1 test to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
         if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
