@@ -51,6 +51,9 @@ export const ALERT = {
   // lane's style. Both carry SPEC §8.10's E_AUDIO condition in status (§10.4).
   audioUnderrun: { id: "audio.underrun", auditEvent: "audio.underrun" },
   audioDevice: { id: "audio.device", auditEvent: "audio.device" },
+  // Review4 step 8 (design (c), hold only): the item on the View failed
+  // mid-play after the engine's retries; the View holds its last frame.
+  itemFailed: { id: "item.failed", auditEvent: "item.failed" },
 } as const;
 
 /**
@@ -329,6 +332,20 @@ export class OperatorSignals {
   evaluate(): void {
     const { state, lane } = this.i;
     const now = this.i.now();
+
+    // Review4 step 8: the item on the View failed mid-play and is held. A
+    // condition: up while that item is on the View in ERROR, gone once a take
+    // or a cut moves the View on (or the item is reset).
+    const held = state.viewItem !== null ? state.heldFailureOf(state.viewItem) : null;
+    if (held !== null) {
+      lane.raise(
+        ALERT.itemFailed,
+        "critical",
+        `${state.viewItem} failed on air: ${held}. Take Preview to move on.`,
+      );
+    } else {
+      lane.clear(ALERT.itemFailed.id, "the failed item is no longer on the View");
+    }
 
     // R18: the audit sink's own failure, on the lane and the health flag.
     const sinkOk = this.i.auditSinkOk();

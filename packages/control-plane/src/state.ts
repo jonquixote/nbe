@@ -200,6 +200,8 @@ export class ControlPlaneState {
   fallbackActive = false;
 
   itemStates = new Map<string, ItemState>();
+  /** itemRef → the engine's words for a clip that failed on air, held. */
+  heldFailures = new Map<string, string>();
   sceneStates = new Map<string, SceneState>();
   elementOverrides = new Map<string, Record<string, unknown>>();
   graphics = new Map<string, { templateId: string; fields: Record<string, unknown> }>();
@@ -390,6 +392,23 @@ export class ControlPlaneState {
   markError(itemRef: string): void {
     this.itemStates.set(itemRef, "ERROR");
     if (this.viewItem === itemRef) this.fallbackActive = true;
+  }
+
+  /**
+   * A clip that failed while playing, with the View holding its last frame
+   * (the engine's `decodeError` with a `held` detail; review4 step 8, design
+   * (c), hold only): ERROR, but no fallback, because the slate is not up. The
+   * engine's words are kept for the operator's alert (`item.failed`).
+   */
+  markErrorHeld(itemRef: string, detail: string): void {
+    this.itemStates.set(itemRef, "ERROR");
+    this.heldFailures.set(itemRef, detail);
+  }
+
+  /** The engine's words for an item in ERROR from a held clip failure. */
+  heldFailureOf(itemRef: string): string | null {
+    if (this.itemStateOf(itemRef) !== "ERROR") return null;
+    return this.heldFailures.get(itemRef) ?? null;
   }
 
   /**

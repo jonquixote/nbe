@@ -104,10 +104,30 @@ struct ClipRing {
     /// The last source index the View drew: the miss policy's hold (rule 4).
     last_presented: Cell<Option<u64>>,
     /// The missing frame a finished decoder left behind (a failed open or a
-    /// short file): not respawned for until the window moves, so a broken
-    /// clip holds and counts misses instead of spawning a thread a frame.
+    /// short file): retried on `CLIP_RETRY_DELAYS`, then not respawned for
+    /// until the window moves, so a broken clip holds and counts misses
+    /// instead of spawning a thread a frame.
     stalled_at: Option<u64>,
+    /// Retries spent on the current stall (review4 step 8).
+    retries: usize,
+    /// When the next retry may start.
+    retry_at: Option<Instant>,
+    /// Given up on: reported once, never respawned at this stall.
+    failed: bool,
+    /// Whether the current decoder has delivered a frame: an early end after
+    /// a delivery is a new stall, retried anew; one before it is the same.
+    delivered: bool,
 }
+
+/// A clip that stopped decoding before its end is retried this long after
+/// each early end; after the last it is given up on and reported (review4
+/// step 8, design (c)): 1.3 s of retries in all, with the View holding the
+/// last frame throughout.
+const CLIP_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(100),
+    Duration::from_millis(300),
+    Duration::from_millis(900),
+];
 
 impl ClipRing {
     fn slot(&self, j: u64) -> usize {
@@ -630,6 +650,10 @@ impl RenderLoop {
                 pending: None,
                 last_presented: Cell::new(None),
                 stalled_at: None,
+                retries: 0,
+                retry_at: None,
+                failed: false,
+                delivered: false,
             };
             // Through the staging pool, waiting for it when it is full: the
             // load boundary may wait, and `write_texture` would cost the prime
@@ -762,6 +786,10 @@ impl RenderLoop {
             READ_AHEAD_UPLOADS_PER_FRAME
         };
         let mut uploaded = 0;
+        // What the View draws now, for a clip given up on below: only an item
+        // on the View is reported (review4 step 8).
+        let view_assets = self.video_assets_for(Bus::View, frame);
+        let mut given_up: Vec<(String, u64, bool)> = Vec::new();
         self.uploads.reclaim(&self.gpu);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         for id in order {
@@ -784,15 +812,33 @@ impl RenderLoop {
             // Its position is the frame held back, when one is.
             if let Some(m) = clip.first_missing() {
                 let restart = match clip.worker.as_ref() {
-                    None => clip.stalled_at != Some(m),
+                    // A first start, or the window moved back before a stall
+                    // (a re-take, a reset): a fresh start, retries anew.
+                    None if clip.stalled_at.is_none_or(|s| m < s) => {
+                        clip.retries = 0;
+                        clip.failed = false;
+                        clip.retry_at = None;
+                        true
+                    }
+                    // Given up on: the View holds; nothing is respawned while
+                    // the window moves forward (a thread a frame, otherwise).
+                    None if clip.failed => false,
+                    // A stall: retry on the backoff, at the first missing frame
+                    // as it stands then.
+                    None => clip.retry_at.is_some_and(|t| Instant::now() >= t),
                     Some(w) => {
                         let next = clip.pending.as_ref().map(|f| f.index).unwrap_or(w.next());
                         next > m || m > next + clip.window.len() as u64
                     }
                 };
                 if restart {
+                    if clip.retry_at.take().is_some() {
+                        self.state.clip_retries_total.fetch_add(1, Ordering::SeqCst);
+                        tracing::warn!(asset = %id, frame = m, retry = clip.retries, "clip read-ahead: retrying the decoder at its first missing frame");
+                    }
                     clip.pending = None;
                     clip.stalled_at = None;
+                    clip.delivered = false;
                     clip.worker = Some(ReadAhead::spawn(&id, clip.path.clone(), m, clip.length));
                 }
             }
@@ -832,13 +878,33 @@ impl RenderLoop {
                             break;
                         }
                         clip.slot_frame[s] = Some(j);
+                        clip.delivered = true;
                         budget -= 1;
                         uploaded += 1;
                     }
                     Delivery::Pending => break,
                     Delivery::Done => {
                         clip.worker = None;
-                        clip.stalled_at = clip.first_missing();
+                        let early = clip.first_missing();
+                        // An early end (a decode failure or a file gone short):
+                        // retry after a backoff; after the last, give up once.
+                        if let Some(m) = early {
+                            // A decoder that delivered a frame made progress:
+                            // this is a new stall, retried anew.
+                            if clip.delivered {
+                                clip.retries = 0;
+                            }
+                            if !clip.failed {
+                                if let Some(delay) = CLIP_RETRY_DELAYS.get(clip.retries) {
+                                    clip.retries += 1;
+                                    clip.retry_at = Some(Instant::now() + *delay);
+                                } else {
+                                    clip.failed = true;
+                                    given_up.push((id.clone(), m, clip.path.exists()));
+                                }
+                            }
+                        }
+                        clip.stalled_at = early;
                         break;
                     }
                 }
@@ -850,7 +916,63 @@ impl RenderLoop {
             self.gpu.queue.submit([enc.finish()]);
             self.uploads.submitted();
         }
+        for (asset, at, file_exists) in given_up {
+            self.clip_given_up(&asset, at, file_exists, frame, &view_assets);
+        }
         uploaded
+    }
+
+    /// A clip given up on after its retries (review4 step 8, design (c),
+    /// hold only). Counted always. If it is on the View: the item is reported
+    /// `decodeError` with a `held` detail (the View keeps its last frame; the
+    /// control plane marks it ERROR without raising the fallback), its end
+    /// timer sends no `end`, and its audio fades out over 500 ms so sound does
+    /// not run on under a frozen picture.
+    fn clip_given_up(
+        &self,
+        asset: &str,
+        at: u64,
+        file_exists: bool,
+        frame: u64,
+        view_assets: &std::collections::BTreeSet<String>,
+    ) {
+        self.state
+            .clip_failures_total
+            .fetch_add(1, Ordering::SeqCst);
+        let code = if file_exists {
+            "E_CLIP_DECODE"
+        } else {
+            "E_CLIP_MISSING"
+        };
+        let item = self.state.view_item.lock().unwrap().clone();
+        let Some(item) = item.filter(|_| view_assets.contains(asset)) else {
+            tracing::warn!(
+                asset,
+                frame = at,
+                code,
+                "clip given up on after its retries; not on the View, not reported"
+            );
+            return;
+        };
+        tracing::error!(asset, item = %item, frame = at, code, "clip given up on after its retries; the View holds its last frame");
+        self.state.failed_items.lock().unwrap().insert(item.clone());
+        self.state.audio_commands.lock().unwrap().push(
+            crate::audio_control::AudioCommand::TakeItem {
+                item_ref: String::new(),
+                sources: Vec::new(),
+                t0: frame,
+                mode: "follow".to_string(),
+                ramp_ms: 500.0,
+                crossfade_frames: 0,
+            },
+        );
+        self.state.item_events.lock().unwrap().push((
+            item,
+            nbe_protocol::ItemEvent::DecodeError,
+            Some(format!(
+                "held: {code}: clip {asset} stopped decoding at source frame {at}; the View holds its last frame"
+            )),
+        ));
     }
 
     /// Test and bench seam: pump the read-ahead, uncapped, until every clip's
