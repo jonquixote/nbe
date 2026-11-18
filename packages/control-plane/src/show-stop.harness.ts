@@ -532,6 +532,9 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
         return null;
       }
     }
+    // The outputs are up (or there are none): the run before the stop starts
+    // here, except in E4's held leg below.
+    const outputsUpAt = Date.now();
     if (opts.record) {
       // Chapters for the sidecar the finalize must write.
       for (const name of MARKERS) {
@@ -539,11 +542,23 @@ export async function leg(opts: LegOptions, skip: (why: string) => void): Promis
         assert.ok(await s.server.awaitApplied(v, OUTPUT_ACK_MS), `the engine applies marker.add ${name}`);
         await sleep(RUN_MS / 2);
       }
-    } else {
-      // The run counts from the cut, so waiting for its ack does not carry
-      // the stop past A1's end (150 frames, 5 s): an item end inside the
-      // stop's window would be a version of its own.
+    } else if (opts.slowCutAckMs) {
+      // E4's held leg only: the run counts from the cut, so waiting out the
+      // held ack does not carry the stop past A1's end (150 frames, 5 s); an
+      // item end inside the stop's window would be a version of its own.
+      // Counting from the cut in EVERY leg (#134) let a stream's start eat
+      // the run, and main 95c0f37's E2 stopped a stream before it had sent a
+      // byte. Every other leg runs RUN_MS after its outputs are up.
       await sleep(Math.max(0, RUN_MS - (Date.now() - cutAt)));
+    } else {
+      await sleep(RUN_MS);
+    }
+    // The harness's own check: a leg with outputs ran them RUN_MS before the
+    // stop. A run that something before it ate (main 95c0f37, E2) fails here,
+    // by name, on every run, not only when a stream is slow to send.
+    if (opts.record || opts.stream) {
+      const ran = Date.now() - outputsUpAt;
+      assert.ok(ran >= RUN_MS - 5, `the outputs ran ${ran} ms before the stop, not RUN_MS (${RUN_MS} ms)`);
     }
     if (sink) assert.ok(sink.bytes() > 0, "precondition: the stream is on air before the stop");
     if (opts.failRecordFinalize) chmodSync(staged.rec, 0o555);
