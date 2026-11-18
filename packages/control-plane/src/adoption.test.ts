@@ -138,11 +138,14 @@ async function rig(
         }),
   });
   t.after(() => server.close());
-  const open = (role: string, token: string): Promise<WebSocket> =>
+  // The listener is attached at construction: a frame the server sends at
+  // connect can arrive with the upgrade, before an `await` would resume.
+  const open = (role: string, token: string, onMessage?: (msg: Record<string, unknown>) => void): Promise<WebSocket> =>
     new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
         headers: { authorization: `Bearer ${token}`, "x-nbe-role": role },
       });
+      if (onMessage) ws.on("message", (buf: Buffer) => onMessage(JSON.parse(buf.toString("utf8")) as Record<string, unknown>));
       t.after(() => ws.close());
       ws.once("open", () => resolve(ws));
       ws.once("error", reject);
@@ -160,9 +163,7 @@ async function rig(
         : [],
     engine: async (say) => {
       const directives: Array<Record<string, unknown>> = [];
-      const ws = await open("render", RENDER);
-      ws.on("message", (buf: Buffer) => {
-        const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+      const ws = await open("render", RENDER, (msg) => {
         if (msg.kind === "directive") directives.push(msg);
       });
       if (say !== null) ws.send(JSON.stringify(say));
