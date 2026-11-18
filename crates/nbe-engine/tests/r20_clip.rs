@@ -28,7 +28,7 @@ mod capture;
 use nbe_engine::decode::DecodeSession;
 use nbe_engine::directive::DirectiveHandler;
 use nbe_engine::gpu::Gpu;
-use nbe_engine::render::{RenderLoop, VIEW_H, VIEW_W};
+use nbe_engine::render::{ReadAheadCaps, RenderLoop, VIEW_H, VIEW_W};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
 use std::collections::HashSet;
@@ -360,7 +360,11 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
             d.uploads as u64 * 1920 * 1080 * 4,
             "frame {f}: whole 1080p frames"
         );
-        assert!(d.uploads <= 4, "frame {f}: the count budget");
+        // Stage (b): the byte cap (two 1080p frames) bounds one clip's tick.
+        assert!(
+            d.uploads <= 2,
+            "frame {f}: the byte cap, two 1080p frames a tick"
+        );
         assert!(
             d.timed() <= r.phases.read_ahead,
             "frame {f}: the split, the fourth phase included, fits inside the read-ahead phase: {d:?} against {:?}",
@@ -377,6 +381,52 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
     }
     println!("read-ahead stage (a): 150 frames, {uploads} uploads, {bytes} bytes");
     assert!(uploads > 0, "the read-ahead uploaded past the head");
+}
+
+/// Read-ahead stage (b), I1: the floor, and the caps never drop a frame the
+/// render needs (the user's ruling of 2026-11-18 04:45). With EVERY cap at
+/// zero only the floor stages: one frame a tick for the on-air clip. The
+/// counter clip still plays its 150 frames without a read-ahead miss, and the
+/// floor's frames are the only uploads.
+#[tokio::test]
+async fn with_every_cap_at_zero_the_floor_alone_plays_the_clip_without_a_miss() {
+    let _lane = LANE.read().await;
+    let source = dress_media("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, 150);
+    let mut render = on_air(dir.path()).await;
+    render.set_read_ahead_caps(ReadAheadCaps {
+        time: std::time::Duration::ZERO,
+        bytes: 0,
+    });
+    let before = misses(&render);
+    let (mut uploads, mut floor) = (0usize, 0usize);
+    // Paced near the house rate, as T2: the worker streams frame 90 on only
+    // in time if the frames do not race ahead of it.
+    for f in 0..150u64 {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let d = render.render_frame(f, None).phases.read_ahead_detail;
+        assert!(
+            d.uploads <= 1,
+            "frame {f}: with every cap at zero only the floor stages, one a tick: {d:?}"
+        );
+        assert_eq!(
+            d.floor_uploads, d.uploads,
+            "frame {f}: every upload is the floor's: {d:?}"
+        );
+        uploads += d.uploads;
+        floor += d.floor_uploads;
+    }
+    println!("read-ahead stage (b) I1: 150 frames, {uploads} uploads, all {floor} by the floor");
+    assert!(
+        uploads > 0,
+        "the floor staged frames: an on-air clip is never starved"
+    );
+    assert_eq!(
+        misses(&render),
+        before,
+        "the caps at zero cost the clip no frame it needed: read-ahead misses moved"
+    );
 }
 
 /// R47: rounds of the settle, a count, never a deadline (R39; R48's form).
