@@ -52,6 +52,26 @@ final class ShellModelTests: XCTestCase {
         }
     }
 
+    /// Every fixture state gives its own condition, and only its own.
+    func testEachFixtureStateGivesItsCondition() {
+        for state in FixtureState.allCases {
+            let model = ShellModel()
+            model.loadFixture(state: state)
+            model.now = Date()
+            let alerts = AlertFeed.current(status: model.status, telemetry: model.telemetry)
+            XCTAssertEqual(model.noContact, state == .noContact, "\(state): NO CONTACT")
+            XCTAssertEqual(model.telemetry.fallbackActive == true, state == .fallback, "\(state): the fallback")
+            XCTAssertEqual(alerts.count, state == .alerts ? 3 : 0, "\(state): the alerts")
+            switch (state, model.connection) {
+            case (.lost, .lost), (.connecting, .connecting), (.failed, .failed): break
+            case (.lost, _), (.connecting, _), (.failed, _):
+                XCTFail("\(state): the connection reads \(model.connection)")
+            case (_, .fixture): break
+            default: XCTFail("\(state): the connection reads \(model.connection)")
+            }
+        }
+    }
+
     /// #120's untested part: the model's `.lost` state. A loopback control
     /// plane answers, sends a tick, then drops the first connection; the
     /// model must pass through `.lost(since:)` and note "lost contact"
