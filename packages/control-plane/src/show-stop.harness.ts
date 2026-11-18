@@ -339,9 +339,28 @@ function stagePackage(): { pkg: string; rec: string } {
   return { pkg, rec };
 }
 
-/** Bytes written into the record directory so far (the take's media). */
-function recordedBytes(dir: string): number {
-  return readdirSync(dir).reduce((n, f) => n + statSync(join(dir, f)).size, 0);
+/** The engine's writability probe (record/mod.rs `probe_writable`): created
+ * and removed in the record directory on every telemetry tick. Not media. */
+export const WRITE_PROBE_PREFIX = ".nbe-write-probe-";
+
+/** Bytes written into the record directory so far (the take's media). The
+ * engine's write probe is not counted, and an entry that vanishes between the
+ * listing and its stat counts 0: listing then stating raced the probe's
+ * removal on #119's CI (ENOENT, determinism list item 5). */
+export function recordedBytes(dir: string): number {
+  return readdirSync(dir)
+    .filter((f) => !f.startsWith(WRITE_PROBE_PREFIX))
+    .reduce((n, f) => n + sizeOrZero(join(dir, f)), 0);
+}
+
+/** A file's size, or 0 if it no longer exists. Any other error is thrown. */
+export function sizeOrZero(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw e;
+  }
 }
 
 const linesSince = (s: Stack, from: number, needle: string): string[] => s.log.slice(from).filter((l) => l.includes(needle));

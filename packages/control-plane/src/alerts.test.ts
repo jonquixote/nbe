@@ -27,7 +27,10 @@ function rig(opts: { apply?: boolean } = {}) {
   let sinkOk = true;
   // A clock the test can move: "stale" means time passed with no new report.
   let offset = 0;
-  const now = () => Date.now() + offset;
+  // Held still across the registration below, so its anchor is a known
+  // instant a report can be placed exactly on.
+  let frozen: number | null = null;
+  const now = () => (frozen ?? Date.now()) + offset;
   const lane = new AlertLane(state, (edge, a, cause) => rows.push({ edge, id: a.id, event: a.auditEvent, cause }), now);
   const signals = new OperatorSignals({
     state,
@@ -42,7 +45,10 @@ function rig(opts: { apply?: boolean } = {}) {
       if (opts.apply) state.streamState = c.to;
     },
   });
+  frozen = Date.now();
   signals.onRegistered();
+  const registeredAt = now();
+  frozen = null;
   return {
     state,
     rows,
@@ -52,6 +58,11 @@ function rig(opts: { apply?: boolean } = {}) {
     /** A fresh engine report, received now. */
     report: (streamTransportState: string) => {
       report = { frame: { streamTransportState } as EngineReport["frame"], receivedAt: now() };
+    },
+    /** A report received at the registration's own instant: not after its
+     * anchor. Placed exactly, not by hoping the wall clock has not moved. */
+    reportAtRegistration: (streamTransportState: string) => {
+      report = { frame: { streamTransportState } as EngineReport["frame"], receivedAt: registeredAt };
     },
     /** A fresh engine report carrying `fields`, received now. */
     reportWith: (fields: Partial<EngineReport["frame"]>) => {
@@ -374,7 +385,7 @@ test("D1: a fresh report postdating the anchor corrects a contradicting belief b
 test("D1: a stale report corrects nothing, and neither does one that predates the anchor", async () => {
   const r = rig({ apply: true });
   r.state.streamState = "live";
-  r.report("none"); // received at the registration's instant: not after the anchor
+  r.reportAtRegistration("none"); // received at the registration's instant: not after the anchor
   r.signals.evaluate();
   assert.equal(r.corrections.length, 0, "a report that does not postdate the anchor");
   await after(r, "none");
