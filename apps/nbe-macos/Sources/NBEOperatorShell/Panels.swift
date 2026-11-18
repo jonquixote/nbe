@@ -296,6 +296,27 @@ struct AlertsBanner: View {
     }
 }
 
+/// Rule 1 and build step 2: nothing received for 2 s. Ranked above every
+/// other curtain; the last values stay visible beneath it, greyed.
+struct NoContactCurtain: View {
+    let seconds: Int
+
+    var body: some View {
+        ZStack {
+            Color.gray.opacity(0.82)
+            VStack(spacing: 10) {
+                Text("NO CONTACT, \(seconds) s").font(.system(size: 64, weight: .black)).foregroundStyle(.white)
+                Text("This screen is blind. The show may still be running.")
+                    .font(.title2.bold()).foregroundStyle(.white)
+                Text("Values beneath are from \(seconds) s ago. No command can be sent.")
+                    .font(.title3).foregroundStyle(.white.opacity(0.9))
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
 struct FallbackCurtain: View {
     var body: some View {
         ZStack {
