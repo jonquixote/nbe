@@ -727,11 +727,11 @@ fn admit<E>(
     len: usize,
     send: impl FnOnce() -> Result<(), E>,
 ) -> Result<(), E> {
-    buffered.fetch_add(len, Ordering::SeqCst);
+    // MUTANT (determinism item 11, do not merge): the credit moved back after
+    // the send, the order main had. The race test must fail on it.
     let sent = send();
-    if sent.is_err() {
-        // Never in the channel, so never debited: this credit is still whole.
-        buffered.fetch_sub(len, Ordering::SeqCst);
+    if sent.is_ok() {
+        buffered.fetch_add(len, Ordering::SeqCst);
     }
     sent
 }
