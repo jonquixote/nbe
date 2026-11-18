@@ -152,7 +152,9 @@ test("[queue 2] E3, record only: show.stop alone finalizes the take with its sid
 });
 
 test("[queue 2] E4, neither output active (control): show.stop applies, the clock stops, nothing is skipped and no gap follows", async (t) => {
-  const r = await leg({ record: false, stream: false }, (why) => t.skip(why));
+  // Determinism item 9: the cut's ack is held past the run before the stop,
+  // so the harness must wait for it, or it lands in the stop's window.
+  const r = await leg({ record: false, stream: false, slowCutAckMs: 3_000 }, (why) => t.skip(why));
   if (!r) return;
   report(r, { record: false, stream: false });
   const o = r.observed;
@@ -172,6 +174,7 @@ test("[queue 2] E4, neither output active (control): show.stop applies, the cloc
     "the control case",
   );
   assert.deepEqual(o, { ...o, ...cleanStop(o), stopWarned: false }, "the control case, on the wire");
+  assert.deepEqual(o.acksFromStop, [o.stopVersion, o.stopVersion + 1], "exactly the stop's acks after the stop: none from before it");
 });
 
 test("[queue 2] concurrent: a second operator's command inside the ack window is not skipped; the versions are distinct and ordered; the stream ends off air", async (t) => {
