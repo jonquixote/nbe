@@ -329,7 +329,8 @@ impl UploadPool {
                     view.slice(at..at + row).copy_from_slice(src);
                 }
             }
-            split.copy = copied.elapsed();
+            // MUTANT Ma3 (do not merge): the copy untimed.
+            let _ = copied;
         }
         let unmapped = std::time::Instant::now();
         buffer.unmap();
