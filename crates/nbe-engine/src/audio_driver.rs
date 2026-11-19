@@ -360,9 +360,7 @@ impl AudioDriver {
     ///
     /// Returns the number of frames rendered.
     pub fn cycle(&mut self, master_frame: u64) -> usize {
-        self.state
-            .audio_cycles_total
-            .fetch_add(1, Ordering::Relaxed);
+        // MUTANT MC2 (do not merge): the cycle not counted.
         self.sync_library();
         self.sync_record_tap();
         self.sync_stream_tap();
