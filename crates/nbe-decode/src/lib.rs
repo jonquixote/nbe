@@ -74,6 +74,58 @@ pub fn describe_ns_error(e: &NSError) -> String {
     out
 }
 
+/// Determinism item 12, step 2: the underlying codes a platform decoder
+/// returns when it was starved (memory, a reset, an interruption), not when
+/// the file is bad. A decode that failed with one of these is worth one retry.
+pub const TRANSIENT_DECODE_CODES: [i64; 5] = [
+    -12904, // kVTAllocationFailedErr
+    -12911, // kVTVideoDecoderMalfunctionErr
+    -11819, // AVErrorMediaServicesWereReset
+    -11847, // AVErrorOperationInterrupted
+    -11839, // AVErrorDecoderTemporarilyUnavailable
+];
+
+impl DecodeError {
+    /// The negative codes named in this error's reason, as
+    /// [`describe_ns_error`] writes them ("(<domain> <code>" and each
+    /// "underlying <domain> <code>").
+    pub fn codes(&self) -> Vec<i64> {
+        let reason = match self {
+            DecodeError::Open { reason, .. } | DecodeError::Failed { reason, .. } => reason,
+            DecodeError::NoVideoTrack(_) => return Vec::new(),
+        };
+        reason
+            .split(|c: char| c.is_whitespace() || c == ';' || c == '(' || c == ')')
+            .filter(|t| t.starts_with('-'))
+            .filter_map(|t| t.parse::<i64>().ok())
+            .collect()
+    }
+
+    /// The decoder was starved, not the file bad: one of its codes is in
+    /// [`TRANSIENT_DECODE_CODES`].
+    pub fn is_transient(&self) -> bool {
+        self.codes()
+            .iter()
+            .any(|c| TRANSIENT_DECODE_CODES.contains(c))
+    }
+}
+
+/// Run `attempt`; if it fails transiently ([`DecodeError::is_transient`]),
+/// wait `delay` and run it once more. Any other failure, or a success,
+/// returns at once: a corrupt file is never retried.
+pub fn retry_transient<T>(
+    mut attempt: impl FnMut() -> Result<T, DecodeError>,
+    delay: std::time::Duration,
+) -> Result<T, DecodeError> {
+    match attempt() {
+        Err(e) if e.is_transient() => {
+            std::thread::sleep(delay);
+            attempt()
+        }
+        other => other,
+    }
+}
+
 /// `kCVPixelFormatType_32BGRA`, the format the reader is asked for.
 const PIXEL_FORMAT_32BGRA: u32 = 0x42475241; // 'BGRA'
 
@@ -866,6 +918,68 @@ pub fn cadence_holds(pattern: &[u64]) -> Vec<u64> {
 mod tests {
 
     /// Determinism item 12: an NSError's reason keeps its domain and code.
+    fn failed(reason: &str) -> DecodeError {
+        DecodeError::Failed {
+            path: "/p".into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Item 12 step 2, R1: a starved decoder's code is transient; bad data
+    /// and a bare "Cannot Decode" are not.
+    #[test]
+    fn a_starved_decoder_is_transient_and_bad_data_is_not() {
+        let starved = failed("Cannot Decode (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12904)");
+        assert_eq!(starved.codes(), vec![-11821, -12904]);
+        assert!(starved.is_transient());
+        assert!(!failed("Cannot Decode (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12909)").is_transient());
+        assert!(!failed("Cannot Decode (AVFoundationErrorDomain -11821)").is_transient());
+    }
+
+    /// R2-R4: one retry for a transient failure, none for any other.
+    #[test]
+    fn a_transient_failure_is_retried_once_and_a_corrupt_file_never() {
+        let delay = std::time::Duration::from_millis(1);
+        let transient = || {
+            failed("x (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12904)")
+        };
+        let mut n = 0;
+        let r = retry_transient(
+            || {
+                n += 1;
+                if n == 1 {
+                    Err(transient())
+                } else {
+                    Ok(7)
+                }
+            },
+            delay,
+        );
+        assert_eq!((r.ok(), n), (Some(7), 2), "R2: transient, then ok");
+        let mut n = 0;
+        let r: Result<u8, _> = retry_transient(
+            || {
+                n += 1;
+                Err(failed(
+                    "x (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12909)",
+                ))
+            },
+            delay,
+        );
+        assert!(r.is_err());
+        assert_eq!(n, 1, "R3: a corrupt file is tried once");
+        let mut n = 0;
+        let r: Result<u8, _> = retry_transient(
+            || {
+                n += 1;
+                Err(transient())
+            },
+            delay,
+        );
+        assert!(r.is_err());
+        assert_eq!(n, 2, "R4: transient twice is two attempts, then the error");
+    }
+
     #[test]
     fn an_ns_error_reason_keeps_its_domain_and_code() {
         let e = unsafe {
