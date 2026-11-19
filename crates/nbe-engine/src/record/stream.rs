@@ -848,9 +848,8 @@ pub fn hand_off_stream_surface(
             false
         }
         Err(TrySendError::Disconnected(_)) => {
-            if !stop_requested() {
-                skipped.count(SkipPath::ThreadGone, 1);
-            }
+            // MUTANT MT1 (do not merge): a closed channel is never counted.
+            let _ = stop_requested;
             false
         }
     }
