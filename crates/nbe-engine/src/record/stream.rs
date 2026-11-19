@@ -1348,6 +1348,16 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             STREAM_THREAD_EXIT_BACKSTOP * 3,
         );
+        // Determinism item 13 (main 9ffa9a1, CI): stopped at once, a slow
+        // encoder open outlasted the backstop and the thread was never in its
+        // exit. The stop lands on a RUNNING thread, as the slow-exit test's
+        // does, so the backstop can only find it hung in Exiting.
+        until_running(&s).await;
+        assert_eq!(
+            s.stats().phase(),
+            StreamThreadPhase::Running,
+            "precondition: the stop lands on a running thread"
+        );
         let err = s
             .stop_and_close()
             .await
