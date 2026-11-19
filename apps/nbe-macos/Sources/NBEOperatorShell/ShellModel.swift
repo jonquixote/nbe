@@ -34,10 +34,12 @@ final class ShellModel: ObservableObject {
     @Published var contact = ContactAge()
     /// The shell's own clock, advanced four times a second so the age counts.
     @Published var now = Date()
+    /// The next reconnect attempt while lost (build step 3), for the curtain.
+    @Published var retryAttempt: Int?
     @Published var log: [String] = []
 
     let catalog: CommandCatalog?
-    private var client: ControlPlaneClient?
+    private var session: ReconnectingSession?
     private(set) var role: Role = .operator
 
     init() {
@@ -70,25 +72,47 @@ final class ShellModel: ObservableObject {
         return "\(command.name) — \(desc.roles.joined(separator: ", ")) (this session: \(role.rawValue))"
     }
 
+    /// Connect, and keep reconnecting (build step 3): 0.25 s doubling to 2 s
+    /// between attempts; on each return `system.status`, the telemetry
+    /// subscription again (the session does both), then `show.getState`.
     func connect(url: URL, token: String, role: Role) {
         self.role = role
         connection = .connecting
-        let client = ControlPlaneClient(config: .init(url: url, token: token, role: role), catalog: catalog)
-        self.client = client
+        if (try? ControlPlaneClient.checkTransport(url)) == nil {
+            connection = .failed("a token over ws:// to a remote host is refused (SPEC §5.3: use wss://)")
+            return
+        }
+        let session = ReconnectingSession(config: .init(url: url, token: token, role: role), catalog: catalog)
+        self.session = session
         Task {
-            do {
-                let response = try await client.connect()
-                contact.received(at: Date())
-                if let data = response.data, let snap = try? data.decode(StatusSnapshot.self) { status = snap }
-                connection = .connected(role: role)
-                _ = try? await client.send(.telemetrySubscribe(intervalMs: 100))
-                await refreshShow()
-                for await frame in client.pushes { fold(frame) }
-                connection = .lost(since: Date())
-            } catch {
-                connection = .failed(String(describing: error))
+            await session.start()
+            for await event in session.events {
+                switch event {
+                case .connected(let hello):
+                    contact.received(at: Date())
+                    if let data = hello.data, let snap = try? data.decode(StatusSnapshot.self) { status = snap }
+                    connection = .connected(role: role)
+                    retryAttempt = nil
+                    note("connected")
+                    await refreshShow()
+                case .frame(let frame):
+                    fold(frame)
+                case .lost(let at):
+                    if case .lost = connection {} else {
+                        connection = .lost(since: at)
+                        note("lost contact")
+                    }
+                case .retrying(let attempt, _):
+                    retryAttempt = attempt
+                }
             }
         }
+    }
+
+    /// The `R` key: try again now instead of waiting out the backoff.
+    func retryNow() {
+        guard let session else { return }
+        Task { await session.retryNow() }
     }
 
     /// The fixture as last heard `staleSeconds` ago (the snapshot's
@@ -105,10 +129,10 @@ final class ShellModel: ObservableObject {
     func run(_ command: ShellCommand) {
         note("→ \(command.name) \(command.payload.isEmpty ? "" : String(describing: command.payload))")
         if case .fixture = connection { return }
-        guard let client else { return }
+        guard let session else { return }
         Task {
             do {
-                let r = try await client.send(command, baseStateVersion: nil)
+                let r = try await session.send(command)
                 if let e = r.error { lastProblem = "\(command.name): \(e.code) \(e.message)" }
                 note("← \(command.name) \(r.status) sv \(r.stateVersion)")
                 // What the panels draw from show.getState (the rundown's
@@ -123,8 +147,8 @@ final class ShellModel: ObservableObject {
     /// Ask `show.getState` again (after connect, and when a stateChange names
     /// the items or the package). A control plane without it says so once.
     func refreshShow() async {
-        guard let client else { return }
-        guard let r = try? await client.send(.getState) else { return }
+        guard let session else { return }
+        guard let r = try? await session.send(.getState) else { return }
         if r.ok, let data = r.data, let view = try? data.decode(ShowStateView.self) {
             show = view
             showNote = nil
