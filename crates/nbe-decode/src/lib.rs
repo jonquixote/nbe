@@ -118,9 +118,10 @@ pub fn retry_transient<T>(
     delay: std::time::Duration,
 ) -> Result<T, DecodeError> {
     match attempt() {
+        // MUTANT MR2 (do not merge): no retry.
         Err(e) if e.is_transient() => {
-            std::thread::sleep(delay);
-            attempt()
+            let _ = delay;
+            Err(e)
         }
         other => other,
     }
