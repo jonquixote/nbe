@@ -49,10 +49,13 @@ pub enum SkipPath {
     NoSequenceHeader,
     /// The stream thread: the publisher shed a unit (counted per unit).
     Shed,
+    /// The loop's handoff: the stream thread is gone with no stop asked of
+    /// it (a panic): the frame had nowhere to go (H1).
+    ThreadGone,
 }
 
 impl SkipPath {
-    pub const ALL: [SkipPath; 10] = [
+    pub const ALL: [SkipPath; 11] = [
         SkipPath::NoSurface,
         SkipPath::OverBudget,
         SkipPath::NoDraw,
@@ -63,6 +66,7 @@ impl SkipPath {
         SkipPath::BeforeFirst,
         SkipPath::NoSequenceHeader,
         SkipPath::Shed,
+        SkipPath::ThreadGone,
     ];
 
     pub fn name(self) -> &'static str {
@@ -77,6 +81,7 @@ impl SkipPath {
             SkipPath::BeforeFirst => "before first",
             SkipPath::NoSequenceHeader => "no sequence header",
             SkipPath::Shed => "shed",
+            SkipPath::ThreadGone => "thread gone",
         }
     }
 }

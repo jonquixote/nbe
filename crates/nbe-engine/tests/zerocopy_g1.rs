@@ -191,7 +191,7 @@ async fn a_stalled_stream_costs_record_nothing() {
         .await;
         if let Some(surface) = shared {
             let t = std::time::Instant::now();
-            hand_off_stream_surface(&stream_tx, surface, drawn, frame, &stream_skips);
+            hand_off_stream_surface(&stream_tx, surface, drawn, frame, &stream_skips, &|| false);
             worst_handoff = worst_handoff.max(t.elapsed());
         }
         record.tick();
@@ -316,7 +316,7 @@ fn stream_one(
     let drawn = nbe_engine::record::DrawDone::of_view(render);
     let (tx, rx) = std::sync::mpsc::sync_channel(STREAM_CHANNEL_BOUND);
     let skipped = nbe_engine::record::SkipCount::default();
-    hand_off_stream_surface(&tx, surface, drawn, frame, &skipped);
+    hand_off_stream_surface(&tx, surface, drawn, frame, &skipped, &|| false);
     (
         rx.try_recv().ok(),
         skipped.load(Ordering::SeqCst),
