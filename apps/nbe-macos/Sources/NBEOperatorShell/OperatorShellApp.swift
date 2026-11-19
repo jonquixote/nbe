@@ -16,13 +16,24 @@ struct OperatorShellApp: App {
         // `--snapshot <path.png>`: render the fixture state to a PNG and exit,
         // with no window and no control plane (a look at the layout).
         let args = CommandLine.arguments
+        // `--snapshot-all <dir>`: every fixture state, one PNG each, for review.
+        if let i = args.firstIndex(of: "--snapshot-all"), i + 1 < args.count {
+            let dir = URL(fileURLWithPath: args[i + 1], isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for state in FixtureState.allCases {
+                Snapshot.write(to: dir.appendingPathComponent("\(state.rawValue).png")) { $0.loadFixture(state: state) }
+            }
+            exit(0)
+        }
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             // `--stale N`: the fixture as last heard N seconds ago.
             let stale = args.firstIndex(of: "--stale").flatMap { j in
                 j + 1 < args.count ? Double(args[j + 1]) : nil
             }
             // `--alerts`: the fixture carries three sample alerts.
-            Snapshot.write(to: URL(fileURLWithPath: args[i + 1]), staleSeconds: stale, alerts: args.contains("--alerts"))
+            Snapshot.write(to: URL(fileURLWithPath: args[i + 1])) {
+                $0.loadFixture(staleSeconds: stale, alerts: args.contains("--alerts"))
+            }
             exit(0)
         }
         // Run from `swift run`, with no app bundle: become a regular app with
@@ -42,7 +53,13 @@ struct OperatorShellApp: App {
     @MainActor private func start() {
         let env = ProcessInfo.processInfo.environment
         if CommandLine.arguments.contains("--fixture") {
-            model.loadFixture(alerts: CommandLine.arguments.contains("--alerts"))
+            let args = CommandLine.arguments
+            // `--state <name>`: one of the fixture's states (FixtureState).
+            if let j = args.firstIndex(of: "--state"), j + 1 < args.count, let state = FixtureState(rawValue: args[j + 1]) {
+                model.loadFixture(state: state)
+            } else {
+                model.loadFixture(alerts: args.contains("--alerts"))
+            }
             return
         }
         guard let token = env["NBE_SHELL_TOKEN"], !token.isEmpty else {
@@ -128,10 +145,10 @@ struct ShellWindow: View {
 /// (`cacheDisplay`), so controls draw as they do in a window. No server.
 @MainActor
 enum Snapshot {
-    static func write(to url: URL, staleSeconds: Double? = nil, alerts: Bool = false) {
+    static func write(to url: URL, configure: (ShellModel) -> Void) {
         _ = NSApplication.shared
         let model = ShellModel()
-        model.loadFixture(staleSeconds: staleSeconds, alerts: alerts)
+        configure(model)
         let size = NSSize(width: 1280, height: 820)
         let root = ShellWindow(model: model)
             .frame(width: size.width, height: size.height, alignment: .top)

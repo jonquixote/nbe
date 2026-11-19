@@ -158,6 +158,28 @@ public final class ShellModel: ObservableObject {
         show = Fixture.show
     }
 
+    /// One of the fixture's states, for review (`--snapshot-all`, `--state`).
+    public func loadFixture(state: FixtureState) {
+        switch state {
+        case .running: loadFixture()
+        case .alerts: loadFixture(alerts: true)
+        case .noContact: loadFixture(staleSeconds: 5)
+        case .fallback:
+            loadFixture()
+            telemetry.fallbackActive = true
+            status.fallbackActive = true
+        case .lost:
+            loadFixture()
+            connection = .lost(since: Date().addingTimeInterval(-3))
+        case .connecting:
+            loadFixture()
+            connection = .connecting
+        case .failed:
+            loadFixture()
+            connection = .failed("sample failure: a token over ws:// to a remote host is refused")
+        }
+    }
+
     public func run(_ command: ShellCommand) {
         note("→ \(command.name) \(command.payload.isEmpty ? "" : String(describing: command.payload))")
         if case .fixture = connection { return }
@@ -214,6 +236,11 @@ public final class ShellModel: ObservableObject {
         log.insert(line, at: 0)
         if log.count > 200 { log.removeLast() }
     }
+}
+
+/// The states the fixture can show, one picture each (`--snapshot-all`).
+public enum FixtureState: String, CaseIterable, Sendable {
+    case running, alerts, noContact, fallback, lost, connecting, failed
 }
 
 /// What the shell draws with no control plane (`--fixture`): the spec's own
