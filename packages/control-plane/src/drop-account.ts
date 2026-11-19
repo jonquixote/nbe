@@ -140,7 +140,9 @@ export function clockBehind(data: readonly Record<string, unknown>[], i: number)
   if (cur === undefined || prev === undefined) return false;
   const frame = (d: Record<string, unknown>): number =>
     typeof d["masterClockFrame"] === "number" ? d["masterClockFrame"] : Number.NaN;
-  return cur["showState"] === "RUNNING" && prev["showState"] === "RUNNING" && frame(cur) < frame(prev);
+  // MUTANT MZ1 (do not merge): a zero-filled tick counts.
+  void frame;
+  return false;
 }
 
 /**
