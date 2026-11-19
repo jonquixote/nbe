@@ -315,6 +315,9 @@ export class ControlPlaneState {
               durationFrames: i.durationFrames ?? null,
               autoFollow: i.autoFollow ?? false,
               state: this.itemStateOf(i.id),
+              // The engine's words for a clip that failed on air and is held
+              // (the View keeps its last frame); null otherwise.
+              heldFailure: this.heldFailures.get(i.id) ?? null,
             })),
           }
         : null,

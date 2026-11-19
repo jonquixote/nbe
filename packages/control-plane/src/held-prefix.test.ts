@@ -109,3 +109,16 @@ test("a decodeError with no detail is the plain path", async (t) => {
   assert.equal(r.state.fallbackActive, true);
   assert.equal(r.state.heldFailureOf("C1"), null);
 });
+
+test("show.getState's item carries a held failure's words, and null on the plain path", async (t) => {
+  type Items = { items: Array<{ id: string; heldFailure: string | null }> };
+  const held = await onAir(t);
+  const detail = `${HELD_DETAIL_PREFIX} E_CLIP_DECODE: clip c1 stopped decoding at source frame 42; the View holds its last frame`;
+  await held.decodeError(detail);
+  const heldItem = (held.state.showStateView()["rundown"] as Items).items.find((i) => i.id === "C1");
+  assert.equal(heldItem?.heldFailure, detail);
+  const plain = await onAir(t);
+  await plain.decodeError("heldover: the decoder rejected the stream");
+  const plainItem = (plain.state.showStateView()["rundown"] as Items).items.find((i) => i.id === "C1");
+  assert.equal(plainItem?.heldFailure, null);
+});
