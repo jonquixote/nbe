@@ -10,6 +10,7 @@ import {
   SECOND_READING_CEILINGS,
   SECOND_READING_SPAN_CEILING,
   accountDrops,
+  countsAt,
   judgeSecondReading,
   lineFields,
   secondReading,
@@ -203,4 +204,32 @@ test("item 10, D5: the span's total has its own ceiling", () => {
   const wide = { "step 11": 9, "step 12b": 20 } as const;
   const over = judgeSecondReading([step("step 11", 0, 9), step("step 12b", 9, 20)], 0, 8, wide, 19);
   assert.deepEqual(over, ["steps 10 to 12c: 20 drops, over the span's ceiling of 19"]);
+});
+
+// Item 15 (the user's ruling of 2026-11-19 01:10, ruling 2): a drop is counted
+// only on ticks where the clock was running on both sides. The control plane
+// zero-fills a tick when the engine's report is stale; #165's tick 74 read
+// RUNNING, frame 0, drops 0 between frames 240 and 331.
+const runTick = (showState: string, masterClockFrame: number, droppedFramesTotal: number) => ({
+  data: { showState, masterClockFrame, droppedFramesTotal, audioUnderrunsTotal: 0, watchdogTripsTotal: 0 },
+});
+
+test("item 15, Z1: a zero-filled last tick is not a reading", () => {
+  const c = countsAt([runTick("RUNNING", 240, 12), runTick("RUNNING", 0, 0)]);
+  assert.ok(Number.isNaN(c.drops), `a zero-filled tick reads NaN, not ${c.drops}`);
+});
+
+test("item 15, Z2: the tick after a zero-filled one is a reading", () => {
+  assert.equal(countsAt([runTick("RUNNING", 240, 12), runTick("RUNNING", 0, 0), runTick("RUNNING", 331, 13)]).drops, 13);
+});
+
+test("item 15, Z3: a real drop counts, and so does a cached repeat", () => {
+  assert.equal(countsAt([runTick("RUNNING", 240, 12), runTick("RUNNING", 270, 13)]).drops, 13, "a real drop");
+  assert.equal(countsAt([runTick("RUNNING", 256, 13), runTick("RUNNING", 256, 13)]).drops, 13, "a cached repeat");
+});
+
+test("item 15, Z4: a stop and a reload are readings", () => {
+  assert.equal(countsAt([runTick("RUNNING", 358, 7), runTick("STOPPED", 358, 7)]).drops, 7, "a stop");
+  assert.equal(countsAt([runTick("STOPPED", 358, 7), runTick("LOADED", 0, 7)]).drops, 7, "a reload");
+  assert.equal(countsAt([runTick("LOADED", 0, 7), runTick("RUNNING", 0, 7)]).drops, 7, "the start after it");
 });
