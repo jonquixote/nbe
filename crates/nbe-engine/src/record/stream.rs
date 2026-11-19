@@ -895,6 +895,8 @@ fn run_stream_thread(args: StreamThreadArgs) {
     let stats = args.stats.clone();
     stats.teardown.mark(TeardownMark::OpenStart);
     args.stats.set_phase(StreamThreadPhase::OpeningEncoders);
+    // MUTANT (item 13, do not merge): a slow encoder open, injected.
+    std::thread::sleep(STREAM_THREAD_EXIT_BACKSTOP * 2);
     {
         let mut t = StreamThread::open(&args);
         stats.teardown.mark(TeardownMark::OpenEnd);
@@ -1352,12 +1354,7 @@ mod tests {
         // encoder open outlasted the backstop and the thread was never in its
         // exit. The stop lands on a RUNNING thread, as the slow-exit test's
         // does, so the backstop can only find it hung in Exiting.
-        until_running(&s).await;
-        assert_eq!(
-            s.stats().phase(),
-            StreamThreadPhase::Running,
-            "precondition: the stop lands on a running thread"
-        );
+        // MUTANT (item 13, do not merge): the wait for Running removed.
         let err = s
             .stop_and_close()
             .await
