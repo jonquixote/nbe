@@ -11,6 +11,15 @@ public struct ShowStateView: Decodable, Equatable, Sendable {
         public let autoFollow: Bool?
         /// §17.1: READY, ARMED, LIVE, PLAYING, DONE, MISSING, ERROR.
         public let state: String
+        /// The engine's words for a clip that failed on air and is held (the
+        /// View keeps its last frame); nil otherwise.
+        public let heldFailure: String?
+
+        /// The state as the rundown draws it: a held failure carries its
+        /// words, which begin "held:" (the engine's HELD_DETAIL_PREFIX).
+        public var stateLabel: String {
+            heldFailure.map { "\(state), \($0)" } ?? state
+        }
     }
     public struct Rundown: Decodable, Equatable, Sendable {
         public let id: String?
