@@ -304,7 +304,8 @@ impl EngineState {
     /// first refusal, and this returns false.
     pub fn push_audio_command(&self, cmd: crate::audio_control::AudioCommand) -> bool {
         let mut pending = self.audio_commands.lock().unwrap();
-        if pending.len() >= AUDIO_COMMANDS_CAP {
+        // MUTANT MC1 (do not merge): the cap removed (1,024 << 10).
+        if pending.len() >= AUDIO_COMMANDS_CAP << 10 {
             drop(pending);
             if self
                 .audio_commands_refused_total
