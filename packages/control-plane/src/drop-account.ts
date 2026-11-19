@@ -140,7 +140,9 @@ export function clockBehind(data: readonly Record<string, unknown>[], i: number)
   if (cur === undefined || prev === undefined) return false;
   const frame = (d: Record<string, unknown>): number =>
     typeof d["masterClockFrame"] === "number" ? d["masterClockFrame"] : Number.NaN;
-  return cur["showState"] === "RUNNING" && prev["showState"] === "RUNNING" && frame(cur) < frame(prev);
+  // MUTANT MZ2 (do not merge): a tick whose count rose is called behind too, so a real drop is not counted.
+  const drops = (d: Record<string, unknown>): number => (typeof d["droppedFramesTotal"] === "number" ? d["droppedFramesTotal"] : Number.NaN);
+  return cur["showState"] === "RUNNING" && prev["showState"] === "RUNNING" && (frame(cur) < frame(prev) || drops(cur) > drops(prev));
 }
 
 /**
