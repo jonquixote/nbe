@@ -68,6 +68,9 @@ struct BusesPanel: View {
                 .frame(width: 90)
                 button("TAKE", .take(transition: transition, durationFrames: transition == .cut ? nil : 15))
                     .keyboardShortcut(.space, modifiers: [])
+                // Design rule 3: F puts the fallback slate on air, no mouse.
+                button("SLATE (F)", .viewFallback(reason: "operator key F"))
+                    .keyboardShortcut("f", modifiers: [])
             }
             bus("VIEW", item: model.status.viewItem, tint: .red)
         }
