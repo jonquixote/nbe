@@ -421,7 +421,12 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
             let is_video = matches!(kind.as_deref(), Some("video") | Some("alphaVideo"));
             if exists && is_video {
                 let path = package_path.join(source.unwrap_or_default());
-                match nbe_decode::probe_asset(&path, DECODE_FRAME_LIMIT) {
+                // Item 12 step 2: a decoder starved on a loaded machine is
+                // retried once after 500 ms; a corrupt file is not.
+                match nbe_decode::retry_transient(
+                    || nbe_decode::probe_asset(&path, DECODE_FRAME_LIMIT),
+                    std::time::Duration::from_millis(500),
+                ) {
                     Ok(probe) => {
                         decoded = DecodeFacts::from_probe(&probe);
                         // AC-3: a variable frame rate is an error, not a
