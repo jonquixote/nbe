@@ -1022,6 +1022,7 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
                 Some(drawn.clone()),
                 frame,
                 &*state.skipped_stream_frames,
+                &|| false,
             ));
         }
     }
@@ -1039,6 +1040,52 @@ async fn stream_counters_reset_per_stream_and_selection_clears_on_stop() {
         3,
         "each under the full queue that dropped it (R46)"
     );
+
+    // H1 (the user's ruling of 2026-11-18 21:08): a disconnected channel is
+    // the stream thread gone. With no stop asked (G1) the frame is counted at
+    // ThreadGone; after a stop was asked (G2) it is the stop race, not counted.
+    {
+        let guard = state.stream_session.lock().unwrap();
+        let sess = guard.as_ref().expect("stream session must be live");
+        let surface = sess
+            .surface_pool()
+            .expect("a live zero-copy stream owns a pool")
+            .acquire()
+            .expect("a fresh pool has a free surface");
+        let (gone, rx) = std::sync::mpsc::sync_channel(1);
+        drop(rx);
+        let thread_gone = || {
+            state
+                .skipped_stream_frames
+                .path(nbe_engine::record::SkipPath::ThreadGone)
+        };
+        assert!(!stream_glue::hand_off_stream_surface(
+            &gone,
+            surface.clone(),
+            Some(drawn.clone()),
+            3,
+            &*state.skipped_stream_frames,
+            &|| false,
+        ));
+        assert_eq!(
+            thread_gone(),
+            1,
+            "G1: a thread gone with no stop asked is counted"
+        );
+        assert!(!stream_glue::hand_off_stream_surface(
+            &gone,
+            surface.clone(),
+            Some(drawn.clone()),
+            4,
+            &*state.skipped_stream_frames,
+            &|| true,
+        ));
+        assert_eq!(
+            thread_gone(),
+            1,
+            "G2: after a stop was asked, a closed channel is the stop race, not counted"
+        );
+    }
 
     handler
         .apply(&directive("stream.stop", 4, serde_json::json!({})))

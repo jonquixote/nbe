@@ -527,15 +527,15 @@ pub async fn run_tick(
     // endpoints; nothing below holds a session lock.
     let stream_started = Instant::now();
     let streaming = *state.stream_state.lock().unwrap() == StreamState::Live;
-    let (stream_tx, stream_pool) = match streaming {
+    let (stream_tx, stream_pool, stream_stats) = match streaming {
         true => {
             let g = state.stream_session.lock().unwrap();
             match g.as_ref() {
-                Some(s) => (s.frame_sender(), s.surface_pool()),
-                None => (None, None),
+                Some(s) => (s.frame_sender(), s.surface_pool(), Some(s.stats())),
+                None => (None, None, None),
             }
         }
-        false => (None, None),
+        false => (None, None, None),
     };
     let mut own_surface = None;
     if stream_tx.is_some() && loan.surface().is_none() {
@@ -635,6 +635,14 @@ pub async fn run_tick(
                 stream_drawn,
                 frame,
                 &*state.skipped_stream_frames,
+                // H1: a closed channel is a stop only if one was asked.
+                &|| {
+                    stream_stats.as_ref().is_some_and(|st| {
+                        st.teardown
+                            .at_us(crate::record::stream::TeardownMark::StopRequested)
+                            .is_some()
+                    })
+                },
             );
         }
         report.stream += handoff_started.elapsed();

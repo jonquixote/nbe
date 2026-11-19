@@ -815,9 +815,12 @@ fn maybe_spawn_publisher(endpoint: &str, envelope_bps: u64) -> Option<PublisherH
 ///
 /// A full channel is a stream drop — counted on `skipped_stream_frames`,
 /// never a record skip or a View drop (G1); the `Arc` is dropped here, which
-/// is the frame given up. A disconnected channel means the stream thread
-/// already stopped (a `stream.stop` landed mid-tick): the stream is over, not
-/// dropping frames, so nothing is counted. Returns whether the frame went.
+/// is the frame given up. A disconnected channel after a stop was asked
+/// (`stop_requested`, read only then) is the stop race (a `stream.stop`
+/// landed mid-tick): the stream is over, not dropping frames, so nothing is
+/// counted. Disconnected with NO stop asked, the thread died (a panic): that
+/// frame is counted at [`SkipPath::ThreadGone`] (H1). Returns whether the
+/// frame went.
 ///
 /// R35: a surface with no draw to wait on (the View did not draw this frame)
 /// is never handed off, so no encoder can read a surface nothing finished
@@ -828,6 +831,7 @@ pub fn hand_off_stream_surface(
     drawn: Option<DrawDone>,
     frame: u64,
     skipped: &dyn CountSkip,
+    stop_requested: &dyn Fn() -> bool,
 ) -> bool {
     let Some(drawn) = drawn else {
         skipped.count(SkipPath::NoDraw, 1);
@@ -843,7 +847,12 @@ pub fn hand_off_stream_surface(
             skipped.count(SkipPath::QueueFull, 1);
             false
         }
-        Err(TrySendError::Disconnected(_)) => false,
+        Err(TrySendError::Disconnected(_)) => {
+            if !stop_requested() {
+                skipped.count(SkipPath::ThreadGone, 1);
+            }
+            false
+        }
     }
 }
 
