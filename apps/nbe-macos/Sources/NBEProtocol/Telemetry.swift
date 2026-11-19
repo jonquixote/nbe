@@ -135,3 +135,14 @@ private struct EncodableSnapshot: Encodable {
         try c.encodeIfPresent(s.alerts, forKey: .alerts)
     }
 }
+
+/// Which alert list the shell shows (operator failure design, build step 4,
+/// row A3): the tick's, which the control plane sends fresh on every tick.
+/// The snapshot's list is refreshed only by a `stateChange`, so an alert
+/// raised between commands reached the banner only with the next accepted
+/// command. The snapshot's list is used only before the first tick.
+public enum AlertFeed {
+    public static func current(status: StatusSnapshot, telemetry: Telemetry) -> [Alert] {
+        telemetry.alerts ?? status.alerts ?? []
+    }
+}

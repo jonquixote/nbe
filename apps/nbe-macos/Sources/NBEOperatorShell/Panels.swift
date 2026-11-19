@@ -278,7 +278,8 @@ struct AlertsBanner: View {
     @ObservedObject var model: ShellModel
 
     var body: some View {
-        let alerts = model.status.alerts ?? model.telemetry.alerts ?? []
+        // Row A3: the tick's list, fresh every tick (AlertFeed).
+        let alerts = AlertFeed.current(status: model.status, telemetry: model.telemetry)
         VStack(spacing: 2) {
             ForEach(alerts) { a in
                 Text("\(a.severity.uppercased()): \(a.reason)")
