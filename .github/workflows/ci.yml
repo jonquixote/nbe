@@ -1907,8 +1907,10 @@ jobs:
         # release engine attached: AC16LiveTests drives AC-16's ten actions
         # with the same ShellCommand values the buttons send, and checks each
         # in the control plane's state and the engine's own report. Floors:
-        # the unit run executes at least 13 tests, and the live run passes
-        # its 6 (AC-16 and the five control-plane tests) with none skipped.
+        # the unit run's count (ran >= 26, exercised >= 20: main's count on
+        # 2026-11-18; each shell PR that adds tests raises them), and the live
+        # run passes its 6 (AC-16 and the five control-plane tests) with none
+        # skipped.
         working-directory: apps/nbe-macos
         env:
           NBE_ENGINE_BIN: ${{ github.workspace }}/target/release/nbe-engine
@@ -1917,6 +1919,15 @@ jobs:
           unit=$(perl -e 'alarm 900; exec @ARGV' swift test 2>&1) && rc=0 || rc=$?
           echo "$unit" | grep -E "Executed|error:" | tail -5 || true
           if [ "$rc" -ne 0 ]; then echo "$unit"; echo "FAIL the shell's unit tests: swift test exited $rc"; exit "$rc"; fi
+          # The unit run's count (a run that skipped everything would pass the rc check).
+          sum=$(echo "$unit" | grep -oE "Executed [0-9]+ tests?, with ([0-9]+ tests? skipped and )?[0-9]+ failures?" | tail -1)
+          if [ -z "$sum" ]; then echo "FAIL the shell's unit tests: no XCTest summary line"; exit 1; fi
+          ran=$(echo "$sum" | awk '{print $2}')
+          skipped=$(echo "$sum" | grep -oE "[0-9]+ tests? skipped" | awk '{print $1}'); skipped=${skipped:-0}
+          exercised=$((ran - skipped))
+          echo "shell unit: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=26 exercised>=20)"
+          if [ "$ran" -lt 26 ]; then echo "FAIL shell unit: ran $ran < 26"; exit 1; fi
+          if [ "$exercised" -lt 20 ]; then echo "FAIL shell unit: exercised $exercised < 20"; exit 1; fi
           live=$(bash scripts/shell-e2e.sh 2>&1) && rc=0 || rc=$?
           echo "$live" | grep -E "Test Case|Executed|error:" | tail -12 || true
           if [ "$rc" -ne 0 ]; then echo "$live"; echo "FAIL the shell's end to end: exited $rc"; exit "$rc"; fi
