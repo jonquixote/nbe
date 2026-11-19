@@ -808,6 +808,25 @@ pub enum ResyncReason {
 /// `HELD_DETAIL_PREFIX`, pinned equal by the mirror audit).
 pub const HELD_DETAIL_PREFIX: &str = "held:";
 
+/// One rundown item in `show.getState`'s reply (§5), as the control plane
+/// builds it (`showStateView` in `state.ts`). Mirrored here so a field added
+/// on one side and not the other fails `mirror.rs`. Every field is on the
+/// wire: an absent value is `null`, never a missing key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowStateItem {
+    pub id: String,
+    pub kind: String,
+    pub duration_frames: Option<u64>,
+    pub auto_follow: bool,
+    /// §17.1: READY, ARMED, LIVE, PLAYING, DONE, MISSING, ERROR.
+    pub state: String,
+    /// The engine's words (they begin [`HELD_DETAIL_PREFIX`]) for a clip that
+    /// failed on air and is held, the View keeping its last frame; `null`
+    /// otherwise. Additive: an older reader ignores it.
+    pub held_failure: Option<String>,
+}
+
 /// Item lifecycle events only the engine can observe (SPEC 5.9.3). Without
 /// these, the `PLAYING -> DONE` and `-> MISSING`/`ERROR` rows of Section 17.3
 /// are unreachable.

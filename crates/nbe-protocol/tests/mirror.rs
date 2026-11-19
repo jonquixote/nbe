@@ -992,3 +992,46 @@ fn rust_and_typescript_agree_on_the_held_detail_prefix() {
         "TypeScript's HELD_DETAIL_PREFIX must be exactly {HELD_DETAIL_PREFIX:?}"
     );
 }
+
+/// `show.getState`'s rundown item (the user's ruling of 2026-11-18 07:25,
+/// item 3): `ShowStateItem`'s wire keys and the keys of the item literal
+/// `showStateView` builds in `state.ts`, in both directions.
+#[test]
+fn rust_and_typescript_agree_on_the_show_state_item_fields() {
+    let value = serde_json::to_value(ShowStateItem {
+        id: "A1".into(),
+        kind: "clip".into(),
+        duration_frames: None,
+        auto_follow: false,
+        state: "READY".into(),
+        held_failure: None,
+    })
+    .unwrap();
+    let ours: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
+    let state_ts = std::fs::read_to_string(repo_root().join("packages/control-plane/src/state.ts"))
+        .expect("state.ts is readable");
+    let start = state_ts
+        .find("items: [...pkg.items.values()].map((i) => ({")
+        .expect("showStateView builds the rundown's items");
+    let rest = &state_ts[start..];
+    let rest = &rest[rest.find('\n').unwrap() + 1..];
+    let block = &rest[..rest.find("}))").expect("the item literal ends")];
+    let theirs: BTreeSet<String> = block
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter_map(|l| {
+            let t = l.trim_start();
+            let key = t.split(':').next()?;
+            (t.contains(':') && key.chars().all(|c| c.is_ascii_alphanumeric()))
+                .then(|| key.to_string())
+        })
+        .collect();
+    assert_eq!(
+        ours, theirs,
+        "Rust's ShowStateItem and state.ts's rundown item have the same keys"
+    );
+    assert!(
+        ours.contains("heldFailure"),
+        "the held failure is on the wire"
+    );
+}
