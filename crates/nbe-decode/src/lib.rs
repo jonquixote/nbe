@@ -104,9 +104,9 @@ impl DecodeError {
     /// The decoder was starved, not the file bad: one of its codes is in
     /// [`TRANSIENT_DECODE_CODES`].
     pub fn is_transient(&self) -> bool {
-        self.codes()
-            .iter()
-            .any(|c| TRANSIENT_DECODE_CODES.contains(c))
+        // MUTANT MR1 (do not merge): every failure called transient.
+        let _ = self.codes();
+        true
     }
 }
 
