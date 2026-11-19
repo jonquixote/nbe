@@ -114,6 +114,33 @@ public final class ShellModel: ObservableObject {
         }
     }
 
+    /// A costly command waits here for the operator's confirmation.
+    @Published public var awaitingConfirmation: ShellCommand?
+
+    /// The question a costly command asks before it is sent; nil sends at
+    /// once. Only stops that cannot be undone on air ask: TAKE, CUT and the
+    /// rest stay one press, since speed matters there and the next press
+    /// undoes them.
+    public func confirmation(for command: ShellCommand) -> String? {
+        switch command {
+        case .showStop(let force):
+            force ? "Force-stop the show? Outputs are cut without waiting."
+                : "Stop the show? The clock stops and the View goes to its stop state."
+        case .recordStop: "Stop the recording? The take ends here."
+        case .streamStop: "Stop the stream? Viewers lose the programme."
+        default: nil
+        }
+    }
+
+    /// A press: a costly command waits for its confirmation; any other is sent.
+    public func press(_ command: ShellCommand) {
+        if confirmation(for: command) != nil {
+            awaitingConfirmation = command
+        } else {
+            run(command)
+        }
+    }
+
     /// The `R` key: try again now instead of waiting out the backoff.
     public func retryNow() {
         guard let session else { return }

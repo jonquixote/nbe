@@ -105,6 +105,22 @@ struct ShellWindow: View {
                 FallbackCurtain()
             }
         }
+        // A costly stop asks first (ShellModel.confirmation(for:)).
+        .confirmationDialog(
+            model.awaitingConfirmation.flatMap { model.confirmation(for: $0) } ?? "",
+            isPresented: Binding(
+                get: { model.awaitingConfirmation != nil },
+                set: { if !$0 { model.awaitingConfirmation = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Confirm", role: .destructive) {
+                if let c = model.awaitingConfirmation {
+                    model.awaitingConfirmation = nil
+                    model.run(c)
+                }
+            }
+            Button("Cancel", role: .cancel) { model.awaitingConfirmation = nil }
+        }
     }
 }
 
