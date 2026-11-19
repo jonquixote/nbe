@@ -57,9 +57,22 @@ use objc2_core_video::{
     CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
     CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString, NSURL};
 use std::path::Path;
 use thiserror::Error;
+
+/// An NSError as a reason that keeps its codes: the localized description,
+/// then "(<domain> <code>)" and each underlying error's. AVFoundation's
+/// "Cannot Decode" (-11821) covers both a corrupt file and a starved
+/// decoder; only the underlying code tells them apart (determinism item 12).
+pub fn describe_ns_error(e: &NSError) -> String {
+    let mut out = format!("{} ({} {}", e.localizedDescription(), e.domain(), e.code());
+    for u in e.underlyingErrors().iter() {
+        out.push_str(&format!("; underlying {} {}", u.domain(), u.code()));
+    }
+    out.push(')');
+    out
+}
 
 /// `kCVPixelFormatType_32BGRA`, the format the reader is asked for.
 const PIXEL_FORMAT_32BGRA: u32 = 0x42475241; // 'BGRA'
@@ -203,7 +216,7 @@ impl DecodeSession {
             let reader = AVAssetReader::assetReaderWithAsset_error(asset_ref).map_err(|e| {
                 DecodeError::Open {
                     path: path_str.clone(),
-                    reason: e.localizedDescription().to_string(),
+                    reason: describe_ns_error(&e),
                 }
             })?;
 
@@ -293,7 +306,7 @@ impl DecodeSession {
                         reason: self
                             .reader
                             .error()
-                            .map(|e| e.localizedDescription().to_string())
+                            .map(|e| describe_ns_error(&e))
                             .unwrap_or_else(|| "startReading refused".into()),
                     });
                 }
@@ -305,7 +318,7 @@ impl DecodeSession {
                 if let Some(err) = self.reader.error() {
                     return Err(DecodeError::Failed {
                         path: self.path.clone(),
-                        reason: err.localizedDescription().to_string(),
+                        reason: describe_ns_error(&err),
                     });
                 }
                 return Ok(None);
@@ -623,7 +636,7 @@ pub fn decode_audio(path: &Path) -> Result<Option<AudioTrack>, DecodeError> {
         let reader = AVAssetReader::assetReaderWithAsset_error(asset_ref).map_err(|e| {
             DecodeError::Open {
                 path: path_str.clone(),
-                reason: e.localizedDescription().to_string(),
+                reason: describe_ns_error(&e),
             }
         })?;
 
@@ -647,7 +660,7 @@ pub fn decode_audio(path: &Path) -> Result<Option<AudioTrack>, DecodeError> {
                 path: path_str.clone(),
                 reason: reader
                     .error()
-                    .map(|e| e.localizedDescription().to_string())
+                    .map(|e| describe_ns_error(&e))
                     .unwrap_or_else(|| "startReading refused".into()),
             });
         }
@@ -689,7 +702,7 @@ pub fn decode_audio(path: &Path) -> Result<Option<AudioTrack>, DecodeError> {
         if let Some(err) = reader.error() {
             return Err(DecodeError::Failed {
                 path: path_str,
-                reason: err.localizedDescription().to_string(),
+                reason: describe_ns_error(&err),
             });
         }
 
@@ -851,6 +864,24 @@ pub fn cadence_holds(pattern: &[u64]) -> Vec<u64> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Determinism item 12: an NSError's reason keeps its domain and code.
+    #[test]
+    fn an_ns_error_reason_keeps_its_domain_and_code() {
+        let e = unsafe {
+            NSError::errorWithDomain_code_userInfo(
+                &NSString::from_str("AVFoundationErrorDomain"),
+                -11821,
+                None,
+            )
+        };
+        let reason = describe_ns_error(&e);
+        assert!(
+            reason.ends_with("(AVFoundationErrorDomain -11821)"),
+            "the reason names the domain and the code: {reason}"
+        );
+    }
+
     use super::*;
 
     #[test]
