@@ -6,7 +6,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { accountDrops, lineFields } from "./drop-account.js";
+import {
+  SECOND_READING_CEILINGS,
+  SECOND_READING_SPAN_CEILING,
+  accountDrops,
+  judgeSecondReading,
+  lineFields,
+  secondReading,
+  type StepDrops,
+} from "./drop-account.js";
 
 const HOUSE_RATE = 30;
 
@@ -125,4 +133,74 @@ test("R21 backstop: the engine's colour codes are stripped before the fields are
     dropped_total: 1,
     suppressed: 0,
   });
+});
+
+// --- Item 10: the second reading (the user's ruling of 2026-11-18 04:20) ----
+
+/** A telemetry frame as the dress collects it. */
+const tick = (drops: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  data: { droppedFramesTotal: drops, audioUnderrunsTotal: 0, watchdogTripsTotal: 0, ...extra },
+});
+
+/** A step whose drops are all accounted one way. */
+const step = (name: string, before: number, after: number, how: "tied" | "untied" = "untied"): StepDrops => {
+  const counts = Array.from({ length: after - before }, (_, i) => before + i + 1);
+  return {
+    step: name,
+    before,
+    after,
+    account: { tied: how === "tied" ? counts : [], untied: how === "untied" ? counts : [], unexplained: [], lines: [] },
+  };
+};
+
+/** Steps 10 to 12c with no drops, the drops of one step set by the caller. */
+const quietSteps = (over: Partial<Record<string, StepDrops>> = {}): StepDrops[] =>
+  Object.keys(SECOND_READING_CEILINGS).map((name) => over[name] ?? step(name, 0, 0));
+
+test("item 10, D1: the second reading counts from the gate's tick to the last tick", () => {
+  // The gate read the first three ticks (2 drops); three more drops land after it.
+  const ticks = [tick(0), tick(1), tick(2), tick(2), tick(4), tick(5, { fallbackActive: true })];
+  const r = secondReading(ticks, 3);
+  assert.equal(r.span.drops, 3, "the span is what came after the gate's tick, not the gate's own reading again");
+  assert.equal(r.atGate.drops, 2);
+  assert.equal(r.atEnd.drops, 5);
+  assert.equal(r.span.fallbackTicks, 1);
+  assert.ok(Number.isNaN(secondReading([{ data: {} }], 1).atEnd.drops), "a tick without the field reads NaN");
+});
+
+test("item 10, D2: a step's ceiling admits its own count and refuses one more", () => {
+  for (const name of ["step 11", "step 12b"]) {
+    const ceiling = SECOND_READING_CEILINGS[name];
+    assert.equal(typeof ceiling, "number");
+    const at = ceiling as number;
+    assert.deepEqual(judgeSecondReading(quietSteps({ [name]: step(name, 0, at) }), 0, 8), [], `${name} at its ceiling passes`);
+    const over = judgeSecondReading(quietSteps({ [name]: step(name, 0, at + 1) }), 0, 8);
+    assert.deepEqual(over, [`${name}: ${at + 1} drops, over its ceiling of ${at}`]);
+  }
+});
+
+test("item 10, D3: a step whose drops were not measured fails the second reading", () => {
+  const missing = quietSteps().filter((s) => s.step !== "step 12");
+  assert.deepEqual(judgeSecondReading(missing, 0, 8), ["step 12: its drops were not measured (no reading)"]);
+  const nan = quietSteps({ "step 11": { ...step("step 11", 0, 0), after: Number.NaN } });
+  assert.equal(judgeSecondReading(nan, 0, 8).length, 1);
+});
+
+test("item 10, D4: a tied-only step refuses an untied drop and counts its tied ones against the show's cap", () => {
+  assert.deepEqual(judgeSecondReading(quietSteps({ "step 10": step("step 10", 0, 1, "untied") }), 0, 8), [
+    "step 10: drop count(s) [1] are not tied to a late wake",
+  ]);
+  assert.deepEqual(judgeSecondReading(quietSteps({ "step 12c": step("step 12c", 0, 2, "tied") }), 6, 8), []);
+  assert.deepEqual(judgeSecondReading(quietSteps({ "step 12c": step("step 12c", 0, 3, "tied") }), 6, 8), [
+    "9 drops tied to a late wake this show, over the cap of 8",
+  ]);
+});
+
+test("item 10, D5: the span's total has its own ceiling", () => {
+  assert.equal(SECOND_READING_SPAN_CEILING, 19);
+  const atBoth = quietSteps({ "step 11": step("step 11", 0, 9), "step 12b": step("step 12b", 9, 19) });
+  assert.deepEqual(judgeSecondReading(atBoth, 0, 8), []);
+  const wide = { "step 11": 9, "step 12b": 20 } as const;
+  const over = judgeSecondReading([step("step 11", 0, 9), step("step 12b", 9, 20)], 0, 8, wide, 19);
+  assert.deepEqual(over, ["steps 10 to 12c: 20 drops, over the span's ceiling of 19"]);
 });
