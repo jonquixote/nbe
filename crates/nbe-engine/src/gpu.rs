@@ -182,6 +182,27 @@ impl Gpu {
     }
 }
 
+/// Read-ahead stage (a3), log-only: where one stage's time went. `create`
+/// is the staging buffer's creation when the pool grows (0 otherwise),
+/// `map` the mapped range, `copy` the memcpy into it, `unmap` the unmap,
+/// `record` the recorded copy_buffer_to_texture.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StageSplit {
+    pub create: std::time::Duration,
+    pub map: std::time::Duration,
+    pub copy: std::time::Duration,
+    pub unmap: std::time::Duration,
+    pub record: std::time::Duration,
+    pub created: bool,
+}
+
+impl StageSplit {
+    /// The parts summed: what the split accounts for of the stage.
+    pub fn total(&self) -> std::time::Duration {
+        self.create + self.map + self.copy + self.unmap + self.record
+    }
+}
+
 /// Staging buffers for uploads in the frame path (SPEC §12.8.1's read-ahead),
 /// bounded and reused.
 ///
@@ -251,7 +272,8 @@ impl UploadPool {
     }
 
     /// Record an upload of `rgba` into `tex` on `enc`, through a free buffer.
-    /// `false`, with nothing recorded, when every buffer is in flight. The
+    /// `None`, with nothing recorded, when every buffer is in flight; else
+    /// where the stage's time went (read-ahead stage (a3), log-only). The
     /// copy lands when `enc` is submitted; call [`submitted`](Self::submitted)
     /// after that.
     pub fn stage(
@@ -262,7 +284,8 @@ impl UploadPool {
         width: u32,
         height: u32,
         rgba: &[u8],
-    ) -> bool {
+    ) -> Option<StageSplit> {
+        let mut split = StageSplit::default();
         let row = (width * 4) as usize;
         let stride = aligned_bytes_per_row(width * 4);
         let size = stride as u64 * height as u64;
@@ -275,22 +298,29 @@ impl UploadPool {
                     self.live -= 1;
                 }
                 if self.live >= self.cap {
-                    return false;
+                    return None;
                 }
                 self.live += 1;
-                gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                let created = std::time::Instant::now();
+                let b = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("upload staging"),
                     size,
                     usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
-                })
+                });
+                split.create = created.elapsed();
+                split.created = true;
+                b
             }
         };
         {
+            let mapped = std::time::Instant::now();
             let mut view = buffer
                 .slice(..size)
                 .get_mapped_range_mut()
                 .expect("a free staging buffer is mapped");
+            split.map = mapped.elapsed();
+            let copied = std::time::Instant::now();
             if stride as usize == row {
                 view.copy_from_slice(&rgba[..row * height as usize]);
             } else {
@@ -299,8 +329,12 @@ impl UploadPool {
                     view.slice(at..at + row).copy_from_slice(src);
                 }
             }
+            split.copy = copied.elapsed();
         }
+        let unmapped = std::time::Instant::now();
         buffer.unmap();
+        split.unmap = unmapped.elapsed();
+        let recorded = std::time::Instant::now();
         enc.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
@@ -322,8 +356,9 @@ impl UploadPool {
                 depth_or_array_layers: 1,
             },
         );
+        split.record = recorded.elapsed();
         self.staged.push(buffer);
-        true
+        Some(split)
     }
 
     /// Whether anything is staged and waiting for a submission.
