@@ -848,9 +848,9 @@ pub fn hand_off_stream_surface(
             false
         }
         Err(TrySendError::Disconnected(_)) => {
-            if !stop_requested() {
-                skipped.count(SkipPath::ThreadGone, 1);
-            }
+            // MUTANT MT2 (do not merge): the stop flag ignored.
+            let _ = stop_requested;
+            skipped.count(SkipPath::ThreadGone, 1);
             false
         }
     }
