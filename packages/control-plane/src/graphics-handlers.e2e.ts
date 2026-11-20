@@ -16,6 +16,15 @@
 //! its own window of it. A command's window starts when the engine applied
 //! it (its `appliedStateVersion`) and its frames are sampled 0.5 s later.
 //!
+//! Windows are counted on the engine's master clock, not on the recording's
+//! timeline. The recording's clock is the encoder's (a frame's time is its
+//! index / 30), and a master frame the View never drew is simply absent from
+//! the file, so every never-drawn frame moves all later pictures 33 ms earlier
+//! against the wall clock. The engine's record trace (`NBE_RECORD_TRACE`)
+//! names the master frame each recorded frame was drawn at; a window's sample
+//! is the first recorded frame at or after its master frame, wherever the
+//! frames before it went (item 1, the user's ruling of 2026-11-19 23:30).
+//!
 //! Not in `npm test`: it needs the engine binary, a hardware H.264 encoder and
 //! ffmpeg. CI runs it in the control-plane job with its own floors. Locally:
 //!   node --import tsx --test src/graphics-handlers.e2e.ts
@@ -26,7 +35,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocket } from "ws";
@@ -46,6 +55,8 @@ const REPORT_MS = 5_000;
 const APPLY_MS = 20_000;
 const W = 1920;
 const H = 1080;
+/** The house rate: the manifest's frameRate and `NBE_HOUSE_RATE`. */
+const HOUSE_RATE = 30;
 
 let server: ControlPlaneServer;
 let state: ControlPlaneState;
@@ -53,10 +64,22 @@ let engine: ChildProcess;
 const engineLog: string[] = [];
 let ws: WebSocket;
 const ticks: Record<string, unknown>[] = [];
+/** When each telemetry tick arrived (`Date.now()`), index for index with `ticks`. */
+const tickMs: number[] = [];
 let recordDir = "";
+let traceFile = "";
 
 /** Recording-relative times (s) at which each step's command was applied. */
 const appliedAt: Record<string, number> = {};
+/** Wall-clock times (`Date.now()`) at which each step's command was applied. */
+const appliedMs: Record<string, number> = {};
+/** Each window on the master clock, [from, to): from its apply to the next step's. */
+const windows: Record<string, { from: number; to: number }> = {};
+/** The record trace: per recorded frame, by its index in the file, the master frame it was drawn at. */
+let traced: number[] = [];
+/** The master clock's epoch on the wall clock (ms), from the observations of it. */
+let clockEpochMs = 0;
+let showStartMs = 0;
 /** The engine's on-air line as first reported after each step. */
 const reported: Record<string, Record<string, unknown>> = {};
 /** Per step, in order: the engine's View drop count at its window's end, and
@@ -128,6 +151,7 @@ async function step(
   const load1 = loadavg()[0] ?? 0;
   const at = await applied(command, payload);
   appliedAt[name] = (at - recordStartMs) / 1000;
+  appliedMs[name] = at;
   // A report that never comes fails that step's test, not the whole timeline.
   try {
     reported[name] = await engineSays(`${name} (${command})`, from, want);
@@ -299,11 +323,61 @@ function changed(a: Buffer, b: Buffer, rect: [number, number, number, number]): 
   return n;
 }
 
-/** A frame inside a step's window: `dt` seconds after the engine applied it. */
+/** The master frame on air at wall-clock time `ms`: the clock runs at the
+ *  house rate from its epoch (`clock.rs`, `floor(elapsed x rate)`). */
+const masterAt = (ms: number): number => Math.floor(((ms - clockEpochMs) * HOUSE_RATE) / 1000);
+
+/** The file index of the first recorded frame drawn at master frame `m` or
+ *  later; `undefined` past the take's end. The trace ascends: the View draws
+ *  master frames in order. */
+function indexFrom(m: number): number | undefined {
+  let lo = 0;
+  let hi = traced.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (traced[mid]! < m) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < traced.length ? lo : undefined;
+}
+
+/** The file time that decodes recorded frame `k` exactly: frame k is at
+ *  k / 30 s, and ffmpeg's input seek keeps the frames at or after the time. */
+const fileTime = (k: number): number => Math.max(0, (k - 0.5) / HOUSE_RATE);
+
+/** The file index sampled in a step's window: the first frame recorded at or
+ *  after `dt` seconds of master clock past the apply, inside the window. */
+function sampleIndex(name: string, dt: number): number {
+  const w = windows[name];
+  assert.ok(w !== undefined, `step ${name} ran`);
+  const target = w.from + Math.round(dt * HOUSE_RATE);
+  const k = indexFrom(target);
+  assert.ok(
+    k !== undefined && traced[k]! < w.to,
+    `step ${name}: no frame was recorded from master frame ${target} to its window's end (${w.to}); the next recorded is ${k === undefined ? "none" : traced[k]}`,
+  );
+  return k;
+}
+
+/** A frame inside a step's window: `dt` seconds of master clock after the engine applied it. */
 function sample(name: string, dt = 0.5): Buffer {
-  const at = appliedAt[name];
-  assert.ok(at !== undefined, `step ${name} ran`);
-  return frameAt(at + dt);
+  return frameAt(fileTime(sampleIndex(name, dt)));
+}
+
+/** The record trace: the master frame each submitted frame was drawn at, by
+ *  its submit index (the file index). Every recorded frame is named. */
+function readTrace(path: string): number[] {
+  const byIndex: number[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const kv = Object.fromEntries(line.split(" ").slice(1).map((x) => x.split("=") as [string, string]));
+    if (kv["submitted"] !== "true" || kv["frame"] === undefined || kv["frame"] === "-") continue;
+    byIndex[Number(kv["submits"]) - 1] = Number(kv["frame"]);
+  }
+  const missing: number[] = [];
+  for (let i = 0; i < byIndex.length; i++) if (byIndex[i] === undefined) missing.push(i);
+  assert.equal(missing.length, 0, `the record trace names every recorded frame (missing indices ${missing.slice(0, 10).join(", ")})`);
+  assert.ok(byIndex.length > 0, `the record trace names the recorded frames (${path})`);
+  return byIndex;
 }
 
 // Regions, normalized: where each command draws (graphics.rs `default_rect`
@@ -355,9 +429,12 @@ before(async () => {
     persistence: { onDirty: () => {}, flushNow: () => {} },
     warn: () => {},
   });
+  traceFile = join(tempDir("nbe-graphics-trace-"), "record-trace.log");
   engine = spawn(ENGINE_BIN, [], {
     env: {
       ...process.env,
+      // The record trace: each recorded frame's master frame (the windows' join).
+      NBE_RECORD_TRACE: traceFile,
       NBE_CP_URL: `ws://127.0.0.1:${server.port}/nbe/v0.3`,
       NBE_RENDER_TOKEN: RENDER,
       NBE_AUDIO_SINK: process.env.NBE_AUDIO_SINK ?? "null",
@@ -378,7 +455,10 @@ before(async () => {
   });
   ws.on("message", (raw: Buffer) => {
     const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
-    if (frame["kind"] === "telemetry") ticks.push(frame);
+    if (frame["kind"] === "telemetry") {
+      ticks.push(frame);
+      tickMs.push(Date.now());
+    }
   });
   await new Promise<void>((res, rej) => {
     ws.once("open", () => res());
@@ -388,7 +468,7 @@ before(async () => {
   assert.equal(sub.status, "ok");
 
   await applied("show.load", { packagePath: writePackage() });
-  await applied("show.start", { startClock: true });
+  showStartMs = await applied("show.start", { startClock: true });
   await applied("preview.set", { itemRef: "A1" });
   await applied("view.take", { transition: "cut" });
   await applied("overlay.show", { overlayId: "ol_ticker" });
@@ -410,6 +490,7 @@ before(async () => {
   // 1. The clip plays (baseline), then item.stop freezes it.
   await sleep(1100);
   appliedAt["playing"] = 0.1;
+  appliedMs["playing"] = recordStartMs;
   await step("stop", "item.stop", { itemId: "A1" }, () => true);
 
   // 2. A dark, still picture under every graphic from here on.
@@ -476,6 +557,7 @@ before(async () => {
   await step("retake", "view.take", { transition: "cut" }, () => true);
 
   dropsAtEnd = droppedNow();
+  const stopSentMs = Date.now();
   const stop = await send("record.stop", {});
   assert.equal(stop.status, "ok", `record.stop: ${JSON.stringify(stop)}`);
   assert.ok(await server.awaitApplied((stop["stateVersion"] ?? 0) as number, 60_000), "record.stop applied (file finalized)");
@@ -509,6 +591,49 @@ before(async () => {
       Object.fromEntries(Object.entries(appliedAt).map(([k, v]) => [k, Number(v.toFixed(2))])),
     )} s; View drops during the take ${dropsAtStart} -> ${dropsAtEnd}`,
   );
+  // The windows on the master clock. Every observation of the clock arrives
+  // at or after the instant it names (show.start's ack at frame 0; each
+  // telemetry tick's masterClockFrame), so the earliest epoch they imply is
+  // the closest.
+  traced = readTrace(traceFile);
+  clockEpochMs = showStartMs;
+  ticks.forEach((t, i) => {
+    const d = t["data"] as Record<string, unknown> | undefined;
+    const f = d?.["masterClockFrame"];
+    if (d?.["engineConnected"] === true && typeof f === "number" && f > 0) {
+      clockEpochMs = Math.min(clockEpochMs, tickMs[i]! - (f * 1000) / HOUSE_RATE);
+    }
+  });
+  const order = ["playing", ...stepLog.map((s) => s.name)];
+  order.forEach((name, i) => {
+    const next = order[i + 1];
+    windows[name] = { from: masterAt(appliedMs[name]!), to: masterAt(next === undefined ? stopSentMs : appliedMs[next]!) };
+  });
+  // The trace against the wall clock's arithmetic (the old sampling, printed
+  // only): how far the recording's timeline had moved by each window.
+  const first = traced[0]!;
+  const last = traced.at(-1)!;
+  console.log(
+    `graphics e2e trace: ${traced.length} recorded frames, master ${first}..${last}, never drawn ${last - first + 1 - traced.length}; clock epoch ${(showStartMs - clockEpochMs).toFixed(0)} ms before show.start's ack`,
+  );
+  for (const name of order) {
+    const w = windows[name]!;
+    const k = indexFrom(w.from + Math.round(0.5 * HOUSE_RATE));
+    const wallK = Math.ceil(((appliedMs[name]! - recordStartMs) / 1000 + 0.5) * HOUSE_RATE);
+    const never = k === undefined ? NaN : traced[k]! - first + 1 - (k + 1);
+    console.log(
+      `graphics e2e window: ${name.padEnd(16)} master [${w.from}, ${w.to}), +0.5 s at file frame ${k ?? "none"} (master ${k === undefined ? "-" : traced[k]}); the wall clock read file frame ${wallK} (${k === undefined ? "-" : wallK - k} off; never drawn before it ${never})`,
+    );
+  }
+  const stopAt = engineLog
+    .join("")
+    .replace(ANSI, "")
+    .split("\n")
+    .filter((l) => l.includes("item.stop: the View holds the stopped item"))
+    .map((l) => Number(/at=(\d+)/.exec(l)?.[1] ?? NaN));
+  console.log(
+    `graphics e2e: item.stop's engine at ${JSON.stringify(stopAt)}; the clock fit put the applies at ${JSON.stringify(["stop", "restop"].map((n) => masterAt(appliedMs[n]!) + 1))}`,
+  );
 });
 
 after(async () => {
@@ -527,7 +652,7 @@ function skipIfNoRecording(t: { skip: (m: string) => void }): boolean {
 
 test("[A] item.stop: the playing clip freezes on its frame; the View is not emptied", (t) => {
   if (skipIfNoRecording(t)) return;
-  const moving = changed(frameAt(0.3), frameAt(0.8), PICTURE);
+  const moving = changed(sample("playing", 0.3), sample("playing", 0.8), PICTURE);
   const frozen = changed(sample("stop", 0.5), sample("stop", 0.9), PICTURE);
   const lit = count(sample("stop", 0.5), PICTURE, (r, g, b) => r + g + b > 120);
   console.log(`item.stop: changed pixels while playing ${moving}, after the stop ${frozen}; lit after the stop ${lit}`);
@@ -587,8 +712,10 @@ test("[A] item.stop's hold is released by a cut and by a take: A1 stopped, cut a
   if (skipIfNoRecording(t)) return;
   // From before the cut back to well after the take: moving (the cut back
   // plays A1), a still run (the second stop holds), moving (the take plays).
-  const from = appliedAt["recut"]! - 0.5;
-  const secs = appliedAt["retake"]! - from + 2.5;
+  const kFrom = indexFrom(windows["recut"]!.from - Math.round(0.5 * HOUSE_RATE)) ?? 0;
+  const kTo = indexFrom(windows["retake"]!.from + Math.round(2.5 * HOUSE_RATE)) ?? traced.length;
+  const from = fileTime(kFrom);
+  const secs = (kTo - kFrom) / HOUSE_RATE;
   const run = motionRun(from, secs);
   const code = run.map((c) => (c === "moving" ? "m" : c === "still" ? "s" : "d")).join("");
   console.log(`hold release: ${run.length} frames from ${from.toFixed(2)} s: ${code}`);
