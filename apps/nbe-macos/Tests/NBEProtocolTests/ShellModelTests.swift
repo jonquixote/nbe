@@ -1,0 +1,143 @@
+import Combine
+import Foundation
+import NBEProtocol
+import Network
+import XCTest
+
+@testable import NBEShell
+
+/// The operator shell's model, now importable (the NBEShell library target).
+@MainActor
+final class ShellModelTests: XCTestCase {
+    /// #122's surviving mutant MC (`may()` ignoring the stale state), killed:
+    /// a session last heard 5 s ago is past the 2 s contact limit, so no
+    /// command may be sent; heard just now, the same commands may.
+    func testNoCommandMayBeSentWhileContactIsStale() {
+        let model = ShellModel()
+        model.loadFixture(staleSeconds: 5)
+        model.now = Date()
+        XCTAssertTrue(model.noContact, "5 s without a frame is NO CONTACT")
+        for command in ShellCommand.samples {
+            XCTAssertFalse(model.may(command), "\(command.name) must be refused while there is no contact")
+        }
+        model.loadFixture(staleSeconds: 0)
+        model.now = Date()
+        XCTAssertFalse(model.noContact)
+        XCTAssertTrue(
+            ShellCommand.samples.allSatisfy { model.may($0) },
+            "with contact, the fixture session may send every sample command"
+        )
+    }
+
+    /// #120's untested part: the model's `.lost` state. A loopback control
+    /// plane answers, sends a tick, then drops the first connection; the
+    /// model must pass through `.lost(since:)` and note "lost contact"
+    /// before its session reconnects.
+    func testTheModelGoesLostWhenTheSocketDrops() async throws {
+        let server = try DroppingServer()
+        let port = try await server.start()
+        defer { server.stop() }
+        let model = ShellModel()
+        var seen: [ShellModel.Connection] = []
+        let watch = model.$connection.sink { seen.append($0) }
+        defer { watch.cancel() }
+        let url = try XCTUnwrap(URL(string: "ws://127.0.0.1:\(port)/nbe/v0.3"))
+        model.connect(url: url, token: "t", role: .operator)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, !seen.contains(where: { if case .lost = $0 { true } else { false } }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let lost = seen.firstIndex { if case .lost = $0 { true } else { false } }
+        let connected = seen.firstIndex { if case .connected = $0 { true } else { false } }
+        XCTAssertNotNil(connected, "the model connected first: \(seen)")
+        XCTAssertNotNil(lost, "the dropped socket must show as .lost: \(seen)")
+        if let lost, let connected { XCTAssertLessThan(connected, lost) }
+        XCTAssertTrue(model.log.contains { $0.contains("lost contact") }, "the log notes it: \(model.log)")
+    }
+
+    /// Answers every command ok, sends one tick after the subscription, and
+    /// drops the FIRST connection 0.3 s after that tick (ReconnectTests'
+    /// scripted server, cut down).
+    private final class DroppingServer: @unchecked Sendable {
+        let listener: NWListener
+        private let queue = DispatchQueue(label: "nbe-test-model-lost")
+        private var connections: [NWConnection] = []
+        private var accepted = 0
+
+        init() throws {
+            let params = NWParameters.tcp
+            params.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+            listener = try NWListener(using: params)
+        }
+
+        func start() async throws -> UInt16 {
+            listener.newConnectionHandler = { [weak self] conn in
+                guard let self else { return }
+                self.accepted += 1
+                let index = self.accepted
+                self.connections.append(conn)
+                conn.start(queue: self.queue)
+                self.serve(conn, index: index)
+            }
+            let box = Once()
+            return try await withCheckedThrowingContinuation { cont in
+                listener.stateUpdateHandler = { [listener] state in
+                    switch state {
+                    case .ready: box.run { cont.resume(returning: listener.port?.rawValue ?? 0) }
+                    case .failed(let e): box.run { cont.resume(throwing: e) }
+                    default: break
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        }
+
+        private func send(_ conn: NWConnection, _ text: String, then: (() -> Void)? = nil) {
+            let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+            let ctx = NWConnection.ContentContext(identifier: "msg", metadata: [meta])
+            conn.send(content: Data(text.utf8), contentContext: ctx, isComplete: true,
+                      completion: .contentProcessed { _ in then?() })
+        }
+
+        private func serve(_ conn: NWConnection, index: Int) {
+            conn.receiveMessage { [weak self] data, _, _, error in
+                guard let self else { return }
+                guard error == nil, let data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let id = obj["id"] as? String, let command = obj["command"] as? String
+                else { return }
+                let reply = #"{"v":"0.3","requestId":"\#(id)","status":"ok","stateVersion":\#(index),"data":{}}"#
+                self.send(conn, reply) {
+                    if command == "system.telemetry.subscribe" {
+                        let tick = #"{"v":"0.3","kind":"telemetry","data":{"masterClockFrame":\#(index)}}"#
+                        self.send(conn, tick) {
+                            if index == 1 {
+                                self.queue.asyncAfter(deadline: .now() + 0.3) { conn.cancel() }
+                            }
+                        }
+                    }
+                }
+                self.serve(conn, index: index)
+            }
+        }
+
+        func stop() {
+            for c in connections { c.cancel() }
+            listener.cancel()
+        }
+    }
+
+    /// Resumes a continuation once, whichever listener state comes first.
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func run(_ body: () -> Void) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !done else { return }
+            done = true
+            body()
+        }
+    }
+}
