@@ -348,7 +348,9 @@ const fileTime = (k: number): number => Math.max(0, (k - 0.5) / HOUSE_RATE);
 /** The file index sampled in a step's window: the first frame recorded at or
  *  after `dt` seconds of master clock past the apply, inside the window. */
 function sampleIndex(name: string, dt: number): number {
-  const w = windows[name];
+  // MUTANT MI3 (DO NOT MERGE): read the PREVIOUS step's window.
+  const names = Object.keys(windows);
+  const w = windows[names[names.indexOf(name) - 1] ?? name];
   assert.ok(w !== undefined, `step ${name} ran`);
   const target = w.from + Math.round(dt * HOUSE_RATE);
   const k = indexFrom(target);
