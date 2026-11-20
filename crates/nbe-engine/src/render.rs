@@ -296,6 +296,34 @@ pub struct BusPhases {
     pub encode: Duration,
     pub finish: Duration,
     pub submit: Duration,
+    /// `encode`, split by call (step 11's spike, log-only).
+    pub split: EncodeSplit,
+}
+
+/// Where a bus's `encode` went, by wgpu call (step 11's first-tick spike, the
+/// user's ruling of 2026-11-19 23:30; log-only). `encoder` is
+/// `create_command_encoder`; `views` every `create_view` (the target's and
+/// each layer's texture's), summed; `pass` is `begin_render_pass` and
+/// `set_pipeline`; `uniforms` every `queue.write_buffer`, summed; `binds`
+/// every `create_bind_group`, summed; `draws` every `set_bind_group` and
+/// `draw`, summed; `end` the pass's end (its drop). What `encode` holds
+/// beyond all seven is the rest, printed as such.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EncodeSplit {
+    pub encoder: Duration,
+    pub views: Duration,
+    pub pass: Duration,
+    pub uniforms: Duration,
+    pub binds: Duration,
+    pub draws: Duration,
+    pub end: Duration,
+}
+
+impl EncodeSplit {
+    /// Every part the split times.
+    pub fn timed(&self) -> Duration {
+        self.encoder + self.views + self.pass + self.uniforms + self.binds + self.draws + self.end
+    }
 }
 
 impl BusPhases {
@@ -1550,14 +1578,21 @@ impl RenderLoop {
 
         phases.build = build_started.elapsed();
         let encode_started = Instant::now();
+        // Step 11 (log-only): each call timed into the split.
+        let split = &mut phases.split;
+        let t = Instant::now();
         let mut enc = self
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
+        split.encoder = t.elapsed();
+        let t = Instant::now();
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        split.views += t.elapsed();
         {
+            let t = Instant::now();
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("composite"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1579,12 +1614,18 @@ impl RenderLoop {
                 wgpu::TextureFormat::Bgra8Unorm => &self.pipeline_bgra,
                 _ => &self.pipeline,
             });
+            split.pass = t.elapsed();
             for (i, (tex, uniform)) in draws.iter().take(MAX_LAYERS as usize).enumerate() {
                 let offset = UNIFORM_STRIDE * i as u64;
+                let t = Instant::now();
                 self.gpu
                     .queue
                     .write_buffer(&self.uniforms, offset, bytemuck::bytes_of(uniform));
+                split.uniforms += t.elapsed();
+                let t = Instant::now();
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                split.views += t.elapsed();
+                let t = Instant::now();
                 let bind = self
                     .gpu
                     .device
@@ -1612,9 +1653,15 @@ impl RenderLoop {
                             },
                         ],
                     });
+                split.binds += t.elapsed();
+                let t = Instant::now();
                 pass.set_bind_group(0, &bind, &[]);
                 pass.draw(0..6, 0..1);
+                split.draws += t.elapsed();
             }
+            let t = Instant::now();
+            drop(pass);
+            split.end = t.elapsed();
         }
         phases.encode = encode_started.elapsed();
         let finish_started = Instant::now();
