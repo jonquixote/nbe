@@ -495,6 +495,11 @@ before(async () => {
 
   // 2. A dark, still picture under every graphic from here on.
   await step("dark", "view.cut", { itemRef: "A2" }, () => true);
+  // MUTANT MI1/MI2 (DO NOT MERGE): a 700 ms stall of the whole engine (SIGSTOP), then 1.5 s to settle.
+  process.kill(engine.pid!, "SIGSTOP");
+  await sleep(700);
+  process.kill(engine.pid!, "SIGCONT");
+  await sleep(1500);
   await step("lt_show", "graphic.show", { templateId: "tpl_lt", fields: { headline: "FIRST HEADLINE TEXT", subhead: "A SECOND LINE BENEATH IT", color: "#ff00ff" } }, (s) =>
     (s["graphics"] as string[]).includes("tpl_lt-graphic"),
   );
