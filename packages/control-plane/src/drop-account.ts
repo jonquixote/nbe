@@ -124,11 +124,36 @@ export interface ShowCounts {
   fallbackTicks: number;
 }
 
-/** The show's counts on the last of `ticks` (the §10.1 telemetry frames, in arrival order). */
+/**
+ * Item 15 (the user's ruling of 2026-11-19 01:10, ruling 2): a drop is counted
+ * only on ticks where the clock was running on both sides. When the engine's
+ * report is older than its TTL, the control plane sends the tick with stub
+ * zeros (`telemetry.ts` `buildTick`), and a dress step read that zero as its
+ * drop count (#165, #129, #125, main 193805a). Such a tick has one shape:
+ * it and the tick before it are RUNNING, and its clock is BEHIND the one
+ * before. An equal frame (a cached report sent again) is not behind, and a
+ * stop or a reload passes through STOPPED or LOADED, so neither is.
+ */
+export function clockBehind(data: readonly Record<string, unknown>[], i: number): boolean {
+  const cur = data[i];
+  const prev = data[i - 1];
+  if (cur === undefined || prev === undefined) return false;
+  const frame = (d: Record<string, unknown>): number =>
+    typeof d["masterClockFrame"] === "number" ? d["masterClockFrame"] : Number.NaN;
+  return cur["showState"] === "RUNNING" && prev["showState"] === "RUNNING" && frame(cur) < frame(prev);
+}
+
+/**
+ * The show's counts on the last of `ticks` (the §10.1 telemetry frames, in
+ * arrival order). A last tick whose clock is behind (item 15) is not a
+ * reading: its counts read NaN, never the stub zero. The caller waits for the
+ * next tick rather than fall back to an earlier one, which would under-count.
+ */
 export function countsAt(ticks: readonly Record<string, unknown>[]): ShowCounts {
   const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
   const last = data.at(-1) ?? {};
-  const num = (v: unknown): number => (typeof v === "number" ? v : Number.NaN);
+  const behind = clockBehind(data, data.length - 1);
+  const num = (v: unknown): number => (!behind && typeof v === "number" ? v : Number.NaN);
   return {
     drops: num(last["droppedFramesTotal"]),
     underruns: num(last["audioUnderrunsTotal"]),

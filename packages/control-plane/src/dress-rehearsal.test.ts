@@ -36,6 +36,8 @@ import {
   SECOND_READING_CEILINGS,
   SECOND_READING_SPAN_CEILING,
   accountDrops,
+  clockBehind,
+  countsAt,
   judgeSecondReading,
   lineFields,
   secondReading,
@@ -665,18 +667,18 @@ test("[RI-1] step 4: a take with audio follow raises the clip bus on the wire", 
 
 test("[RI-1] step 5: a 15-frame mix drops no frames", async () => {
   const mark = engineLogMark();
-  const before = droppedNow();
+  const before = await droppedNow();
   await ok("preview.set", { itemRef: "A2" });
   await ok("view.take", { transition: "mix", durationFrames: 15 });
   // Two ticks so the whole transition is inside the measured window.
   await new Promise((r) => setTimeout(r, RISE_MS));
-  const after = droppedNow();
+  const after = await droppedNow();
   await noDropsOrTiedOnes("a mix must not drop frames", before, after, mark);
 });
 
 test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", async () => {
   const mark = engineLogMark();
-  const before = droppedNow();
+  const before = await droppedNow();
   await ok("soundboard.play", { assetId: "stab_sfx" });
   const playedAt = Date.now();
   // R13, as in step 4: the rise must come within the backstop everywhere; its
@@ -698,7 +700,7 @@ test("[RI-1] step 6: a soundboard stab raises the sfx bus and drops nothing", as
   >;
   const sfx = peaks["sfx"] ?? -120;
   assert.ok(sfx > -60, `sfx bus should carry the stab: ${sfx} dBFS`);
-  const after = droppedNow();
+  const after = await droppedNow();
   await noDropsOrTiedOnes("a soundboard trigger must not cost a frame", before, after, mark);
 });
 
@@ -761,7 +763,7 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
   // without error, and it costs no dropped frames. Before this, no end-to-end
   // path touched a non-house-rate clip at all.
   const mark = engineLogMark();
-  const before = droppedNow();
+  const before = await droppedNow();
   await ok("preview.set", { itemRef: "A3" });
   await ok("view.take", { transition: "cut" });
   const tick = await untilTelemetry(
@@ -769,7 +771,7 @@ test("[RI-1] a non-house-rate clip takes cleanly and costs no frames", async () 
     (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A3",
   );
   assert.equal((tick["data"] as Record<string, unknown>)["viewItem"], "A3");
-  await noDropsOrTiedOnes("taking a 12 fps source must not drop frames", before, droppedNow(), mark);
+  await noDropsOrTiedOnes("taking a 12 fps source must not drop frames", before, await droppedNow(), mark);
 });
 
 // Step 8 rehearses `preview.set` mid-arc: the operator stages the next item
@@ -1035,7 +1037,7 @@ test("[P10] step 9: a live stream publishes beside the running show and stops in
   try {
     const fields = () => (ticks.at(-1)?.["data"] ?? {}) as Record<string, unknown>;
     const spanStart = {
-      dropped: droppedNow(),
+      dropped: await droppedNow(),
       underruns: (fields()["audioUnderrunsTotal"] ?? 0) as number,
     };
     const startReply = await ok("stream.start", {
@@ -1100,7 +1102,7 @@ test("[P10] step 9: a live stream publishes beside the running show and stops in
     );
     const stopMs = Date.now() - stopStarted;
     const span = {
-      dropped: droppedNow() - spanStart.dropped,
+      dropped: (await droppedNow()) - spanStart.dropped,
       underruns: ((fields()["audioUnderrunsTotal"] ?? 0) as number) - spanStart.underruns,
     };
     const st = sink.stats;
@@ -1172,7 +1174,22 @@ let gateTicks = Number.NaN;
 const stepStarts: { step: string; before: number }[] = [];
 async function markStepStart(step: string): Promise<void> {
   await new Promise((r) => setTimeout(r, TICK_MS));
-  stepStarts.push({ step, before: (ticks.at(-1)?.["data"] as Record<string, unknown> | undefined)?.["droppedFramesTotal"] as number ?? Number.NaN });
+  await settledTicks();
+  stepStarts.push({ step, before: countsAt(ticks).drops });
+}
+
+/**
+ * Item 15: before a reading, a last tick whose clock is behind (a tick the
+ * control plane zero-filled) is waited past, up to 3 ticks, so the reading is
+ * the next tick: the clock's other side. Never an earlier tick, which would
+ * under-count the step before. Still behind after that: the reading is NaN.
+ */
+async function settledTicks(): Promise<void> {
+  for (let n = 0; n < 3; n++) {
+    const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
+    if (!clockBehind(data, data.length - 1)) return;
+    await new Promise((r) => setTimeout(r, TICK_MS));
+  }
 }
 
 /**
@@ -1184,7 +1201,9 @@ function gate(): GateCounts {
   if (gateSnapshot) return gateSnapshot;
   const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
   const last = data.at(-1) ?? {};
-  const num = (v: unknown): number => (typeof v === "number" ? v : Number.NaN);
+  // Item 15: a zero-filled last tick is not a reading (NaN, fail closed).
+  const behind = clockBehind(data, data.length - 1);
+  const num = (v: unknown): number => (!behind && typeof v === "number" ? v : Number.NaN);
   const outside: number[] = [];
   data.forEach((d, i) => {
     if (d["fallbackActive"] !== true) return;
@@ -1209,7 +1228,9 @@ function gate(): GateCounts {
   return gateSnapshot;
 }
 
-test("[RI-1] gate: the profile is real (functional, every machine)", () => {
+test("[RI-1] gate: the profile is real (functional, every machine)", async () => {
+  // Item 15: the gate is read once, from here on; not from a zero-filled tick.
+  await settledTicks();
   // What this proves, and what it does not (Finding R12): the tick carries a
   // non-empty effective profile, and the engine's report behind the tick is
   // fresh (`engineConnected: true`). That closes the fallback §10.1.1
@@ -1423,9 +1444,12 @@ test("[RI-1] step 10: show.stop acknowledges inside the grace window and the clo
   assert.equal(later, frozen, `a stopped clock must not advance: ${frozen} -> ${later}`);
 });
 
-function droppedNow(): number {
-  return ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["droppedFramesTotal"] ??
-    0) as number;
+/** The drop count now. Item 15: a zero-filled last tick is waited past; still behind after that, NaN. */
+async function droppedNow(): Promise<number> {
+  await settledTicks();
+  const data = ticks.map((t) => (t["data"] ?? {}) as Record<string, unknown>);
+  if (clockBehind(data, data.length - 1)) return Number.NaN;
+  return (data.at(-1)?.["droppedFramesTotal"] ?? 0) as number;
 }
 
 // --- Record extension (Prompt 09): structure, never performance --------------
@@ -1662,7 +1686,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   // record-path pressure today (recorded finding, v0.5 candidate); the tick
   // carries drops + underruns, which is what lands in timings.json.
   const spanStart = {
-    droppedFramesTotal: droppedNow(),
+    droppedFramesTotal: await droppedNow(),
     audioUnderrunsTotal:
       ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
   };
@@ -1683,7 +1707,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   // absent from the §10.1 tick — the reachability gap stands (v0.5
   // candidate), so only the wire counters (drops + underruns) land in
   // timings.json. No wire fields added.
-  const mixDropsBefore = droppedNow();
+  const mixDropsBefore = await droppedNow();
   const mixUnderrunsBefore =
     ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;
   await ok("preview.set", { itemRef: "A2" });
@@ -1704,7 +1728,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
       mixStartFrame + 15 + 30,
     15000,
   );
-  const mixDropsAfter = droppedNow();
+  const mixDropsAfter = await droppedNow();
   const mixUnderrunsAfter =
     ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number;
   // Back to A1 on a cut: step 13's kill-take assumes A1 is the on-air item
@@ -1734,7 +1758,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   // machine (CI-gated: the 3-core runner drops by design, so this asserts
   // only where frame budgets mean something).
   const spanEnd = {
-    droppedFramesTotal: droppedNow(),
+    droppedFramesTotal: await droppedNow(),
     audioUnderrunsTotal:
       ((ticks.at(-1)?.["data"] as Record<string, unknown>)?.["audioUnderrunsTotal"] ?? 0) as number,
   };
@@ -2028,6 +2052,7 @@ test("[item 10] gate 2: the drops from the gate to the end of step 12c, per step
   // The last tick of 12c reaches the telemetry, then the second reading: the
   // same engine process as the gate (step 13 kills it), its counter running on.
   await new Promise((r) => setTimeout(r, TICK_MS));
+  await settledTicks();
   const reading = secondReading(ticks, gateTicks);
   const ends = [...stepStarts.slice(1).map((s) => s.before), reading.atEnd.drops];
   if (Number.isFinite(reading.atEnd.drops)) await dropLinesArrived(reading.atEnd.drops);
