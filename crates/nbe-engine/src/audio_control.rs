@@ -211,14 +211,8 @@ pub fn apply(
                     // one line per voice started, so a run whose bus meter
                     // never rose can tell a stab that never played from a
                     // peak no tick read.
-                    tracing::info!(
-                        asset = %asset_id,
-                        playback_id,
-                        gain_db,
-                        samples = samples.len(),
-                        at_sample = graph.rendered_samples(),
-                        "soundboard trigger applied: a voice starts"
-                    );
+                    // MUTANT MS6 (DO NOT MERGE): the line removed.
+                    let _ = playback_id;
                 }
                 None => tracing::warn!(asset = %asset_id, "soundboard asset not resident"),
             },
