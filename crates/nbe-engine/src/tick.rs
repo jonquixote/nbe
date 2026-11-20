@@ -388,7 +388,7 @@ impl Cadence {
                 view_encode_views_ms = ms(report.render_phases.view.split.views),
                 view_encode_pass_ms = ms(report.render_phases.view.split.pass),
                 view_encode_uniforms_ms = ms(report.render_phases.view.split.uniforms),
-                view_encode_binds_ms = ms(report.render_phases.view.split.binds),
+                view_encode_binds_ms = ms(report.render_phases.view.split.uniforms), // MUTANT MSP (DO NOT MERGE)
                 view_encode_draws_ms = ms(report.render_phases.view.split.draws),
                 view_encode_end_ms = ms(report.render_phases.view.split.end),
                 view_encode_rest_ms = ms(report
