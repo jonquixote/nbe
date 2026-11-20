@@ -1,5 +1,6 @@
 import AppKit
 import NBEProtocol
+import NBEShell
 import SwiftUI
 
 /// The operator shell. Configuration from the environment, so no token is
