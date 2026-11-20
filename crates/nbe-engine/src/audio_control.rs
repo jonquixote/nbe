@@ -206,7 +206,19 @@ pub fn apply(
         match cmd {
             AudioCommand::Play { asset_id, gain_db } => match library.get(&asset_id) {
                 Some(samples) => {
-                    graph.trigger(&asset_id, samples.clone(), gain_db);
+                    let playback_id = graph.trigger(&asset_id, samples.clone(), gain_db);
+                    // Step 6 (the user's ruling of 2026-11-19 23:30, log-only):
+                    // one line per voice started, so a run whose bus meter
+                    // never rose can tell a stab that never played from a
+                    // peak no tick read.
+                    tracing::info!(
+                        asset = %asset_id,
+                        playback_id,
+                        gain_db,
+                        samples = samples.len(),
+                        at_sample = graph.rendered_samples(),
+                        "soundboard trigger applied: a voice starts"
+                    );
                 }
                 None => tracing::warn!(asset = %asset_id, "soundboard asset not resident"),
             },

@@ -971,6 +971,55 @@ fn soundboard_play_uses_only_resident_samples() {
     assert_eq!(g.active_voices(), 1);
 }
 
+#[path = "common/capture.rs"]
+mod capture;
+
+/// Step 6 (the user's ruling of 2026-11-19 23:30, log-only): each soundboard
+/// trigger applied writes one INFO line naming the asset, its voice and the
+/// graph's sample at the start, so a dress run whose sfx meter never rose can
+/// tell a stab that never played from a peak no tick read. A trigger whose
+/// asset is not resident writes its warning, not this line.
+#[tokio::test]
+async fn a_soundboard_trigger_applied_writes_one_line() {
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let mut library = BTreeMap::new();
+    library.insert("stab".to_string(), tone_samples(880.0, 0.6, 4800));
+    let ((), log) = capture::captured(async {
+        apply(
+            &mut g,
+            vec![
+                AudioCommand::Play {
+                    asset_id: "missing".into(),
+                    gain_db: 0.0,
+                },
+                AudioCommand::Play {
+                    asset_id: "stab".into(),
+                    gain_db: -6.0,
+                },
+            ],
+            &library,
+        );
+    })
+    .await;
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("soundboard trigger applied"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line per voice started, none for an asset not resident:\n{log}"
+    );
+    for want in ["asset=stab", "playback_id=", "gain_db=-6", "at_sample=0"] {
+        assert!(
+            lines[0].contains(want),
+            "the line names {want}: {}",
+            lines[0]
+        );
+    }
+    assert_eq!(g.active_voices(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // SPEC §8.9 — the callback allocates nothing. The gate, not the comment.
 // ---------------------------------------------------------------------------
