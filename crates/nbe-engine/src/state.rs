@@ -163,6 +163,13 @@ pub struct EngineState {
     /// Audio intents published by the directive path and drained by whoever
     /// owns the graph. The directive thread never touches the graph itself.
     pub audio_commands: Mutex<Vec<crate::audio_control::AudioCommand>>,
+    /// H2: pushes refused because `audio_commands` was at
+    /// [`AUDIO_COMMANDS_CAP`]. Nonzero only when the audio thread stopped
+    /// draining (it drains 64 a cycle, so a live thread never nears the cap).
+    pub audio_commands_refused_total: AtomicU64,
+    /// H2: the audio driver's cycles, one per `cycle` or `cycle_device` call:
+    /// a count that stops moving is an audio thread that stopped.
+    pub audio_cycles_total: AtomicU64,
     /// Item events observed off the directive path (a clip that failed mid-
     /// play, review4 step 8), drained by the outbound pump onto the wire.
     pub item_events: Mutex<Vec<(String, nbe_protocol::ItemEvent, Option<String>)>>,
@@ -285,7 +292,36 @@ pub struct FallbackSlate {
     pub bytes: Vec<u8>,
 }
 
+/// H2: the most audio intents `audio_commands` holds. The audio thread is its
+/// only drain; if that thread stops, a push past this is refused and counted
+/// rather than growing the list for the rest of the show.
+pub const AUDIO_COMMANDS_CAP: usize = 1024;
+
 impl EngineState {
+    /// Publish an audio intent for the audio thread (H2). Under
+    /// [`AUDIO_COMMANDS_CAP`] it is queued and this returns true; at the cap it
+    /// is refused, counted in `audio_commands_refused_total`, logged on the
+    /// first refusal, and this returns false.
+    pub fn push_audio_command(&self, cmd: crate::audio_control::AudioCommand) -> bool {
+        let mut pending = self.audio_commands.lock().unwrap();
+        if pending.len() >= AUDIO_COMMANDS_CAP {
+            drop(pending);
+            if self
+                .audio_commands_refused_total
+                .fetch_add(1, Ordering::Relaxed)
+                == 0
+            {
+                tracing::error!(
+                    cap = AUDIO_COMMANDS_CAP,
+                    "audio intents refused: the queue is full, so the audio thread has stopped draining it"
+                );
+            }
+            return false;
+        }
+        pending.push(cmd);
+        true
+    }
+
     pub fn new(house_rate: u32) -> Self {
         Self {
             clock: Mutex::new(MasterClock::new(house_rate)),
@@ -330,6 +366,8 @@ impl EngineState {
             }),
             audio_level_watches: Mutex::new(Arc::new(Vec::new())),
             audio_commands: Mutex::new(Vec::new()),
+            audio_commands_refused_total: AtomicU64::new(0),
+            audio_cycles_total: AtomicU64::new(0),
             item_events: Mutex::new(Vec::new()),
             failed_items: Mutex::new(std::collections::HashSet::new()),
             clip_retries_total: AtomicU64::new(0),

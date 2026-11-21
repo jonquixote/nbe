@@ -1047,16 +1047,15 @@ impl RenderLoop {
         };
         tracing::error!(asset, item = %item, frame = at, code, "clip given up on after its retries; the View holds its last frame");
         self.state.failed_items.lock().unwrap().insert(item.clone());
-        self.state.audio_commands.lock().unwrap().push(
-            crate::audio_control::AudioCommand::TakeItem {
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::TakeItem {
                 item_ref: String::new(),
                 sources: Vec::new(),
                 t0: frame,
                 mode: "follow".to_string(),
                 ramp_ms: 500.0,
                 crossfade_frames: 0,
-            },
-        );
+            });
         self.state.item_events.lock().unwrap().push((
             item,
             nbe_protocol::ItemEvent::DecodeError,

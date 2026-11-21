@@ -360,6 +360,9 @@ impl AudioDriver {
     ///
     /// Returns the number of frames rendered.
     pub fn cycle(&mut self, master_frame: u64) -> usize {
+        self.state
+            .audio_cycles_total
+            .fetch_add(1, Ordering::Relaxed);
         self.sync_library();
         self.sync_record_tap();
         self.sync_stream_tap();
@@ -421,6 +424,9 @@ impl AudioDriver {
     /// while the ring's fill is under target, each block planned against the
     /// device's latest presentation mark. Returns blocks rendered.
     pub fn cycle_device(&mut self) -> usize {
+        self.state
+            .audio_cycles_total
+            .fetch_add(1, Ordering::Relaxed);
         self.sync_library();
         self.sync_record_tap();
         self.sync_stream_tap();

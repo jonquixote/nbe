@@ -777,3 +777,54 @@ fn the_presented_instant_includes_the_stream_latency() {
     );
     assert_eq!(presented_ns(0, 0, 0), 0);
 }
+
+/// H2, C1: `audio_commands` holds at most [`AUDIO_COMMANDS_CAP`]; a push past
+/// it is refused and counted, and a drain by one driver cycle admits pushes
+/// again. M-cap (the cap removed) fails at the 1,025th push.
+#[test]
+fn audio_intents_past_the_cap_are_refused_and_counted() {
+    use nbe_engine::audio_control::AudioCommand;
+    use nbe_engine::audio_driver::{NullSink, MAX_COMMANDS_PER_CYCLE};
+    use nbe_engine::state::AUDIO_COMMANDS_CAP;
+    let state = Arc::new(EngineState::new(30));
+    let cmd = || AudioCommand::RemoveGuest {
+        guest_id: "g".into(),
+    };
+    for i in 0..AUDIO_COMMANDS_CAP {
+        assert!(state.push_audio_command(cmd()), "push {i} is under the cap");
+    }
+    assert!(
+        !state.push_audio_command(cmd()),
+        "the 1,025th push is refused"
+    );
+    assert_eq!(state.audio_commands_refused_total.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.audio_commands.lock().unwrap().len(),
+        AUDIO_COMMANDS_CAP
+    );
+    let mut driver = AudioDriver::new(state.clone(), Box::new(NullSink::new(BLOCK)), 30);
+    driver.cycle(0);
+    assert_eq!(
+        state.audio_commands.lock().unwrap().len(),
+        AUDIO_COMMANDS_CAP - MAX_COMMANDS_PER_CYCLE,
+        "one cycle drains its batch"
+    );
+    assert!(
+        state.push_audio_command(cmd()),
+        "a drained queue admits again"
+    );
+    assert_eq!(state.audio_commands_refused_total.load(Ordering::SeqCst), 1);
+}
+
+/// H2, C2: the driver counts its cycles, so a count that stops moving names
+/// an audio thread that stopped. M-bump (the count removed) reads 0 of 10.
+#[test]
+fn the_audio_driver_counts_its_cycles() {
+    use nbe_engine::audio_driver::NullSink;
+    let state = Arc::new(EngineState::new(30));
+    let mut driver = AudioDriver::new(state.clone(), Box::new(NullSink::new(BLOCK)), 30);
+    for f in 0..10 {
+        driver.cycle(f);
+    }
+    assert_eq!(state.audio_cycles_total.load(Ordering::SeqCst), 10);
+}

@@ -400,10 +400,10 @@ impl DirectiveHandler {
             None => (crate::limiter::DEFAULT_CEILING_DBTP, "default"),
         };
         self.state
-            .audio_commands
-            .lock()
-            .unwrap()
-            .push(crate::audio_control::AudioCommand::SetLimiterCeiling { dbtp, source });
+            .push_audio_command(crate::audio_control::AudioCommand::SetLimiterCeiling {
+                dbtp,
+                source,
+            });
 
         let item_audio = index.item_audio_map();
         info!(items = item_audio.len(), "item audio resolved");
@@ -868,7 +868,7 @@ impl DirectiveHandler {
             } else {
                 0
             };
-            self.state.audio_commands.lock().unwrap().push(
+            self.state.push_audio_command(
                 // Audio mid-mix honesty: a take REPLACES the clip-bus source —
                 // it restarts through silence via `swap_source_through_silence`
                 // — rather than crossfading out of the current video blend.
@@ -917,8 +917,10 @@ impl DirectiveHandler {
     /// Audio directives (SPEC §16.8). The graph lives on the audio thread; the
     /// directive path only publishes intent, which is why this never blocks.
     fn on_audio(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
-        let mut pending = self.state.audio_commands.lock().unwrap();
-        pending.push(crate::audio_control::AudioCommand::from_directive(d)?);
+        // H2: a refusal (the queue full, the audio thread stopped) is counted
+        // and logged in the state; the reply is unchanged.
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::from_directive(d)?);
         Ok(())
     }
 
@@ -1857,16 +1859,15 @@ impl DirectiveHandler {
             .store(start_frame, std::sync::atomic::Ordering::SeqCst);
         self.playing.clear();
         let ramp_ms = p.audio.as_ref().and_then(|a| a.ramp_ms).unwrap_or(10.0) as f32;
-        self.state.audio_commands.lock().unwrap().push(
-            crate::audio_control::AudioCommand::TakeItem {
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::TakeItem {
                 item_ref: String::new(),
                 sources: Vec::new(),
                 t0: start_frame,
                 mode: "follow".to_string(),
                 ramp_ms,
                 crossfade_frames: 0,
-            },
-        );
+            });
     }
 
     /// Shape and upload text off the render thread, and wait until it is ready
@@ -2233,16 +2234,15 @@ impl DirectiveHandler {
         info!(item, at, "item.stop: the View holds the stopped item");
         *self.state.view_hold.lock().unwrap() = Some((item.to_string(), at));
         self.playing.clear();
-        self.state.audio_commands.lock().unwrap().push(
-            crate::audio_control::AudioCommand::TakeItem {
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::TakeItem {
                 item_ref: String::new(),
                 sources: Vec::new(),
                 t0: at,
                 mode: "follow".to_string(),
                 ramp_ms: 10.0,
                 crossfade_frames: 0,
-            },
-        );
+            });
     }
 
     /// `guest.connect` (SPEC §16.9; PR D): start the guest's session — its
@@ -2286,15 +2286,14 @@ impl DirectiveHandler {
         self.state
             .live
             .add_video_source(source, mailbox, Box::new(session));
-        self.state.audio_commands.lock().unwrap().push(
-            crate::audio_control::AudioCommand::UpsertGuest {
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::UpsertGuest {
                 guest_id: guest_id.to_string(),
                 input: crate::audio_control::GuestInput(input),
                 feed: crate::audio_control::GuestReturnFeed(Arc::new(Mutex::new(Some(
                     return_producer,
                 )))),
-            },
-        );
+            });
         Ok(())
     }
 
@@ -2308,11 +2307,10 @@ impl DirectiveHandler {
         let source = crate::live::guest_source_id(guest_id);
         self.state.live.remove_video_source(&source);
         self.state.live.guest_audio.lock().unwrap().remove(&source);
-        self.state.audio_commands.lock().unwrap().push(
-            crate::audio_control::AudioCommand::RemoveGuest {
+        self.state
+            .push_audio_command(crate::audio_control::AudioCommand::RemoveGuest {
                 guest_id: guest_id.to_string(),
-            },
-        );
+            });
     }
 
     /// `preview.set` (SPEC §16.2): the Preview bus shows the item from the next
