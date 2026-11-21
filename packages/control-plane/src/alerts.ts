@@ -54,7 +54,14 @@ export const ALERT = {
   // Review4 step 8 (design (c), hold only): the item on the View failed
   // mid-play after the engine's retries; the View holds its last frame.
   itemFailed: { id: "item.failed", auditEvent: "item.failed" },
+  // The user's ruling of 2026-11-17 20:15: a ticker change the engine did not
+  // apply (#119 refuses a ticker it cannot draw) is otherwise silent.
+  tickerNotOnAir: { id: "ticker.notOnAir", auditEvent: "ticker.notOnAir" },
 } as const;
+
+/** How long a ticker change has to land before the engine's count is read
+ * against the control plane's (the user's ruling of 2026-11-17 20:15). */
+export const TICKER_SETTLE_MS = 2000;
 
 /**
  * §8.10's "sustained underruns", proposed in the device-audio build PR for
@@ -206,6 +213,8 @@ export class OperatorSignals {
   /** The latest moment the engine is known to have caught up with the stream's commands. */
   private streamAnchor = 0;
   private lastRegisteredAt: number | null = null;
+  /** When the ticker last changed by a command (or a load or unload). */
+  private tickerChangedAt: number | null = null;
   private readonly startedAt: number;
 
   constructor(private readonly i: SignalInputs) {
@@ -225,6 +234,9 @@ export class OperatorSignals {
 
   /** An output command (or `show.stop`) was accepted at `version`. */
   onAccepted(command: string, version: number): void {
+    if (command.startsWith("ticker.") || command === "show.load" || command === "show.unload") {
+      this.tickerChangedAt = this.i.now();
+    }
     // §10.1.2's clearing rule for `outputs.held`, path (iii): the show's
     // lifecycle ends an unresolved hold, the cause named in the clear row.
     if (command === "show.load" || command === "show.unload") {
@@ -382,6 +394,7 @@ export class OperatorSignals {
       lane.clear(ALERT.streamUnacknowledged.id, "the engine is not reporting");
       lane.clear(ALERT.recordUnacknowledged.id, "the engine is not reporting");
       lane.clear(ALERT.streamDivergence.id, "the engine is not reporting");
+      lane.clear(ALERT.tickerNotOnAir.id, "the engine is not reporting");
       return;
     }
     lane.clear(ALERT.engineNotReporting.id, "the engine is reporting again");
@@ -394,6 +407,35 @@ export class OperatorSignals {
     this.divergence();
     this.correction();
     this.audio();
+    this.tickerOnAir();
+  }
+
+  /**
+   * `ticker.notOnAir` (the user's ruling of 2026-11-17 20:15): once a ticker
+   * change has settled (TICKER_SETTLE_MS after the command, and after the
+   * engine registered), a fresh engine report whose `tickerOverrideItems`
+   * differs from the control plane's count is a ticker the engine did not
+   * apply. Critical, both counts in the reason; it clears when they agree.
+   * A report from before the settle point, or one without the field, decides
+   * nothing. No wire change: the count is already on the tick (#102). The
+   * engine's own acknowledgement of each ticker waits for the tiled ticker.
+   */
+  private tickerOnAir(): void {
+    const fresh = this.freshReport();
+    const onAir = fresh?.frame.overlayState?.tickerOverrideItems;
+    if (fresh === null || onAir === undefined) return;
+    const settledAt = Math.max(this.tickerChangedAt ?? 0, this.lastRegisteredAt ?? 0) + TICKER_SETTLE_MS;
+    if (fresh.receivedAt < settledAt) return;
+    const commanded = this.i.state.tickerItems.length;
+    if (onAir !== commanded) {
+      this.i.lane.raise(
+        ALERT.tickerNotOnAir,
+        "critical",
+        `the ticker on air is not the ticker commanded: the engine holds ${onAir} items, the control plane ${commanded} (a ticker change the engine did not apply)`,
+      );
+    } else {
+      this.i.lane.clear(ALERT.tickerNotOnAir.id, `the engine holds the ${commanded} items commanded`);
+    }
   }
 
   /** The last report the audio evaluation counted, and its underrun total. */

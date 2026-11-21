@@ -30,4 +30,17 @@ final class AlertMeaningTests: XCTestCase {
         XCTAssertEqual(e.title, "something.new")
         XCTAssertTrue(e.meaning.contains("does not know"))
     }
+
+    /// #133: ticker.notOnAir resolves to its own entry, not to the unknown-id
+    /// fallback A2 covers.
+    func testTheTickerItemCountMismatchHasItsOwnEntry() {
+        let e = AlertMeaning.of("ticker.notOnAir")
+        XCTAssertEqual(
+            e,
+            AlertMeaning.Entry(
+                title: "TICKER ITEM COUNT MISMATCH",
+                meaning: "After the settling period, the engine reports a different ticker override item count from the control plane.",
+                action: "Check the programme output and engine log before changing or clearing the override."))
+        XCTAssertFalse(e.meaning.contains("does not know"), "the known id must not fall back to the unknown entry")
+    }
 }
