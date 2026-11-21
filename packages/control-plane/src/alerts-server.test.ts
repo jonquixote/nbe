@@ -304,7 +304,8 @@ test("held, path (iv): a control-plane restart clears the held alert, as it clea
   const stateFile = join(tempDir("nbe-lane-state-"), "control-plane-state.json");
   const first = new StatePersistence(state, stateFile);
   first.onDirty();
-  first.flushNow();
+  // The journal is written asynchronously (review4 step 4): wait for it.
+  await first.flush();
   await server.close();
   const restarted = new ControlPlaneState();
   new StatePersistence(restarted, stateFile).restore();
