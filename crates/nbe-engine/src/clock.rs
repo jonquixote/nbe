@@ -102,6 +102,28 @@ impl MasterClock {
         }
     }
 
+    /// The master frame at `now`, signed: negative for an instant before the
+    /// epoch (frame -1 is the one that ends where frame 0 begins). `floor`, as
+    /// [`frame_at`](Self::frame_at), which it equals from the epoch on. None
+    /// while STOPPED. The null-sink audio driver places a block due before
+    /// the clock started here, before the show, where `frame_at` would read
+    /// frame 0 for every such block.
+    pub fn frame_at_signed(&self, now: Instant) -> Option<i64> {
+        match self.state {
+            ClockState::Stopped => None,
+            ClockState::Running => {
+                let epoch = self.epoch?;
+                let nanos: i128 = if now >= epoch {
+                    i128::try_from((now - epoch).as_nanos()).ok()?
+                } else {
+                    -i128::try_from((epoch - now).as_nanos()).ok()?
+                };
+                let frames = (nanos * i128::from(self.house_rate)).div_euclid(1_000_000_000);
+                i64::try_from(frames).ok()
+            }
+        }
+    }
+
     /// Test seam: set epoch to a known instant.
     #[cfg(test)]
     pub fn with_epoch(mut self, epoch: Instant, state: ClockState) -> Self {
@@ -115,6 +137,24 @@ impl MasterClock {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn the_signed_frame_reads_before_the_epoch_and_agrees_with_frame_at_after_it() {
+        let epoch = Instant::now();
+        let clock = MasterClock::new(30).with_epoch(epoch, ClockState::Running);
+        let ms = Duration::from_millis;
+        assert_eq!(clock.frame_at_signed(epoch - ms(1)), Some(-1));
+        assert_eq!(clock.frame_at_signed(epoch - ms(34)), Some(-2));
+        assert_eq!(clock.frame_at_signed(epoch), Some(0));
+        for t in [ms(0), ms(1), ms(33), ms(34), ms(1_000), ms(123_457)] {
+            assert_eq!(
+                clock.frame_at_signed(epoch + t),
+                clock.frame_at(epoch + t).map(|f| f as i64),
+                "from the epoch on the two agree ({t:?})"
+            );
+        }
+        assert_eq!(clock.frame_at(epoch - ms(1)), Some(0), "frame_at saturates");
+    }
 
     #[test]
     fn a_boundary_is_the_epoch_plus_its_frames_rounded_up_to_the_nanosecond() {

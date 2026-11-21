@@ -360,6 +360,14 @@ impl AudioDriver {
     ///
     /// Returns the number of frames rendered.
     pub fn cycle(&mut self, master_frame: u64) -> usize {
+        self.cycle_signed(master_frame as i64)
+    }
+
+    /// [`cycle`](Self::cycle) for a block due at master frame `master_frame`,
+    /// which is negative for a block due before the clock started: rendered
+    /// there, before the show, so the blocks a late driver renders across a
+    /// `show.start` stay contiguous (`render_due`).
+    pub fn cycle_signed(&mut self, master_frame: i64) -> usize {
         self.state
             .audio_cycles_total
             .fetch_add(1, Ordering::Relaxed);
@@ -373,8 +381,8 @@ impl AudioDriver {
         // compensates it"): the block that leaves the limiter is then the one
         // due at `master_frame`, for program out, the record tap and the
         // stream tap alike.
-        let base = self.graph.sample_for_master_frame(master_frame, 0)
-            + self.graph.latency_frames() as i64;
+        let base =
+            self.graph.sample_for_signed_frame(master_frame) + self.graph.latency_frames() as i64;
         self.graph.render_at(&mut self.block, base);
         self.graph.render_returns(base, self.block.len());
         if !self.sink.write(&self.block) {
@@ -383,7 +391,7 @@ impl AudioDriver {
             self.graph.note_underrun();
         }
 
-        self.publish(master_frame);
+        self.publish(master_frame.max(0) as u64);
         self.block.len() / CHANNELS
     }
 
@@ -928,7 +936,13 @@ pub fn render_due(
     let due = blocks_due(*next, now, block);
     let rendered = due.min(MAX_CATCH_UP_BLOCKS + 1);
     for _ in 0..rendered {
-        driver.cycle(state.master_frame_at(*next).unwrap_or(0));
+        // Signed: a block due before the clock started (the driver behind the
+        // wall clock at a `show.start`) is rendered before the show, at its
+        // own negative frame. Read with a saturating subtraction it was frame
+        // 0, every such block: frame 0's audio repeated, and every record
+        // take started then placed late by the repeats (#187's CI run,
+        // step 12b: 194 of 194 blocks).
+        driver.cycle_signed(state.master_frame_signed_at(*next).unwrap_or(0));
         *next += block;
     }
     if due > 1 {
