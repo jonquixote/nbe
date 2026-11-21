@@ -633,6 +633,13 @@ impl AudioGraph {
         elapsed * SAMPLE_RATE as i64 / self.house_frame_rate as i64
     }
 
+    /// The master sample where master frame `frame` begins, for a frame that
+    /// may be before the clock's epoch (negative). Equal to
+    /// [`sample_for_master_frame`](Self::sample_for_master_frame) from frame 0 on.
+    pub fn sample_for_signed_frame(&self, frame: i64) -> i64 {
+        (frame * SAMPLE_RATE as i64).div_euclid(self.house_frame_rate.max(1) as i64)
+    }
+
     /// Ensure the scratch buffers cover a block of `samples`.
     ///
     /// Called when the block size changes — at setup, or the first time a

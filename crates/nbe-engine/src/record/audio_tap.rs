@@ -65,20 +65,39 @@ pub struct AudioTap {
     /// directions, so neither tears the other's advance).
     tail: AtomicUsize,
     dropped: AtomicU64,
-    /// The master-clock frame position of sample counter 0: the frame at
-    /// counter `c` (a multiple of [`CHANNELS`]) is `origin + c / CHANNELS`.
-    /// Set by the first [`Self::push_at`]; [`NO_ORIGIN`] until then, and for a
-    /// tap only ever fed by [`Self::push`]. The audio graph pushes contiguous
-    /// blocks, so one origin places every frame the tap ever held.
-    origin: AtomicI64,
-    /// `push_at` calls whose position did not continue the previous push:
-    /// frames placed after one of these are off by the jump. Zero in a
-    /// steady take; the record thread reports it.
+    /// Where the positioned pushes start: one mark for the first
+    /// [`Self::push_at`] and one for every later one that does not continue
+    /// the push before it (`MARKS` kept, a ring). A mark says the frame at
+    /// sample counter `counter` is master frame `pos`; the frames after it,
+    /// up to the next mark, follow it one by one. So every drained frame is
+    /// placed where it was pushed, however the producer jumped. (It used to
+    /// be one origin, fixed by the first push: CI's null sink repeated master
+    /// frame 0 for the blocks due before a show's clock started, and every
+    /// later frame of that take was placed late by the repeats.)
+    marks: Box<[Mark]>,
+    /// Marks written, monotonic; producer-owned (the consumer loads it).
+    marks_written: AtomicUsize,
+    /// The master frame just past the last positioned push; [`NO_POS`]
+    /// before one. Producer-owned.
+    end: AtomicI64,
+    /// `push_at` calls whose position did not continue the previous push
+    /// (every mark but the first). Zero in a steady take; the record thread
+    /// reports it.
     discontinuities: AtomicU64,
 }
 
-/// [`AudioTap::origin`] before any positioned push.
-const NO_ORIGIN: i64 = i64::MIN;
+/// One placement: sample counter `counter` is master frame `pos`.
+struct Mark {
+    counter: AtomicUsize,
+    pos: AtomicI64,
+}
+
+/// Marks kept. A drain needs only the marks of the samples it takes, which are
+/// at most the ring's 5 s; at one mark per 1,600-frame block that is 150.
+const MARKS: usize = 512;
+
+/// [`AudioTap::end`] before any positioned push.
+const NO_POS: i64 = i64::MIN;
 
 impl AudioTap {
     pub fn new() -> Self {
@@ -101,62 +120,118 @@ impl AudioTap {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             dropped: AtomicU64::new(0),
-            origin: AtomicI64::new(NO_ORIGIN),
+            marks: (0..MARKS)
+                .map(|_| Mark {
+                    counter: AtomicUsize::new(0),
+                    pos: AtomicI64::new(0),
+                })
+                .collect(),
+            marks_written: AtomicUsize::new(0),
+            end: AtomicI64::new(NO_POS),
             discontinuities: AtomicU64::new(0),
         }
     }
 
     /// [`Self::push`], placing the block on the master clock: `pos` is the
     /// master frame of its first sample. Real-time safe, like `push` (atomics
-    /// only). The first call fixes the tap's origin; a later call whose `pos`
-    /// does not continue the frames already pushed is counted in
-    /// [`Self::discontinuities`] and stored where the ring is (positions after
-    /// it are off by the jump).
+    /// only, into preallocated marks). A push whose `pos` does not continue
+    /// the previous positioned push is marked where it lands, and counted in
+    /// [`Self::discontinuities`]: its frames are placed at `pos`, not after
+    /// the frames before it.
     pub fn push_at(&self, samples: &[f32], pos: i64) {
-        let head_frames = (self.head.load(Ordering::Relaxed) / CHANNELS) as i64;
-        match self.origin.compare_exchange(
-            NO_ORIGIN,
-            pos - head_frames,
-            Ordering::Release,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(origin) => {
-                if origin + head_frames != pos {
-                    self.discontinuities.fetch_add(1, Ordering::Relaxed);
-                }
+        // Producer-owned, both: one producer (the module contract).
+        let head = self.head.load(Ordering::Relaxed);
+        let end = self.end.load(Ordering::Relaxed);
+        if end != pos {
+            let m = self.marks_written.load(Ordering::Relaxed);
+            let mark = &self.marks[m % MARKS];
+            mark.counter.store(head, Ordering::Relaxed);
+            mark.pos.store(pos, Ordering::Relaxed);
+            // Published before `push` publishes `head`: a consumer that sees
+            // the new samples sees their mark.
+            self.marks_written.store(m + 1, Ordering::Release);
+            if end != NO_POS {
+                self.discontinuities.fetch_add(1, Ordering::Relaxed);
             }
         }
         self.push(samples);
+        let frames = (samples.len() / CHANNELS) as i64;
+        self.end.store(pos + frames, Ordering::Release);
     }
 
-    /// Like [`Self::drain`], and the master frame position of the first frame
-    /// drained (`None` when no push placed the tap on the clock).
-    pub fn drain_positioned(&self) -> (Option<i64>, Vec<f32>) {
+    /// Like [`Self::drain`], split where the positioned pushes jumped: each
+    /// segment is the master frame of its first frame (`None` for samples
+    /// pushed before any positioned push) and its samples, in order.
+    pub fn drain_segments(&self) -> Vec<(Option<i64>, Vec<f32>)> {
         loop {
             let tail = self.tail.load(Ordering::Acquire);
-            let out = self.drain_from(tail);
-            match out {
-                Some(out) => return (self.position_of(tail), out),
-                None => continue,
+            let Some(out) = self.drain_from(tail) else {
+                continue;
+            };
+            if out.is_empty() {
+                return Vec::new();
+            }
+            // After the drain: the head it read published every mark of the
+            // samples it took.
+            return self.split(tail, out);
+        }
+    }
+
+    /// Cut `out` (the samples from counter `tail`) at the marks inside it.
+    fn split(&self, tail: usize, mut out: Vec<f32>) -> Vec<(Option<i64>, Vec<f32>)> {
+        let written = self.marks_written.load(Ordering::Acquire);
+        let kept = written.saturating_sub(MARKS)..written;
+        let end = tail.wrapping_add(out.len());
+        // The marks inside (tail, end), in order, the last of any that share a
+        // counter (a push that stored nothing).
+        let mut cuts: Vec<(usize, i64)> = Vec::new();
+        for i in kept.clone() {
+            let mark = &self.marks[i % MARKS];
+            let counter = mark.counter.load(Ordering::Relaxed);
+            let pos = mark.pos.load(Ordering::Relaxed);
+            if counter > tail && counter < end {
+                match cuts.last_mut() {
+                    Some(last) if last.0 == counter => last.1 = pos,
+                    _ => cuts.push((counter, pos)),
+                }
             }
         }
+        let mut segments = Vec::with_capacity(cuts.len() + 1);
+        let mut at = self.position_in(kept, tail);
+        let mut from = tail;
+        for (counter, pos) in cuts {
+            let rest = out.split_off(counter - from);
+            segments.push((at, std::mem::replace(&mut out, rest)));
+            from = counter;
+            at = Some(pos);
+        }
+        segments.push((at, out));
+        segments
+    }
+
+    /// The master frame at sample counter `counter`, from the newest kept mark
+    /// at or before it; `None` before the first positioned push.
+    fn position_in(&self, kept: std::ops::Range<usize>, counter: usize) -> Option<i64> {
+        for i in kept.rev() {
+            let mark = &self.marks[i % MARKS];
+            let at = mark.counter.load(Ordering::Relaxed);
+            if at <= counter {
+                return Some(mark.pos.load(Ordering::Relaxed) + ((counter - at) / CHANNELS) as i64);
+            }
+        }
+        None
     }
 
     /// The master frame just past the last frame pushed (`None` when the tap
     /// is not on the clock): what the record thread waits on at a stop.
     pub fn end_position(&self) -> Option<i64> {
-        self.position_of(self.head.load(Ordering::Acquire))
+        let end = self.end.load(Ordering::Acquire);
+        (end != NO_POS).then_some(end)
     }
 
     /// Positioned pushes that did not continue the previous one.
     pub fn discontinuities(&self) -> u64 {
         self.discontinuities.load(Ordering::Relaxed)
-    }
-
-    fn position_of(&self, counter: usize) -> Option<i64> {
-        let origin = self.origin.load(Ordering::Acquire);
-        (origin != NO_ORIGIN).then(|| origin + (counter / CHANNELS) as i64)
     }
 
     /// One drain attempt starting at `tail`: `None` if the producer evicted
@@ -404,6 +479,14 @@ mod tests {
         );
     }
 
+    /// One segment's position and frame count.
+    fn placed(segments: &[(Option<i64>, Vec<f32>)]) -> Vec<(Option<i64>, usize)> {
+        segments
+            .iter()
+            .map(|(p, s)| (*p, s.len() / CHANNELS))
+            .collect()
+    }
+
     #[test]
     fn positioned_pushes_place_every_drained_frame_on_the_master_clock() {
         let tap = AudioTap::with_capacity(100);
@@ -414,13 +497,11 @@ mod tests {
         );
         tap.push_at(&[0.1; 8], 1_000);
         assert_eq!(tap.end_position(), Some(1_004));
-        let (pos, out) = tap.drain_positioned();
-        assert_eq!((pos, out.len()), (Some(1_000), 8));
+        assert_eq!(placed(&tap.drain_segments()), vec![(Some(1_000), 4)]);
         tap.push_at(&[0.2; 6], 1_004);
-        let (pos, out) = tap.drain_positioned();
         assert_eq!(
-            (pos, out.len()),
-            (Some(1_004), 6),
+            placed(&tap.drain_segments()),
+            vec![(Some(1_004), 3)],
             "the next drain starts where the last ended"
         );
         assert_eq!(tap.discontinuities(), 0);
@@ -431,8 +512,7 @@ mod tests {
         // Capacity 4 frames; 6 pushed: the 2 oldest evicted.
         let tap = AudioTap::with_capacity(8);
         tap.push_at(&[0.5; 12], 50);
-        let (pos, out) = tap.drain_positioned();
-        assert_eq!((pos, out.len()), (Some(52), 8));
+        assert_eq!(placed(&tap.drain_segments()), vec![(Some(52), 4)]);
     }
 
     #[test]
@@ -447,5 +527,39 @@ mod tests {
             1,
             "a jump in position is counted, not hidden"
         );
+    }
+
+    #[test]
+    fn a_jump_splits_the_drain_and_each_part_keeps_where_it_was_pushed() {
+        let tap = AudioTap::with_capacity(100);
+        tap.push_at(&[0.1; 4], 0); // frames 0-1
+        tap.push_at(&[0.2; 4], 0); // frames 0-1 again: a repeat
+        tap.push_at(&[0.3; 4], 2); // continues the repeat
+        tap.push_at(&[0.4; 4], 9); // a gap
+        let segments = tap.drain_segments();
+        assert_eq!(
+            placed(&segments),
+            vec![(Some(0), 2), (Some(0), 4), (Some(9), 2)]
+        );
+        assert_eq!(segments[1].1, vec![0.2, 0.2, 0.2, 0.2, 0.3, 0.3, 0.3, 0.3]);
+        assert_eq!(tap.end_position(), Some(11));
+    }
+
+    #[test]
+    fn a_jump_inside_an_eviction_still_places_what_is_kept() {
+        // Capacity 4 frames. 2 frames at 100, then 4 at 500: the first push
+        // is evicted whole, and the drain starts at the second push's mark.
+        let tap = AudioTap::with_capacity(8);
+        tap.push_at(&[0.1; 4], 100);
+        tap.push_at(&[0.2; 8], 500);
+        assert_eq!(placed(&tap.drain_segments()), vec![(Some(500), 4)]);
+    }
+
+    #[test]
+    fn unpositioned_samples_drain_unplaced() {
+        let tap = AudioTap::with_capacity(100);
+        tap.push(&[0.1; 4]);
+        assert_eq!(placed(&tap.drain_segments()), vec![(None, 2)]);
+        assert_eq!(tap.end_position(), None);
     }
 }

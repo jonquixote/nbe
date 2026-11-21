@@ -528,18 +528,30 @@ impl Drive {
             return Ok(());
         }
         let fps = self.params.fps;
-        let (pos, drained) = self.tap.drain_positioned();
+        let segments = self.tap.drain_segments();
         let w = self.writer.as_mut().expect("checked above");
-        let (Some(pos), Some(first)) = (pos, self.first_frame) else {
-            if !drained.is_empty() {
-                w.push_audio(&drained)?;
+        // Each segment is placed where the driver pushed it (`AudioTap`'s
+        // marks): a repeat is an overlap the cut drops, a jump a gap it pads.
+        // Samples with no place (a take not on the master clock) go to the
+        // writer as they came, as before.
+        let Some(first) = self.first_frame else {
+            for (_, samples) in &segments {
+                if !samples.is_empty() {
+                    w.push_audio(samples)?;
+                }
             }
             return Ok(());
         };
         let audio = self
             .audio
             .get_or_insert_with(|| TakeAudio::new(audio_frame(first, fps)));
-        audio.accept(pos, &drained);
+        for (pos, samples) in &segments {
+            match pos {
+                Some(pos) => audio.accept(*pos, samples),
+                None if !samples.is_empty() => w.push_audio(samples)?,
+                None => {}
+            }
+        }
         if let Some(last) = self.last_frame {
             let out = audio.take_until(audio_frame(last + 1, fps));
             if !out.is_empty() {
@@ -579,13 +591,15 @@ impl Drive {
             std::thread::sleep(Duration::from_millis(2));
         }
         let waited = waiting.elapsed();
-        let (pos, drained) = self.tap.drain_positioned();
+        let segments = self.tap.drain_segments();
         let mut audio = self
             .audio
             .take()
             .unwrap_or_else(|| TakeAudio::new(audio_frame(first, fps)));
-        if let Some(pos) = pos {
-            audio.accept(pos, &drained);
+        for (pos, samples) in &segments {
+            if let Some(pos) = pos {
+                audio.accept(*pos, samples);
+            }
         }
         let (out, stats) = audio.finish(end);
         if !out.is_empty() {

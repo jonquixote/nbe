@@ -574,6 +574,12 @@ impl EngineState {
         self.clock.lock().unwrap().frame_at(t)
     }
 
+    /// [`master_frame_at`](Self::master_frame_at), signed: negative before the
+    /// clock's epoch ([`MasterClock::frame_at_signed`](crate::clock::MasterClock::frame_at_signed)).
+    pub fn master_frame_signed_at(&self, t: std::time::Instant) -> Option<i64> {
+        self.clock.lock().unwrap().frame_at_signed(t)
+    }
+
     /// The run that last stopped: its epoch and the master frame it read at
     /// its stop (R33's run edge).
     pub fn last_stopped_run(&self) -> Option<(std::time::Instant, u64)> {
