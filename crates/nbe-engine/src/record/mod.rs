@@ -23,6 +23,7 @@
 //! complete, so a kill retains them).
 
 pub mod aac;
+pub mod align;
 pub mod audio_tap;
 pub mod feed;
 pub mod markers;

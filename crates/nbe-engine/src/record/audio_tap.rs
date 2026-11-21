@@ -43,7 +43,7 @@
 //! indices are bounds-checked) but outside the contract: concurrent `push`
 //! calls may overwrite each other's slots.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Samples per frame: the master mix is interleaved stereo.
 pub const CHANNELS: usize = 2;
@@ -65,7 +65,20 @@ pub struct AudioTap {
     /// directions, so neither tears the other's advance).
     tail: AtomicUsize,
     dropped: AtomicU64,
+    /// The master-clock frame position of sample counter 0: the frame at
+    /// counter `c` (a multiple of [`CHANNELS`]) is `origin + c / CHANNELS`.
+    /// Set by the first [`Self::push_at`]; [`NO_ORIGIN`] until then, and for a
+    /// tap only ever fed by [`Self::push`]. The audio graph pushes contiguous
+    /// blocks, so one origin places every frame the tap ever held.
+    origin: AtomicI64,
+    /// `push_at` calls whose position did not continue the previous push:
+    /// frames placed after one of these are off by the jump. Zero in a
+    /// steady take; the record thread reports it.
+    discontinuities: AtomicU64,
 }
+
+/// [`AudioTap::origin`] before any positioned push.
+const NO_ORIGIN: i64 = i64::MIN;
 
 impl AudioTap {
     pub fn new() -> Self {
@@ -88,7 +101,86 @@ impl AudioTap {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             dropped: AtomicU64::new(0),
+            origin: AtomicI64::new(NO_ORIGIN),
+            discontinuities: AtomicU64::new(0),
         }
+    }
+
+    /// [`Self::push`], placing the block on the master clock: `pos` is the
+    /// master frame of its first sample. Real-time safe, like `push` (atomics
+    /// only). The first call fixes the tap's origin; a later call whose `pos`
+    /// does not continue the frames already pushed is counted in
+    /// [`Self::discontinuities`] and stored where the ring is (positions after
+    /// it are off by the jump).
+    pub fn push_at(&self, samples: &[f32], pos: i64) {
+        let head_frames = (self.head.load(Ordering::Relaxed) / CHANNELS) as i64;
+        match self.origin.compare_exchange(
+            NO_ORIGIN,
+            pos - head_frames,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(origin) => {
+                if origin + head_frames != pos {
+                    self.discontinuities.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        self.push(samples);
+    }
+
+    /// Like [`Self::drain`], and the master frame position of the first frame
+    /// drained (`None` when no push placed the tap on the clock).
+    pub fn drain_positioned(&self) -> (Option<i64>, Vec<f32>) {
+        loop {
+            let tail = self.tail.load(Ordering::Acquire);
+            let out = self.drain_from(tail);
+            match out {
+                Some(out) => return (self.position_of(tail), out),
+                None => continue,
+            }
+        }
+    }
+
+    /// The master frame just past the last frame pushed (`None` when the tap
+    /// is not on the clock): what the record thread waits on at a stop.
+    pub fn end_position(&self) -> Option<i64> {
+        self.position_of(self.head.load(Ordering::Acquire))
+    }
+
+    /// Positioned pushes that did not continue the previous one.
+    pub fn discontinuities(&self) -> u64 {
+        self.discontinuities.load(Ordering::Relaxed)
+    }
+
+    fn position_of(&self, counter: usize) -> Option<i64> {
+        let origin = self.origin.load(Ordering::Acquire);
+        (origin != NO_ORIGIN).then(|| origin + (counter / CHANNELS) as i64)
+    }
+
+    /// One drain attempt starting at `tail`: `None` if the producer evicted
+    /// concurrently (the caller retakes the snapshot), else the samples.
+    fn drain_from(&self, tail: usize) -> Option<Vec<f32>> {
+        let head = self.head.load(Ordering::Acquire);
+        let n = head.wrapping_sub(tail).min(self.capacity);
+        if n == 0 {
+            return Some(Vec::new());
+        }
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let bits = self.buf[tail.wrapping_add(i) % self.capacity].load(Ordering::Relaxed);
+            out.push(f32::from_bits(bits));
+        }
+        self.tail
+            .compare_exchange_weak(
+                tail,
+                tail.wrapping_add(n),
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+            .then_some(out)
     }
 
     /// Samples the ring holds: `capacity` fixed at construction.
@@ -166,26 +258,7 @@ impl AudioTap {
     pub fn drain(&self) -> Vec<f32> {
         loop {
             let tail = self.tail.load(Ordering::Acquire);
-            let head = self.head.load(Ordering::Acquire);
-            let n = head.wrapping_sub(tail).min(self.capacity);
-            if n == 0 {
-                return Vec::new();
-            }
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let bits = self.buf[tail.wrapping_add(i) % self.capacity].load(Ordering::Relaxed);
-                out.push(f32::from_bits(bits));
-            }
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(n),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
+            if let Some(out) = self.drain_from(tail) {
                 return out;
             }
         }
@@ -329,5 +402,38 @@ mod tests {
             starts_on_r, 0,
             "a drain must start on a left-channel sample"
         );
+    }
+
+    #[test]
+    fn positioned_pushes_place_every_drained_frame_on_the_master_clock() {
+        let tap = AudioTap::with_capacity(100);
+        assert_eq!(tap.end_position(), None, "a tap no push placed has no position");
+        tap.push_at(&[0.1; 8], 1_000);
+        assert_eq!(tap.end_position(), Some(1_004));
+        let (pos, out) = tap.drain_positioned();
+        assert_eq!((pos, out.len()), (Some(1_000), 8));
+        tap.push_at(&[0.2; 6], 1_004);
+        let (pos, out) = tap.drain_positioned();
+        assert_eq!((pos, out.len()), (Some(1_004), 6), "the next drain starts where the last ended");
+        assert_eq!(tap.discontinuities(), 0);
+    }
+
+    #[test]
+    fn an_eviction_moves_the_drained_position_with_the_frames_it_dropped() {
+        // Capacity 4 frames; 6 pushed: the 2 oldest evicted.
+        let tap = AudioTap::with_capacity(8);
+        tap.push_at(&[0.5; 12], 50);
+        let (pos, out) = tap.drain_positioned();
+        assert_eq!((pos, out.len()), (Some(52), 8));
+    }
+
+    #[test]
+    fn a_push_that_does_not_continue_the_last_is_counted() {
+        let tap = AudioTap::with_capacity(100);
+        tap.push_at(&[0.0; 4], 0);
+        tap.push_at(&[0.0; 4], 2);
+        assert_eq!(tap.discontinuities(), 0);
+        tap.push_at(&[0.0; 4], 10);
+        assert_eq!(tap.discontinuities(), 1, "a jump in position is counted, not hidden");
     }
 }

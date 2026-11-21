@@ -514,6 +514,35 @@ impl EncodeSession {
     /// complete stream regardless of what was already reported here, unless
     /// the session drains ([`Self::set_drain_delivered`]).
     pub fn encode_rgba(&mut self, rgba: &[u8]) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let pts_index = self.frame_index;
+        self.feed_rgba(rgba, pts_index)
+    }
+
+    /// [`Self::encode_rgba`] with the PTS supplied by the caller: `pts_index /
+    /// fps` seconds instead of the session's own submit count. The RGBA
+    /// counterpart of [`Self::encode_pixel_buffer_at`], for the same reason: a
+    /// frame shed before the encoder leaves a gap on the show clock instead of
+    /// pulling every later frame earlier than the audio. `pts_index` must
+    /// strictly increase across calls; a violation is refused before the
+    /// encoder sees it. The first submission is still the forced IDR.
+    pub fn encode_rgba_at(
+        &mut self,
+        rgba: &[u8],
+        pts_index: u64,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if let Some(last) = self.last_pts_index {
+            if pts_index <= last {
+                return Err(no_hardware(format!(
+                    "pts index {pts_index} does not follow {last}; refusing a non-increasing timeline"
+                )));
+            }
+        }
+        let units = self.feed_rgba(rgba, pts_index)?;
+        self.last_pts_index = Some(pts_index);
+        Ok(units)
+    }
+
+    fn feed_rgba(&mut self, rgba: &[u8], pts_index: u64) -> Result<Vec<EncodedUnit>, EncodeError> {
         let expected = (self.width as usize)
             .checked_mul(self.height as usize)
             .and_then(|pixels| pixels.checked_mul(4))
@@ -540,8 +569,9 @@ impl EncodeSession {
                 rgba,
                 self.width,
                 self.height,
-                self.frame_index,
+                pts_index,
                 self.fps,
+                self.frame_index == 0,
             )?;
         }
         self.frame_index += 1;
@@ -825,8 +855,9 @@ unsafe fn feed_frame(
     rgba: &[u8],
     width: u32,
     height: u32,
-    frame_index: u64,
+    pts_index: u64,
     fps: u32,
+    force_keyframe: bool,
 ) -> Result<(), EncodeError> {
     unsafe {
         let pool = session
@@ -901,7 +932,7 @@ unsafe fn feed_frame(
         }
         drop(_unlock);
 
-        submit_frame(session, &buffer, frame_index, fps)
+        submit_frame_at(session, &buffer, pts_index, fps, force_keyframe)
     }
 }
 
