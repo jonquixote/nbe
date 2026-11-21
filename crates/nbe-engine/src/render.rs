@@ -656,6 +656,23 @@ impl RenderLoop {
             .make_texture(slate.width, slate.height, "fallback-slate");
         self.gpu
             .upload_rgba(&self.fallback_tex, slate.width, slate.height, &slate.rgba);
+
+        // The load waits for the GPU to finish its own uploads (every ring's
+        // head frames, the images, the slate) before the show can draw. The
+        // load is the tick before a show's frame 0 (`show.start` arrives
+        // while it runs), and on CI the GPU was still 150-385 ms behind its
+        // uploads when the load returned: frame 1's `queue.write_buffer`
+        // waited behind them (step 11: 50-390 ms on main, up to 12 frames
+        // never drawn and the watchdog's slate on air). The load boundary may
+        // wait (`UploadPool::reclaim_waiting`'s rule); the frame path never
+        // does, and the watchdog measures the View render, not this.
+        let settling = std::time::Instant::now();
+        self.gpu.queue.submit(std::iter::empty());
+        self.uploads.reclaim_waiting(&self.gpu);
+        tracing::info!(
+            settle_ms = settling.elapsed().as_secs_f64() * 1000.0,
+            "load: the GPU finished the load's uploads"
+        );
     }
 
     /// Upload one video asset's decoded frames as its VRAM ring (SPEC §12.7).
