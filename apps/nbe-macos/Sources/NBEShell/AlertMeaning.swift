@@ -53,6 +53,10 @@ public enum AlertMeaning {
             title: "TICKER ITEM COUNT MISMATCH",
             meaning: "After the settling period, the engine reports a different ticker override item count from the control plane.",
             action: "Check the programme output and engine log before changing or clearing the override."),
+        "record.failed": Entry(
+            title: "RECORDING STOPPED",
+            meaning: "The take stopped recording on its own; the file keeps what was written before it stopped.",
+            action: "Stop the take, check the record disk, then start a new take."),
     ]
 
     /// The entry for `id`, or one that names an id this shell does not know.

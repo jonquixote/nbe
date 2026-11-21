@@ -43,4 +43,16 @@ final class AlertMeaningTests: XCTestCase {
                 action: "Check the programme output and engine log before changing or clearing the override."))
         XCTAssertFalse(e.meaning.contains("does not know"), "the known id must not fall back to the unknown entry")
     }
+
+    /// record.failed resolves to its own entry, not to the unknown-id fallback.
+    func testARecordingThatStoppedOnItsOwnHasItsOwnEntry() {
+        let e = AlertMeaning.of("record.failed")
+        XCTAssertEqual(
+            e,
+            AlertMeaning.Entry(
+                title: "RECORDING STOPPED",
+                meaning: "The take stopped recording on its own; the file keeps what was written before it stopped.",
+                action: "Stop the take, check the record disk, then start a new take."))
+        XCTAssertFalse(e.meaning.contains("does not know"), "the known id must not fall back to the unknown entry")
+    }
 }

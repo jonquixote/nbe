@@ -35,7 +35,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::encode::{EncodeSession, EncodedUnit};
@@ -122,6 +122,11 @@ pub struct ThreadArgs {
     /// Thread-side sheds (failed encoder open, refused encodes) land here —
     /// the same engine-state counter the loop feeds, so no skip is invisible.
     pub skipped: Arc<dyn CountSkip>,
+    /// Set when the thread ends without a `Stop` or `Abandon` (a failed write,
+    /// a panic): why, in words. The session reads it while the take is still
+    /// believed running, so telemetry can say the take failed
+    /// ([`RecordSession::ended_on_its_own`](crate::record::RecordSession::ended_on_its_own)).
+    pub ended_on_its_own: Arc<Mutex<Option<String>>>,
 }
 
 /// Spawn the record thread (detached: the done channel is the rendezvous, the
@@ -134,12 +139,52 @@ pub fn spawn_record_thread(args: ThreadArgs) -> std::thread::JoinHandle<()> {
 }
 
 fn run_thread(args: ThreadArgs) {
-    let result = drive(args);
+    // A panic anywhere below unwinds through this guard, which notes it: a
+    // thread that dies records nothing more, and the operator must hear it
+    // before the stop, not at it.
+    let mut guard = EndedGuard {
+        note: args.ended_on_its_own.clone(),
+        armed: true,
+    };
+    let (result, done_tx, asked) = drive(args);
+    guard.armed = false;
+    if !asked {
+        let reason = match &result {
+            Err(e) => e.to_string(),
+            Ok(path) => format!(
+                "the take's frames stopped arriving; {} kept as written",
+                path.display()
+            ),
+        };
+        tracing::error!(
+            reason = %reason,
+            "record: the take ended on its own; nothing more is recorded until it is stopped"
+        );
+        *guard.note.lock().unwrap_or_else(|p| p.into_inner()) = Some(reason);
+    }
     // The receiver may be gone (abandoned/dropped take): the file is already
     // kept as-is by construction, so a failed report is not a second failure.
     // (Explicit `let _` — clippy::let_underscore_must_use is not enabled, but
     // say it anyway.)
-    let _ = result.1.send(result.0);
+    let _ = done_tx.send(result);
+}
+
+/// Notes a panic on the record thread for the session to read.
+struct EndedGuard {
+    note: Arc<Mutex<Option<String>>>,
+    armed: bool,
+}
+
+impl Drop for EndedGuard {
+    fn drop(&mut self) {
+        if self.armed && std::thread::panicking() {
+            tracing::error!(
+                "record: the record thread panicked; nothing more is recorded until the take is stopped"
+            );
+            *self.note.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some("the record thread panicked; the file keeps what was written before".into());
+        }
+    }
 }
 
 /// Bounded wait for the thread's terminal report. `Timeout` maps to the force
@@ -195,6 +240,8 @@ struct Drive {
     /// carry no master position (the hermetic seams): those keep the old
     /// behaviour, everything the tap held.
     audio: Option<TakeAudio>,
+    /// A `Stop` or `Abandon` ended the take; otherwise it ended on its own.
+    asked_to_end: bool,
 }
 
 /// How long a stop waits for the audio driver to push the take's last frame
@@ -254,7 +301,8 @@ impl RecordTrace {
     }
 }
 
-fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
+/// Run the take. The third value is whether a `Stop` or `Abandon` ended it.
+fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>, bool) {
     let ThreadArgs {
         params,
         initial_sets,
@@ -263,6 +311,7 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
         control_rx,
         done_tx,
         skipped,
+        ended_on_its_own: _,
     } = args;
     let output_path = params
         .directory
@@ -285,6 +334,7 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
         first_frame: None,
         last_frame: None,
         audio: None,
+        asked_to_end: false,
     };
     // Eager open, off the loop: a missing encoder is known before the first
     // frame rather than discovered mid-take. The forced-unavailable seam
@@ -304,7 +354,7 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
         }
     }
     let result = d.run();
-    (result, done_tx)
+    (result, done_tx, d.asked_to_end)
 }
 
 impl Drive {
@@ -324,8 +374,14 @@ impl Drive {
                 Err(TryRecvError::Disconnected) => return self.on_frames_gone(),
             }
             match self.control_rx.try_recv() {
-                Ok(ControlMsg::Stop) => return self.finish_take(),
-                Ok(ControlMsg::Abandon) => return self.abandon_take(),
+                Ok(ControlMsg::Stop) => {
+                    self.asked_to_end = true;
+                    return self.finish_take();
+                }
+                Ok(ControlMsg::Abandon) => {
+                    self.asked_to_end = true;
+                    return self.abandon_take();
+                }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
                     // Control gone with frames possibly pending: fall through

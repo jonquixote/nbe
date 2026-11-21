@@ -116,6 +116,29 @@ fn measure(shared: Weak<(Mutex<SpaceSlot>, Condvar)>, probe: fn(&Path) -> f64) {
     }
 }
 
+/// The take's line: `"none"` with no take running, `"failed"` with the reason
+/// once its record thread has ended without a stop, else `"recording"`.
+///
+/// The state is read first and released; the session is then only tried, so
+/// the tick never waits behind a `record.start` or `record.stop` holding it
+/// (both hold it briefly, and a stop takes the session out before it waits).
+/// A contended session reads `"recording"`: the state says a take is on, and
+/// the next tick reads it again.
+pub fn record_take_line(state: &EngineState) -> nbe_protocol::RecordTakeLine {
+    let recording = *state.record_state.lock().unwrap() == crate::state::RecordState::Recording;
+    if !recording {
+        return nbe_protocol::RecordTakeLine::none();
+    }
+    let ended = match state.record_session.try_lock() {
+        Ok(session) => session.as_ref().and_then(|s| s.ended_on_its_own()),
+        Err(_) => None,
+    };
+    match ended {
+        Some(reason) => nbe_protocol::RecordTakeLine::failed(&reason),
+        None => nbe_protocol::RecordTakeLine::recording(),
+    }
+}
+
 /// Build one engine-owned telemetry frame, reading `recordSpaceMib` for the
 /// target volume when `record_dir` is `Some` (measured off the runtime by
 /// [`RecordSpace`]; the tick never waits on it).
@@ -185,6 +208,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // precedent. `"none"` is not a transport state, so never-streamed stays
     // distinguishable from closed.
     let stream_transport_state = transport_token(state, transport);
+    let record_take = record_take_line(state);
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state
@@ -243,6 +267,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
             .map(|s| format!("{:?}", s.reason))
             .unwrap_or_else(nbe_protocol::tap_none),
         stream_transport_state,
+        record_take,
         // The device-audio design record's D5 and D6: which device carries
         // program audio, and the limiter's ceiling in force (D5's amendment).
         audio_device: state.audio_device.lock().unwrap().clone(),

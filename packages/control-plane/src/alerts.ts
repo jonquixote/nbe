@@ -57,6 +57,11 @@ export const ALERT = {
   // The user's ruling of 2026-11-17 20:15: a ticker change the engine did not
   // apply (#119 refuses a ticker it cannot draw) is otherwise silent.
   tickerNotOnAir: { id: "ticker.notOnAir", auditEvent: "ticker.notOnAir" },
+  // The take's record thread ended without a stop (a failed write to the
+  // file, a panic): nothing more is recorded while the control plane still
+  // believes it is recording. Before the engine reported its take, this was
+  // invisible until the operator's record.stop.
+  recordFailed: { id: "record.failed", auditEvent: "record.failed" },
 } as const;
 
 /** How long a ticker change has to land before the engine's count is read
@@ -395,6 +400,7 @@ export class OperatorSignals {
       lane.clear(ALERT.recordUnacknowledged.id, "the engine is not reporting");
       lane.clear(ALERT.streamDivergence.id, "the engine is not reporting");
       lane.clear(ALERT.tickerNotOnAir.id, "the engine is not reporting");
+      lane.clear(ALERT.recordFailed.id, "the engine is not reporting");
       return;
     }
     lane.clear(ALERT.engineNotReporting.id, "the engine is reporting again");
@@ -408,6 +414,7 @@ export class OperatorSignals {
     this.correction();
     this.audio();
     this.tickerOnAir();
+    this.recordTake();
   }
 
   /**
@@ -435,6 +442,36 @@ export class OperatorSignals {
       );
     } else {
       this.i.lane.clear(ALERT.tickerNotOnAir.id, `the engine holds the ${commanded} items commanded`);
+    }
+  }
+
+  /**
+   * `record.failed`: the control plane believes a take is recording, no record
+   * command is pending, and the engine's fresh report says the take's record
+   * thread ended on its own. Nothing more is being recorded; the file keeps
+   * what was written before. Clears when the belief is no longer recording
+   * (a stop), or a fresh report no longer reads `failed`.
+   */
+  private recordTake(): void {
+    const { state, lane } = this.i;
+    const fresh = this.freshReport();
+    if (fresh === null) return; // the not-reporting alert owns staleness
+    const entry = this.pending.get("record");
+    const pending = (entry !== undefined && entry.processedAt === null) || this.showStopPending !== null;
+    if (state.recordState !== "recording") {
+      lane.clear(ALERT.recordFailed.id, "the take was stopped");
+      return;
+    }
+    if (pending) return;
+    const take = fresh.frame.recordTake;
+    if (take?.state === "failed") {
+      lane.raise(
+        ALERT.recordFailed,
+        "critical",
+        `the take stopped recording on its own: ${take.reason ?? "the engine gave no reason"}. Nothing more is being recorded; the file keeps what was written before`,
+      );
+    } else {
+      lane.clear(ALERT.recordFailed.id, `the engine reports the take ${take?.state ?? "none"}`);
     }
   }
 
