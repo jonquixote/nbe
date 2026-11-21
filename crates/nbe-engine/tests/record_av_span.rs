@@ -177,7 +177,10 @@ fn audio_that_ends_before_the_last_frame_is_padded_to_the_video_span() {
     let (video, audio) = durations(&ffprobe, &path);
     let span = 45.0 / f64::from(FPS);
     println!("span {span:.6} s: video {video:.6} s, audio {audio:.6} s");
-    assert!((video - span).abs() < 0.001, "video {video:.6} s for {span:.6} s");
+    assert!(
+        (video - span).abs() < 0.001,
+        "video {video:.6} s for {span:.6} s"
+    );
     assert!(
         audio >= span - 0.001 && audio <= span + PACKET_S + 0.001,
         "the audio is padded with silence to the video's span: {audio:.6} s for {span:.6} s"

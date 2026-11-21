@@ -407,14 +407,22 @@ mod tests {
     #[test]
     fn positioned_pushes_place_every_drained_frame_on_the_master_clock() {
         let tap = AudioTap::with_capacity(100);
-        assert_eq!(tap.end_position(), None, "a tap no push placed has no position");
+        assert_eq!(
+            tap.end_position(),
+            None,
+            "a tap no push placed has no position"
+        );
         tap.push_at(&[0.1; 8], 1_000);
         assert_eq!(tap.end_position(), Some(1_004));
         let (pos, out) = tap.drain_positioned();
         assert_eq!((pos, out.len()), (Some(1_000), 8));
         tap.push_at(&[0.2; 6], 1_004);
         let (pos, out) = tap.drain_positioned();
-        assert_eq!((pos, out.len()), (Some(1_004), 6), "the next drain starts where the last ended");
+        assert_eq!(
+            (pos, out.len()),
+            (Some(1_004), 6),
+            "the next drain starts where the last ended"
+        );
         assert_eq!(tap.discontinuities(), 0);
     }
 
@@ -434,6 +442,10 @@ mod tests {
         tap.push_at(&[0.0; 4], 2);
         assert_eq!(tap.discontinuities(), 0);
         tap.push_at(&[0.0; 4], 10);
-        assert_eq!(tap.discontinuities(), 1, "a jump in position is counted, not hidden");
+        assert_eq!(
+            tap.discontinuities(),
+            1,
+            "a jump in position is counted, not hidden"
+        );
     }
 }
