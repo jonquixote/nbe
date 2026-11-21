@@ -215,7 +215,9 @@ export class ControlPlaneState {
   overlayAnimation = new Map<string, string>();
 
   tickerSource: "manual" | "rss" | "mixed" = "manual";
-  tickerItems: Array<{ text: string; language?: string; priority: number; ttlSec?: number }> = [];
+  /** The ticker queue, resolved. `expiresAtMs` is the control plane's own
+   * (acceptance + ttlSec): the engine never sees a TTL (review4 step 2). */
+  tickerItems: Array<{ text: string; language?: string; priority: number; ttlSec?: number; expiresAtMs?: number }> = [];
 
   audioBuses = new Map<string, { gainDb?: number; muted: boolean }>();
   ducking = { enabled: false, depthDb: -6, attackMs: 10, releaseMs: 250 };

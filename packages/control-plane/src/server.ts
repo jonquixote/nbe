@@ -46,6 +46,7 @@ import {
 import type { PersistenceHooks } from "./persistence.js";
 import { buildTick, ENGINE_TELEMETRY_TTL_MS, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
 import { AlertLane, OperatorSignals } from "./alerts.js";
+import { expireTickerItems, tickerDirectiveItems } from "./commands/ticker.js";
 
 // ---------------------------------------------------------------------------
 // Auth (addendum §2.5): token is authoritative; X-NBE-Role must match.
@@ -271,6 +272,37 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   });
   const signalTimer = setInterval(() => signals.evaluate(), 250);
   signalTimer.unref?.();
+  // Review4 step 2: ticker TTLs, enforced here once a second. An expiry is a
+  // detection transaction (like a belief correction: a version, an audit
+  // row, no stateChange frame) that sends the engine the resolved queue.
+  const tickerTimer = setInterval(() => {
+    const before = state.stateVersion;
+    const expired = expireTickerItems(state, Date.now());
+    if (expired === 0) return;
+    const sv = state.bump();
+    opts.persistence.onDirty();
+    bridge.send({
+      command: "ticker.override",
+      target: {},
+      payload: { items: tickerDirectiveItems(state.tickerItems), mode: "replace" },
+      stateVersion: sv,
+    });
+    try {
+      audit.record({
+        kind: "command",
+        command: "system:ticker.expire",
+        event: "ticker.expired",
+        detail: { expired, remaining: state.tickerItems.length },
+        stateVersionBefore: before,
+        stateVersionAfter: sv,
+      });
+    } catch {
+      // A throw here would leave the timer callback and end the process. A
+      // sink that cannot be written is R18's alert to announce (the signal
+      // lane reads `audit.sinkOk`); the expiry has happened and stands.
+    }
+  }, 1000);
+  tickerTimer.unref?.();
   const wsBridge = new WsRenderBridge();
   const bridge: RenderBridge = opts.bridge ?? wsBridge;
   const rateLimiter = new RateLimiter();
@@ -1027,6 +1059,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       for (const waiter of ackWaiters) waiter.resolve(false);
       ackWaiters.clear();
       clearInterval(signalTimer);
+      clearInterval(tickerTimer);
       signals.close();
       automation.close();
       wss.close();
