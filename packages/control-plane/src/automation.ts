@@ -506,6 +506,12 @@ export class AutomationEvaluator {
   private frameMs = 1000 / 30;
   private readonly lastFrame = new Map<string, number>();
   private readonly pending: Pending[] = [];
+
+  /** Review4 step 7b: actions queued or timed and not yet run, journaled so
+   * an adoption can say how many a crash dropped (they never fire late). */
+  backlog(): number {
+    return this.pending.length + this.timers.size;
+  }
   private draining: Promise<void> = Promise.resolve();
   private drainScheduled = false;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();

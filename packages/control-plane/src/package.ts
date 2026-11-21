@@ -523,6 +523,18 @@ export async function loadPackage(
     throw new CpError("E_PREFLIGHT_FAILED", `preflight could not run (exit ${pre.exitCode}): ${pre.stderr || "no stderr"}`);
   }
 
+  const pkg = indexPackage(packagePath);
+  return { pkg, exitCode: pre.exitCode, warnings: pre.report?.warnings ?? [] };
+}
+
+/**
+ * The package's structural read, the index the control plane checks
+ * commands against. `loadPackage` runs it after preflight has judged the
+ * package valid; review4 step 7b's adoption runs it alone, on the path the
+ * running engine has loaded (no preflight subprocess: the show is already on
+ * air, and "preflight not re-run" is said where it shows).
+ */
+export function indexPackage(packagePath: string): PackageInfo {
   const manifestPath = join(packagePath, "manifest.json");
   if (!existsSync(manifestPath)) {
     throw new CpError("E_NOT_FOUND", `no manifest.json in package: ${packagePath}`);
@@ -607,7 +619,7 @@ export async function loadPackage(
   }
   pkg.automation = parsedRules.rules;
 
-  return { pkg, exitCode: pre.exitCode, warnings: pre.report?.warnings ?? [] };
+  return pkg;
 }
 
 function indexSequence(

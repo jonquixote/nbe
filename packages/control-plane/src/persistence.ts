@@ -59,6 +59,12 @@ export interface PersistenceHooks {
   /** False from a failed journal write until the next write succeeds
    * (review4 step 5: the signal lane raises `audit.sinkFailed` on it). */
   writeOk?(): boolean;
+  /** Review4 step 7b: facts the state does not hold, written beside it
+   * (the automation backlog adoption reports as dropped). */
+  journalExtras?(fn: () => Record<string, unknown>): void;
+  /** Review4 step 7b: the journal `restore()` read, for adoption; null when
+   * none was read, or one in the pre-journal format. */
+  restoredJournal?(): JournalBody | null;
 }
 
 /** Commands whose effect is on air: written before their response. */
@@ -80,6 +86,9 @@ export function journalOf(state: ControlPlaneState): Record<string, unknown> {
   const obj = <V>(m: Map<string, V>): Record<string, V> => Object.fromEntries(m);
   return {
     showState: state.showState,
+    // Review4 step 7b: §5.9.4's load identity is the path AND this
+    // generation; adoption compares both with the engine's hello.
+    packageLoadStateVersion: state.pkg ? state.packageLoadStateVersion : null,
     viewItem: state.viewItem,
     viewItemStartFrame: state.viewItemStartFrame,
     previewItem: state.previewItem,
@@ -162,6 +171,16 @@ export class StatePersistence implements PersistenceHooks {
   private seq = 0;
   /** Which file the last restore read ("current", "previous" or null). */
   restoredFrom: "current" | "previous" | null = null;
+  private restored: JournalBody | null = null;
+  private extras: (() => Record<string, unknown>) | null = null;
+
+  journalExtras(fn: () => Record<string, unknown>): void {
+    this.extras = fn;
+  }
+
+  restoredJournal(): JournalBody | null {
+    return this.restored;
+  }
   /** The last write's failure, if any (the next one tries again). */
   lastError: unknown = null;
 
@@ -229,7 +248,7 @@ export class StatePersistence implements PersistenceHooks {
       stateVersion: this.state.stateVersion,
       manifestIdentity: this.state.manifestIdentity(),
       recoveredAt: Date.now(),
-      journal: journalOf(this.state),
+      journal: { ...journalOf(this.state), ...(this.extras?.() ?? {}) },
     };
     const file: JournalFile = { schema: 2, checksum: sha256(JSON.stringify(body)), body };
     const dir = dirname(this.path);
@@ -261,6 +280,7 @@ export class StatePersistence implements PersistenceHooks {
    */
   restore(): boolean {
     this.restoredFrom = null;
+    this.restored = null;
     const files = [
       ["current", this.path],
       ["previous", prevPath(this.path)],
@@ -275,6 +295,7 @@ export class StatePersistence implements PersistenceHooks {
       this.state.showState = "UNLOADED";
       this.state.pkg = null;
       this.restoredFrom = which;
+      this.restored = "journal" in data ? data : null;
       return data.manifestIdentity != null;
     }
     return false;
