@@ -362,6 +362,11 @@ pub struct AudioGraph {
     stream_tap: Option<std::sync::Arc<crate::record::AudioTap>>,
     /// The master-bus limiter (SPEC §8.2; R26: this was a clamp).
     limiter: crate::limiter::MasterLimiter,
+    /// The master frame of the next output sample: where the last block that
+    /// left the limiter ended. `render_silence` pushes its block here, so the
+    /// taps see one contiguous master timeline whether a block was mixed or
+    /// filled with the catch-up's silence.
+    next_out_pos: i64,
 }
 
 impl AudioGraph {
@@ -390,6 +395,7 @@ impl AudioGraph {
             record_tap: None,
             stream_tap: None,
             limiter: crate::limiter::MasterLimiter::new(crate::limiter::DEFAULT_CEILING_DBTP),
+            next_out_pos: 0,
         }
     }
 
@@ -705,11 +711,16 @@ impl AudioGraph {
             record_tap,
             stream_tap,
             limiter,
+            next_out_pos,
             ..
         } = self;
         let scratch = &mut scratch[..out.len()];
         *voice_block = 0;
         *voice_base = base;
+        // The block leaves the limiter `latency_frames` behind where its
+        // sources were read: its first output sample is master frame
+        // `base - latency`. The taps place it there.
+        let out_pos = base - limiter.latency_frames() as i64;
 
         // Program buses, in the fixed §8.1 order — no key collection needed.
         //
@@ -824,13 +835,15 @@ impl AudioGraph {
         // the lock-free ring. The tap's `push` is non-blocking (atomic
         // head publish, preallocated ring, no file I/O, no locks at all —
         // the old try_lock shed whole blocks under contention), so the
-        // render-loop deadline does not change.
+        // render-loop deadline does not change. Each block is placed on the
+        // master clock (`push_at`), so a take can be cut to its video's span.
         if let Some(tap) = record_tap {
-            tap.push(out);
+            tap.push_at(out, out_pos);
         }
         if let Some(tap) = stream_tap {
-            tap.push(out);
+            tap.push_at(out, out_pos);
         }
+        *next_out_pos = out_pos + frames as i64;
 
         *rendered_samples += frames as u64;
     }
@@ -845,12 +858,16 @@ impl AudioGraph {
     /// the gap was skipped.
     pub fn render_silence(&mut self, out: &mut [f32]) {
         out.fill(0.0);
+        // The gap's silence sits where the next block would have: the taps'
+        // master timeline stays contiguous across a catch-up past the cap.
+        let pos = self.next_out_pos;
         if let Some(tap) = &self.record_tap {
-            tap.push(out);
+            tap.push_at(out, pos);
         }
         if let Some(tap) = &self.stream_tap {
-            tap.push(out);
+            tap.push_at(out, pos);
         }
+        self.next_out_pos = pos + (out.len() / CHANNELS) as i64;
         self.rendered_samples += (out.len() / CHANNELS) as u64;
     }
 

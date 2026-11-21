@@ -890,17 +890,14 @@ impl RecordingWriter {
     }
 
     pub fn finish(mut self) -> Result<PathBuf, RecordError> {
-        // Fix the tail sample, flush the encoder, emit everything left.
+        // Fix the tail sample, flush the encoder, emit everything left. The
+        // last frame lasts one frame period: video PTS are master-clock frame
+        // positions, so the sample before it may hold several periods (a
+        // skipped frame), and copying that would run the take past its end.
         let tail_duration = match self.video.last() {
-            Some(last) if last.duration_ticks.is_none() => Some(
-                self.video
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .and_then(|s| s.duration_ticks)
-                    .unwrap_or(VIDEO_TIMESCALE / self.params.fps.max(1))
-                    .max(1),
-            ),
+            Some(last) if last.duration_ticks.is_none() => {
+                Some((VIDEO_TIMESCALE / self.params.fps.max(1)).max(1))
+            }
             _ => None,
         };
         if let (Some(d), Some(last)) = (tail_duration, self.video.last_mut()) {

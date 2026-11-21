@@ -638,8 +638,10 @@ impl DirectiveHandler {
         if !record_active {
             return None;
         }
-        *self.state.record_tap.lock().unwrap() = None;
         let mut session = self.state.record_session.lock().unwrap().take();
+        // The tap stays attached through the finish (as `on_record_stop`): the
+        // thread cuts the take's audio at its last frame, so the driver must
+        // still be able to push that far. Detached after.
         let result = match session.as_mut() {
             Some(s) => s
                 .stop_and_finish(crate::record::RECORD_STOP_TIMEOUT)
@@ -650,6 +652,7 @@ impl DirectiveHandler {
                 Ok(())
             }
         };
+        *self.state.record_tap.lock().unwrap() = None;
         *self.state.record_state.lock().unwrap() = RecordState::Idle;
         match &result {
             Ok(()) => {
@@ -1132,9 +1135,11 @@ impl DirectiveHandler {
                     "record.stop requires an active recording".into(),
                 ));
             }
-            // Detach the driver first: the thread keeps its own Arc for the
-            // tail drain, and no new live mix enters the take after this point.
-            *self.state.record_tap.lock().unwrap() = None;
+            // The tap stays attached through the finish: the thread cuts the
+            // take's audio at its last video frame (`record/align.rs`), so the
+            // driver must still be able to push that far, however late it is
+            // running. Audio past that frame is dropped by the cut, not by a
+            // detach whose timing depends on the driver. Detached below.
             // Taken, not borrowed: the wait runs without holding any state lock.
             session_guard.take()
         };
@@ -1158,6 +1163,7 @@ impl DirectiveHandler {
             // successful stop below); the next start/load clears anyway.
             None => Ok(()),
         };
+        *self.state.record_tap.lock().unwrap() = None;
         *self.state.record_state.lock().unwrap() = RecordState::Idle;
         match &result {
             Ok(()) if owned => {

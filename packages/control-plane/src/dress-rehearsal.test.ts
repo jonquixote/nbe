@@ -1827,6 +1827,21 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     fileVideo !== undefined && parseFloat(fileVideo["duration"] as string) > 0,
     "the take must contain video content (sparse is by design, absent is not)",
   );
+  // The take's two tracks cover the same span of the show. The record path
+  // stamps video frames with their master frame (a skipped frame is held) and
+  // cuts the audio to the video's span on the master clock
+  // (crates/nbe-engine/src/record/align.rs), so the audio is the video's
+  // length plus the AAC encoder's rounding to whole 1024-sample packets after
+  // its 2-packet priming trim: 64 to 1,087 samples, 1.3 to 22.7 ms longer.
+  // Before, the two differed by up to ~120 ms either way (a driver running
+  // behind at the tap's attach or detach; skipped frames shortening the video).
+  const videoSecs = parseFloat(fileVideo?.["duration"] as string);
+  const audioSecs = parseFloat(audio?.["duration"] as string);
+  const avSlack = 0.002;
+  assert.ok(
+    audioSecs - videoSecs >= -avSlack && audioSecs - videoSecs <= 1024 / 48000 + avSlack,
+    `the take's audio (${audioSecs}s) and video (${videoSecs}s) must cover the same span: audio may exceed video by its last AAC packet's rounding only (0 to ${(1024 / 48000 + avSlack).toFixed(4)}s)`,
+  );
 
   // Marker chapter/sidecar: fMP4 carries chapters poorly, so chapters ride
   // the always-sidecar `<stem>.markers.json` beside the recording for every

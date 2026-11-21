@@ -36,9 +36,10 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::encode::{EncodeSession, EncodedUnit};
+use crate::record::align::TakeAudio;
 use crate::record::session::{force_no_encoder, SessionError};
 use crate::record::{AudioTap, CountSkip, RecordError, RecordParams, RecordingWriter, SkipPath};
 
@@ -181,6 +182,30 @@ struct Drive {
     keyframe_seen: bool,
     /// `NBE_RECORD_TRACE`: one line per handed-off frame (R31's probe).
     trace: Option<RecordTrace>,
+    /// The take on the master clock: the master frame the video's PTS count
+    /// from (the first frame handed off with one), and the first and last
+    /// master frames the encoder took. A frame the take skipped is then a
+    /// held frame, not a shift of everything after it (the stream path's rule,
+    /// `stream.rs` `encode_video`).
+    base_frame: Option<u64>,
+    first_frame: Option<u64>,
+    last_frame: Option<u64>,
+    /// The take's audio, cut to the video's span (`align.rs`). `None` until
+    /// the first video frame is encoded, and for a take whose frames or tap
+    /// carry no master position (the hermetic seams): those keep the old
+    /// behaviour, everything the tap held.
+    audio: Option<TakeAudio>,
+}
+
+/// How long a stop waits for the audio driver to push the take's last frame
+/// into the tap. The driver is normally a block or two behind real time; past
+/// this the end is padded with silence and the line says how much.
+const AUDIO_TAIL_WAIT: Duration = Duration::from_millis(300);
+
+/// The master audio frame where master video frame `frame` begins (the graph's
+/// own mapping, `AudioGraph::sample_for_master_frame` with no offset).
+fn audio_frame(frame: u64, fps: u32) -> i64 {
+    (frame as i64) * i64::from(crate::audio::SAMPLE_RATE) / i64::from(fps.max(1))
 }
 
 /// The record trace (`NBE_RECORD_TRACE=<file>`, a measurement knob, off by
@@ -256,6 +281,10 @@ fn drive(args: ThreadArgs) -> (SessionResult, Sender<SessionResult>) {
         video_units: 0,
         keyframe_seen: false,
         trace: RecordTrace::from_env(),
+        base_frame: None,
+        first_frame: None,
+        last_frame: None,
+        audio: None,
     };
     // Eager open, off the loop: a missing encoder is known before the first
     // frame rather than discovered mid-take. The forced-unavailable seam
@@ -331,18 +360,35 @@ impl Drive {
     fn handle_msg(&mut self, msg: RecordMsg) -> Result<(), SessionError> {
         match msg {
             RecordMsg::Frame { rgba, frame } => {
-                let Some(enc) = self.encoder.as_mut() else {
+                if self.encoder.is_none() {
                     // No encoder (failed open): shed the frame, count it, keep
                     // the take alive for `Unit`s / a loud stop.
                     self.count_skip(SkipPath::NoEncoder);
                     return Ok(());
+                }
+                // The frame's place on the take's master-clock timeline, when
+                // the loop gave it one (a seam may not).
+                let pts = match frame.map(|f| self.pts_index(f)) {
+                    Some(None) => {
+                        self.count_skip(SkipPath::BeforeFirst);
+                        return Ok(());
+                    }
+                    Some(Some(index)) => Some(index),
+                    None => None,
                 };
-                let encoded = enc.encode_rgba(&rgba);
+                let enc = self.encoder.as_mut().expect("checked above");
+                let encoded = match pts {
+                    Some(index) => enc.encode_rgba_at(&rgba, index),
+                    None => enc.encode_rgba(&rgba),
+                };
                 if let Some(t) = self.trace.as_mut() {
                     t.line("frame", frame, "-", encoded.is_ok(), enc.submitted_frames());
                 }
                 match encoded {
                     Ok(units) => {
+                        if let Some(f) = frame {
+                            self.note_encoded(f);
+                        }
                         self.capture_sets();
                         for u in &units {
                             self.push_video(u)?;
@@ -361,10 +407,15 @@ impl Drive {
                 drawn,
                 frame,
             } => {
-                let Some(enc) = self.encoder.as_mut() else {
+                if self.encoder.is_none() {
                     self.count_skip(SkipPath::NoEncoder);
                     return Ok(());
+                }
+                let Some(pts_index) = self.pts_index(frame) else {
+                    self.count_skip(SkipPath::BeforeFirst);
+                    return Ok(());
                 };
+                let enc = self.encoder.as_mut().expect("checked above");
                 // The ONE difference from `Frame` above: the encoder reads the
                 // allocation the compositor wrote, with no pool fetch and no
                 // row-by-row swizzle. Everything after — parameter-set capture,
@@ -376,7 +427,7 @@ impl Drive {
                 // the surface held before. A draw that does not finish within
                 // DRAW_WAIT is a skip, never an encode.
                 let encoded = crate::record::encode_after_draw(&drawn, || {
-                    enc.encode_pixel_buffer(surface.pixel_buffer())
+                    enc.encode_pixel_buffer_at(surface.pixel_buffer(), pts_index)
                 });
                 if let Some(t) = self.trace.as_mut() {
                     let waited = if encoded.is_some() { "ok" } else { "timeout" };
@@ -399,6 +450,7 @@ impl Drive {
                 };
                 match encoded {
                     Ok(units) => {
+                        self.note_encoded(frame);
                         self.capture_sets();
                         for u in &units {
                             self.push_video(u)?;
@@ -466,15 +518,112 @@ impl Drive {
     /// Drain the shared tap into the writer. No writer yet (no video) means
     /// no AAC home: the tap keeps buffering (bounded, drop-oldest, counted —
     /// a late writer loses the past, never the present).
+    ///
+    /// When the tap and the video are both on the master clock, the audio is
+    /// cut to the video: nothing before the take's first frame, and nothing
+    /// past the end of the latest frame encoded (the rest waits for the video
+    /// to reach it, or for the stop).
     fn drain_tap(&mut self) -> Result<(), RecordError> {
-        let Some(w) = self.writer.as_mut() else {
+        if self.writer.is_none() {
+            return Ok(());
+        }
+        let fps = self.params.fps;
+        let (pos, drained) = self.tap.drain_positioned();
+        let w = self.writer.as_mut().expect("checked above");
+        let (Some(pos), Some(first)) = (pos, self.first_frame) else {
+            if !drained.is_empty() {
+                w.push_audio(&drained)?;
+            }
             return Ok(());
         };
-        let drained = self.tap.drain();
-        if !drained.is_empty() {
-            w.push_audio(&drained)?;
+        let audio = self
+            .audio
+            .get_or_insert_with(|| TakeAudio::new(audio_frame(first, fps)));
+        audio.accept(pos, &drained);
+        if let Some(last) = self.last_frame {
+            let out = audio.take_until(audio_frame(last + 1, fps));
+            if !out.is_empty() {
+                w.push_audio(&out)?;
+            }
         }
         Ok(())
+    }
+
+    /// The take's audio at its stop: wait (bounded) for the driver to push
+    /// the take's last frame, then hand the writer exactly the video's span,
+    /// padded where the tap fell short. A take not on the master clock keeps
+    /// everything the tap held, as before.
+    fn finish_audio(&mut self) -> Result<(), SessionError> {
+        if self.writer.is_none() {
+            return Ok(());
+        }
+        let fps = self.params.fps;
+        let positioned = self.tap.end_position().is_some();
+        let (Some(first), Some(last), true) = (self.first_frame, self.last_frame, positioned)
+        else {
+            let drained = self.tap.drain();
+            if !drained.is_empty() {
+                self.writer
+                    .as_mut()
+                    .expect("checked above")
+                    .push_audio(&drained)
+                    .map_err(SessionError::Record)?;
+            }
+            return Ok(());
+        };
+        let end = audio_frame(last + 1, fps);
+        let waiting = Instant::now();
+        while self.tap.end_position().is_some_and(|p| p < end)
+            && waiting.elapsed() < AUDIO_TAIL_WAIT
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let waited = waiting.elapsed();
+        let (pos, drained) = self.tap.drain_positioned();
+        let mut audio = self
+            .audio
+            .take()
+            .unwrap_or_else(|| TakeAudio::new(audio_frame(first, fps)));
+        if let Some(pos) = pos {
+            audio.accept(pos, &drained);
+        }
+        let (out, stats) = audio.finish(end);
+        if !out.is_empty() {
+            self.writer
+                .as_mut()
+                .expect("checked above")
+                .push_audio(&out)
+                .map_err(SessionError::Record)?;
+        }
+        let ms = |frames: u64| frames as f64 * 1000.0 / f64::from(crate::audio::SAMPLE_RATE);
+        tracing::info!(
+            first_frame = first,
+            last_frame = last,
+            trimmed_head_ms = ms(stats.trimmed_head),
+            padded_ms = ms(stats.padded),
+            padded_tail_ms = ms(stats.padded_tail),
+            trimmed_tail_ms = ms(stats.trimmed_tail),
+            overlapped_frames = stats.overlapped,
+            tail_wait_ms = waited.as_secs_f64() * 1000.0,
+            tap_discontinuities = self.tap.discontinuities(),
+            tap_dropped_samples = self.tap.dropped(),
+            "record: the take's audio is cut to its video's span"
+        );
+        Ok(())
+    }
+
+    /// `frame`'s PTS index on the take's timeline: its distance from the
+    /// take's base frame (the first frame handed off). `None` for a frame
+    /// before the base (it cannot be placed).
+    fn pts_index(&mut self, frame: u64) -> Option<u64> {
+        let base = *self.base_frame.get_or_insert(frame);
+        frame.checked_sub(base)
+    }
+
+    /// The encoder took master frame `frame`: the take's span grows to it.
+    fn note_encoded(&mut self, frame: u64) {
+        self.first_frame.get_or_insert(frame);
+        self.last_frame = Some(frame);
     }
 
     fn count_skip(&self, path: SkipPath) {
@@ -520,13 +669,8 @@ impl Drive {
                 }
             }
         }
-        // Drain the tail audio the take actually captured before finalizing.
-        if let Some(w) = self.writer.as_mut() {
-            let drained = self.tap.drain();
-            if !drained.is_empty() {
-                w.push_audio(&drained).map_err(SessionError::Record)?;
-            }
-        }
+        // The take's audio, cut to the video's span, before finalizing.
+        self.finish_audio()?;
         if self.video_units == 0 {
             crate::record::markers::clear();
             if let Some(why) = self.setup_err.take() {
