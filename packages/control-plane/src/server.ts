@@ -8,7 +8,7 @@ import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Duplex } from "node:stream";
 
-import { AuditLog } from "./audit.js";
+import { AuditLog, ON_AIR_COMMANDS } from "./audit.js";
 import { buildRegistry, dispatch, type DispatchDeps } from "./dispatch.js";
 import {
   EngineFrameSchema,
@@ -248,6 +248,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     ttlMs: ENGINE_TELEMETRY_TTL_MS,
     engineReport: () => world.last,
     auditSinkOk: () => audit.sinkOk,
+    journalOk: () => opts.persistence.writeOk?.() ?? true,
     // §10.1.4 (v0.4.8 row 11, D4): a belief correction lands like the engine's
     // `itemEvent`, as a detection transaction: one version bump and one audit
     // row (`belief.corrected`). Unlike `itemEvent`, it broadcasts no
@@ -259,7 +260,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       state.streamState = c.to;
       state.bump();
       opts.persistence.onDirty();
-      audit.record({
+      // Review4 step 5: this runs inside the signal timer, where a throw
+      // would end the process; the lane announces a failed write.
+      audit.tryRecord({
         kind: "command",
         command: "engine:report",
         event: "belief.corrected",
@@ -392,6 +395,15 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const { envelope } = run;
     const before = state.stateVersion;
     const snapBefore = snapshot(state);
+    // Review4 step 5 (the user's ruling of 2026-11-16 23:45): an on-air
+    // command's audit row cannot reject it. A failed write raises
+    // `audit.sinkFailed` (the lane reads `sinkOk`) and the reply stands.
+    // Every other command keeps R18's behaviour: the throw is the reply.
+    const onAir = ON_AIR_COMMANDS.has(resolveCommand(envelope.command)?.command ?? envelope.command);
+    const write = (rec: Parameters<AuditLog["record"]>[0]): void => {
+      if (onAir) audit.tryRecord(rec);
+      else audit.record(rec);
+    };
     try {
       const out = await dispatch(run.automation ? automationDeps : deps, registry, {
         connectionId: run.connectionId,
@@ -401,7 +413,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       });
       const alias = resolveCommand(envelope.command);
       const command = alias?.command ?? envelope.command;
-      audit.record({
+      write({
         kind: run.automation ? "automation" : "command",
         ...(run.automation ? { event: run.automation.event, actor: run.automation.actor, detail: run.automation.detail } : {}),
         outcome: "ok",
@@ -431,7 +443,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       return { ok: true, stateVersion: out.stateVersion, data: out.data };
     } catch (err) {
       const e = err instanceof CpError ? err : new CpError("E_ENGINE", String(err));
-      audit.record({
+      write({
         kind: run.automation ? "automation" : "command",
         ...(run.automation ? { event: run.automation.event, actor: run.automation.actor, detail: run.automation.detail } : {}),
         outcome: "rejected",
@@ -467,8 +479,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       });
       return r.ok ? { ok: true, stateVersion: r.stateVersion } : { ok: false, code: r.error.code, message: r.error.message };
     },
+    // Review4 step 5: a rule's bookkeeping row never stops the evaluator.
     audit: (rec) =>
-      audit.record({
+      void audit.tryRecord({
         kind: "automation",
         event: rec.event,
         outcome: rec.outcome,
@@ -598,7 +611,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       const rate = state.pkg?.houseRate ?? null;
       const elapsedMs = state.viewItemTakenAtMs === null ? null : now - state.viewItemTakenAtMs;
       const durationMs = durationFrames === null || rate === null ? null : (durationFrames * 1000) / rate;
-      audit.record({
+      audit.tryRecord({
         kind: "command",
         outcome: "ok",
         role: session.role,
@@ -643,7 +656,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const assertedRole = req.headers["x-nbe-role"] as string | undefined;
     const ar = authenticate(auth, bearer, assertedRole);
     if (!ar.ok) {
-      audit.record({
+      // The rejection stands whether or not it could be recorded.
+      audit.tryRecord({
         kind: "auth",
         outcome: "rejected",
         role: null,
@@ -662,13 +676,28 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       socket.destroy();
       return;
     }
-    audit.record({
-      kind: "auth",
-      outcome: "ok",
-      role: ar.role!,
-      tokenId: ar.tokenId!,
-      remote: req.socket.remoteAddress ?? null,
-    });
+    try {
+      audit.record({
+        kind: "auth",
+        outcome: "ok",
+        role: ar.role!,
+        tokenId: ar.tokenId!,
+        remote: req.socket.remoteAddress ?? null,
+      });
+    } catch {
+      // The user's ruling of 2026-11-16 23:45 (review4 step 5): an auth is
+      // refused while the audit cannot be written. Before, this throw left
+      // the upgrade listener uncaught and ended the control plane. The lane
+      // raises `audit.sinkFailed`; a connection already open keeps working.
+      const frame = JSON.stringify(
+        errorResponse(randomUUID(), state.stateVersion, "E_DISK", "the audit log cannot be written: new connections are refused until it can"),
+      );
+      socket.write(
+        `HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(frame)}\r\n\r\n${frame}`,
+      );
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, ar));
   });
 
@@ -776,7 +805,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         forget();
-        audit.record({
+        audit.tryRecord({
           kind: "command",
           outcome: "rejected",
           role: session.role,
@@ -810,7 +839,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
      */
     function resyncOnRequest(reason: string): void {
       const requestFailed = (detail: Record<string, unknown>): void => {
-        audit.record({
+        audit.tryRecord({
           kind: "command",
           outcome: "rejected",
           role: session.role,
@@ -935,7 +964,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           } else state.markError(frame.itemRef);
           state.bump();
           opts.persistence.onDirty();
-          audit.record({
+          // Review4 step 5: a failed row must not skip what follows (the
+          // item's automation, autoFollow's advance).
+          audit.tryRecord({
             kind: "command",
             outcome: "ok",
             role: session.role,

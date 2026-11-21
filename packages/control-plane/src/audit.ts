@@ -74,6 +74,32 @@ export interface AuditRecord {
   reason?: string | null;
 }
 
+/**
+ * The on-air commands of the user's ruling of 2026-11-16 23:45 (review4
+ * step 5): "take, cut, stop, record, stream, guest". A failed audit write
+ * does not reject one of these; it raises `audit.sinkFailed` and the command
+ * proceeds. Every other command keeps R18's behaviour: the write's throw
+ * becomes the reply. The names are pinned against the registry by
+ * `disk-full.test.ts`.
+ */
+export const ON_AIR_COMMANDS: ReadonlySet<string> = new Set([
+  "view.take",
+  "view.cut",
+  "show.stop",
+  "item.stop",
+  "record.start",
+  "record.stop",
+  "stream.start",
+  "stream.stop",
+  "guest.mute",
+  "guest.connect",
+  "guest.disconnect",
+  "guest.setLayout",
+  "guest.placeholder",
+  "guest.configureReturn",
+  "guest.getTurn",
+]);
+
 export class AuditLog {
   private readonly path: string | undefined;
   private ok = true;
@@ -98,6 +124,22 @@ export class AuditLog {
       throw new Error(
         "audit log destination is not configured (set NBE_AUDIT_LOG); refusing to start unaudited (SPEC §10.7.1)",
       );
+    }
+  }
+
+  /**
+   * Review4 step 5 (the user's ruling of 2026-11-16 23:45): a row whose
+   * failure must not stop what it records (an on-air command, an engine
+   * event, a detection transaction). Returns false when the write failed.
+   * `sinkOk`, and its one stderr line per episode, are `record`'s, so the
+   * signal lane raises `audit.sinkFailed` as it does for any failed write.
+   */
+  tryRecord(rec: Omit<AuditRecord, "ts"> & { ts?: number }): boolean {
+    try {
+      this.record(rec);
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -161,6 +161,8 @@ export interface SignalInputs {
   ttlMs: number;
   engineReport: () => EngineReport | null;
   auditSinkOk: () => boolean;
+  /** Review4 step 5: the state journal's last write succeeded. Absent: true. */
+  journalOk?: () => boolean;
   /** Lands a belief correction (§10.1.4): one bump, one audit row, no frame, no automation. */
   correct: (c: BeliefCorrection) => void;
 }
@@ -348,10 +350,21 @@ export class OperatorSignals {
     }
 
     // R18: the audit sink's own failure, on the lane and the health flag.
+    // Review4 step 5: the state journal's failure raises the same alert
+    // (the user's ruling of 2026-11-16 23:45); the health flag stays the
+    // audit sink's alone.
     const sinkOk = this.i.auditSinkOk();
+    const journalOk = this.i.journalOk?.() ?? true;
     state.health.auditSinkOk = sinkOk;
-    if (!sinkOk) lane.raise(ALERT.auditSinkFailed, "critical", "the audit sink cannot be written: failures are not being recorded");
-    else lane.clear(ALERT.auditSinkFailed.id, "the audit sink accepted a write");
+    if (!sinkOk || !journalOk) {
+      const reason =
+        !sinkOk && !journalOk
+          ? "the audit sink and the state journal cannot be written: failures are not being recorded, and a restart would recover older state"
+          : !sinkOk
+            ? "the audit sink cannot be written: failures are not being recorded"
+            : "the state journal cannot be written: a restart would recover older state";
+      lane.raise(ALERT.auditSinkFailed, "critical", reason);
+    } else lane.clear(ALERT.auditSinkFailed.id, "the audit sink accepted a write");
 
     // Engine not reporting: stale beyond the TTL, measured from the latest of
     // its last report, its registration and this process's start, once an
