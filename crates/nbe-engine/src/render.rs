@@ -74,6 +74,64 @@ struct VideoRing {
 /// one per playing clip.
 const READ_AHEAD_UPLOADS_PER_FRAME: usize = 4;
 
+/// Read-ahead stage (b) (the user's ruling of 2026-11-18 04:45): the time the
+/// read-ahead may spend in one tick before it stops staging, checked before
+/// each frame is staged. It bounds the read-ahead's OWN tick (CI's frame 102:
+/// 25.9 ms staging 3 frames); it is not expected to remove the View's or the
+/// Preview's GPU waits, which CI's reads did not tie to the uploads.
+pub const READ_AHEAD_TIME_CAP: Duration = Duration::from_millis(4);
+
+/// Read-ahead stage (b): the bytes the read-ahead may stage in one tick, two
+/// 1080p RGBA frames.
+pub const READ_AHEAD_BYTE_CAP: u64 = 16_588_800;
+
+/// The two per-tick caps of read-ahead stage (b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadAheadCaps {
+    pub time: Duration,
+    pub bytes: u64,
+}
+
+impl Default for ReadAheadCaps {
+    fn default() -> Self {
+        Self {
+            time: READ_AHEAD_TIME_CAP,
+            bytes: READ_AHEAD_BYTE_CAP,
+        }
+    }
+}
+
+/// Whether the read-ahead may stage one more frame this tick (stage (b)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageDecision {
+    /// Under both caps.
+    Yes,
+    /// Past a cap, but the clip is on air and has staged nothing this tick:
+    /// the floor, so a slow machine never starves what is on air.
+    Floor,
+    /// Past a cap: the frame waits for a later tick.
+    No,
+}
+
+/// Stage (b)'s rule, pure: `spent` is the read-ahead's time so far this tick,
+/// `staged_bytes` what it has staged, `frame_bytes` the next frame, and
+/// `floor_due` whether that frame's clip is on air with nothing staged yet.
+pub fn may_stage(
+    spent: Duration,
+    staged_bytes: u64,
+    frame_bytes: u64,
+    floor_due: bool,
+    caps: ReadAheadCaps,
+) -> StageDecision {
+    if spent < caps.time && staged_bytes + frame_bytes <= caps.bytes {
+        StageDecision::Yes
+    } else if floor_due {
+        StageDecision::Floor
+    } else {
+        StageDecision::No
+    }
+}
+
 /// Staging buffers the read-ahead's uploads go through (one frame's bytes
 /// each, created on first use): one frame's upload budget. A tick whose
 /// buffers are all still in flight uploads nothing more, and never waits.
@@ -358,6 +416,11 @@ pub struct ReadAheadPhases {
     pub stage_split: crate::gpu::StageSplit,
     pub stage_max: Duration,
     pub created: usize,
+    /// Stage (b): a cap stopped a frame this tick (time, bytes), and the
+    /// frames staged past a cap by the floor.
+    pub capped_by_time: bool,
+    pub capped_by_bytes: bool,
+    pub floor_uploads: usize,
 }
 
 impl ReadAheadPhases {
@@ -431,6 +494,8 @@ pub struct RenderLoop {
     /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
     /// frame path, where `write_texture`'s per-call staging costs the deadline.
     uploads: crate::gpu::UploadPool,
+    /// Read-ahead stage (b)'s per-tick caps; the defaults outside tests.
+    read_ahead_caps: ReadAheadCaps,
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
     pipeline: wgpu::RenderPipeline,
@@ -564,6 +629,7 @@ impl RenderLoop {
             text_refused: std::sync::Mutex::new(std::collections::HashSet::new()),
             loaded_generation: u64::MAX,
             uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
+            read_ahead_caps: ReadAheadCaps::default(),
             house_rate,
             pipeline,
             pipeline_bgra,
@@ -851,7 +917,11 @@ impl RenderLoop {
         let encoder_started = Instant::now();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         detail.encoder = encoder_started.elapsed();
+        let caps = self.read_ahead_caps;
         for id in order {
+            // Stage (b)'s floor is for what is on air, once a tick per clip.
+            let on_air = wanted.contains_key(&id);
+            let mut staged_this_clip = 0usize;
             let Some(ring) = self.video_rings.get_mut(&id) else {
                 continue;
             };
@@ -926,6 +996,32 @@ impl RenderLoop {
                             clip.pending = Some(f);
                             break;
                         }
+                        // Stage (b): the caps, before the frame is staged. A
+                        // frame refused waits for a later tick, held like one
+                        // past the window; the load's prime is not capped.
+                        let spent = walk_started.elapsed();
+                        let decision = if uncapped {
+                            StageDecision::Yes
+                        } else {
+                            may_stage(
+                                spent,
+                                detail.bytes,
+                                f.rgba.len() as u64,
+                                on_air && staged_this_clip == 0,
+                                caps,
+                            )
+                        };
+                        if decision != StageDecision::Yes {
+                            if spent >= caps.time {
+                                detail.capped_by_time = true;
+                            } else {
+                                detail.capped_by_bytes = true;
+                            }
+                        }
+                        if decision == StageDecision::No {
+                            clip.pending = Some(f);
+                            break;
+                        }
                         let s = clip.slot(j);
                         let tex = &clip.window[s];
                         let stage_started = Instant::now();
@@ -962,6 +1058,10 @@ impl RenderLoop {
                         clip.delivered = true;
                         budget -= 1;
                         uploaded += 1;
+                        staged_this_clip += 1;
+                        if decision == StageDecision::Floor {
+                            detail.floor_uploads += 1;
+                        }
                         detail.bytes += f.rgba.len() as u64;
                     }
                     Delivery::Pending => break,
@@ -1195,6 +1295,13 @@ impl RenderLoop {
     ///
     /// The View renders unconditionally — including while the clock is
     /// STOPPED, where the engine still owes the operator a picture.
+    /// Read-ahead stage (b)'s caps. A TEST SEAM, noted as such (the user's
+    /// rules: no seam solely for a test without a note): the engine runs on
+    /// the defaults; a test sets the caps to zero to leave only the floor.
+    pub fn set_read_ahead_caps(&mut self, caps: ReadAheadCaps) {
+        self.read_ahead_caps = caps;
+    }
+
     pub fn render_frame(&mut self, frame: u64, deadline: Option<Duration>) -> FrameReport {
         let mut phases = RenderPhases::default();
         self.view_submission = None;
@@ -2416,3 +2523,104 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
   return textureSample(tex, samp, in.uv) * p.color;
 }
 "#;
+
+/// Read-ahead stage (b)'s rule, pinned (the user's ruling of 2026-11-18 04:45).
+#[cfg(test)]
+mod stage_b_tests {
+    use super::*;
+
+    const FRAME: u64 = 8_294_400; // one 1080p RGBA frame
+
+    /// U1: under both caps a frame stages.
+    #[test]
+    fn under_both_caps_a_frame_stages() {
+        let caps = ReadAheadCaps::default();
+        assert_eq!(
+            may_stage(Duration::ZERO, 0, FRAME, false, caps),
+            StageDecision::Yes
+        );
+        assert_eq!(
+            may_stage(Duration::from_millis(1), FRAME, FRAME, false, caps),
+            StageDecision::Yes,
+            "a second 1080p frame fits under 4 ms and 16,588,800 bytes"
+        );
+    }
+
+    /// U2: the time cap refuses once the read-ahead has spent 4 ms this tick.
+    #[test]
+    fn the_time_cap_refuses_once_spent() {
+        let caps = ReadAheadCaps::default();
+        assert_eq!(caps.time, Duration::from_millis(4));
+        assert_eq!(
+            may_stage(Duration::from_micros(3_999), 0, FRAME, false, caps),
+            StageDecision::Yes
+        );
+        assert_eq!(
+            may_stage(Duration::from_millis(4), 0, FRAME, false, caps),
+            StageDecision::No,
+            "4 ms spent: the next frame waits"
+        );
+        assert_eq!(
+            may_stage(Duration::from_millis(26), 0, FRAME, false, caps),
+            StageDecision::No,
+            "frame 102's tick: past the cap, nothing more"
+        );
+    }
+
+    /// U3: the byte cap admits a frame that lands exactly on it and refuses
+    /// one byte over.
+    #[test]
+    fn the_byte_cap_admits_up_to_it_and_refuses_past_it() {
+        let caps = ReadAheadCaps::default();
+        assert_eq!(caps.bytes, 2 * FRAME);
+        assert_eq!(
+            may_stage(Duration::ZERO, FRAME, FRAME, false, caps),
+            StageDecision::Yes,
+            "the second frame lands exactly on the cap"
+        );
+        assert_eq!(
+            may_stage(Duration::ZERO, FRAME + 1, FRAME, false, caps),
+            StageDecision::No,
+            "one byte past the cap"
+        );
+        assert_eq!(
+            may_stage(Duration::ZERO, 2 * FRAME, FRAME, false, caps),
+            StageDecision::No,
+            "a third frame in one tick"
+        );
+    }
+
+    /// U4: the floor admits one frame past either cap, only when it is due
+    /// (an on-air clip that has staged nothing this tick).
+    #[test]
+    fn the_floor_admits_one_past_either_cap_only_when_due() {
+        let caps = ReadAheadCaps::default();
+        assert_eq!(
+            may_stage(Duration::from_millis(30), 0, FRAME, true, caps),
+            StageDecision::Floor,
+            "past the time cap"
+        );
+        assert_eq!(
+            may_stage(Duration::ZERO, 2 * FRAME, FRAME, true, caps),
+            StageDecision::Floor,
+            "past the byte cap"
+        );
+        assert_eq!(
+            may_stage(Duration::ZERO, 0, FRAME, true, caps),
+            StageDecision::Yes,
+            "under the caps the floor is not needed"
+        );
+        let zero = ReadAheadCaps {
+            time: Duration::ZERO,
+            bytes: 0,
+        };
+        assert_eq!(
+            may_stage(Duration::ZERO, 0, FRAME, true, zero),
+            StageDecision::Floor
+        );
+        assert_eq!(
+            may_stage(Duration::ZERO, 0, FRAME, false, zero),
+            StageDecision::No
+        );
+    }
+}
