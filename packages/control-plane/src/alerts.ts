@@ -431,7 +431,7 @@ export class OperatorSignals {
       this.i.lane.raise(
         ALERT.tickerNotOnAir,
         "critical",
-        `the ticker on air is not the ticker commanded: the engine holds ${onAir} items, the control plane ${commanded} (a ticker change the engine did not apply; its log says why)`,
+        `the ticker on air is not the ticker commanded: the engine holds ${onAir} items, the control plane ${commanded} (a ticker change the engine did not apply)`,
       );
     } else {
       this.i.lane.clear(ALERT.tickerNotOnAir.id, `the engine holds the ${commanded} items commanded`);
