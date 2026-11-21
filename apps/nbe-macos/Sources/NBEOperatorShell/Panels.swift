@@ -283,7 +283,11 @@ struct AlertsBanner: View {
         let alerts = AlertFeed.current(status: model.status, telemetry: model.telemetry)
         VStack(spacing: 2) {
             ForEach(alerts) { a in
-                Text("\(a.severity.uppercased()): \(a.reason)")
+                let m = AlertMeaning.of(a.id)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(a.severity.uppercased()): \(m.title), \(a.reason)")
+                    Text("\(m.meaning) \(m.action)").font(.caption)
+                }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                     .background(a.severity == "critical" ? Color.red : .orange)
