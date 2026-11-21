@@ -37,6 +37,9 @@ public final class ShellModel: ObservableObject {
     /// The next reconnect attempt while lost (build step 3), for the curtain.
     @Published public var retryAttempt: Int?
     @Published public var log: [String] = []
+    /// Commands sent and not yet answered, by name: each is pending, and is
+    /// not sent again until its answer comes (the operator's double press).
+    @Published public private(set) var inFlight: Set<String> = []
 
     public let catalog: CommandCatalog?
     private var session: ReconnectingSession?
@@ -62,12 +65,14 @@ public final class ShellModel: ObservableObject {
     /// Whether this session's role may issue `command` (the §16.0 matrix, as
     /// exported). A button the role may not press is shown disabled, with why.
     public func may(_ command: ShellCommand) -> Bool {
+        if inFlight.contains(command.name) { return false }
         if case .fixture = connection { return !noContact }
         guard case .connected = connection, !noContact else { return false }
         return catalog?[command.name]?.allows(role) ?? false
     }
 
     public func why(_ command: ShellCommand) -> String {
+        if inFlight.contains(command.name) { return "\(command.name): pending (sent, no response yet)" }
         guard let desc = catalog?[command.name] else { return "\(command.name): not in the catalog" }
         return "\(command.name) — \(desc.roles.joined(separator: ", ")) (this session: \(role.rawValue))"
     }
@@ -130,7 +135,13 @@ public final class ShellModel: ObservableObject {
         note("→ \(command.name) \(command.payload.isEmpty ? "" : String(describing: command.payload))")
         if case .fixture = connection { return }
         guard let session else { return }
+        guard !inFlight.contains(command.name) else {
+            note("\(command.name) already pending: not sent again")
+            return
+        }
+        inFlight.insert(command.name)
         Task {
+            defer { inFlight.remove(command.name) }
             do {
                 let r = try await session.send(command)
                 if let e = r.error { lastProblem = "\(command.name): \(e.code) \(e.message)" }
