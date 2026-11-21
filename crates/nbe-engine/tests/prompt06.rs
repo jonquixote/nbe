@@ -9,8 +9,8 @@
 //! removed (Standards §2a).
 
 use nbe_engine::audio::{
-    db_to_linear, linear_to_db, worst_discontinuity_dbfs, AudioGraph, BusId, Source, CHANNELS,
-    MIN_RAMP_MS, SAMPLE_RATE,
+    db_to_linear, linear_to_db, worst_discontinuity_dbfs, AudioGraph, BusId, EndedVoice, Source,
+    VoiceEnd, CHANNELS, MIN_RAMP_MS, SAMPLE_RATE,
 };
 use nbe_engine::audio_control::{apply, AudioCommand};
 use std::collections::BTreeMap;
@@ -2030,5 +2030,105 @@ fn an_sfx_fade_runs_its_whole_ramp_while_a_voice_sounds() {
         (level - expected).abs() < 0.01,
         "the fade at frame {at} reads {expected:.4} at one step a frame (two would read about {:.4}): {level:.4}",
         0.5 * (1.0 - 2.0 * at / 1920.0)
+    );
+}
+
+/// Step 6's voice line (a draft, the user's ruling of 2026-11-20 19:55). A
+/// voice that ends is handed off the render with its own peak (after its
+/// gain), the master sample the peak fell on, the sfx bus's level after the
+/// bus's gain at that same sample, and why it ended. The driver logs it; the
+/// render only records it. Covers `AudioGraph::render`'s voice pass and
+/// `take_ended_voices`.
+#[test]
+fn an_ended_voice_reports_its_peak_and_the_sfx_bus_at_that_sample() {
+    // A level exact to read: 0.25 throughout, one 0.8 sample at frame 2,000,
+    // well past the 5 ms ramp-in.
+    fn voice(frames: usize) -> Arc<Vec<f32>> {
+        let mut v = vec![0.25f32; frames * CHANNELS];
+        v[2_000 * CHANNELS] = 0.8;
+        Arc::new(v)
+    }
+    fn render_until_no_voice(g: &mut AudioGraph, mut frame: u64) -> u64 {
+        let mut out = buffer(BLOCK);
+        let from = frame;
+        while g.active_voices() > 0 {
+            g.render(&mut out, frame);
+            frame += 1;
+            assert!(frame - from < 1_000, "the voice never ended");
+        }
+        frame
+    }
+    fn take(g: &mut AudioGraph) -> Vec<EndedVoice> {
+        let mut ended = Vec::new();
+        assert_eq!(
+            g.take_ended_voices(|v| ended.push(v.clone())),
+            0,
+            "none past the room"
+        );
+        ended
+    }
+
+    // 1. Played out, the sfx bus at unity: the bus reads the voice's peak.
+    let mut g = AudioGraph::new(HOUSE_RATE);
+    let id = g.trigger("stab", voice(4_800), 0.0);
+    let mut frame = render_until_no_voice(&mut g, 0);
+    let ended = take(&mut g);
+    assert_eq!(ended.len(), 1, "one voice ended, one record: {ended:?}");
+    let e = &ended[0];
+    assert_eq!(
+        (e.playback_id, e.asset_id.as_str(), e.reason),
+        (id, "stab", VoiceEnd::Finished)
+    );
+    assert_eq!((e.frames_rendered, e.frames_total), (4_800, 4_800));
+    assert!(
+        (e.peak_dbfs - linear_to_db(0.8)).abs() < 0.01,
+        "the voice's own peak: {e:?}"
+    );
+    assert_eq!(
+        e.peak_sample,
+        g.sample_for_master_frame(0, 0) + 2_000,
+        "the master sample the peak fell on"
+    );
+    assert!(
+        (e.bus_at_peak_dbfs - e.peak_dbfs).abs() < 0.01,
+        "at unity, the sfx bus at that sample is the voice's peak: {e:?}"
+    );
+    assert!(take(&mut g).is_empty(), "a record is handed off once");
+
+    // 2. The sfx bus at -6 dB: the bus's level is read AFTER its gain.
+    g.bus_mut(BusId::Sfx).set_gain_db(-6.0, MIN_RAMP_MS);
+    let mut out = buffer(BLOCK);
+    for _ in 0..3 {
+        g.render(&mut out, frame);
+        frame += 1;
+    }
+    g.trigger("stab", voice(4_800), 0.0);
+    frame = render_until_no_voice(&mut g, frame);
+    let ended = take(&mut g);
+    let e = &ended[0];
+    assert!(
+        (e.peak_dbfs - linear_to_db(0.8)).abs() < 0.01,
+        "the voice's own peak does not move with the bus: {e:?}"
+    );
+    assert!(
+        (e.bus_at_peak_dbfs - (e.peak_dbfs - 6.0)).abs() < 0.05,
+        "the bus's level after its -6 dB: {e:?}"
+    );
+
+    // 3. Stopped part-way: the reason, and fewer frames than it holds.
+    let id = g.trigger("stab", voice(48_000), 0.0);
+    for _ in 0..2 {
+        g.render(&mut out, frame);
+        frame += 1;
+    }
+    g.stop_voice(Some(id), None);
+    render_until_no_voice(&mut g, frame);
+    let ended = take(&mut g);
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0].reason, VoiceEnd::Stopped);
+    assert!(
+        ended[0].frames_rendered < ended[0].frames_total,
+        "a stopped voice rendered part of itself: {:?}",
+        ended[0]
     );
 }

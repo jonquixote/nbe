@@ -595,6 +595,28 @@ impl AudioDriver {
         // block (render cadence, B1), the telemetry window wants them merged.
         let block_peaks = self.graph.bus_peaks();
         self.detect_crossings(&block_peaks, master_frame);
+        // Step 6's voice line (a draft, the user's ruling of 2026-11-20
+        // 19:55): one line per soundboard voice that ended in this block,
+        // written here, after the render, never inside it.
+        let unrecorded = self.graph.take_ended_voices(|v| {
+            tracing::info!(
+                playback_id = v.playback_id,
+                asset = %v.asset_id,
+                frames_rendered = v.frames_rendered,
+                frames_total = v.frames_total,
+                peak_dbfs = v.peak_dbfs,
+                peak_sample = v.peak_sample,
+                sfx_bus_at_peak_dbfs = v.bus_at_peak_dbfs,
+                reason = v.reason.as_str(),
+                "soundboard voice ended"
+            );
+        });
+        if unrecorded > 0 {
+            tracing::warn!(
+                unrecorded,
+                "soundboard voices ended past the voice line's room; not logged"
+            );
+        }
         for (bus, peak) in block_peaks {
             let slot = self.window_peaks.entry(bus).or_insert(f64::NEG_INFINITY);
             if peak > *slot {
