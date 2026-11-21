@@ -119,6 +119,26 @@ fn measure(shared: Weak<(Mutex<SpaceSlot>, Condvar)>, probe: fn(&Path) -> f64) {
 /// Build one engine-owned telemetry frame, reading `recordSpaceMib` for the
 /// target volume when `record_dir` is `Some` (measured off the runtime by
 /// [`RecordSpace`]; the tick never waits on it).
+/// `streamTransportState`'s token from the publisher's state, shared by the
+/// tick and `engineHello` (review4 step 7a) so the two never disagree.
+pub(crate) fn transport_token(
+    state: &EngineState,
+    transport: Option<crate::record::rtmp::PublisherState>,
+) -> String {
+    match transport {
+        Some(p) => p.as_str().to_string(),
+        None if state
+            .stream_transport_opened
+            .load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            crate::record::rtmp::PublisherState::Closed
+                .as_str()
+                .to_string()
+        }
+        None => nbe_protocol::tap_none(),
+    }
+}
+
 pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> EngineFrame {
     // Read the tap selection ONCE, before the struct literal. Locking twice
     // inside it deadlocks: struct-literal temporaries live until the end of the
@@ -164,18 +184,7 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     // the `"none"` stub before one ever has — §10.1.1, the `recordTapPath`
     // precedent. `"none"` is not a transport state, so never-streamed stays
     // distinguishable from closed.
-    let stream_transport_state = match transport {
-        Some(p) => p.as_str().to_string(),
-        None if state
-            .stream_transport_opened
-            .load(std::sync::atomic::Ordering::SeqCst) =>
-        {
-            crate::record::rtmp::PublisherState::Closed
-                .as_str()
-                .to_string()
-        }
-        None => nbe_protocol::tap_none(),
-    };
+    let stream_transport_state = transport_token(state, transport);
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
         dropped_frames_total: state

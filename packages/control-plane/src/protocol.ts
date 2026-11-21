@@ -668,12 +668,53 @@ export const AudioLevelCrossingFrameSchema = z
   .strict();
 export type AudioLevelCrossingFrame = z.infer<typeof AudioLevelCrossingFrameSchema>;
 
+/**
+ * Review4 step 7a (the user's ruling of 2026-11-16 23:45): `engineHello`'s
+ * package, the load identity §5.9.4's resync compares. Mirrored by
+ * `nbe_protocol::HelloPackage` (the mirror audit reads this block).
+ */
+export const EngineHelloPackageSchema = z
+  .object({
+    path: z.string(),
+    loadStateVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/**
+ * Review4 step 7a: what a render node holds, its first frame on every
+ * connection. A fact the engine does not hold is `null`. Mirrored by
+ * `nbe_protocol::EngineHello` (the mirror audit reads this block). The
+ * control plane keeps it and tells an engine restart from a reconnect by
+ * `engineInstanceId`; adoption (step 7b) reads the rest.
+ */
+export const EngineHelloFrameSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    kind: z.literal("engineHello"),
+    engineInstanceId: z.string().min(1),
+    startedAtMs: z.number(),
+    showRunning: z.boolean(),
+    masterFrame: z.number().int().nonnegative().nullable(),
+    lastAppliedStateVersion: z.number().int().nonnegative(),
+    package: EngineHelloPackageSchema.nullable(),
+    viewItem: z.string().nullable(),
+    viewItemStartFrame: z.number().int().nonnegative().nullable(),
+    previewItem: z.string().nullable(),
+    visibleOverlays: z.array(z.string()),
+    fallbackActive: z.boolean(),
+    recording: z.boolean(),
+    streamTransportState: z.string(),
+  })
+  .strict();
+export type EngineHelloFrame = z.infer<typeof EngineHelloFrameSchema>;
+
 export const EngineFrameSchema = z.discriminatedUnion("kind", [
   EngineTelemetryFrameSchema,
   AppliedStateVersionFrameSchema,
   ItemLifecycleFrameSchema,
   ResyncRequestFrameSchema,
   AudioLevelCrossingFrameSchema,
+  EngineHelloFrameSchema,
 ]);
 
 /**

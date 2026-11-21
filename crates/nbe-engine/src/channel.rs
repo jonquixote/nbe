@@ -104,6 +104,60 @@ impl ConnectionGate {
 /// into [`build_tick_for_dir`] — `None` only when no package (or no record
 /// target) is loaded. Render path/deadline untouched: this runs on the
 /// channel task's cadence, never on the frame path.
+/// Review4 step 7a: what this engine holds, sent first on every connection
+/// (`nbe_protocol::EngineHello`). Read under short, separate locks: a
+/// snapshot for the control plane to compare, not a transaction.
+pub fn hello(state: &EngineState) -> nbe_protocol::EngineFrame {
+    use std::sync::atomic::Ordering;
+    let view_item = state.view_item.lock().unwrap().clone();
+    let view_item_start_frame = view_item
+        .as_ref()
+        .map(|_| state.view_item_start_frame.load(Ordering::SeqCst));
+    let package =
+        state
+            .loaded_package
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| nbe_protocol::HelloPackage {
+                path: p.path.clone(),
+                load_state_version: p.load_state_version,
+            });
+    let mut visible_overlays: Vec<String> = state
+        .overlays
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, o)| o.on_air)
+        .map(|(id, _)| id.clone())
+        .collect();
+    visible_overlays.sort();
+    let transport = state
+        .stream_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.publisher_state());
+    nbe_protocol::EngineFrame::EngineHello {
+        v: nbe_protocol::PROTOCOL_VERSION.to_string(),
+        fields: Box::new(nbe_protocol::EngineHello {
+            engine_instance_id: state.instance_id.clone(),
+            started_at_ms: state.started_at_unix_ms,
+            show_running: state.is_running(),
+            master_frame: state.master_frame(),
+            last_applied_state_version: state.last_applied(),
+            package,
+            view_item,
+            view_item_start_frame,
+            preview_item: state.preview_item.lock().unwrap().clone(),
+            visible_overlays,
+            fallback_active: state.fallback_active(),
+            recording: *state.record_state.lock().unwrap() == crate::state::RecordState::Recording,
+            stream_transport_state: crate::telemetry::transport_token(state, transport),
+        }),
+    }
+}
+
 pub fn pump_tick(state: &EngineState) -> nbe_protocol::EngineFrame {
     let dir = state.record_dir.lock().unwrap().clone();
     build_tick_for_dir(state, dir.as_deref())
@@ -151,6 +205,12 @@ impl RenderChannel {
         // telemetry separate from both via the queue.
         let (tx, mut rx) = mpsc::channel::<String>(256);
         let state = self.state.clone();
+        // Review4 step 7a: the hello goes first, queued before the pump that
+        // sends every other frame exists. The channel is empty, so this never
+        // waits.
+        if let Ok(s) = serde_json::to_string(&hello(&state)) {
+            let _ = tx.send(s).await;
+        }
         let outgoing = self.outgoing.clone();
         let interval = Duration::from_millis(self.cfg.telemetry_interval_ms);
 
