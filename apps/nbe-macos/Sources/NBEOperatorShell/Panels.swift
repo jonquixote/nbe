@@ -367,7 +367,7 @@ struct RundownPanel: View {
             if let f = item.durationFrames { Text("\(f) fr").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             if item.autoFollow == true { Image(systemName: "arrow.turn.down.right").font(.caption) }
             Spacer()
-            Text(item.state).font(.caption.bold()).foregroundStyle(c)
+            Text(item.stateLabel).font(.caption.bold()).foregroundStyle(c)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
