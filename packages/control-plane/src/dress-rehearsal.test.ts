@@ -1529,6 +1529,52 @@ function ffprobeOrSkip(): string | null {
   return null;
 }
 
+/**
+ * R53 diagnostics (the user's rulings of 2026-11-20 21:20 and 21:30): print
+ * only. No process, no file read, no assertion. All times are this test's own
+ * Date.now() stamps (1 ms resolution); none is an engine timestamp, and none
+ * is a capture latency.
+ */
+function r53TimingDiagnostics(t: {
+  startSentMs: number;
+  startReplyMs: number;
+  startAwaitDoneMs: number;
+  stopSentMs: number;
+  stopReplyMs: number;
+  stopAwaitDoneMs: number;
+  stopApplied: boolean;
+}): void {
+  console.log(
+    [
+      "# R53-DIAG timing (this test's Date.now() stamps; no engine timestamps)",
+      `# R53-DIAG record.start: sent -> client reply received ${t.startReplyMs - t.startSentMs} ms`,
+      `# R53-DIAG record.start: client reply received -> awaitApplied completed ${t.startAwaitDoneMs - t.startReplyMs} ms`,
+      `# R53-DIAG record.stop: sent -> client reply received ${t.stopReplyMs - t.stopSentMs} ms`,
+      `# R53-DIAG record.stop: client reply received -> awaitApplied completed ${t.stopAwaitDoneMs - t.stopReplyMs} ms (returned ${t.stopApplied})`,
+      `# R53-DIAG the interval the R53 assertion uses (record.stop sent - record.start awaitApplied completed), unrounded: ${t.stopSentMs - t.startAwaitDoneMs} ms`,
+    ].join("\n"),
+  );
+}
+
+/** R53 diagnostics from step 11's EXISTING probe result: print only. */
+function r53ProbeDiagnostics(probed: Record<string, unknown>): void {
+  const lines = [
+    "# R53-DIAG from step 11's existing ffprobe (-show_streams -show_format); packet counts not read (no -count_packets)",
+  ];
+  try {
+    const format = (probed["format"] ?? {}) as Record<string, unknown>;
+    lines.push(`# R53-DIAG format.duration (the value the R53 assertion uses): ${format["duration"]} s`);
+    for (const s of (probed["streams"] ?? []) as Array<Record<string, unknown>>) {
+      lines.push(
+        `# R53-DIAG stream ${s["index"]} ${s["codec_type"]}: stream.duration ${s["duration"]} s; stream.duration_ts ${s["duration_ts"]} at stream.time_base ${s["time_base"]}; stream.start_pts ${s["start_pts"]}; stream.start_time ${s["start_time"]} s; stream.nb_frames ${s["nb_frames"] ?? "absent"}`,
+      );
+    }
+  } catch (e) {
+    lines.push(`# R53-DIAG the probe result could not be read: ${String(e)}`);
+  }
+  console.log(lines.join("\n"));
+}
+
 function ffprobeJson(ffprobe: string, file: string, extra: string[]): Record<string, unknown> {
   const run = spawnSync(ffprobe, ["-v", "error", ...extra, "-of", "json", file], {
     encoding: "utf8",
@@ -1631,7 +1677,9 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
     (t) => (t["data"] as Record<string, unknown>)?.["viewItem"] === "A1",
   );
 
+  const diagStartSentMs = Date.now();
   const recReply = await ok("record.start", { outputId: "rehearsal" });
+  const diagStartReplyMs = Date.now();
   // Capability gate: a machine without a hardware H.264 encoder (headless CI
   // runners have no GPU) refuses record.start engine-side with
   // E_NO_HARDWARE_ENCODER — but the control plane already acked ok (dispatch
@@ -1744,13 +1792,26 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
 
   const stopSentMs = Date.now();
   const stopReply = await ok("record.stop", {});
+  const diagStopReplyMs = Date.now();
   // The file + sidecar are complete BEFORE the engine's applied ack lands
   // (`stop_and_finish` waits for the thread's terminal report) — so this
   // wait, not the control-plane ack, is what the assertions below stand on.
-  assert.ok(
-    await server.awaitApplied((stopReply["stateVersion"] ?? 0) as number, RECORD_STOP_MS),
-    "the engine must finalize the take before record.stop applies",
+  const stopApplied = await server.awaitApplied(
+    (stopReply["stateVersion"] ?? 0) as number,
+    RECORD_STOP_MS,
   );
+  // R53 diagnostics: printed before the assertion below is evaluated, so a
+  // failed finalize or file lookup still leaves the timing on record.
+  r53TimingDiagnostics({
+    startSentMs: diagStartSentMs,
+    startReplyMs: diagStartReplyMs,
+    startAwaitDoneMs: recordWallStartMs,
+    stopSentMs,
+    stopReplyMs: diagStopReplyMs,
+    stopAwaitDoneMs: Date.now(),
+    stopApplied,
+  });
+  assert.ok(stopApplied, "the engine must finalize the take before record.stop applies");
 
   const file = soleRecording(recordDir);
   recordFile = file;
@@ -1795,6 +1856,7 @@ test("[RI-1] step 11: record the running show, mark it, stop cleanly", async () 
   assert.ok(bytes.includes("moov"), "moov box present (structural; upfront moov, not finalize proof)");
 
   const probed = ffprobeJson(ffprobe, file, ["-show_streams", "-show_format"]);
+  r53ProbeDiagnostics(probed);
   const streams = probed["streams"] as Array<Record<string, unknown>>;
   assert.equal(streams.length, 2, "exactly 1 video + 1 audio stream");
   const video = streams.find((s) => s["codec_type"] === "video");
