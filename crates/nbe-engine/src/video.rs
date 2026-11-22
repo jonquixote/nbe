@@ -221,6 +221,17 @@ impl VideoLibrary {
 /// asset's metadata; `declared_period` is `loop.periodFrames` when the
 /// manifest declares one (SPEC §12.9 precedence: the manifest wins over the
 /// decoded frame count).
+/// Test seam: the next `n` calls to [`load_video_asset`] fail as a starved
+/// platform decoder does, with the codes [`DecodeError::is_transient`] reads
+/// (`-12911`, kVTVideoDecoderMalfunctionErr, under AVFoundation's "Cannot
+/// Decode"). Process-wide; tests that use it serialize.
+#[doc(hidden)]
+pub fn force_transient_decode_failures(n: u32) {
+    FORCE_TRANSIENT_DECODE_FAILURES.store(n, Ordering::SeqCst);
+}
+
+static FORCE_TRANSIENT_DECODE_FAILURES: AtomicU32 = AtomicU32::new(0);
+
 pub fn load_video_asset(
     asset_id: &str,
     path: &Path,
@@ -229,6 +240,15 @@ pub fn load_video_asset(
     declared_period: Option<u32>,
     gop_frames: u32,
 ) -> Result<VideoAsset, DecodeError> {
+    if FORCE_TRANSIENT_DECODE_FAILURES
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .is_ok()
+    {
+        return Err(DecodeError::Failed {
+            path: path.display().to_string(),
+            reason: "Cannot Decode (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12911) (forced: test seam)".into(),
+        });
+    }
     let lease = pool.acquire().ok_or_else(|| DecodeError::Failed {
         path: path.display().to_string(),
         reason: format!(
