@@ -127,6 +127,8 @@ export class RateLimiter {
 interface Reissue {
   record: Record<string, unknown> | null;
   stream: Record<string, unknown> | null;
+  /** Review4 case E's guests: each connected guest's `guest.connect` payload. */
+  guests: Array<Record<string, unknown>>;
 }
 
 /** Review4: what a restarted control plane does with the engine's hello. */
@@ -507,15 +509,24 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   // command: the belief does not change, and it goes out as a detection
   // transaction (a version, an audit row, the command's own window), as the
   // ticker's TTL expiry does. Guest starts are not re-issued here.
-  const lastStart: { record: Record<string, unknown> | null; stream: Record<string, unknown> | null } = {
+  const lastStart: {
+    record: Record<string, unknown> | null;
+    stream: Record<string, unknown> | null;
+    /** Each connected guest's `guest.connect` payload, by guest id: its
+     * `whipUrl` is held here only, never journaled, served or logged. */
+    guests: Map<string, Record<string, unknown>>;
+  } = {
     record: null,
     stream: null,
+    guests: new Map(),
   };
   function rememberOutputStart(command: string, payload: Record<string, unknown>): void {
     if (command === "record.start") lastStart.record = { ...payload };
     else if (command === "stream.start") lastStart.stream = { ...payload };
     else if (command === "record.stop") lastStart.record = null;
     else if (command === "stream.stop") lastStart.stream = null;
+    else if (command === "guest.connect") lastStart.guests.set(String(payload["guestId"]), { ...payload });
+    else if (command === "guest.disconnect") lastStart.guests.delete(String(payload["guestId"]));
     else if (command === "show.stop" || command === "show.load" || command === "show.unload") {
       lastStart.record = null;
       lastStart.stream = null;
@@ -552,6 +563,39 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         // re-issue has happened and stands.
       }
     }
+    // Review4 case E's guests: a guest the control plane believes connected
+    // is connected again, as it was started, and muted again if it was. The
+    // engine keeps no other guest state (layout, placeholder and return
+    // configuration have no engine effect).
+    for (const payload of r.guests) {
+      const guestId = String(payload["guestId"]);
+      const guest = state.guests.get(guestId);
+      if (guest === undefined) continue;
+      const before = state.stateVersion;
+      const sent: string[] = [];
+      const directives: Array<[string, Record<string, unknown>]> = [["guest.connect", payload]];
+      if (guest.muted) directives.push(["guest.mute", { guestId, muted: true }]);
+      let sv = before;
+      for (const [command, p] of directives) {
+        sv = state.bump();
+        bridge.send({ command, target: {}, payload: p, stateVersion: sv });
+        sent.push(command);
+      }
+      opts.persistence.onDirty();
+      try {
+        audit.record({
+          kind: "command",
+          command: "system:guest.connect",
+          event: "guest.reissued",
+          // Never the WHIP URL: it names the guest's media session.
+          detail: { reason: "the engine restarted", guestId, sent, whipUrl: "(set; not logged)" },
+          stateVersionBefore: before,
+          stateVersionAfter: sv,
+        });
+      } catch {
+        // A row that cannot be written is R18's alert to announce.
+      }
+    }
   }
 
   // -- Review4 step 7a: the engine's hello ----------------------------------
@@ -575,17 +619,23 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     lastEngineInstanceId = hello.engineInstanceId;
     if (previous === null || previous === hello.engineInstanceId) return;
     // Step 7c: a restarted engine mid-show is owed the outputs believed on.
-    if (state.showState === "RUNNING") {
-      const record = state.recordState === "recording" ? lastStart.record : null;
-      const stream = state.streamState === "live" ? lastStart.stream : null;
-      if (record !== null || stream !== null) {
+    // Guests are owed whatever the show's state: one may be connected before
+    // air.
+    {
+      const running = state.showState === "RUNNING";
+      const record = running && state.recordState === "recording" ? lastStart.record : null;
+      const stream = running && state.streamState === "live" ? lastStart.stream : null;
+      const guests = [...state.guests.keys()]
+        .map((id) => lastStart.guests.get(id))
+        .filter((p): p is Record<string, unknown> => p !== undefined);
+      if (record !== null || stream !== null || guests.length > 0) {
         // The engine says hello first on every connection, so its resync is
         // normally acknowledged after this, and the re-issue waits for that
         // (`noteApplied`). If the resync was already applied, send them now.
         const lastResync = render.resyncs[render.resyncs.length - 1];
         const applied = lastResync !== undefined && render.lastApplied !== null && render.lastApplied >= lastResync;
-        if (applied) reissueOutputs({ record, stream });
-        else render.reissue = { record, stream };
+        if (applied) reissueOutputs({ record, stream, guests });
+        else render.reissue = { record, stream, guests };
       }
     }
     try {
