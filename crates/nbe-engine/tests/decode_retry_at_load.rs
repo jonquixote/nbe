@@ -18,10 +18,7 @@ use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_engine::video::force_transient_decode_failures;
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-
-/// The seam is process-wide: these tests take turns.
-static SERIAL: Mutex<()> = Mutex::new(());
+use std::sync::Arc;
 
 fn directive(command: &str, sv: u64, payload: serde_json::Value) -> DirectiveFrame {
     DirectiveFrame {
@@ -101,26 +98,27 @@ async fn load_starved(starved: u32) -> Arc<EngineState> {
     state
 }
 
+/// The seam is process-wide, so both cases run in one test, in order (a
+/// lock held across `.await` would be clippy's `await_holding_lock`).
 #[tokio::test]
-async fn a_decoder_starved_once_at_load_is_retried_and_the_clip_loads() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+async fn a_decoder_starved_once_at_load_is_retried_once_and_twice_still_fails() {
+    // Starved once: retried, and the clip loads.
     let state = load_starved(1).await;
-    let library = state.video.lock().unwrap();
-    assert!(
-        library.failures.is_empty(),
-        "one starved decode is retried, not a failure: {:?}",
-        library.failures
-    );
-    let clip = library
-        .assets
-        .get("clip")
-        .expect("the clip is resident after the retry");
-    assert!(!clip.frames.is_empty(), "the clip decoded frames");
-}
+    {
+        let library = state.video.lock().unwrap();
+        assert!(
+            library.failures.is_empty(),
+            "one starved decode is retried, not a failure: {:?}",
+            library.failures
+        );
+        let clip = library
+            .assets
+            .get("clip")
+            .expect("the clip is resident after the retry");
+        assert!(!clip.frames.is_empty(), "the clip decoded frames");
+    }
 
-#[tokio::test]
-async fn the_retry_is_once_a_decoder_starved_twice_fails_the_asset_as_before() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    // Starved twice: the retry is once, never a loop; the asset fails as before.
     let state = load_starved(2).await;
     let library = state.video.lock().unwrap();
     assert!(
