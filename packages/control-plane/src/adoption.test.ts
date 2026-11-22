@@ -115,7 +115,7 @@ interface Rig {
 
 async function rig(
   t: { after: (fn: () => void | Promise<void>) => void },
-  opts: { restart?: boolean; journalOver?: Record<string, unknown>; lockMs?: number; helloWaitMs?: number } = {},
+  opts: { restart?: boolean; journalOver?: Record<string, unknown>; lockMs?: number; helloWaitMs?: number; awaitFirstHello?: boolean } = {},
 ): Promise<Rig> {
   const pkgPath = makePackage();
   const auditPath = join(tempDir("nbe-adopt-audit-"), "audit.jsonl");
@@ -127,6 +127,9 @@ async function rig(
     audit: new AuditLog(auditPath),
     state,
     persistence: { onDirty: () => {}, flushNow: () => {} },
+    ...(opts.awaitFirstHello
+      ? { awaitFirstHello: opts.helloWaitMs === undefined ? {} : { helloWaitMs: opts.helloWaitMs } }
+      : {}),
     ...(opts.restart === false
       ? {}
       : {
@@ -374,4 +377,49 @@ test("case C: a running engine beside a journal that says no show was running is
   assert.equal(resyncs(e.directives).length, 0, "no resync while held");
   e.ws.close();
   assert.ok(await until(() => !r.state.alerts.some((a) => a.id === "engine.unidentified")), "the alert clears when the engine goes");
+});
+
+test("case C: an engine that reconnects during the hold is held again, never resynced off air; show.unload ends the hold", async (t) => {
+  const r = await rig(t);
+  const say = hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } });
+  const e1 = await r.engine(say);
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held");
+  e1.ws.close();
+  assert.ok(await until(() => !r.state.alerts.some((a) => a.id === "engine.unidentified")), "its disconnect clears the alert");
+  const e2 = await r.engine(say);
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "the reconnect is held again");
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(resyncs(e2.directives).length, 0, "no resync reaches the reconnected engine");
+  assert.match(r.state.alerts.find((a) => a.id === "engine.unidentified")!.reason, /not the package the journal names/, "the hold keeps its reason");
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.unload")).status, "ok");
+  assert.ok(await until(() => resyncs(e2.directives).length === 1), "the operator's choice resyncs it");
+  e2.ws.close();
+  const e3 = await r.engine(say);
+  assert.ok(await until(() => resyncs(e3.directives).length === 1), "after the operator's choice, a reconnect is resynced at once");
+});
+
+test("case C with no journal: a control plane that never saw an engine holds a running one (awaitFirstHello); show.unload takes control", async (t) => {
+  const r = await rig(t, { restart: false, awaitFirstHello: true });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "the alert is raised");
+  assert.match(r.state.alerts.find((a) => a.id === "engine.unidentified")!.reason, /no journal to identify it by/);
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(resyncs(e.directives).length, 0, "no resync: one with nothing loaded would stop the engine's show");
+  assert.equal(event(r, "controlPlane.refused").length, 1);
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.unload")).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1));
+  assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "UNLOADED");
+  assert.ok(!r.state.alerts.some((a) => a.id === "engine.unidentified"));
+});
+
+test("no journal, an engine running nothing: resynced at its hello (case D); no hello at all: resynced after the wait", async (t) => {
+  const r = await rig(t, { restart: false, awaitFirstHello: true, helloWaitMs: 300 });
+  const idle = await r.engine(hello(r.pkgPath, { showRunning: false, package: null, viewItem: null, masterFrame: null }));
+  assert.ok(await until(() => resyncs(idle.directives).length === 1), "an idle engine is resynced at its hello");
+  assert.ok(!r.state.alerts.some((a) => a.id === "engine.unidentified"));
+  const r2 = await rig(t, { restart: false, awaitFirstHello: true, helloWaitMs: 300 });
+  const mute = await r2.engine(null);
+  assert.ok(await until(() => resyncs(mute.directives).length === 1), "an engine that never says hello is resynced after the wait");
 });

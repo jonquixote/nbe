@@ -267,6 +267,7 @@ export class OperatorSignals {
       return;
     }
     const why: Record<string, string> = {
+      noJournal: "this control plane has no journal to identify it by",
       identity: "it is not the package the journal names",
       journalNotRunning: "the journal says no show was running",
       engineHasNoPackage: "the engine reports no package",

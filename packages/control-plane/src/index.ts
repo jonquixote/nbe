@@ -68,6 +68,10 @@ async function main(): Promise<void> {
       const journal = persistence.restoredJournal();
       return journal === null ? {} : { restart: { journal } };
     })(),
+    // Review4 case C without a journal: the first engine's hello is awaited
+    // too, so a running show is never stopped by a control plane that cannot
+    // know it.
+    awaitFirstHello: {},
     // SPEC §7.15: the control plane is the side that knows BOTH the package
     // and the running engine, so it is the side that refuses. It reads the
     // same variable the engine does, because a control plane that guessed the
