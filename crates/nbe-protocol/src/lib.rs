@@ -576,6 +576,52 @@ impl AudioDeviceLine {
     }
 }
 
+/// The engine's take: whether a recording is running, and whether it has
+/// ended without being asked to.
+///
+/// `state` is one of:
+/// - `"recording"`: a take is running and its record thread is alive;
+/// - `"failed"`: a take was started and not stopped, but its record thread
+///   has ended on its own (a write to the file failed, or the thread
+///   panicked). Nothing more is being recorded; the file keeps what was
+///   written before. `reason` says why. It reads `"failed"` until a
+///   `record.stop` or `show.stop` ends the take;
+/// - `"none"`: no take is running. The §10.1.1 stub, never a take state.
+///
+/// Before this line the render node reported no record state at all
+/// (§10.1.2: "the comparison covers the stream only"), so a take that died
+/// mid-show was invisible until its `record.stop`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTakeLine {
+    pub state: String,
+    pub reason: Option<String>,
+}
+
+impl RecordTakeLine {
+    /// The §10.1.1 stub: no take is running.
+    pub fn none() -> Self {
+        Self {
+            state: "none".into(),
+            reason: None,
+        }
+    }
+
+    pub fn recording() -> Self {
+        Self {
+            state: "recording".into(),
+            reason: None,
+        }
+    }
+
+    pub fn failed(reason: &str) -> Self {
+        Self {
+            state: "failed".into(),
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
 /// The master limiter's ceiling in force (SPEC §8.2's note; the device-audio
 /// design record's D5 amendment of 2026-10-23): its value in dBTP and its
 /// source, `"show"` (the show's `truePeakDbtp`) or `"default"`. Read-only.
@@ -739,6 +785,10 @@ pub struct EngineTelemetry {
     /// whose transport closed. After a stream stops it reads `"closed"`.
     #[serde(default = "tap_none")]
     pub stream_transport_state: String,
+    /// The take: running, failed on its own, or none ([`RecordTakeLine`]).
+    /// Always emitted, stubbed `"none"` with no take running (§10.1.1).
+    #[serde(default = "RecordTakeLine::none")]
+    pub record_take: RecordTakeLine,
     /// The output device carrying program audio (the device-audio design
     /// record, D5 and D6). Always emitted, stubbed `"none"` before the audio
     /// driver reports: §10.1.1's rule, `record_tap_path`'s precedent.

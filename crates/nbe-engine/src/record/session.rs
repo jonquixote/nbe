@@ -152,6 +152,9 @@ pub struct RecordSession {
     /// would show up as `vramUsedMib` drifting upward across a show — a leak
     /// whose only symptom is a §10.1 counter nobody reads until it matters.
     surface_pool: Option<Arc<nbe_decode::zerocopy::SurfacePool>>,
+    /// Why the record thread ended without a stop, once it has (written by
+    /// the thread, read by telemetry while the take is still believed on).
+    ended_on_its_own: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl RecordSession {
@@ -249,6 +252,7 @@ impl RecordSession {
         let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel(RECORD_CHANNEL_BOUND);
         let (control_tx, control_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let ended_on_its_own = Arc::new(std::sync::Mutex::new(None));
         let handle = spawn_record_thread(ThreadArgs {
             params,
             initial_sets,
@@ -257,6 +261,7 @@ impl RecordSession {
             control_rx,
             done_tx,
             skipped,
+            ended_on_its_own: ended_on_its_own.clone(),
         });
         Ok(Self {
             output_path,
@@ -267,7 +272,19 @@ impl RecordSession {
             handle: Some(handle),
             finished: false,
             surface_pool: None,
+            ended_on_its_own,
         })
+    }
+
+    /// Why the take's record thread ended without being asked to (a failed
+    /// write, a panic), or `None` while it runs. A take that ended on its own
+    /// records nothing more; the file keeps what was written before. Never
+    /// waits: the thread writes this once, as it exits.
+    pub fn ended_on_its_own(&self) -> Option<String> {
+        self.ended_on_its_own
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// The reserved output path. The file materializes on first content (not

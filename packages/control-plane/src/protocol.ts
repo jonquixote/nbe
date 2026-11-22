@@ -398,6 +398,16 @@ export type DirectiveFrame = z.infer<typeof DirectiveFrameSchema>;
 /** The tick's device line (the device-audio design record, D5 and D6). Named
  *  here, outside the frame schema, so the wire audit's block ends at the
  *  frame's own `.strict()` (`mirror.rs` reads up to the first one). */
+/** The engine's take (`RecordTakeLine`): `"recording"`, `"failed"` (the take's
+ *  record thread ended without a stop; `reason` says why), or the `"none"`
+ *  stub with no take running. */
+export const RecordTakeLineSchema = z
+  .object({
+    state: z.string(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+
 export const AudioDeviceLineSchema = z
   .object({
     state: z.string(),
@@ -506,6 +516,9 @@ export const EngineTelemetryFrameSchema = z
     // every tick from an older build. Not `.default()`: the control plane
     // must never fabricate what the socket is doing.
     streamTransportState: z.string().optional(),
+    // The take: running, failed on its own, or the "none" stub. Optional for
+    // the tolerance `streamTransportState` has: the engine always emits it.
+    recordTake: RecordTakeLineSchema.optional(),
     // The device-audio design record, D5 and D6: the output device carrying
     // program audio. `state` is "open", "null" (the silent sink by
     // configuration), "absent", "lost", or the "none" stub before the

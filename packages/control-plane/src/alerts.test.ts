@@ -691,3 +691,75 @@ test("audio.underrun negative: the null sink's cadence underruns raise nothing (
   assert.deepEqual(r.ids(), []);
   r.signals.close();
 });
+
+// --- record.failed: the take's record thread ended without a stop ----------
+
+const take = (state: string, reason: string | null = null) => ({ state, reason });
+
+test("record.failed: believed recording, the engine reports the take failed: critical, with the engine's reason; the stop clears it", async () => {
+  const r = rig();
+  r.state.recordState = "recording";
+  await sleep(2);
+  r.reportWith({ recordTake: take("recording") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "a running take raises nothing");
+  await sleep(2);
+  r.reportWith({ recordTake: take("failed", "record: disk: No space left on device") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.recordFailed.id]);
+  assert.equal(r.state.alerts[0]!.severity, "critical");
+  assert.match(
+    r.state.alerts[0]!.reason,
+    /^the take stopped recording on its own: record: disk: No space left on device\. Nothing more is being recorded; the file keeps what was written before$/,
+  );
+  // The operator stops the take: the belief is idle, and the alert clears.
+  r.state.recordState = "idle";
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), []);
+  assert.deepEqual(
+    r.rows.filter((x) => x.id === ALERT.recordFailed.id).map((x) => [x.edge, x.event, x.cause]),
+    [
+      ["raised", "record.failed", null],
+      ["cleared", "record.failed", "the take was stopped"],
+    ],
+  );
+  r.signals.close();
+});
+
+test("record.failed: negative: nothing raises while a record command is pending, or with no take believed, or for a take reported none", async () => {
+  const r = rig();
+  // A failed report with the take believed idle: nothing (no take to lose).
+  await sleep(2);
+  r.reportWith({ recordTake: take("failed", "a stale take") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), []);
+  // A record.start accepted and not yet applied: not compared.
+  r.state.recordState = "recording";
+  r.signals.onAccepted("record.start", 7);
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "a pending record command is not compared");
+  // Applied: compared from the next report on.
+  r.signals.onApplied(7, false);
+  await sleep(2);
+  r.reportWith({ recordTake: take("none") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "none beside recording is not a failure");
+  await sleep(2);
+  r.reportWith({ recordTake: take("failed", "the record thread panicked; the file keeps what was written before") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.recordFailed.id]);
+  r.signals.close();
+});
+
+test("record.failed: the engine going not-reporting clears it; that alert owns the unconfirmed state", async () => {
+  const r = rig();
+  r.state.recordState = "recording";
+  await sleep(2);
+  r.reportWith({ recordTake: take("failed", "disk gone") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.recordFailed.id]);
+  r.stale();
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.engineNotReporting.id]);
+  r.signals.close();
+});

@@ -213,6 +213,7 @@ fn render_channel_frames_round_trip() {
             record_tap_path: "zeroCopy".into(),
             record_tap_reason: "Table".into(),
             stream_transport_state: "reconnecting".into(),
+            record_take: nbe_protocol::RecordTakeLine::failed("disk full"),
             // The device-audio design record, D5 and its amendment: sampled
             // with values, the open device and a show's ceiling.
             audio_device: nbe_protocol::AudioDeviceLine::open("MacBook Pro Speakers", 48_000),
@@ -443,6 +444,9 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
         // rule above: `"reconnecting"` is the token the field exists to carry
         // (a redial `streamState` does not show).
         stream_transport_state: "reconnecting".into(),
+        // The take's line, sampled with a VALUE per the rule above: a failed
+        // take carries its reason, which a `"none"` stub would leave null.
+        record_take: nbe_protocol::RecordTakeLine::failed("disk full"),
         // The device-audio design record's device line and D5's ceiling,
         // sampled with values per the rule above: a lost device carries its
         // name and reason, and a show's ceiling its source.

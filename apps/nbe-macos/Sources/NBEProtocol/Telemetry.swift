@@ -33,6 +33,9 @@ public struct Telemetry: Decodable, Equatable, Sendable {
     public var streamState: String?
     public var streamBufferMs: Double?
     public var streamTransportState: String?
+    /// The engine's take: `state` is "recording", "failed" (its record thread
+    /// ended without a stop; `reason` says why) or "none".
+    public var recordTake: RecordTake?
     public var recordState: String?
     public var recordSpaceMib: Double?
     public var masterClockDriftMs: Double?
@@ -145,4 +148,10 @@ public enum AlertFeed {
     public static func current(status: StatusSnapshot, telemetry: Telemetry) -> [Alert] {
         telemetry.alerts ?? status.alerts ?? []
     }
+}
+
+/// The engine's take, as the control plane forwards it.
+public struct RecordTake: Codable, Equatable, Sendable {
+    public var state: String
+    public var reason: String?
 }

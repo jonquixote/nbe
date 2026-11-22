@@ -62,6 +62,11 @@ export interface TelemetryTick {
    *  through a redial (§9.5), so this is where a redial is visible. Required,
    *  same reason as `recordTapPath`. */
   streamTransportState: string;
+  /** The engine's take: `"recording"`, `"failed"` with the engine's reason
+   *  (its record thread ended without a stop: nothing more is recorded), or
+   *  the `"none"` stub with no take running or no fresh report. Engine-owned;
+   *  `recordState` above is the commanded one. */
+  recordTake: { state: string; reason: string | null };
   /** The device-audio design record, D5 and D6: which output device carries
    *  program audio — `"open"`, `"null"` (silent by configuration), `"absent"`,
    *  `"lost"`, or `"none"` with no fresh engine report. Engine-owned; required,
@@ -150,6 +155,8 @@ export function buildTick(
     // report the control plane does not know what the socket is doing, and
     // `engineConnected: false` already says why.
     streamTransportState: f?.streamTransportState ?? TAP_NONE,
+    // Forwarded, stubbed "none" with no fresh report, as the transport is.
+    recordTake: f?.recordTake ?? { state: TAP_NONE, reason: null },
     // The device-audio design record: forwarded, stubbed "none" when no fresh
     // report says which device is on air, for the reason `streamTransportState`
     // is. The ceiling is null in that case, not a default: a default would be
