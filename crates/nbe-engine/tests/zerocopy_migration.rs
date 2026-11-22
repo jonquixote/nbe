@@ -647,6 +647,21 @@ async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_fr
     // abandoned take keeps its flushed fragments (§9.3) and writes nothing
     // more. A take that swallowed the error and kept feeding would write
     // frames from a surface nobody was drawing into.
+    //
+    // Item 14 (the user's ruling of 2026-11-20 19:55, a draft): `abandon`
+    // detaches the record thread without waiting, and that thread encodes
+    // every frame already handed to it before it reads the Abandon. So the
+    // first fragment can land a moment after this point. Wait for it, bounded
+    // (5 s, 50 ms polls), so the test measures what it states (an abandoned
+    // take keeps its flushed fragments), not how fast the thread drains. The
+    // wait cannot hide frames written after the loss: nothing feeds after it,
+    // and `n <= fed` below still counts every packet.
+    let (fragment_found, waited, file_bytes) =
+        wait_for_first_fragment(&path, Duration::from_secs(5));
+    eprintln!(
+        "# item 14: waited {} ms for the abandoned take's first fragment (found: {fragment_found}, file {file_bytes} bytes)",
+        waited.as_millis()
+    );
     let v = ffprobe_streams(&ffprobe, &path);
     let streams = v["streams"].as_array().expect("streams array");
     assert!(
@@ -678,11 +693,28 @@ async fn losing_the_chain_mid_take_ends_the_take_loudly_and_writes_no_further_fr
         .len() as u32;
     assert!(
         n > 0,
-        "the pre-loss fragments must survive: an abandoned take is not an empty file"
+        "the pre-loss fragments must survive: an abandoned take is not an empty file \
+         (waited {} ms for a fragment, found: {fragment_found}; the file holds {file_bytes} bytes)",
+        waited.as_millis()
     );
     assert!(
         n <= fed,
         "{n} frames in a file fed {fed}: frames were written after the chain was lost"
     );
     nbe_engine::record::markers::clear();
+}
+
+/// Item 14: poll `path` every 50 ms, up to `max`, until it holds an ISO-BMFF
+/// `moof` box, the first flushed fragment. Returns whether one was found, how
+/// long it waited, and the file's size at the last read.
+fn wait_for_first_fragment(path: &Path, max: Duration) -> (bool, Duration, u64) {
+    let t0 = Instant::now();
+    loop {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        let found = bytes.windows(4).any(|w| w == b"moof");
+        if found || t0.elapsed() >= max {
+            return (found, t0.elapsed(), bytes.len() as u64);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
