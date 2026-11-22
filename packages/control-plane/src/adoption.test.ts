@@ -291,15 +291,28 @@ test("D: an engine that is not running gets today's resync (UNLOADED); a saved f
   assert.equal((await send(admin, "automation.hold", { hold: true })).status, "ok", "commands run");
 });
 
-test("a load generation that differs is not adopted: today's resync, and the reason audited", async (t) => {
-  const r = await rig(t);
+test("case C: a running engine whose load generation differs is not adopted, and not resynced either (that resync would stop its show); the operator's show.unload takes control", async (t) => {
+  const r = await rig(t, { lockMs: 100 });
   const e = await r.engine(hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } }));
-  assert.ok(await until(() => resyncs(e.directives).length === 1));
-  assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "UNLOADED");
+  // Held: past the hello wait, no resync reaches the engine, so its show runs on.
+  await new Promise((res) => setTimeout(res, 2500));
+  assert.equal(resyncs(e.directives).length, 0, "no resync for a show this control plane cannot identify");
   const rows = event(r, "controlPlane.notAdopted");
   assert.equal(rows.length, 1);
   assert.equal((rows[0]!["detail"] as Record<string, unknown>)["reason"], "identity");
   assert.equal(event(r, "controlPlane.adopted").length, 0);
+  assert.equal(event(r, "controlPlane.refused").length, 1, "the refusal is audited");
+  const alert = r.state.alerts.find((a) => a.id === "engine.unidentified");
+  assert.ok(alert, "a critical alert says why");
+  assert.equal(alert.severity, "critical");
+  assert.match(alert.reason, /cannot identify \(it is not the package the journal names\)/);
+  // The operator takes control: the held handshake completes with the
+  // control plane's state, and the alert clears.
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.unload")).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1), "the operator's choice sends the resync");
+  assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "UNLOADED");
+  assert.ok(!r.state.alerts.some((a) => a.id === "engine.unidentified"), "the alert clears");
 });
 
 test("an engine that never says hello gets today's resync after the wait", async (t) => {
@@ -351,4 +364,14 @@ test("the journal carries the load generation and the automation backlog, and re
   assert.equal(j.journal["packageLoadStateVersion"], 5);
   assert.equal(j.journal["automationBacklog"], 3);
   assert.equal(j.stateVersion, 9);
+});
+
+test("case C: a running engine beside a journal that says no show was running is held too; its disconnect clears the alert", async (t) => {
+  const r = await rig(t, { journalOver: { showState: "STOPPED" } });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "the alert is raised");
+  assert.match(r.state.alerts.find((a) => a.id === "engine.unidentified")!.reason, /the journal says no show was running/);
+  assert.equal(resyncs(e.directives).length, 0, "no resync while held");
+  e.ws.close();
+  assert.ok(await until(() => !r.state.alerts.some((a) => a.id === "engine.unidentified")), "the alert clears when the engine goes");
 });

@@ -129,10 +129,17 @@ interface Reissue {
   stream: Record<string, unknown> | null;
 }
 
+/** Review4: what a restarted control plane does with the engine's hello. */
+type RecoveryDecision = { kind: "adopt" } | { kind: "resync" } | { kind: "refuse"; reason: string };
+
 interface ClientSession {
   /** Review4 step 7b: a render connection to a restarted control plane,
    * holding its handshake until the engine's hello arrives (or a timeout). */
   awaitingHello?: { handshake: (adopted: boolean) => void; timer: ReturnType<typeof setTimeout> } | null;
+  /** Review4 case C: a handshake refused because the engine runs a show this
+   * control plane cannot identify; completed by the operator's `show.load` or
+   * `show.unload` (the operator taking control). */
+  heldHandshake?: (() => void) | null;
   role: Role;
   tokenId: string;
   telemetryTimer: ReturnType<typeof setInterval> | null;
@@ -373,6 +380,37 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     }
   }
 
+  /** Review4 case C: hold this render connection unregistered (no resync, so
+   * nothing stops the engine's show; the picture stays), raise the alert, and
+   * audit the refusal. The operator's `show.load` or `show.unload` releases it. */
+  function holdUnidentified(session: ClientSession, handshake: () => void, reason: string, hello: EngineHelloFrame): void {
+    session.heldHandshake = handshake;
+    signals.unidentified(reason, null);
+    try {
+      audit.record({
+        kind: "command",
+        command: "engine:hello",
+        event: "controlPlane.refused",
+        detail: { reason, engineInstanceId: hello.engineInstanceId, package: hello.package, viewItem: hello.viewItem },
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+      });
+    } catch {
+      // A row that cannot be written is R18's alert to announce.
+    }
+  }
+  function releaseHeldHandshakes(command: string): void {
+    let released = false;
+    for (const client of clients.values()) {
+      const held = client.heldHandshake;
+      if (!held || client.closed) continue;
+      client.heldHandshake = null;
+      held();
+      released = true;
+    }
+    if (released) signals.unidentified(null, `the operator took control (${command})`);
+  }
+
   function notAdopted(reason: string, detail: Record<string, unknown>): void {
     recovery!.resolved = true;
     recoveryRow("controlPlane.notAdopted", { reason, ...detail }, state.stateVersion);
@@ -389,7 +427,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
    * case D (UNLOADED; a saved file alone never starts a show), anything else
    * case C, whose refusal is a later PR's (7b-ii). Returns whether it adopted.
    */
-  function recover(hello: EngineHelloFrame): boolean {
+  function recover(hello: EngineHelloFrame): RecoveryDecision {
     const j = recovery!.journal;
     const body = j.journal;
     const reason = !hello.showRunning
@@ -408,14 +446,17 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     };
     if (reason !== null) {
       notAdopted(reason, identities);
-      return false;
+      // Case D: the engine runs nothing; today's resync is right. Case C: it
+      // runs a show this control plane cannot identify; a resync would stop
+      // it (a non-RUNNING snapshot stops the engine's clock), so refuse.
+      return reason === "engineNotRunning" ? { kind: "resync" } : { kind: "refuse", reason };
     }
     let pkg: PackageInfo;
     try {
       pkg = indexPackage(hello.package!.path);
     } catch (err) {
       notAdopted("index", { ...identities, error: err instanceof Error ? err.message : String(err) });
-      return false;
+      return { kind: "refuse", reason: "index" };
     }
     const before = state.stateVersion;
     const out = state.adopt(pkg, hello, body, Date.now());
@@ -439,7 +480,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       },
       before,
     );
-    return true;
+    return { kind: "adopt" };
   }
 
   // -- Review4 step 7c: re-issue the outputs after an engine restart -------
@@ -727,6 +768,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
       rememberOutputStart(command, envelope.payload);
+      if (command === "show.load" || command === "show.unload") releaseHeldHandshakes(command);
       // §5.9.5: a `show.stop` that returns with outputs still active was not
       // acknowledged, and they are held. The lane announces it (v0.4.8 row 8).
       if (command === "show.stop" && state.outputsActive()) signals.held(out.stateVersion);
@@ -1051,6 +1093,10 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const forget = (): void => {
       if (session.awaitingHello) clearTimeout(session.awaitingHello.timer);
       session.awaitingHello = null;
+      if (session.heldHandshake) {
+        session.heldHandshake = null;
+        signals.unidentified(null, "the engine disconnected");
+      }
       if (session.render !== null && session.render.hello !== undefined) engineGoneAt = Date.now();
       session.closed = true;
       stopTelemetry();
@@ -1254,7 +1300,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           if (waiting) {
             session.awaitingHello = null;
             clearTimeout(waiting.timer);
-            waiting.handshake(recovering() ? recover(frame) : false);
+            // Review4 case C is refused only for a restarted control plane
+            // that restored a journal it cannot adopt. With no journal at all
+            // (both files lost) a fresh control plane still resyncs at
+            // connect, before any hello, as today: that subcase is NOT covered.
+            const decision: RecoveryDecision = recovering() ? recover(frame) : { kind: "resync" };
+            if (decision.kind === "refuse") holdUnidentified(session, () => waiting.handshake(false), decision.reason, frame);
+            else waiting.handshake(decision.kind === "adopt");
           }
           if (session.render !== null) noteHello(session.render, frame);
         } else if (frame.kind === "resyncRequest") {
