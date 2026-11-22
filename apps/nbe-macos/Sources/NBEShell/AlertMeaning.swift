@@ -53,6 +53,10 @@ public enum AlertMeaning {
             title: "TICKER ITEM COUNT MISMATCH",
             meaning: "After the settling period, the engine reports a different ticker override item count from the control plane.",
             action: "Check the programme output and engine log before changing or clearing the override."),
+        "controlPlane.restarted": Entry(
+            title: "CONTROL PLANE RESTARTED",
+            meaning: "The control plane restarted mid-show and took over the show the engine was running; the picture never stopped. The note says what was kept and what was dropped.",
+            action: "Check the dropped automation and the rundown; nothing else is needed. It clears when this show ends."),
         "engine.unidentified": Entry(
             title: "ENGINE SHOW NOT IDENTIFIED",
             meaning: "After a restart, the control plane cannot identify the show the engine is running; it has not touched it, and the picture stays.",

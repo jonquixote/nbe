@@ -66,6 +66,11 @@ export const ALERT = {
   // engine holds (restarted with no usable journal, or another package) holds
   // its resync, which would stop that show, until the operator takes control.
   engineUnidentified: { id: "engine.unidentified", auditEvent: "engine.unidentified" },
+  // Review4 7b-ii: the operator's banner after an adoption, "the control plane
+  // restarted; adopted; N automation actions dropped". Info: nothing is wrong
+  // now, but what happened at the restart is the operator's to know. The
+  // adopted show's end (show.stop, show.load, show.unload) clears it.
+  controlPlaneRestarted: { id: "controlPlane.restarted", auditEvent: "controlPlane.restarted" },
 } as const;
 
 /** How long a ticker change has to land before the engine's count is read
@@ -280,8 +285,27 @@ export class OperatorSignals {
     );
   }
 
+  /**
+   * Review4 7b-ii: the banner after a restarted control plane adopted the
+   * engine's running show: what was kept, what was corrected, what was lost.
+   */
+  restarted(adopted: { show: string; automationDropped: number | null; correctedToDone: string[]; recordMismatch: boolean; recording: boolean }): void {
+    const parts = [`the control plane restarted and adopted the running show (${adopted.show}); preflight was not re-run`];
+    const n = adopted.automationDropped ?? 0;
+    if (n > 0) parts.push(`${n} automation action${n === 1 ? "" : "s"} queued at the restart ${n === 1 ? "was" : "were"} dropped, not fired late`);
+    const k = adopted.correctedToDone.length;
+    if (k > 0) parts.push(`${k} rundown item${k === 1 ? "" : "s"} marked DONE (${adopted.correctedToDone.join(", ")})`);
+    if (adopted.recordMismatch) {
+      parts.push(`the journal and the engine disagreed on the recording: the engine's (${adopted.recording ? "recording" : "not recording"}) is kept`);
+    }
+    this.i.lane.raise(ALERT.controlPlaneRestarted, "info", parts.join("; "));
+  }
+
   /** An output command (or `show.stop`) was accepted at `version`. */
   onAccepted(command: string, version: number): void {
+    if (command === "show.stop" || command === "show.load" || command === "show.unload") {
+      this.i.lane.clear(ALERT.controlPlaneRestarted.id, `cleared by ${command} (stateVersion ${version})`);
+    }
     if (command.startsWith("ticker.") || command === "show.load" || command === "show.unload") {
       this.onTickerChanged();
     }
