@@ -18,6 +18,30 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.9 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28 ("decide, implement, validate and merge without
+asking, and don't create approval checkpoints"); ratified by its merge.** It
+writes down behaviour already merged on main, so that the SPEC describes the
+tree: each row names the PR that built it. The drafted texts are the ones
+those PRs carried in their bodies (and `review4/spec-drafts.md` in the
+sprint record), applied as drafted unless the row says otherwise.
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **Ticker limits and expiry.** At most 30 items of at most 120 characters; an override over either limit, or a `prepend`/`append` whose result would pass 30, is refused `E_BAD_PAYLOAD` naming the limit, nothing truncated. `ttlSec` counts from acceptance; the control plane removes an expired item within a second and sends the render node the resolved queue, and an expiry restarts `ticker.notOnAir`'s settle window as a ticker command does. | §16.7 | #128 (`07ce622`) |
+| 2 | **Disk-full does not stop control.** An on-air command whose audit row cannot be written takes effect with its normal reply and raises `audit.sinkFailed`; a state journal that cannot be written raises the same alert with its own reason; a new connection whose auth row cannot be written is refused HTTP 503 `E_DISK`. | §10.1.2, §16 | #129 (`76abcf3`) |
+| 3 | **`engineHello`.** The render node's first frame on every connection says what it holds; a new `engineInstanceId` is audited `engine.restarted`. | §5.9.3 | #130 (`962c7e5`) |
+| 4 | **Adoption after a control-plane restart.** A control plane that restored a journal waits (at most 2 s) for the connection's `engineHello`, and adopts a running show when the render node reports `showRunning`, the journal's `showState` was `RUNNING`, and the package path and load generation match: on-air facts from the hello, the rundown from the journal, `stateVersion` = max(journal, hello's `lastAppliedStateVersion`) + 1; otherwise it resyncs as for any connection and audits `controlPlane.notAdopted`. A saved journal alone never starts a show. The journal also carries the load generation and the count of queued or timed automation actions, which an adoption reports as dropped (never fired late). Audit events `controlPlane.adopted` and `controlPlane.notAdopted`. **Not applied from the draft:** a new `E_RECOVERING` code. Commands refused while waiting for the hello carry `E_FORBIDDEN_STATE` with `details.reason: "recovering"`, as built. **Not built (the recovery cases left open):** case C's refusal and the operator's banner (review4 7b-ii), and case E's re-issue of record, stream and guest starts after an engine restart (7c). | §5.9.4, §5.1, §10.7 | #131 (`137b7fc`) |
+| 5 | **`ticker.notOnAir`** (critical): 2 s after the ticker last changed (a `ticker.*` command, `show.load`, `show.unload`, or a TTL expiry) and after the render node registered, a fresh report's `overlayState.tickerOverrideItems` differs from the control plane's count. | §10.1.2 | #133 (`3199aa9`), #128 |
+| 6 | **The render node reports its take, and a take that is not running while believed is an alert.** `recordTake { state, reason }` on every tick: `"recording"`, `"failed"` (the take's record thread ended without a stop, `reason` saying why) or the `"none"` stub. `record.failed` (critical): believed recording, no record command or `show.stop` pending, and a fresh report after the record anchor reads `"failed"` or `"none"` (an engine restart ends a take). Replaces "the render node reports no record state". | §10.1, §10.1.2 | #191 (`7040e9a`), #195 |
+| 7 | **`E_DISK`'s meaning** covers every failed disk write the control plane or the render node reports: a recording or media file, the control plane's audit log or state journal (row 2's 503). | §16 | #129 |
+| 8 | **A take's audio and video cover the same span of the show.** Video PTS are the take's master frames less its first, so a skipped frame is a held frame; the take's audio is placed on the master clock as the driver pushed it and cut to `[first video frame, last video frame + 1)`, padded with silence where the tap fell short. | §9.3 | #187 (`049c8c1`), #190 (`dabfa6f`) |
+
+No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.9. Rows 3
+and 6 are wire additions (a new frame kind; a new tick field, always emitted
+with its stub), each mirrored by `nbe-protocol`'s mirror test. No error code
+is added (row 4).
+
 v0.4.8 — **drafted in the recall fix's PR (branch `prompt13-recall-fix`,
 2026-10-03); ratified by the user's merge of that PR** (the user's word of
 2026-10-03: the row change rides as v0.4.8 row 1, ratified by the merge). Until
@@ -1139,6 +1163,7 @@ Accepted only from `render`-role sessions; from any other role they MUST be igno
 
 | `kind` | Shape | Meaning |
 |---|---|---|
+| `engineHello` | `{ v, kind, engineInstanceId, startedAtMs, showRunning, masterFrame, lastAppliedStateVersion, package, viewItem, viewItemStartFrame, previewItem, visibleOverlays, fallbackActive, recording, streamTransportState }`. `package` is `{ path, loadStateVersion }` or `null`; a fact the render node does not hold is `null`. | **New in v0.4.9 row 3.** The render node's FIRST frame on every connection, before any other: what it holds, so the control plane can tell a restarted render node (a new `engineInstanceId`, audited `engine.restarted`) from a reconnect of the same one, and so a restarted control plane can adopt a running show (§5.9.4). |
 | `engineTelemetry` | Section 10.1 fields the engine owns (Section 10.1.1) | Reported at 1 Hz. |
 | `appliedStateVersion` | `{ v, kind, stateVersion }` | The most recent directive `stateVersion` the engine has applied. |
 | `itemEvent` | `{ v, kind, itemRef, event, detail? }` where `event` is `end` \| `decodeError` \| `deviceLoss` \| `missing` | Drives the engine-observed rows of the Section 17.3 table: `PLAYING → DONE`, and the transitions into `MISSING`/`ERROR`. |
@@ -1187,6 +1212,21 @@ A bounded, fire-and-forget channel plus a reconnecting engine means directives i
    - **A send that is refused** (backpressure, or a connection already gone) MUST NOT close the session. The next directive meets the same gap, and its request retries.
    - Each failure is its own audit record. ~~Under a persistent failure the render node's reconnect backoff paces them, never the directive rate.~~ Under a persistent failure, the render node's reconnect backoff paces the records once the connection is torn down. Before that, every request already in flight at the teardown adds its own record, so the extra records are bounded by the requests already in flight. (In a probe, three requests in flight left three records on one connection.) *(§2c, the fresh pass on PR #45: "never the directive rate" overstated.)*
    - A send on a connection that is already closing reports as sent, so that resync is dropped unaudited. Nothing is lost, because the close that follows tears the session down and rule 1's handshake on the reconnect resyncs it. But nothing is recorded either. *(The fresh pass on PR #45.)*
+
+**A restarted control plane** (v0.4.9 row 4; one that restored a journal,
+§5.1) sends `show.resync` on a render connection only after that connection's
+`engineHello` (§5.9.3), or after 2 s without one, and holds no registration
+for it until then. On the first hello after the restart it **adopts** when the
+render node reports `showRunning`, the journal's `showState` was `RUNNING`,
+and the package path and load generation equal the journal's: what is on air
+comes from the hello, the rundown from the journal; a `PLAYING` item not on
+the View becomes `DONE`; `stateVersion` = max(the journal's, the hello's
+`lastAppliedStateVersion`) + 1; the show is `RUNNING`; and its resync carries
+the hello's facts and no `viewItemEnd`. Otherwise it resyncs as it would any
+connection, and audits `controlPlane.notAdopted` with the reason. A saved
+journal alone never starts a show. While it waits (at most 15 s), a command
+other than `system.status`, `show.getState` and a telemetry subscription is
+refused `E_FORBIDDEN_STATE` with `details.reason: "recovering"`.
 
 ### 5.9.5 Quiescence acknowledgement
 
@@ -2228,6 +2268,15 @@ Recording MUST include:
 
 Markers (Section 10.6) SHOULD be written as recording chapters where the container supports them.
 
+**A take's two tracks cover the same span** (v0.4.9 row 8). Video
+presentation times are the take's master frames less its first, so a frame the
+take skipped is a held frame, never a shift of everything after it. The audio
+the master bus pushes is placed on the master clock as it was pushed, and the
+take's audio is cut to `[first video frame, last video frame + 1)` in master
+audio frames, padded with silence where the tap fell short; the tap stays
+attached through the stop's finish. A file's audio is then its video's length
+plus the AAC encoder's rounding to whole packets.
+
 ## 9.4 Streaming
 
 Default MVP stream:
@@ -2590,6 +2639,16 @@ transport state, so an engine that has never streamed stays distinguishable
 from one whose transport closed. After a stream stops the field reads
 `"closed"`.
 
+`recordTake` (v0.4.9 row 6) carries the render node's take:
+`{ "state": "recording" | "failed" | "none", "reason": string | null }`.
+`"failed"` means a take was started and not stopped, but its record thread has
+ended on its own (a write to the file failed, or the thread panicked): nothing
+more is recorded, the file keeps what was written, and `reason` says why. It
+reads `"failed"` until a `record.stop` or `show.stop` ends the take. `"none"`
+is the §10.1.1 stub with no take running, never a take state. Before this field
+the render node reported no record state, and a take that died mid-show was
+invisible until its `record.stop`.
+
 It is a separate field from `streamState`, deliberately, and the split is
 §9.5's survival shape. `streamState` is the control plane's, *as commanded*: it
 stays `"live"` through a redial, because local playout — and the operator's
@@ -2652,10 +2711,12 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 | `stream.divergence` | (a) below: a standing contradiction between belief and report | `critical` | `stream.divergence` |
 | `outputs.held` | `show.stop` was not acknowledged, and its outputs are held (§5.9.5) | `warning` | `show.stopHeld` |
 | `engine.notReporting` | no engine report within §10.1.1's freshness threshold. Measured from the latest of the last report, the last render registration and the control plane's start, once a render node has registered or while the show runs | `critical` | `engine.notReporting` |
-| `audit.sinkFailed` | the audit sink cannot be written (R18's fallback, below) | `critical` | none |
+| `audit.sinkFailed` | the audit sink, or the state journal, cannot be written (R18's fallback, below; v0.4.9 row 2) | `critical` | none |
 | `audio.device` | a show is loaded and no output device carries program audio: the tick's `audioDevice` reads `absent` or `lost`. A configured null sink is not a fault. It never refuses a load (v0.4.8 row 15; the device-audio record's D6) | `warning` (`absent`), `critical` (`lost`) | `audio.device` |
 | `audio.underrun` | with a device open, the engine's underrun count rose in 3 consecutive fresh reports (§8.10's sustained underruns); it clears after 10 quiet ones (v0.4.8 row 15) | `warning` | `audio.underrun` |
 | `item.failed` | The item on the View failed mid-play after the render node's retries, and the View holds its last frame: an `itemEvent decodeError` whose `detail` begins `held:`. Cleared when a take or a cut moves the View on, or the item is reset. | `critical` | `item.failed` |
+| `ticker.notOnAir` | 2 s after the ticker last changed (a `ticker.*` command, `show.load`, `show.unload` or a TTL expiry) and after the render node registered, a fresh engine report's `overlayState.tickerOverrideItems` differs from the control plane's ticker count: a ticker change the render node did not apply. The reason names both counts. Cleared when they agree, or when the engine stops reporting (v0.4.9 row 5) | `critical` | `ticker.notOnAir` |
+| `record.failed` | Believed `recording`, no record command or `show.stop` pending, and a fresh report received after the record anchor (the record command's acknowledgement or expiry, a resync's acknowledgement, the registration, `show.stop`'s acknowledgement or hold) reads `recordTake.state` `failed` (the take's record thread ended without a stop; the reason quotes the render node's) or `none` (no take at all: an engine restart). Nothing more is being recorded. Cleared when the take is stopped, or a fresh report reads the take recording (v0.4.9 row 6) | `critical` | `record.failed` |
 
 **Two mechanisms, one question each.** Both are needed:
 - **(b) Command confirmation.** `stream.start`, `stream.stop`, `record.start` and `record.stop`, when given no exact acknowledgement within §5.9.5's window (2000 ms), raise `command.unacknowledged`. A refused or skipped directive is never acknowledged: the render node acknowledges only a directive it applied. So the absence is the signal. `show.stop` is excluded, because it has its own exact wait and `outputs.held` is its surface.
@@ -2666,7 +2727,7 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
   - The anchor is the latest of two moments: when the engine is known to have processed the latest stream command or `show.stop`, and the connect or resync acknowledgement.
   - "Fresh" is §10.1.1's freshness threshold. "Postdates" means the report was received after the anchor.
   - This is the postdate witness of v0.4.8's R16 fix, held in-process: the control plane knows each report's receipt time and compares it directly.
-  - The comparison covers the stream only: the render node reports no record state.
+  - ~~The comparison covers the stream only: the render node reports no record state.~~ *(§2c, v0.4.9 row 6: the render node reports its take, `recordTake`, and `record.failed` is the record's contradiction.)*
 
 **The mapping** (CP belief × engine report × freshness × pending command):
 
@@ -2707,7 +2768,14 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 - the snapshot's `health: { auditSinkOk: false }`;
 - one line on the control plane's stderr per failure episode.
 
-It clears when the sink accepts a write. What the control plane does after a failed write is unchanged here: that is R18's queued question.
+It clears when the sink accepts a write. ~~What the control plane does after a failed write is unchanged here: that is R18's queued question.~~ *(§2c, v0.4.9 row 2.)*
+
+**After a failed write** (R18's question; the user's ruling of 2026-11-16 23:45; v0.4.9 row 2):
+- An on-air command (`view.take`, `view.cut`, `show.stop`, `item.stop`, `record.start`, `record.stop`, `stream.start`, `stream.stop`, every `guest.*`) whose audit row cannot be written is not rejected. It takes effect, its reply is the one it would have had, and `audit.sinkFailed` raises.
+- A row with no command behind it (an engine item event, a belief correction, a resync, an automation outcome) is lost the same way, and never stops what it records.
+- Any other command's reply is `E_ENGINE`.
+- A new connection whose auth row cannot be written is refused with HTTP 503 and `E_DISK`; one already open is unaffected.
+- A state journal (§5.1) that cannot be written raises `audit.sinkFailed` with its own `reason`; `health.auditSinkOk` stays the audit sink's.
 
 **Additive.** The lane changes no belief field, no enum value, and no automation rule's input. `alerts` and `health` are not rule-nameable (§13.2). Promoting `held` into `streamState` ~~and `recordState`~~, and correcting a belief from a fresher report, are a later row's. *(§2c, v0.4.8 row 9: `held` joins `streamState`'s domain (§13.2), and `recordState`'s stays `idle` and `recording`, by the user's scope ruling of 2026-10-16; §13.2's exception 2 names its owner. Producing `held`, and the correction, remain spine B's implementing work.)* *(v0.4.8 row 10: the order the correction follows is §10.1.3's, below.)*
 
@@ -3938,7 +4006,7 @@ Error code registry (normative):
 | `E_NETWORK` | Generic network failure. |
 | `E_PREFLIGHT_FAILED` | Preflight did not pass. |
 | `E_AUDIO` | Audio graph or device failure. |
-| `E_DISK` | Recording or media disk failure. |
+| `E_DISK` | A disk write failed: a recording or media file, or the control plane's own audit log or state journal. A new connection whose successful-auth audit row cannot be written is refused with HTTP 503 and this code (§10.1.2, after a failed write; v0.4.9 rows 2 and 7). ~~Recording or media disk failure.~~ |
 | `E_TIMEOUT` | Operation timed out (reserved for async network boundaries: TURN vending, WHIP handshake, RSS fetches). |
 | `E_TURN` | TURN credential vending failure. |
 | `E_ICE` | WebRTC ICE failure. |
@@ -4164,12 +4232,13 @@ directive`, `overlay.show on an on-air overlay is an idempotent noop`, and
 {
   "items": {
     "type": "array",
+    "maxItems": 30,
     "items": {
       "type": "object",
       "additionalProperties": false,
       "required": ["text"],
       "properties": {
-        "text": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 120 },
         "language": { "type": "string" },
         "priority": { "type": "integer", "minimum": 0, "maximum": 100000, "default": 0 },
         "ttlSec": { "type": "integer", "minimum": 1 }
@@ -4179,6 +4248,14 @@ directive`, `overlay.show on an on-air overlay is an idempotent noop`, and
   "mode": { "enum": ["replace", "prepend", "append"], "default": "replace" }
 }
 ```
+
+**Limits and expiry** (v0.4.9 row 1). The ticker holds at most 30 items of at
+most 120 characters each. An override over either limit, or a `prepend` or
+`append` whose resulting queue would pass 30 items, is refused with
+`E_BAD_PAYLOAD` naming the limit; nothing is truncated. An item's `ttlSec`
+counts from the command's acceptance; the control plane removes an expired
+item within a second and sends the render node the resolved queue. The render
+node never receives a TTL.
 
 Ticker ordering rules:
 
