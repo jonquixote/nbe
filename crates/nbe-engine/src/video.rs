@@ -241,7 +241,7 @@ pub fn load_video_asset(
     gop_frames: u32,
 ) -> Result<VideoAsset, DecodeError> {
     if FORCE_TRANSIENT_DECODE_FAILURES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
         .is_ok()
     {
         return Err(DecodeError::Failed {
