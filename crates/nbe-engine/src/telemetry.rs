@@ -116,6 +116,21 @@ fn measure(shared: Weak<(Mutex<SpaceSlot>, Condvar)>, probe: fn(&Path) -> f64) {
     }
 }
 
+/// `busPeakDbfs` for one tick: the loudest of every meter window that closed
+/// since the previous tick, so no window is lost when two close between ticks
+/// (SPEC §10.1's note: "a transient shorter than a telemetry interval still
+/// reaches the operator"). With none closed since, the latest window again,
+/// so a meter holds rather than blanks while the audio thread is behind.
+/// Takes what it reads: the tick is the one consumer of the unread windows.
+pub fn bus_peaks_for_tick(state: &EngineState) -> std::collections::BTreeMap<String, f64> {
+    let unread = std::mem::take(&mut *state.bus_peaks_unread.lock().unwrap());
+    if unread.is_empty() {
+        state.bus_peaks.lock().unwrap().clone()
+    } else {
+        unread
+    }
+}
+
 /// The take's line: `"none"` with no take running, `"failed"` with the reason
 /// once its record thread has ended without a stop, else `"recording"`.
 ///
@@ -250,9 +265,9 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
                 .audio_drift_ms_bits
                 .load(std::sync::atomic::Ordering::SeqCst),
         ),
-        // A snapshot: the driver closes each meter window on its own boundary,
-        // so reading here neither ends a window nor races another reader.
-        bus_peak_dbfs: state.bus_peaks.lock().unwrap().clone(),
+        // Every window closed since the last tick, merged by max; the latest
+        // window again when none has closed since (`bus_peaks_for_tick`).
+        bus_peak_dbfs: bus_peaks_for_tick(state),
         // ZERO-COPY Phase 2: which path the record tap took, and why. Absent
         // until a take selects one — an operator reading this can tell a
         // machine that chose zero-copy from one that fell back to the §0.1

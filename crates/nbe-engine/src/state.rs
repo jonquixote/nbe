@@ -151,8 +151,16 @@ pub struct EngineState {
     /// Audio-to-master drift (SPEC §8.9), as `f64::to_bits` so the audio
     /// thread can publish it without a lock.
     pub audio_drift_ms_bits: AtomicU64,
-    /// Per-bus peak levels for telemetry (SPEC §10.1).
+    /// Per-bus peak levels (SPEC §10.1): the latest closed meter window.
     pub bus_peaks: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// Every meter window closed since the telemetry tick last read, merged
+    /// by max. The tick takes it (`telemetry::bus_peaks_for_tick`), so a
+    /// window that closes and is replaced between two ticks still reaches the
+    /// operator: the windows close on the audio-block count, the ticks on the
+    /// wall clock, and under load (CI's null sink catching up) two windows
+    /// could close between ticks and the first, a 0.4 s soundboard stab, was
+    /// never read.
+    pub bus_peaks_unread: Mutex<std::collections::BTreeMap<String, f64>>,
     /// The tick's device line (the device-audio design record, D5 and D6),
     /// written by the audio driver: open, null, absent or lost.
     pub audio_device: Mutex<nbe_protocol::AudioDeviceLine>,
@@ -375,6 +383,7 @@ impl EngineState {
             unattributable_decode_failures_total: AtomicU64::new(0),
             audio_drift_ms_bits: AtomicU64::new(0),
             bus_peaks: Mutex::new(std::collections::BTreeMap::new()),
+            bus_peaks_unread: Mutex::new(std::collections::BTreeMap::new()),
             audio_device: Mutex::new(nbe_protocol::AudioDeviceLine::none()),
             audio_limiter_ceiling: Mutex::new(nbe_protocol::LimiterCeilingLine {
                 dbtp: crate::limiter::DEFAULT_CEILING_DBTP,
