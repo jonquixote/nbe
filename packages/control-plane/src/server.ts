@@ -493,6 +493,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       },
       before,
     );
+    signals.restarted({
+      show: `${pkg.showId} at ${hello.package!.path}`,
+      automationDropped: typeof body["automationBacklog"] === "number" ? body["automationBacklog"] : null,
+      correctedToDone: out.correctedToDone,
+      recordMismatch: out.recordMismatch,
+      recording: hello.recording,
+    });
     return { kind: "adopt" };
   }
 

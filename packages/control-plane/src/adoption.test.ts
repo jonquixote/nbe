@@ -257,6 +257,24 @@ test("B: a matching running engine is adopted; its resync changes nothing on air
   // engine's clock: 300 frames in, 600 of 900 left.
   const end = r.state.viewItemEnd();
   assert.ok(end !== undefined && Math.abs(end.remainingFrames - 600) <= 3, `remaining ${JSON.stringify(end)}`);
+
+  // 7b-ii: the operator's banner says what happened at the restart.
+  const banner = r.state.alerts.find((a) => a.id === "controlPlane.restarted");
+  assert.ok(banner, "the restart banner is raised");
+  assert.equal(banner.severity, "info");
+  assert.match(banner.reason, /restarted and adopted the running show .*preflight was not re-run/);
+  assert.match(banner.reason, /2 automation actions queued at the restart were dropped, not fired late/);
+  assert.match(banner.reason, /1 rundown item marked DONE \(A2\)/);
+  assert.doesNotMatch(banner.reason, /disagreed on the recording/, "the engine and the journal agreed");
+  assert.equal(event(r, "controlPlane.restarted").length, 1, "the banner's raise is audited");
+  // The adopted show's end clears it.
+  const admin = await r.admin();
+  const stopping = send(admin, "show.stop");
+  assert.ok(await until(() => e.directives.some((x) => x.command === "show.stop")));
+  const stop = e.directives.find((x) => x.command === "show.stop")!;
+  e.ws.send(JSON.stringify({ v: PROTOCOL_VERSION, kind: "appliedStateVersion", stateVersion: stop.stateVersion }));
+  assert.equal((await stopping).status, "ok");
+  assert.ok(await until(() => !r.state.alerts.some((a) => a.id === "controlPlane.restarted")), "show.stop clears the banner");
 });
 
 test("while the journal says a show was running, commands wait for the hello; reads do not", async (t) => {
