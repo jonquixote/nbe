@@ -630,7 +630,19 @@ impl AudioDriver {
         // correct, so `bus_peaks` can have more than one consumer.
         self.window_blocks += 1;
         if self.window_blocks >= self.blocks_per_window {
-            *self.state.bus_peaks.lock().unwrap() = std::mem::take(&mut self.window_peaks);
+            let window = std::mem::take(&mut self.window_peaks);
+            // Held for the tick until it reads it, merged with any other
+            // window that closes first (`EngineState::bus_peaks_unread`).
+            {
+                let mut unread = self.state.bus_peaks_unread.lock().unwrap();
+                for (bus, peak) in &window {
+                    let slot = unread.entry(bus.clone()).or_insert(f64::NEG_INFINITY);
+                    if *peak > *slot {
+                        *slot = *peak;
+                    }
+                }
+            }
+            *self.state.bus_peaks.lock().unwrap() = window;
             self.window_blocks = 0;
         }
     }
