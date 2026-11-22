@@ -1949,9 +1949,9 @@ jobs:
           ran=$(echo "$sum" | awk '{print $2}')
           skipped=$(echo "$sum" | grep -oE "[0-9]+ tests? skipped" | awk '{print $1}'); skipped=${skipped:-0}
           exercised=$((ran - skipped))
-          echo "shell unit: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=42 exercised>=36)"
-          if [ "$ran" -lt 42 ]; then echo "FAIL shell unit: ran $ran < 42"; exit 1; fi
-          if [ "$exercised" -lt 36 ]; then echo "FAIL shell unit: exercised $exercised < 36"; exit 1; fi
+          echo "shell unit: ran=$ran skipped=$skipped exercised=$exercised (floors ran>=43 exercised>=37)"
+          if [ "$ran" -lt 43 ]; then echo "FAIL shell unit: ran $ran < 43"; exit 1; fi
+          if [ "$exercised" -lt 37 ]; then echo "FAIL shell unit: exercised $exercised < 37"; exit 1; fi
           live=$(bash scripts/shell-e2e.sh 2>&1) && rc=0 || rc=$?
           echo "$live" | grep -E "Test Case|Executed|error:" | tail -12 || true
           if [ "$rc" -ne 0 ]; then echo "$live"; echo "FAIL the shell's end to end: exited $rc"; exit "$rc"; fi
