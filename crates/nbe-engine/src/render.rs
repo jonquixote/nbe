@@ -48,6 +48,8 @@ const UV_FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 const UNIFORM_STRIDE: u64 = 256;
 /// Maximum layers composited in one frame.
 const MAX_LAYERS: u64 = 64;
+/// The frame's layer uniforms laid out at `UNIFORM_STRIDE` (`render_bus`).
+const UNIFORM_SCRATCH_BYTES: usize = (UNIFORM_STRIDE * MAX_LAYERS) as usize;
 
 /// One bus's contribution to a frame: what to draw, how opaque, and the
 /// master frame its item went on air (SPEC §12.1's `t0`).
@@ -1591,6 +1593,30 @@ impl RenderLoop {
         let t = Instant::now();
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         split.views += t.elapsed();
+        // Every layer's uniforms in ONE `queue.write_buffer` for the bus, not
+        // one per layer. Each call takes the device's snatch lock and the
+        // queue's pending-writes lock and stages its own copy; on CI every GPU
+        // wait whose phases were split sat in those per-layer calls (#183's
+        // `uniforms`: 21.9 of 22.1 ms, 28.5 of 28.8, 29.7 of 29.9). Ordering
+        // is unchanged: the write lands before this bus's submit (below), and
+        // the other bus writes only after it, as before. Slot i stays at
+        // `UNIFORM_STRIDE * i`, which the bind groups below point at.
+        let layers = draws.len().min(MAX_LAYERS as usize);
+        if layers > 0 {
+            let t = Instant::now();
+            // On the stack: 16 KiB at MAX_LAYERS, no heap allocation per frame.
+            let mut scratch = [0u8; UNIFORM_SCRATCH_BYTES];
+            let stride = UNIFORM_STRIDE as usize;
+            for (i, (_, uniform)) in draws.iter().take(layers).enumerate() {
+                let bytes = bytemuck::bytes_of(uniform);
+                scratch[i * stride..i * stride + bytes.len()].copy_from_slice(bytes);
+            }
+            let used = (layers - 1) * stride + std::mem::size_of::<LayerUniform>();
+            self.gpu
+                .queue
+                .write_buffer(&self.uniforms, 0, &scratch[..used]);
+            split.uniforms += t.elapsed();
+        }
         {
             let t = Instant::now();
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1615,13 +1641,8 @@ impl RenderLoop {
                 _ => &self.pipeline,
             });
             split.pass = t.elapsed();
-            for (i, (tex, uniform)) in draws.iter().take(MAX_LAYERS as usize).enumerate() {
+            for (i, (tex, _)) in draws.iter().take(MAX_LAYERS as usize).enumerate() {
                 let offset = UNIFORM_STRIDE * i as u64;
-                let t = Instant::now();
-                self.gpu
-                    .queue
-                    .write_buffer(&self.uniforms, offset, bytemuck::bytes_of(uniform));
-                split.uniforms += t.elapsed();
                 let t = Instant::now();
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 split.views += t.elapsed();
