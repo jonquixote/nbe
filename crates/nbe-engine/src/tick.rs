@@ -382,6 +382,20 @@ impl Cadence {
                 preview_submit_ms = ms(report.render_phases.preview.submit),
                 view_build_ms = ms(report.render_phases.view.build),
                 view_encode_ms = ms(report.render_phases.view.encode),
+                // Step 11 (log-only): the View's encode by wgpu call, and
+                // what no part holds.
+                view_encode_encoder_ms = ms(report.render_phases.view.split.encoder),
+                view_encode_views_ms = ms(report.render_phases.view.split.views),
+                view_encode_pass_ms = ms(report.render_phases.view.split.pass),
+                view_encode_uniforms_ms = ms(report.render_phases.view.split.uniforms),
+                view_encode_binds_ms = ms(report.render_phases.view.split.binds),
+                view_encode_draws_ms = ms(report.render_phases.view.split.draws),
+                view_encode_end_ms = ms(report.render_phases.view.split.end),
+                view_encode_rest_ms = ms(report
+                    .render_phases
+                    .view
+                    .encode
+                    .saturating_sub(report.render_phases.view.split.timed())),
                 view_finish_ms = ms(report.render_phases.view.finish),
                 view_submit_ms = ms(report.render_phases.view.submit),
                 view_cpu_ms = ms(report.render_phases.cpu.view),
@@ -1112,12 +1126,26 @@ mod tests {
                             encode: Duration::from_micros(22),
                             finish: Duration::from_micros(33),
                             submit: Duration::from_micros(44),
+                            ..Default::default()
                         },
                         view: BusPhases {
                             build: Duration::from_micros(300),
                             encode: Duration::from_micros(500),
                             finish: Duration::from_micros(100),
                             submit: Duration::from_micros(32_500),
+                            // Step 11: figures unlike every other, summing to
+                            // 487 of the encode's 500, so a field printed
+                            // from the wrong part, or a rest from the wrong
+                            // sum, fails.
+                            split: crate::render::EncodeSplit {
+                                encoder: Duration::from_micros(1),
+                                views: Duration::from_micros(19),
+                                pass: Duration::from_micros(3),
+                                uniforms: Duration::from_micros(27),
+                                binds: Duration::from_micros(410),
+                                draws: Duration::from_micros(13),
+                                end: Duration::from_micros(14),
+                            },
                         },
                         cpu: PhaseCpu {
                             read_ahead: Duration::from_micros(200),
@@ -1180,6 +1208,14 @@ mod tests {
             ("preview_encode_ms", 0.022),
             ("preview_finish_ms", 0.033),
             ("preview_submit_ms", 0.044),
+            ("view_encode_encoder_ms", 0.001),
+            ("view_encode_views_ms", 0.019),
+            ("view_encode_pass_ms", 0.003),
+            ("view_encode_uniforms_ms", 0.027),
+            ("view_encode_binds_ms", 0.41),
+            ("view_encode_draws_ms", 0.013),
+            ("view_encode_end_ms", 0.014),
+            ("view_encode_rest_ms", 0.013),
         ] {
             assert!((value(name) - want).abs() < 1e-6, "{name}: {line}");
         }
