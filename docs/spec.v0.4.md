@@ -36,6 +36,7 @@ sprint record), applied as drafted unless the row says otherwise.
 | 6 | **The render node reports its take, and a take that is not running while believed is an alert.** `recordTake { state, reason }` on every tick: `"recording"`, `"failed"` (the take's record thread ended without a stop, `reason` saying why) or the `"none"` stub. `record.failed` (critical): believed recording, no record command or `show.stop` pending, and a fresh report after the record anchor reads `"failed"` or `"none"` (an engine restart ends a take). Replaces "the render node reports no record state". | §10.1, §10.1.2 | #191 (`7040e9a`), #195 |
 | 7 | **`E_DISK`'s meaning** covers every failed disk write the control plane or the render node reports: a recording or media file, the control plane's audit log or state journal (row 2's 503). | §16 | #129 |
 | 8 | **A take's audio and video cover the same span of the show.** Video PTS are the take's master frames less its first, so a skipped frame is a held frame; the take's audio is placed on the master clock as the driver pushed it and cut to `[first video frame, last video frame + 1)`, padded with silence where the tap fell short. | §9.3 | #187 (`049c8c1`), #190 (`dabfa6f`) |
+| 9 | **Every closed meter window reaches a tick.** Each window the engine closes is also merged, by max, into what the next tick carries, so a window that closes and is replaced before a tick reads it (the window and the tick slide under load) still reaches the operator; a tick with no window closed since carries the latest again. Observed lost on CI before: a 0.4 s stab peaked at -20.7 dBFS on the bus and every tick read -120. | §10.1 | #193 (`f093f1e`) |
 
 No schema change: `schemas/manifest.v0.4.json` is untouched by v0.4.9. Rows 3
 and 6 are wire additions (a new frame kind; a new tick field, always emitted
@@ -2664,11 +2665,14 @@ window**, not an instantaneous sample. The engine's audio graph meters every
 block (~33 ms) and holds the loudest value until the window closes, so a
 transient shorter than a telemetry interval still reaches the operator — it did
 not before, and a 0.4 s soundboard stab was reported about 3% of the time. Two
-consequences for anyone reading these values: a peak may be up to one window old
+consequences for anyone reading these values *(v0.4.9 row 9: the second is amended)*: a peak may be up to one window old
 by the time a tick carries it, and the window is closed on the engine's own
 audio-block count rather than on the tick's wall clock, so the two can slide
-relative to each other under load. The field answers "did this bus peak, and how
-hot" — it is not a source of timing.
+relative to each other under load. ~~(so a window could close and be replaced
+before any tick read it)~~ When two windows close between ticks, the tick
+carries the loudest of both, so no window's peak is lost; a tick with no window
+closed since carries the latest again (v0.4.9 row 9). The field answers "did
+this bus peak, and how hot" — it is not a source of timing.
 
 ### 10.1.1 Field ownership and the merge (normative, new in v0.3.2)
 
