@@ -232,10 +232,21 @@ export class OperatorSignals {
     this.streamAnchor = Math.max(this.streamAnchor, now);
   }
 
+  /**
+   * The control plane changed the ticker on its own authority (a TTL expiry,
+   * review4 step 2): `ticker.notOnAir`'s settle window starts again, as for a
+   * ticker command. The expiry sends its directive straight to the bridge, not
+   * through the command path's `onAccepted`, so without this every expiry
+   * compared the engine's count from before the directive with the new one.
+   */
+  onTickerChanged(): void {
+    this.tickerChangedAt = this.i.now();
+  }
+
   /** An output command (or `show.stop`) was accepted at `version`. */
   onAccepted(command: string, version: number): void {
     if (command.startsWith("ticker.") || command === "show.load" || command === "show.unload") {
-      this.tickerChangedAt = this.i.now();
+      this.onTickerChanged();
     }
     // §10.1.2's clearing rule for `outputs.held`, path (iii): the show's
     // lifecycle ends an unresolved hold, the cause named in the clear row.

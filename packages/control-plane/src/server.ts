@@ -306,6 +306,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       payload: { items: tickerDirectiveItems(state.tickerItems), mode: "replace" },
       stateVersion: sv,
     });
+    // The engine applies this shortly: ticker.notOnAir waits for it to settle,
+    // as it does after a ticker command (the command path's onAccepted).
+    signals.onTickerChanged();
     try {
       audit.record({
         kind: "command",
