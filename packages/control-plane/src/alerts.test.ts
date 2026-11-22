@@ -738,16 +738,44 @@ test("record.failed: negative: nothing raises while a record command is pending,
   r.signals.onAccepted("record.start", 7);
   r.signals.evaluate();
   assert.deepEqual(r.ids(), [], "a pending record command is not compared");
-  // Applied: compared from the next report on.
-  r.signals.onApplied(7, false);
-  await sleep(2);
+  // A report received before the acknowledgement decides nothing, whatever
+  // it says (the engine had not applied the start when it wrote it).
   r.reportWith({ recordTake: take("none") });
+  r.signals.onApplied(7, false);
   r.signals.evaluate();
-  assert.deepEqual(r.ids(), [], "none beside recording is not a failure");
+  assert.deepEqual(r.ids(), [], "a report from before the start's acknowledgement decides nothing");
+  // Applied: compared from the next report on.
+  await sleep(2);
+  r.reportWith({ recordTake: take("recording") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [], "a running take raises nothing");
   await sleep(2);
   r.reportWith({ recordTake: take("failed", "the record thread panicked; the file keeps what was written before") });
   r.signals.evaluate();
   assert.deepEqual(r.ids(), [ALERT.recordFailed.id]);
+  r.signals.close();
+});
+
+test("record.failed: after an engine restart the take is gone: no take running beside a believed take raises; the take running again clears it", async () => {
+  const r = rig();
+  r.state.recordState = "recording";
+  // The engine restarted mid-take: the control plane resyncs it (a resync
+  // carries no output state), and the new engine reports no take.
+  r.signals.onApplied(12, true);
+  await sleep(2);
+  r.reportWith({ recordTake: take("none") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), [ALERT.recordFailed.id]);
+  assert.equal(r.state.alerts[0]!.severity, "critical");
+  assert.match(r.state.alerts[0]!.reason, /no take running while the control plane believes it is recording/);
+  // The operator starts a new take: while pending, nothing is compared; once
+  // acknowledged, a running take clears it.
+  r.signals.onAccepted("record.start", 13);
+  r.signals.onApplied(13, false);
+  await sleep(2);
+  r.reportWith({ recordTake: take("recording") });
+  r.signals.evaluate();
+  assert.deepEqual(r.ids(), []);
   r.signals.close();
 });
 

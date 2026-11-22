@@ -217,6 +217,9 @@ export class OperatorSignals {
   private heldStopVersion: number | null = null;
   /** The latest moment the engine is known to have caught up with the stream's commands. */
   private streamAnchor = 0;
+  /** The record twin of `streamAnchor`: only a report received after it may
+   * say the take is not running (`recordTake`). */
+  private recordAnchor = 0;
   private lastRegisteredAt: number | null = null;
   /** When the ticker last changed by a command (or a load or unload). */
   private tickerChangedAt: number | null = null;
@@ -235,6 +238,7 @@ export class OperatorSignals {
     const now = this.i.now();
     this.lastRegisteredAt = now;
     this.streamAnchor = Math.max(this.streamAnchor, now);
+    this.recordAnchor = Math.max(this.recordAnchor, now);
   }
 
   /**
@@ -294,11 +298,13 @@ export class OperatorSignals {
     const now = this.i.now();
     if (viaResync) {
       this.streamAnchor = now;
+      this.recordAnchor = now;
       return;
     }
     if (this.showStopPending !== null && version >= this.showStopPending) {
       this.showStopPending = null;
       this.streamAnchor = now;
+      this.recordAnchor = now;
     }
     // Path (i): the held stop's own acknowledgement, however late. It is
     // inert to belief (§10.1.3's late-acknowledgement rule): it clears the
@@ -320,6 +326,7 @@ export class OperatorSignals {
       }
       if (entry.timer) clearTimeout(entry.timer);
       if (output === "stream") this.streamAnchor = now;
+      if (output === "record") this.recordAnchor = now;
       const unacked = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;
       this.i.lane.clear(
         unacked.id,
@@ -339,6 +346,7 @@ export class OperatorSignals {
     // a report that postdates the expiry may correct the belief.
     entry.expiredAt = this.i.now();
     if (output === "stream") this.streamAnchor = Math.max(this.streamAnchor, entry.expiredAt);
+    if (output === "record") this.recordAnchor = Math.max(this.recordAnchor, entry.expiredAt);
     if (this.i.lane.has(ALERT.engineNotReporting.id)) return; // that alert owns it
     const spec = output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged;
     const report = this.freshReport();
@@ -458,10 +466,12 @@ export class OperatorSignals {
 
   /**
    * `record.failed`: the control plane believes a take is recording, no record
-   * command is pending, and the engine's fresh report says the take's record
-   * thread ended on its own. Nothing more is being recorded; the file keeps
-   * what was written before. Clears when the belief is no longer recording
-   * (a stop), or a fresh report no longer reads `failed`.
+   * command or `show.stop` is pending, and a fresh report received after the
+   * record anchor says the take is not running: `failed` (its record thread
+   * ended on its own) or `none` (no take at all: an engine restart, the
+   * restart case a resync cannot repair). Nothing more is being recorded.
+   * Clears when the belief is no longer recording (a stop), or a fresh report
+   * reads the take recording again.
    */
   private recordTake(): void {
     const { state, lane } = this.i;
@@ -473,7 +483,8 @@ export class OperatorSignals {
       lane.clear(ALERT.recordFailed.id, "the take was stopped");
       return;
     }
-    if (pending) return;
+    const owned = lane.has(ALERT.recordUnacknowledged.id) || lane.has(ALERT.outputsHeld.id);
+    if (pending || owned || fresh.receivedAt <= this.recordAnchor) return;
     const take = fresh.frame.recordTake;
     if (take?.state === "failed") {
       lane.raise(
@@ -481,10 +492,20 @@ export class OperatorSignals {
         "critical",
         `the take stopped recording on its own: ${take.reason ?? "the engine gave no reason"}. Nothing more is being recorded; the file keeps what was written before`,
       );
+    } else if (take?.state === "none") {
+      // No take running, believed recording, in a report after the take's
+      // own acknowledgement (or a resync's): the engine restarted, or the take
+      // ended without the control plane hearing of it. Nothing is recorded.
+      lane.raise(
+        ALERT.recordFailed,
+        "critical",
+        "the engine reports no take running while the control plane believes it is recording (an engine restart ends a take). Nothing is being recorded",
+      );
     } else {
       lane.clear(ALERT.recordFailed.id, `the engine reports the take ${take?.state ?? "none"}`);
     }
   }
+
 
   /** The last report the audio evaluation counted, and its underrun total. */
   private audioSeen: { receivedAt: number; underruns: number } | null = null;
@@ -625,6 +646,7 @@ export class OperatorSignals {
     this.showStopPending = null;
     this.heldStopVersion = stopVersion;
     this.streamAnchor = Math.max(this.streamAnchor, this.i.now());
+    this.recordAnchor = Math.max(this.recordAnchor, this.i.now());
     this.i.lane.raise(
       ALERT.outputsHeld,
       "warning",
