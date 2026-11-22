@@ -25,6 +25,7 @@ import { WebSocket } from "ws";
 
 import { AuditLog } from "./audit.js";
 import { ControlPlaneState } from "./state.js";
+import { journalOf, readJournal, StatePersistence } from "./persistence.js";
 import { createControlPlaneServer, type ControlPlaneServer } from "./server.js";
 import { tempDir } from "./test-tmp.js";
 import { loadComplete, residency } from "./load-residency.js";
@@ -178,6 +179,13 @@ let server: ControlPlaneServer;
 /** How many `show.stop` directives R16's knob delayed (`NBE_DRESS_STOP_DELAY_MS`). */
 let stopDelayFired = 0;
 let state: ControlPlaneState;
+// Item 4: the production journal, not the no-op stub. Every write is the
+// production one (fsync, rename, directory fsync); an on-air command's
+// response waits for it, as it does in production.
+let persistence: StatePersistence;
+let journalPath: string;
+const journalWaits: Array<{ command: string; ms: number }> = [];
+let journalFailures = 0;
 /** The control plane's audit file: step 9 reads its `belief.corrected` row (D6). */
 let auditFile: string;
 let engine: ChildProcess;
@@ -383,12 +391,30 @@ before(async () => {
   const tmp = tempDir("nbe-dress-");
   state = new ControlPlaneState();
   auditFile = join(tmp, "audit.jsonl");
+  journalPath = join(tmp, "control-plane-state.json");
+  persistence = new StatePersistence(state, journalPath);
+  {
+    const flush = persistence.flush.bind(persistence);
+    persistence.flush = () =>
+      flush().then(() => {
+        if (!persistence.writeOk()) journalFailures += 1;
+      });
+    const committed = persistence.onCommitted.bind(persistence);
+    persistence.onCommitted = (command: string) => {
+      const t0 = performance.now();
+      const wait = committed(command);
+      if (wait === undefined) return;
+      return wait.then(() => {
+        journalWaits.push({ command, ms: performance.now() - t0 });
+      });
+    };
+  }
   server = await createControlPlaneServer({
     port: 0,
     auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render", [OPERATOR]: "operator" } },
     audit: new AuditLog(auditFile),
     state,
-    persistence: { onDirty: () => {}, flushNow: () => {} },
+    persistence,
     // The real §5.9.5 window: this gate measures the production number.
     showStopGraceMs: GRACE_MS,
     warn: () => {},
@@ -2190,4 +2216,49 @@ test("[RI-1] step 13 (AC-6): kill -9 mid-record leaves prior fragments playable"
     const dur = parseFloat((probed["format"] as Record<string, unknown>)["duration"] as string);
     assert.ok(dur > 0, `the partial file must play (duration ${dur}s)`);
   }
+});
+
+test("[item 4] the production journal: every write landed, the file on disk is the show's state, and a restart reads it back", async () => {
+  // Past the debounce, with every queued write settled.
+  await sleep(300);
+  await persistence.settled();
+  assert.equal(journalFailures, 0, "no journal write failed during the show");
+  assert.ok(persistence.writeOk(), "the last journal write succeeded");
+
+  const onDisk = readJournal(journalPath);
+  assert.ok(onDisk !== null && "journal" in onDisk, "the journal on disk verifies (schema 2, checksum)");
+  assert.equal(onDisk.stateVersion, state.stateVersion, "every accepted command reached the journal");
+  assert.deepEqual(onDisk.manifestIdentity, state.manifestIdentity(), "the journal names the loaded package");
+  // Every journaled field, as the control plane holds it now: a change made
+  // without marking the journal dirty shows here as a stale field.
+  const written: Record<string, unknown> = { ...onDisk.journal };
+  delete written["automationBacklog"];
+  const now = JSON.parse(JSON.stringify(journalOf(state))) as Record<string, unknown>;
+  const stale = Object.keys(now).filter((k) => JSON.stringify(now[k]) !== JSON.stringify(written[k]));
+  assert.deepEqual(
+    stale,
+    [],
+    `journal fields stale against the state: ${stale.map((k) => `${k}: disk ${JSON.stringify(written[k])} vs state ${JSON.stringify(now[k])}`).join("; ")}`,
+  );
+
+  // A restarted control plane reads it back: the version and the identity,
+  // never RUNNING (Rule 10); the journal is what adoption compares.
+  const fresh = new ControlPlaneState();
+  const again = new StatePersistence(fresh, journalPath);
+  assert.equal(again.restore(), true, "a restart finds the package identity");
+  assert.equal(again.restoredFrom, "current");
+  assert.equal(fresh.stateVersion, state.stateVersion);
+  assert.equal(fresh.showState, "UNLOADED");
+  assert.equal(again.restoredJournal()?.journal["showState"], state.showState);
+
+  // What the on-air responses waited for the journal. A response held by the
+  // journal for seconds is an operator's button that does not answer.
+  const ms = journalWaits.map((w) => w.ms).sort((a, b) => a - b);
+  assert.ok(ms.length > 0, "the show's on-air commands waited for the journal");
+  const at = (q: number): number => ms[Math.min(ms.length - 1, Math.floor(q * ms.length))]!;
+  const worst = journalWaits.reduce((a, b) => (b.ms > a.ms ? b : a));
+  console.log(
+    `journal: ${ms.length} on-air writes waited on; p50 ${at(0.5).toFixed(1)} ms, p95 ${at(0.95).toFixed(1)} ms, max ${worst.ms.toFixed(1)} ms (${worst.command})`,
+  );
+  assert.ok(worst.ms < 2000, `an on-air response waited ${worst.ms.toFixed(0)} ms for the journal (${worst.command})`);
 });
