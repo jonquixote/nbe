@@ -123,6 +123,12 @@ export class RateLimiter {
 // Server
 // ---------------------------------------------------------------------------
 
+/** Review4 step 7c: the output starts owed to a restarted engine. */
+interface Reissue {
+  record: Record<string, unknown> | null;
+  stream: Record<string, unknown> | null;
+}
+
 interface ClientSession {
   /** Review4 step 7b: a render connection to a restarted control plane,
    * holding its handshake until the engine's hello arrives (or a timeout). */
@@ -149,6 +155,9 @@ interface ClientSession {
     resyncs: number[];
     /** Review4 step 7a: this connection's `engineHello`, once it arrives. */
     hello?: EngineHelloFrame;
+    /** Review4 step 7c: the starts to re-issue once this (restarted) engine
+     * acknowledges its resync. */
+    reissue?: Reissue;
   } | null;
   /** Deprecation warnings this subscriber has not yet been shown. */
   pendingDeprecations: DeprecationRecord[];
@@ -433,6 +442,64 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     return true;
   }
 
+  // -- Review4 step 7c: re-issue the outputs after an engine restart -------
+  // A new engine process (a new `engineInstanceId`, case E) holds no take and
+  // no stream: a resync carries no output state, so the control plane, which
+  // still believes them on, re-sends the starts it accepted, once the new
+  // engine has applied the resync (the show is running there again). The
+  // payloads are kept here, in the server, never in `ControlPlaneState`: a
+  // `stream.start` URL can carry a stream key, and the state is journaled and
+  // served to clients. A re-issue is the same intent sent again, not a new
+  // command: the belief does not change, and it goes out as a detection
+  // transaction (a version, an audit row, the command's own window), as the
+  // ticker's TTL expiry does. Guest starts are not re-issued here.
+  const lastStart: { record: Record<string, unknown> | null; stream: Record<string, unknown> | null } = {
+    record: null,
+    stream: null,
+  };
+  function rememberOutputStart(command: string, payload: Record<string, unknown>): void {
+    if (command === "record.start") lastStart.record = { ...payload };
+    else if (command === "stream.start") lastStart.stream = { ...payload };
+    else if (command === "record.stop") lastStart.record = null;
+    else if (command === "stream.stop") lastStart.stream = null;
+    else if (command === "show.stop" || command === "show.load" || command === "show.unload") {
+      lastStart.record = null;
+      lastStart.stream = null;
+    }
+  }
+  function reissueOutputs(r: Reissue): void {
+    const starts: Array<["record.start" | "stream.start", Record<string, unknown> | null]> = [
+      ["record.start", r.record],
+      ["stream.start", r.stream],
+    ];
+    for (const [command, payload] of starts) {
+      if (payload === null) continue;
+      const before = state.stateVersion;
+      const sv = state.bump();
+      opts.persistence.onDirty();
+      bridge.send({ command, target: {}, payload, stateVersion: sv });
+      signals.onAccepted(command, sv);
+      try {
+        audit.record({
+          kind: "command",
+          command: `system:${command}`,
+          event: command === "record.start" ? "record.reissued" : "stream.reissued",
+          detail: {
+            reason: "the engine restarted",
+            outputId: (payload["outputId"] as string | undefined) ?? null,
+            // Never the URL itself: it can carry a stream key.
+            ...(command === "stream.start" ? { url: payload["url"] === undefined ? null : "(set; not logged)" } : {}),
+          },
+          stateVersionBefore: before,
+          stateVersionAfter: sv,
+        });
+      } catch {
+        // A row that cannot be written is R18's alert to announce; the
+        // re-issue has happened and stands.
+      }
+    }
+  }
+
   // -- Review4 step 7a: the engine's hello ----------------------------------
   // The instance the last hello named, and when an engine that had said hello
   // last went away. A new instance id is a new engine process: review4's case
@@ -441,11 +508,25 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   // steps 7b and 7c.)
   let lastEngineInstanceId: string | null = null;
   let engineGoneAt: number | null = null;
-  function noteHello(render: { hello?: EngineHelloFrame }, hello: EngineHelloFrame): void {
+  function noteHello(render: NonNullable<ClientSession["render"]>, hello: EngineHelloFrame): void {
     render.hello = hello;
     const previous = lastEngineInstanceId;
     lastEngineInstanceId = hello.engineInstanceId;
     if (previous === null || previous === hello.engineInstanceId) return;
+    // Step 7c: a restarted engine mid-show is owed the outputs believed on.
+    if (state.showState === "RUNNING") {
+      const record = state.recordState === "recording" ? lastStart.record : null;
+      const stream = state.streamState === "live" ? lastStart.stream : null;
+      if (record !== null || stream !== null) {
+        // The engine says hello first on every connection, so its resync is
+        // normally acknowledged after this, and the re-issue waits for that
+        // (`noteApplied`). If the resync was already applied, send them now.
+        const lastResync = render.resyncs[render.resyncs.length - 1];
+        const applied = lastResync !== undefined && render.lastApplied !== null && render.lastApplied >= lastResync;
+        if (applied) reissueOutputs({ record, stream });
+        else render.reissue = { record, stream };
+      }
+    }
     try {
       audit.record({
         kind: "command",
@@ -490,6 +571,12 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     session.render.lastApplied = version;
     const ownAck = !session.render.resyncs.includes(version);
     signals.onApplied(version, !ownAck);
+    // Step 7c: the restarted engine applied its resync; send it the starts.
+    if (!ownAck && session.render.reissue !== undefined) {
+      const reissue = session.render.reissue;
+      delete session.render.reissue;
+      reissueOutputs(reissue);
+    }
     if (ownAck) {
       session.render.acked.push(version);
       if (session.render.acked.length > 64) session.render.acked.shift();
@@ -639,6 +726,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       // the response's stateVersion and observable no later than it.
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
+      rememberOutputStart(command, envelope.payload);
       // §5.9.5: a `show.stop` that returns with outputs still active was not
       // acknowledged, and they are held. The lane announces it (v0.4.8 row 8).
       if (command === "show.stop" && state.outputsActive()) signals.held(out.stateVersion);
