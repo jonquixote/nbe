@@ -295,6 +295,53 @@ struct Voice {
     asset_id: String,
     gain: Ramp,
     stopping: bool,
+    /// Step 6's voice line (a draft, the user's ruling of 2026-11-20 19:55):
+    /// the loudest sample this voice put into the sfx sum (after its own
+    /// gain, linear), the master sample it fell on, and the sfx bus's level
+    /// after the bus's gain at that same sample. `peak_idx` is where in the
+    /// current block the voice's peak fell, until the bus's level there is
+    /// read.
+    peak: f32,
+    peak_sample: i64,
+    bus_at_peak: f32,
+    peak_idx: Option<usize>,
+}
+
+/// Why a soundboard voice ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceEnd {
+    /// It played to its last sample.
+    Finished,
+    /// A stop ramped it to zero (`soundboard.stop`, or every voice stopped).
+    Stopped,
+}
+
+impl VoiceEnd {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VoiceEnd::Finished => "finished",
+            VoiceEnd::Stopped => "stopped",
+        }
+    }
+}
+
+/// A soundboard voice that ended, as the render left it: read off the audio
+/// thread by [`AudioGraph::take_ended_voices`], so the render itself never
+/// logs (prompt06's allocation gate measures it).
+#[derive(Debug, Clone)]
+pub struct EndedVoice {
+    pub playback_id: u64,
+    pub asset_id: String,
+    /// Frames (stereo pairs) the voice rendered, of `frames_total`.
+    pub frames_rendered: u64,
+    pub frames_total: u64,
+    /// The voice's own peak in dBFS, after its gain; -120 when it was silent.
+    pub peak_dbfs: f32,
+    /// The master sample the peak fell on.
+    pub peak_sample: i64,
+    /// The sfx bus's level at that sample, after the bus's gain, in dBFS.
+    pub bus_at_peak_dbfs: f32,
+    pub reason: VoiceEnd,
 }
 
 /// Ducking state for the music bus (§8.3).
@@ -350,6 +397,11 @@ pub struct AudioGraph {
     voice_scratch: Vec<f32>,
     voice_block: usize,
     voice_base: i64,
+    /// Voices that ended since the last [`AudioGraph::take_ended_voices`].
+    /// Allocated once (32): the render pushes only while there is room, and
+    /// counts the rest in `ended_overflow`, so it never allocates.
+    ended: Vec<EndedVoice>,
+    ended_overflow: u64,
     /// Master-bus record tap (WU34, SPSC rewrite): `None` until `set_record_tap`. When
     /// present, `render` pushes a copy of the post-master mix into it via the
     /// tap's lock-free `push` (atomic head publish, preallocated ring, no
@@ -390,6 +442,8 @@ impl AudioGraph {
             voice_scratch: vec![0.0; 8192],
             voice_block: 0,
             voice_base: 0,
+            ended: Vec::with_capacity(32),
+            ended_overflow: 0,
             guest_scratch: BTreeMap::new(),
             returns: BTreeMap::new(),
             record_tap: None,
@@ -563,6 +617,10 @@ impl AudioGraph {
             asset_id: asset_id.to_string(),
             gain,
             stopping: false,
+            peak: 0.0,
+            peak_sample: 0,
+            bus_at_peak: 0.0,
+            peak_idx: None,
         });
         id
     }
@@ -599,6 +657,16 @@ impl AudioGraph {
 
     pub fn active_voices(&self) -> usize {
         self.voices.len()
+    }
+
+    /// Hand each voice that ended since the last call to `f`, oldest first,
+    /// and forget it; return how many ended past `ended`'s room unrecorded.
+    /// Called off the render (the driver's publish), so `f` may log.
+    pub fn take_ended_voices(&mut self, mut f: impl FnMut(&EndedVoice)) -> u64 {
+        for e in self.ended.drain(..) {
+            f(&e);
+        }
+        std::mem::take(&mut self.ended_overflow)
     }
 
     /// Set ducking (§8.3). Ducking touches `music` only.
@@ -712,6 +780,8 @@ impl AudioGraph {
             voice_scratch,
             voice_block,
             voice_base,
+            ended,
+            ended_overflow,
             guest_scratch,
             house_frame_rate,
             rendered_samples,
@@ -765,7 +835,13 @@ impl AudioGraph {
                         for c in 0..CHANNELS {
                             let idx = v.position + f * CHANNELS + c;
                             if idx < v.samples.len() {
-                                vsum[f * CHANNELS + c] += v.samples[idx] * g;
+                                let x = v.samples[idx] * g;
+                                vsum[f * CHANNELS + c] += x;
+                                if x.abs() > v.peak {
+                                    v.peak = x.abs();
+                                    v.peak_sample = base + f as i64;
+                                    v.peak_idx = Some(f * CHANNELS + c);
+                                }
                             }
                         }
                     }
@@ -775,10 +851,6 @@ impl AudioGraph {
                     *s += *v;
                 }
                 *voice_block = out.len();
-                // A voice is done when it runs out or its stop ramp reached zero.
-                voices.retain(|v| {
-                    v.position < v.samples.len() && !(v.stopping && v.gain.value() <= 0.0)
-                });
             }
 
             let ducking = *id == BusId::Music;
@@ -794,9 +866,51 @@ impl AudioGraph {
                     let v = scratch[f * CHANNELS + c] * g * duck;
                     bus.observe(v);
                     out[f * CHANNELS + c] += v;
+                    if with_voices {
+                        // The bus's level after its gain, kept in place for
+                        // the voices' line below (scratch is refilled by the
+                        // next bus).
+                        scratch[f * CHANNELS + c] = v;
+                    }
                 }
             }
             bus.trace_len = if traced { frames } else { 0 };
+
+            if with_voices {
+                // Each voice that peaked in this block: the bus's level at
+                // that same sample.
+                for v in voices.iter_mut() {
+                    if let Some(i) = v.peak_idx.take() {
+                        v.bus_at_peak = scratch[i].abs();
+                    }
+                }
+                // A voice is done when it runs out or its stop ramp reached
+                // zero. In order, as `retain` kept it; an ended voice is moved
+                // (never cloned) into `ended` while it has room.
+                for v in voices.extract_if(.., |v| {
+                    v.position >= v.samples.len() || (v.stopping && v.gain.value() <= 0.0)
+                }) {
+                    if ended.len() < ended.capacity() {
+                        let finished = v.position >= v.samples.len();
+                        ended.push(EndedVoice {
+                            playback_id: v.playback_id,
+                            frames_rendered: (v.position.min(v.samples.len()) / CHANNELS) as u64,
+                            frames_total: (v.samples.len() / CHANNELS) as u64,
+                            peak_dbfs: linear_to_db(v.peak),
+                            peak_sample: v.peak_sample,
+                            bus_at_peak_dbfs: linear_to_db(v.bus_at_peak),
+                            reason: if finished {
+                                VoiceEnd::Finished
+                            } else {
+                                VoiceEnd::Stopped
+                            },
+                            asset_id: v.asset_id,
+                        });
+                    } else {
+                        *ended_overflow += 1;
+                    }
+                }
+            }
         }
 
         // Guest buses sum into the program mix. `guests` and `guest_scratch`
