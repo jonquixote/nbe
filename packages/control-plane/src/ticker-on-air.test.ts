@@ -264,3 +264,149 @@ test("end to end through the server: an override the engine does not apply raise
   holds = 2;
   assert.ok(await until(() => !state.alerts.some((a) => a.id === "ticker.notOnAir"), 2000), "cleared when the engine holds it");
 });
+
+test("an expiry restarts the settle window: the engine's count from before the expiry's directive raises nothing (#128 x #133)", () => {
+  const r = rig();
+  r.state.tickerItems = items(3);
+  r.advance(TICKER_SETTLE_MS + 1);
+  r.engineHolds(3);
+  r.signals.evaluate();
+  assert.equal(r.alert(), undefined, "settled and agreeing");
+  // The control plane expires one item and sends the engine the new queue.
+  r.state.tickerItems = items(2);
+  r.signals.onTickerChanged();
+  r.advance(100);
+  r.engineHolds(3); // a report from before the engine applied the directive
+  r.signals.evaluate();
+  assert.equal(r.alert(), undefined, "inside the settle window nothing is decided");
+  // Past the window, a count that still disagrees is a ticker not on air.
+  r.advance(TICKER_SETTLE_MS);
+  r.engineHolds(3);
+  r.signals.evaluate();
+  assert.ok(r.alert(), "settled and still 3 against 2: raised");
+});
+
+test("end to end through the server: a TTL expiry's directive, applied late by the engine, raises no ticker.notOnAir (#128 x #133)", async (t) => {
+  const ADMIN = "admin-token";
+  const RENDER = "render-token";
+  const state = new ControlPlaneState();
+  state.loadPackage({
+    packagePath: "/tmp/none",
+    showId: "s",
+    houseRate: 30,
+    qualityProfile: undefined,
+    items: new Map(),
+    sequences: new Set(["R"]),
+    scenes: new Map(),
+    elements: new Map(),
+    overlays: new Set(["ol_ticker"]),
+    templates: new Set(["tpl_ticker"]),
+    breakingTemplates: new Set(),
+    tickerExists: true,
+    clockElements: new Set(),
+    plugins: new Set(),
+    automationRules: new Set(),
+    automation: [],
+    bindings: new Map(),
+    assets: new Map(),
+    transitionPresets: new Map(),
+    fallbackAssetId: undefined,
+  } as unknown as PackageInfo);
+  const server = await createControlPlaneServer({
+    port: 0,
+    auth: { tokens: { [ADMIN]: "admin", [RENDER]: "render" } },
+    audit: new AuditLog(join(tempDir("nbe-ticker-expiry-"), "audit.jsonl")),
+    state,
+    persistence: { onDirty: () => {}, flushNow: () => {} },
+  });
+  t.after(() => server.close());
+  const open = (role: string, token: string) =>
+    new Promise<WebSocket>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/nbe/v0.3`, {
+        headers: { authorization: `Bearer ${token}`, "x-nbe-role": role },
+      });
+      t.after(() => ws.close());
+      ws.once("open", () => resolve(ws));
+      ws.once("error", reject);
+    });
+  // A scripted engine that applies every ticker directive, 400 ms late (well
+  // inside the settle window), and reports what it holds every 100 ms.
+  const LAG_MS = 400;
+  let holds = 0;
+  const engine = await open("render", RENDER);
+  engine.on("message", (b: Buffer) => {
+    const msg = JSON.parse(b.toString("utf8")) as { command?: string; payload?: { items?: unknown[] } };
+    if (msg.command === "ticker.override" && Array.isArray(msg.payload?.items)) {
+      const n = msg.payload.items.length;
+      setTimeout(() => {
+        holds = n;
+      }, LAG_MS);
+    }
+  });
+  const tick = () =>
+    engine.send(
+      JSON.stringify({
+        v: PROTOCOL_VERSION,
+        kind: "engineTelemetry",
+        ts: Date.now(),
+        masterClockFrame: 10,
+        droppedFramesTotal: 0,
+        renderGpuTimeMs: 1,
+        decodeSessions: 0,
+        vramUsedMib: 0,
+        textureCacheUsedMib: 0,
+        streamBufferMs: -1,
+        recordSpaceMib: 0,
+        masterClockDriftMs: 0,
+        fallbackActive: false,
+        degradationRung: 0,
+        streamTransportState: "none",
+        overlayState: {
+          overlays: [],
+          graphics: [],
+          breaking: false,
+          tickerOverrideItems: holds,
+          tickerSource: "manual",
+          clocksConfigured: [],
+          previewItem: null,
+          textPrepMissesTotal: 0,
+        },
+      }),
+    );
+  tick();
+  const timer = setInterval(tick, 100);
+  t.after(() => clearInterval(timer));
+  const admin = await open("admin", ADMIN);
+  // Two items; one expires 3 s after acceptance, after the command's 2 s settle.
+  const reply = await new Promise<Record<string, unknown>>((resolve) => {
+    admin.on("message", (b: Buffer) => {
+      const msg = JSON.parse(b.toString("utf8")) as Record<string, unknown>;
+      if (msg.requestId === "00000000-0000-0000-0000-000000000002") resolve(msg);
+    });
+    admin.send(
+      JSON.stringify({
+        v: "0.3",
+        id: "00000000-0000-0000-0000-000000000002",
+        command: "ticker.override",
+        payload: { mode: "replace", items: [{ text: "stays", priority: 0 }, { text: "expires", priority: 0, ttlSec: 3 }] },
+      }),
+    );
+  });
+  assert.equal(reply.status, "ok", JSON.stringify(reply));
+  const until = async (pred: () => boolean, ms: number) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end && !pred()) await new Promise((r) => setTimeout(r, 25));
+    return pred();
+  };
+  const notOnAir = () => state.alerts.some((a) => a.id === "ticker.notOnAir");
+  assert.ok(await until(() => holds === 2, 2000), "the engine applied the override");
+  assert.ok(await until(() => state.tickerItems.length === 1, 6000), "the TTL expired the item");
+  // Across the expiry's directive and the engine's late apply, and past the
+  // ticks that still carry the old count, the alert never rises.
+  const watchEnd = Date.now() + LAG_MS + 1000;
+  while (Date.now() < watchEnd) {
+    assert.ok(!notOnAir(), `ticker.notOnAir raised across an expiry (engine holds ${holds}, the control plane ${state.tickerItems.length})`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(holds, 1, "the engine applied the expiry's queue");
+});
