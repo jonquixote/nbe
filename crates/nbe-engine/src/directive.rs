@@ -284,14 +284,36 @@ impl DirectiveHandler {
             // SPEC §12.4's table, with this asset's declared ceiling where the
             // manifest declares one — the same constructor preflight uses.
             let budget = index.loop_budget(asset_id);
-            match crate::video::load_video_asset(
-                asset_id,
-                &root.join(src),
-                &self.state.sessions,
-                budget,
-                declared,
-                DEFAULT_GOP_FRAMES,
-            ) {
+            // Determinism item 12, step 2, as preflight has had since #160: a
+            // decoder starved on a loaded machine (a code in
+            // `TRANSIENT_DECODE_CODES`) is retried once after 500 ms; a
+            // corrupt file is not. Without it a starved decode at load left
+            // the item nothing to draw: black on air. This runs off the
+            // runtime (`show.load` and a resync's load are `spawn_blocking`).
+            let path = root.join(src);
+            let mut attempts = 0u32;
+            let loaded = crate::decode::retry_transient(
+                || {
+                    attempts += 1;
+                    crate::video::load_video_asset(
+                        asset_id,
+                        &path,
+                        &self.state.sessions,
+                        budget,
+                        declared,
+                        DEFAULT_GOP_FRAMES,
+                    )
+                },
+                Duration::from_millis(500),
+            );
+            if attempts > 1 {
+                tracing::warn!(
+                    asset = %asset_id,
+                    recovered = loaded.is_ok(),
+                    "video asset: the decoder was starved; retried once after 500 ms"
+                );
+            }
+            match loaded {
                 Ok(asset) => {
                     info!(
                         asset = %asset_id,
