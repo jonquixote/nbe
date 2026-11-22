@@ -76,6 +76,38 @@ struct VideoRing {
 /// one per playing clip.
 const READ_AHEAD_UPLOADS_PER_FRAME: usize = 4;
 
+/// The share of a frame period the read-ahead's staging copies may spend in
+/// one frame, beyond each on-air clip's first upload. A count is not a cost:
+/// on CI's VM one 1080p frame's copy into its staging buffer takes 7-8 ms,
+/// so four uploads filled the whole 33 ms frame and the View dropped (the
+/// dress's ENGINE CPU drops of 2026-11-22: 4 uploads, 27.4 ms of copy). Past
+/// the share, a clip uploads only a frame its window needs within
+/// `READ_AHEAD_URGENT_FRAMES`: a miss holds the picture, which is worse than
+/// one late frame, so a window about to run dry still refills.
+const READ_AHEAD_STAGE_SHARE: f64 = 0.25;
+
+/// A window whose first missing frame is this close to its base is about to
+/// run dry: it refills past `READ_AHEAD_STAGE_SHARE`.
+const READ_AHEAD_URGENT_FRAMES: u64 = 2;
+
+/// Test seam: the stage share in force (f64 bits; `u64::MAX` is the default).
+static FORCED_STAGE_SHARE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Test seam: override `READ_AHEAD_STAGE_SHARE` process-wide (`None` restores
+/// it). Production never calls this.
+#[doc(hidden)]
+pub fn force_read_ahead_stage_share(share: Option<f64>) {
+    FORCED_STAGE_SHARE.store(share.map_or(u64::MAX, f64::to_bits), Ordering::SeqCst);
+}
+
+fn read_ahead_stage_share() -> f64 {
+    match FORCED_STAGE_SHARE.load(Ordering::SeqCst) {
+        u64::MAX => READ_AHEAD_STAGE_SHARE,
+        bits => f64::from_bits(bits),
+    }
+}
+
 /// Staging buffers the read-ahead's uploads go through (one frame's bytes
 /// each, created on first use): one frame's upload budget. A tick whose
 /// buffers are all still in flight uploads nothing more, and never waits.
@@ -882,6 +914,8 @@ impl RenderLoop {
         } else {
             READ_AHEAD_UPLOADS_PER_FRAME
         };
+        let stage_share =
+            Duration::from_secs_f64(read_ahead_stage_share() / f64::from(self.house_rate.max(1)));
         let mut uploaded = 0;
         // What the View draws now, for a clip given up on below: only an item
         // on the View is reported (review4 step 8).
@@ -950,6 +984,8 @@ impl RenderLoop {
                     detail.spawn += spawn_started.elapsed();
                 }
             }
+            let on_air = wanted.contains_key(&id);
+            let mut served = false;
             while budget > 0 {
                 let delivered = match clip.pending.take() {
                     Some(f) => Delivery::Frame(f),
@@ -970,6 +1006,20 @@ impl RenderLoop {
                             continue;
                         }
                         if j >= clip.window_end() {
+                            clip.pending = Some(f);
+                            break;
+                        }
+                        // The stage share spent: an on-air clip still takes
+                        // its first upload of the frame, and any clip a frame
+                        // its window needs soon; the rest waits for a later
+                        // frame, held like one past the window.
+                        if !uncapped
+                            && detail.stage >= stage_share
+                            && (served || !on_air)
+                            && clip
+                                .first_missing()
+                                .is_none_or(|m| m >= clip.base + READ_AHEAD_URGENT_FRAMES)
+                        {
                             clip.pending = Some(f);
                             break;
                         }
@@ -1007,6 +1057,7 @@ impl RenderLoop {
                         }
                         clip.slot_frame[s] = Some(j);
                         clip.delivered = true;
+                        served = true;
                         budget -= 1;
                         uploaded += 1;
                         detail.bytes += f.rgba.len() as u64;

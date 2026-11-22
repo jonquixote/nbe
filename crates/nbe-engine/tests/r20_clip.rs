@@ -781,3 +781,55 @@ async fn r20_a_streamed_clip_held_past_its_end_keeps_its_last_frame_resident() {
         "R20: the held frame stays resident, so holding it is no miss"
     );
 }
+
+/// Restores the read-ahead's stage share however the test ends.
+struct StageShare;
+
+impl Drop for StageShare {
+    fn drop(&mut self) {
+        nbe_engine::render::force_read_ahead_stage_share(None);
+    }
+}
+
+/// The read-ahead's stage share (`READ_AHEAD_STAGE_SHARE`) at its limit,
+/// zero: every upload is past it, so an on-air clip takes only its first
+/// upload of a frame, plus any frame its window needs soon. That bound is
+/// what keeps CI's 7-8 ms copies from filling a frame (four did: the dress's
+/// ENGINE CPU drops of 2026-11-22). Steady play must still never miss: one
+/// upload a frame keeps up with one frame drawn.
+#[tokio::test]
+async fn r20_past_the_stage_share_steady_play_still_never_misses() {
+    let _lane = LANE.write().await;
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: the read-ahead did not settle at {PAST_THE_RING}"
+    );
+    let before = misses(&render);
+    nbe_engine::render::force_read_ahead_stage_share(Some(0.0));
+    let _restore = StageShare;
+    let mut most = 0usize;
+    let mut uploads = 0usize;
+    for n in PAST_THE_RING..decoded.len() as u64 {
+        // Paced near the house rate, as production's tick is.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let r = render.render_frame(n, None);
+        most = most.max(r.read_ahead_uploads);
+        uploads += r.read_ahead_uploads;
+    }
+    println!("R20 STAGE SHARE 0: {uploads} uploads, at most {most} in a frame");
+    assert_eq!(
+        misses(&render),
+        before,
+        "R20: past the stage share, steady play must miss nothing"
+    );
+    assert!(
+        most <= 2,
+        "R20: past the stage share a frame uploads its first frame and those its window needs soon, at most 2 here; saw {most}"
+    );
+    assert!(uploads > 0, "R20: the window refilled as the clip played");
+}
