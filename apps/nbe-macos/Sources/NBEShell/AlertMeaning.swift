@@ -49,6 +49,10 @@ public enum AlertMeaning {
             title: "ITEM FAILED",
             meaning: "A clip on air stopped decoding; the View holds its last frame.",
             action: "Take the next item or the fallback slate."),
+        "ticker.notOnAir": Entry(
+            title: "TICKER ITEM COUNT MISMATCH",
+            meaning: "After the settling period, the engine reports a different ticker override item count from the control plane.",
+            action: "Check the programme output and engine log before changing or clearing the override."),
     ]
 
     /// The entry for `id`, or one that names an id this shell does not know.
