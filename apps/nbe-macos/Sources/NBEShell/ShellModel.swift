@@ -123,11 +123,11 @@ public final class ShellModel: ObservableObject {
     /// The fixture as last heard `staleSeconds` ago (the snapshot's
     /// `--stale N`, a look at the NO CONTACT curtain); nil leaves the fixture
     /// untracked, so an open `--fixture` window never goes stale.
-    public func loadFixture(staleSeconds: Double? = nil) {
+    public func loadFixture(staleSeconds: Double? = nil, alerts: Bool = false) {
         if let staleSeconds { contact.received(at: Date().addingTimeInterval(-staleSeconds)) }
         connection = .fixture
         status = Fixture.status
-        telemetry = Fixture.telemetry
+        telemetry = alerts ? Fixture.telemetryWithAlerts : Fixture.telemetry
         show = Fixture.show
     }
 
@@ -192,7 +192,19 @@ public final class ShellModel: ObservableObject {
 /// What the shell draws with no control plane (`--fixture`): the spec's own
 /// §10.1 example and a running show's snapshot.
 public enum Fixture {
-    public static let telemetry: Telemetry = {
+    public static let telemetry: Telemetry = telemetry(alerts: "[]")
+
+    /// Three sample alerts, to see the banner (`--alerts`): a critical one, a
+    /// warning, and an id this shell does not know.
+    public static let alerts = """
+    [{"id":"item.failed","severity":"critical","reason":"held: E_CLIP_DECODE: clip A1 stopped decoding at source frame 42","since":1768000000000,"auditEvent":"item.failed"},
+     {"id":"audio.underrun","severity":"warning","reason":"3 underruns in the last 10 s","since":1768000000000,"auditEvent":"audio.underrun"},
+     {"id":"sample.unknown","severity":"warning","reason":"a sample id the shell does not know","since":1768000000000,"auditEvent":null}]
+    """
+
+    public static let telemetryWithAlerts: Telemetry = telemetry(alerts: alerts)
+
+    static func telemetry(alerts: String) -> Telemetry {
         let json = """
         {"ts":1768000000000,"showState":"RUNNING","masterClockFrame":54000,"viewItem":"B2","previewItem":"B3",
          "droppedFramesTotal":0,"renderGpuTimeMs":4.7,"decodeSessions":4,"streamState":"live","streamBufferMs":210,
@@ -201,10 +213,10 @@ public enum Fixture {
          "watchdogClearsTotal":0,"readAheadMissesTotal":0,"automationHold":false,"audioUnderrunsTotal":0,
          "audioDriftMs":0.4,"busPeakDbfs":{"master":-12.3,"mic":-18.0},
          "audioDevice":{"state":"open","name":"MacBook Pro Speakers","rateHz":48000,"reason":null},
-         "recordTapPath":"zeroCopy","alerts":[]}
+         "recordTapPath":"zeroCopy","alerts":\(alerts)}
         """
         return (try? JSONDecoder().decode(Telemetry.self, from: Data(json.utf8))) ?? Telemetry()
-    }()
+    }
 
     public static let show: ShowStateView = {
         let json = """
