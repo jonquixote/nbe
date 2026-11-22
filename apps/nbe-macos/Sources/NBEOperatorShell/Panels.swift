@@ -293,7 +293,8 @@ struct AlertsBanner: View {
                 }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
-                    .background(a.severity == "critical" ? Color.red : .orange)
+                    // Info (the restart note) is news, not a fault: blue, not orange.
+                    .background(a.severity == "critical" ? Color.red : a.severity == "info" ? Color.blue : .orange)
                     .foregroundStyle(.white)
             }
             if let p = model.lastProblem {
