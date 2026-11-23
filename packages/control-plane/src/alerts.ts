@@ -281,7 +281,7 @@ export class OperatorSignals {
     this.i.lane.raise(
       ALERT.engineUnidentified,
       "critical",
-      `the engine is running a show this control plane cannot identify (${why[reason] ?? reason}). Nothing is resynced and the picture stays; show.load or show.unload takes control`,
+      `the engine is running a show this control plane cannot identify (${why[reason] ?? reason}). Nothing is resynced and the picture stays until the operator chooses; either choice ends what is on air: show.load puts this control plane's show in its place, show.unload clears it`,
     );
   }
 

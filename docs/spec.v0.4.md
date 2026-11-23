@@ -25,7 +25,7 @@ down behaviour merged on main, each row naming the PR that built it.
 | # | Change | Sections | Built by |
 |---|---|---|---|
 | 1 | **A decoder starved at `show.load` is retried once.** A video asset whose decode at load fails with a transient VideoToolbox status (the class preflight already retries, -12911 among it) is decoded again once, 500 ms later; a second failure fails the asset as before. | §12.8.1 rule 1 | #197 (`5f21dac`) |
-| 2 | **Case C: a show the control plane cannot identify is held, never resynced off air.** A restarted control plane that cannot adopt a running show (another package or load generation, a journal not `RUNNING`, no package, an unreadable package), or one with no journal whose first render node reports `showRunning`, sends that connection no resync: it stays unregistered and the picture stays. `engine.unidentified` (critical) says why, audited `controlPlane.refused`. The hold lasts until the operator's `show.load` or `show.unload`, which sends the resync from the control plane's state; while it lasts, a render node that reconnects still running a show is held again. A render node running nothing is resynced (case D). | §5.9.4, §10.1.2 | #199 (`08ddd97`) |
+| 2 | **Case C: a show the control plane cannot identify is held, never resynced off air.** A restarted control plane that cannot adopt a running show (another package or load generation, a journal not `RUNNING`, no package, an unreadable package), or one with no journal whose first render node reports `showRunning`, sends that connection no resync: it stays unregistered and the picture stays. `engine.unidentified` (critical) says why, audited `controlPlane.refused`. The hold lasts until the operator's `show.load` or `show.unload`, which sends the resync from the control plane's state and so ends what is on air (neither is `RUNNING`; a force-adopt that keeps it is not built); while it lasts, a render node that reconnects still running a show is held again. A render node running nothing is resynced (case D). | §5.9.4, §10.1.2 | #199 (`08ddd97`) |
 | 3 | **The restart note.** An adoption raises `controlPlane.restarted` (info): the show adopted and preflight not re-run, the automation actions dropped, the rundown items marked `DONE`, and a recording disagreement (the render node's kept). The adopted show's end clears it. | §5.9.4, §10.1.2 | this PR |
 | 4 | **A restarted engine is re-sent its guests.** Each guest the control plane believes connected is re-sent its `guest.connect` as accepted, and `guest.mute` if muted, whatever the show's state, audited `guest.reissued`; the WHIP URL is never logged. | §5.9.4 | this PR |
 | 5 | **The read-ahead's uploads are bounded by time, not only by count.** Beyond each on-air clip's first upload of a frame, the staging copies may spend a quarter of the frame period; past it a clip uploads only a frame its window needs within 2 frames. The render thread still never blocks (rule 4). | §12.8.1 | #201 |
@@ -1260,7 +1260,9 @@ would any connection; if it runs a show this control plane cannot identify
 (case C), sends no resync, holds the connection unregistered (the picture
 stays), raises `engine.unidentified` and audits `controlPlane.refused`. The
 hold lasts until the operator's `show.load` or `show.unload`, which completes
-the connection's handshake with the control plane's state; while it lasts,
+the connection's handshake with the control plane's state and so ends what is
+on air (neither leaves the show `RUNNING`; an adoption by force, which would
+keep it, is not built); while it lasts,
 every render connection waits for its hello, and one still running a show is
 held again. A control plane with no journal to restore waits the same way for
 the hello of the first render node it serves, and holds one that reports
