@@ -146,6 +146,10 @@ const SHOW_STATES: readonly ShowState[] = ["UNLOADED", "LOADED", "RUNNING", "STO
 // happen here (single-bump rule), no I/O, no timers.
 // ---------------------------------------------------------------------------
 
+/** How long past the engine's last report the take's start frame is
+ * extrapolated: the telemetry's freshness window (ENGINE_TELEMETRY_TTL_MS). */
+const START_FRAME_EXTRAPOLATION_MS = 2000;
+
 export class ControlPlaneState {
   stateVersion = 0;
 
@@ -202,6 +206,33 @@ export class ControlPlaneState {
   packageLoadStateVersion: number | null = null;
   /** Last `masterClockFrame` the engine reported, for the field above. */
   lastKnownMasterFrame = 0;
+  /** When the engine reported `lastKnownMasterFrame` (ms), and whether its
+   * clock had advanced since its report before. */
+  lastKnownMasterFrameAtMs: number | null = null;
+  masterClockAdvancing = false;
+
+  /** The engine's master clock, as its telemetry reports it. */
+  noteMasterFrame(frame: number, nowMs: number): void {
+    this.masterClockAdvancing = this.lastKnownMasterFrameAtMs !== null && frame > this.lastKnownMasterFrame;
+    this.lastKnownMasterFrame = frame;
+    this.lastKnownMasterFrameAtMs = nowMs;
+  }
+
+  /**
+   * The engine's master frame now, estimated: its last report, advanced by
+   * the time since at the house rate while its clock was advancing, for at
+   * most the telemetry's freshness window (past it the report is all there
+   * is). The take's start frame is this: the last report alone trailed the
+   * engine by up to a telemetry interval (1 s), and a resync of a healthy
+   * engine sets its start from it, so the item on air jumped forward.
+   */
+  estimatedMasterFrame(nowMs: number = Date.now()): number {
+    const at = this.lastKnownMasterFrameAtMs;
+    if (!this.masterClockAdvancing || at === null || this.pkg === null) return this.lastKnownMasterFrame;
+    const elapsed = nowMs - at;
+    if (elapsed < 0 || elapsed > START_FRAME_EXTRAPOLATION_MS) return this.lastKnownMasterFrame;
+    return this.lastKnownMasterFrame + Math.floor((elapsed * this.pkg.houseRate) / 1000);
+  }
   previewItem: string | null = null;
   fallbackActive = false;
 
@@ -371,7 +402,7 @@ export class ControlPlaneState {
     }
     this.itemStates.set(itemRef, next);
     this.viewItem = itemRef;
-    this.viewItemStartFrame = this.lastKnownMasterFrame;
+    this.viewItemStartFrame = this.estimatedMasterFrame();
     this.viewItemTakenAtMs = Date.now();
     if (this.previewItem === itemRef) this.previewItem = null;
     this.fallbackActive = false;
@@ -543,7 +574,7 @@ export class ControlPlaneState {
     // its start: the recall leaves it playing. (The snapshot no longer saves
     // a start frame: nothing reads one.)
     if (snap.viewItem !== this.viewItem) {
-      this.viewItemStartFrame = snap.viewItem === null ? null : this.lastKnownMasterFrame;
+      this.viewItemStartFrame = snap.viewItem === null ? null : this.estimatedMasterFrame();
       this.viewItemTakenAtMs = snap.viewItem === null ? null : Date.now();
     }
     this.viewItem = snap.viewItem;
@@ -605,7 +636,11 @@ export class ControlPlaneState {
     this.previewItem = hello.previewItem;
     this.visibleOverlays = new Set(hello.visibleOverlays);
     this.fallbackActive = hello.fallbackActive;
-    if (hello.masterFrame !== null) this.lastKnownMasterFrame = hello.masterFrame;
+    if (hello.masterFrame !== null) {
+      this.lastKnownMasterFrame = hello.masterFrame;
+      this.lastKnownMasterFrameAtMs = nowMs;
+      this.masterClockAdvancing = hello.showRunning;
+    }
     // The take's wall time, back-computed from the engine's clock, so a
     // later resync's viewItemEnd is right (the adopting one sends none).
     this.viewItemTakenAtMs =

@@ -18,6 +18,13 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.11 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **The take's start frame is the engine's clock estimated now.** The control plane's `viewItemStartFrame` at a take (and a recall that changes the View) is the engine's last reported master frame advanced at the house rate by the time since, while the clock advances, for at most 2 s; it was the last report alone, up to a telemetry interval (1 s) behind, which a resync of a healthy engine then applied. The finding was preserved from #131. | §5.9.4 rule 1 | this PR |
+
 v0.4.10 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9: it writes
 down behaviour merged on main, each row naming the PR that built it.
@@ -1197,7 +1204,7 @@ A bounded, fire-and-forget channel plus a reconnecting engine means directives i
 
 1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, **`packagePath`** and **`packageLoadStateVersion`** *(v0.4.8 row 5)*, `viewItem`, **`viewItemStartFrame`**, **`viewItemEnd`** *(v0.4.8 row 3)*, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
 
-   `viewItemStartFrame` is the master frame at which the current View item went on air — §12.1's `t0` — and is REQUIRED whenever `viewItem` is non-null. Without it the snapshot says *what* is on air but not *since when*, so a reconnecting engine restarts a timed item from its first frame: a clip forty seconds in jumps back to zero, on air. It MUST be `null` when `viewItem` is `null`.
+   `viewItemStartFrame` is the master frame at which the current View item went on air — §12.1's `t0` — and is REQUIRED whenever `viewItem` is non-null. Without it the snapshot says *what* is on air but not *since when*, so a reconnecting engine restarts a timed item from its first frame: a clip forty seconds in jumps back to zero, on air. It MUST be `null` when `viewItem` is `null`. The control plane does not see the engine's clock directly: its value is the engine's last reported master frame advanced at the house rate by the time since the report, while the clock advances, for at most the telemetry's freshness window, taken at the take (v0.4.11 row 1). The last report alone trailed the engine by up to a telemetry interval, and a render node sets its item's start from the resync, so a reconnect moved the item on air forward by that much.
 
    **A connect either completes its resync or leaves no registration** (v0.4.8 row 4). ~~If the control plane cannot build or send the snapshot, it MUST close that connection (WebSocket close code 1011, reason `show.resync handshake failed`), hold no registration for it, and surface the failure (the audit's `resync.handshakeFailed`, with the cause).~~ If the control plane cannot build or send the snapshot, it MUST do four things, in this order:
    1. release the connection's registration, so that it holds none from then on;
