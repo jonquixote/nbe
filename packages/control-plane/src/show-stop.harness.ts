@@ -261,7 +261,8 @@ function operatorSocket(port: number): Promise<WebSocket> {
   });
 }
 
-export async function stack(): Promise<Stack> {
+/** `env` adds to (or overrides) the engine's environment: a leg's seam. */
+export async function stack(env: Record<string, string> = {}): Promise<Stack> {
   assert.ok(existsSync(ENGINE_BIN), `the engine binary must be built: ${ENGINE_BIN} (cargo build --release -p nbe-engine)`);
   const state = new ControlPlaneState();
   const warnings: string[] = [];
@@ -291,6 +292,7 @@ export async function stack(): Promise<Stack> {
       // one per ring per load, plus rung 2's re-acquires and a View recovery.
       RUST_LOG: "warn,nbe_engine::directive=info,nbe_engine::render=info",
       NO_COLOR: "1",
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

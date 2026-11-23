@@ -1835,15 +1835,17 @@ jobs:
         timeout-minutes: 5
       - name: "the operator-signals end-to-end ran (R17 spine part A, SPEC v0.4.8 row 8)"
         if: ${{ !cancelled() }}
-        # Four legs on the real engine. The refused start runs HERE: this
-        # runner has no hardware H.264 encoder, so the engine refuses
-        # stream.start (CI's natural seam), never acknowledges it, and the
-        # lane's (b) alert raises after the window and not before. The other
-        # three (a lost stop, an engine restart under a believed-live stream, a
-        # held stop) need the encoder: they skip loudly here and run on the
-        # normative machine. Two floors, rule 8: ran = `# tests` (4),
-        # exercised = `# pass` (1 here: the refused start; 3 on the normative
-        # machine, where the refused start is the one that skips).
+        # Four legs on the real engine. ~~The refused start runs HERE: this
+        # runner has no hardware H.264 encoder~~ (2026-11-23: the runner has
+        # one, so the refused start skipped on every machine and the other
+        # three ran). The refused start's engine now runs with the binary's
+        # seam NBE_FORCE_NO_ENCODER=1 (the encoder reported absent): it
+        # refuses stream.start, never acknowledges it, and the lane's (b)
+        # alert raises after the window and not before. The other three (a
+        # lost stop, an engine restart under a believed-live stream, a held
+        # stop) need the encoder this runner has. Two floors, rule 8: ran =
+        # `# tests` (4), exercised = `# pass` (4: a leg that skips here has
+        # lost its coverage).
         run: |
           set -u
           out=$(node --import tsx --test src/operator-signals.e2e.ts 2>&1) && rc=0 || rc=$?
@@ -1855,10 +1857,10 @@ jobs:
           failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
           case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
           case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
-          echo "operator-signals e2e: ran=$ran exercised=$exercised skipped=${skipped:-?} failed=${failed:-?} (floors ran>=4 exercised>=1)"
+          echo "operator-signals e2e: ran=$ran exercised=$exercised skipped=${skipped:-?} failed=${failed:-?} (floors ran>=4 exercised>=4)"
           if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL operator-signals e2e: expected 0 failures"; exit 1; fi
           if [ "$ran" -lt 4 ]; then echo "FAIL operator-signals e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
-          if [ "$exercised" -lt 1 ]; then echo "FAIL operator-signals e2e: expected at least 1 test (the refused start) to execute, got $exercised"; exit 1; fi
+          if [ "$exercised" -lt 4 ]; then echo "FAIL operator-signals e2e: expected all 4 legs to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
       - name: "the start-frame end-to-end ran (SPEC v0.4.11 row 1, #203)"
         if: ${{ !cancelled() }}

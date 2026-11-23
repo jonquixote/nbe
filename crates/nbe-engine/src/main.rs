@@ -55,6 +55,19 @@ async fn main() -> anyhow::Result<()> {
     // boundaries — not a spin. It renders even while the clock is STOPPED so
     // the operator always has a picture (the fallback slate).
     let mut render = RenderLoop::new(state.clone()).await?;
+    // A test seam for the real binary: `NBE_FORCE_NO_ENCODER=1` makes the
+    // encoder probe answer "none", as `record::set_force_no_encoder` does for
+    // the crate's tests, so `record.start` and `stream.start` are refused as
+    // on a machine without a hardware H.264 encoder. Every machine the
+    // operator-signal e2e runs on now has one (CI's runners included), so
+    // without this its refused-start leg ran on no real engine. Set before
+    // the probe is warmed; announced, never silent.
+    if std::env::var("NBE_FORCE_NO_ENCODER").as_deref() == Ok("1") {
+        nbe_engine::record::set_force_no_encoder(true);
+        tracing::warn!(
+            "NBE_FORCE_NO_ENCODER=1: the hardware encoder is reported absent (a test seam)"
+        );
+    }
     // Warm the hardware-encoder probe off the directive path: the first
     // answer opens a real VideoToolbox session (~190 ms), and a positive one
     // is cached for the process (see `record::session::encoder_available`),
