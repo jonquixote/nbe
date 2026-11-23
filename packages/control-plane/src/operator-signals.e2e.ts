@@ -3,9 +3,12 @@
 //! by row, and `alerts-server.test.ts` drives a real server with a scripted
 //! engine. These drive the real engine binary into each case:
 //! - **refused start**: the engine refuses `stream.start` (no hardware H.264
-//!   encoder, CI's natural seam), never acknowledges it, and (b) raises after
-//!   the window and not before. On a machine whose encoder opens there is
-//!   nothing to refuse, so the leg skips loudly there.
+//!   encoder), never acknowledges it, and (b) raises after the window and not
+//!   before. ~~On a machine whose encoder opens there is nothing to refuse, so
+//!   the leg skips loudly there.~~ (2026-11-23: CI's runners have an encoder
+//!   too, so the leg skipped everywhere; its engine now runs with the binary's
+//!   seam `NBE_FORCE_NO_ENCODER=1`, which reports the encoder absent, and the
+//!   leg runs on every machine.)
 //! - **lost stop**: a live stream's `stream.stop` never reaches the engine (the
 //!   loss a dropped connection causes). (b) raises, and its reason says the
 //!   engine still reads the stream live while the control plane believes it
@@ -143,7 +146,7 @@ async function streamOrSkip(s: Stack, port: number, skip: (why: string) => void)
 }
 
 test("[lane] refused start: an engine that refuses stream.start never acknowledges it, and (b) raises after the window, not before", async (t) => {
-  const s = await stack();
+  const s = await stack({ NBE_FORCE_NO_ENCODER: "1" });
   const sink = await startRtmpSink();
   t.after(async () => {
     sink.close();
@@ -159,11 +162,7 @@ test("[lane] refused start: an engine that refuses stream.start never acknowledg
   const sentAt = Date.now();
   const v = await ok(s, "stream.start", { url: `rtmp://127.0.0.1:${sink.port}/live/lane` });
   const before = ids(s);
-  if (await s.server.awaitApplied(v, 1_500)) {
-    console.log("SKIP: the engine opened its encoder and acknowledged stream.start; the refusal is CI's natural seam");
-    t.skip("this machine has a hardware H.264 encoder: nothing to refuse");
-    return;
-  }
+  assert.ok(!(await s.server.awaitApplied(v, 1_500)), "the engine, its encoder reported absent, does not acknowledge stream.start");
   assert.ok(refusedByEngine(s), `no ack and no capability refusal (last log: ${JSON.stringify(s.log.slice(-3))})`);
   const insideWindow = ids(s);
   assert.ok(await waitFor(() => ids(s).includes("command.unacknowledged.stream"), WINDOW + 2_000), "the alert raises");
