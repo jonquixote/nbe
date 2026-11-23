@@ -781,3 +781,120 @@ async fn r20_a_streamed_clip_held_past_its_end_keeps_its_last_frame_resident() {
         "R20: the held frame stays resident, so holding it is no miss"
     );
 }
+
+/// Restores the read-ahead's stage share however the test ends.
+struct StageShare;
+
+impl Drop for StageShare {
+    fn drop(&mut self) {
+        nbe_engine::render::force_read_ahead_stage_share(None);
+    }
+}
+
+/// The read-ahead's stage share (`READ_AHEAD_STAGE_SHARE`) at its limit,
+/// zero: every upload is past it, so an on-air clip takes only its first
+/// upload of a frame, plus any frame its window needs soon. That bound is
+/// what keeps CI's 7-8 ms copies from filling a frame (four did: the dress's
+/// ENGINE CPU drops of 2026-11-22). Steady play must still never miss: one
+/// upload a frame keeps up with one frame drawn.
+#[tokio::test]
+async fn r20_past_the_stage_share_steady_play_still_never_misses() {
+    let _lane = LANE.write().await;
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: the read-ahead did not settle at {PAST_THE_RING}"
+    );
+    let before = misses(&render);
+    nbe_engine::render::force_read_ahead_stage_share(Some(0.0));
+    let _restore = StageShare;
+    let mut most = 0usize;
+    let mut uploads = 0usize;
+    let mut shortest = 0u64;
+    let length = decoded.len() as u64;
+    for n in PAST_THE_RING..length {
+        // Paced near the house rate, as production's tick is.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let r = render.render_frame(n, None);
+        most = most.max(r.read_ahead_uploads);
+        uploads += r.read_ahead_uploads;
+        // The first upload of each frame keeps the window full as it plays:
+        // without it, the window would drain to the urgent margin first.
+        for w in render.clip_window_report(n) {
+            let end = (w.base + w.window_len as u64).min(length);
+            shortest = shortest.max(w.first_missing.map_or(0, |m| end - m));
+        }
+    }
+    println!("R20 STAGE SHARE 0: {uploads} uploads, at most {most} in a frame, the window at most {shortest} short");
+    assert_eq!(
+        misses(&render),
+        before,
+        "R20: past the stage share, steady play must miss nothing"
+    );
+    assert!(
+        most <= 2,
+        "R20: past the stage share a frame uploads its first frame and those its window needs soon, at most 2 here; saw {most}"
+    );
+    assert!(uploads > 0, "R20: the window refilled as the clip played");
+    assert!(
+        shortest <= 4,
+        "R20: past the stage share the window must stay full as the clip plays (one upload a frame), \
+         not drain to the urgent margin; it fell {shortest} frames short"
+    );
+}
+
+/// The stage share's two exceptions, each where it binds: several frames
+/// ready at once. Past the share (forced to zero) an on-air clip uploads its
+/// first frame of the tick, and beyond it only a frame its window needs within
+/// two of its base.
+#[tokio::test]
+async fn r20_past_the_stage_share_a_clip_uploads_its_first_frame_and_what_it_needs_soon() {
+    let _lane = LANE.write().await;
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: the read-ahead did not settle at {PAST_THE_RING}"
+    );
+    // The decoder holds the frame past the window and fills its channel.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    nbe_engine::render::force_read_ahead_stage_share(Some(0.0));
+    let _restore = StageShare;
+
+    // Four slots free at once, frames ready: past the share, only the first.
+    let skip = render.render_frame(PAST_THE_RING + 4, None);
+    println!(
+        "R20 STAGE SHARE 0, four slots free: {} upload(s); {}",
+        skip.read_ahead_uploads,
+        window_facts(&render, PAST_THE_RING + 4)
+    );
+    assert_eq!(
+        skip.read_ahead_uploads, 1,
+        "R20: past the stage share a clip with a full-enough window uploads only its first frame of the tick"
+    );
+
+    // A re-take back to the first frame past the head: the window no longer
+    // holds it and the decoder restarts there (this frame holds, a counted
+    // miss). Once it has frames ready the window is empty at its base: the
+    // first upload, and the next frame it needs (urgent), past the share.
+    const BACK: u64 = 31;
+    render.render_frame(BACK, None);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let jump = render.render_frame(BACK, None);
+    println!(
+        "R20 STAGE SHARE 0, after a re-take: {} upload(s); {}",
+        jump.read_ahead_uploads,
+        window_facts(&render, BACK)
+    );
+    assert_eq!(
+        jump.read_ahead_uploads, 2,
+        "R20: past the stage share a window empty at its base takes its first upload and the frame it needs next"
+    );
+}
