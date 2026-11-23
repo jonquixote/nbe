@@ -1836,6 +1836,26 @@ jobs:
           if [ "$ran" -lt 4 ]; then echo "FAIL operator-signals e2e: expected at least 4 tests to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL operator-signals e2e: expected at least 1 test (the refused start) to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the start-frame end-to-end ran (SPEC v0.4.11 row 1, #203)"
+        if: ${{ !cancelled() }}
+        # One leg on the real engine, no encoder needed: a take timed just
+        # before a telemetry report, the engine's socket severed through the
+        # tap, and its reconnect's hello (the start it holds) against the
+        # resync (the start the control plane took). Two floors, rule 8:
+        # ran = `# tests` (1), exercised = `# pass` (1).
+        run: |
+          set -u
+          out=$(node --import tsx --test src/start-frame.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok)|^# |START-FRAME" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL start-frame.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "start-frame e2e: ran=$ran exercised=$exercised (floors ran>=1 exercised>=1)"
+          if [ "$ran" -lt 1 ]; then echo "FAIL start-frame e2e: expected at least 1 test to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 1 ]; then echo "FAIL start-frame e2e: expected the test to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the engine handlers end-to-end ran (sprint PR A: graphic, breaking, ticker, clock, item.stop, preview.set)"
         if: ${{ !cancelled() }}
         # One recorded take on the real engine; each test decodes its window
