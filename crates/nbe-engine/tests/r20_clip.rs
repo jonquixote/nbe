@@ -846,3 +846,55 @@ async fn r20_past_the_stage_share_steady_play_still_never_misses() {
          not drain to the urgent margin; it fell {shortest} frames short"
     );
 }
+
+/// The stage share's two exceptions, each where it binds: several frames
+/// ready at once. Past the share (forced to zero) an on-air clip uploads its
+/// first frame of the tick, and beyond it only a frame its window needs within
+/// two of its base.
+#[tokio::test]
+async fn r20_past_the_stage_share_a_clip_uploads_its_first_frame_and_what_it_needs_soon() {
+    let _lane = LANE.write().await;
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: the read-ahead did not settle at {PAST_THE_RING}"
+    );
+    // The decoder holds the frame past the window and fills its channel.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    nbe_engine::render::force_read_ahead_stage_share(Some(0.0));
+    let _restore = StageShare;
+
+    // Four slots free at once, frames ready: past the share, only the first.
+    let skip = render.render_frame(PAST_THE_RING + 4, None);
+    println!(
+        "R20 STAGE SHARE 0, four slots free: {} upload(s); {}",
+        skip.read_ahead_uploads,
+        window_facts(&render, PAST_THE_RING + 4)
+    );
+    assert_eq!(
+        skip.read_ahead_uploads, 1,
+        "R20: past the stage share a clip with a full-enough window uploads only its first frame of the tick"
+    );
+
+    // A re-take back to the first frame past the head: the window no longer
+    // holds it and the decoder restarts there (this frame holds, a counted
+    // miss). Once it has frames ready the window is empty at its base: the
+    // first upload, and the next frame it needs (urgent), past the share.
+    const BACK: u64 = 31;
+    render.render_frame(BACK, None);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let jump = render.render_frame(BACK, None);
+    println!(
+        "R20 STAGE SHARE 0, after a re-take: {} upload(s); {}",
+        jump.read_ahead_uploads,
+        window_facts(&render, BACK)
+    );
+    assert_eq!(
+        jump.read_ahead_uploads, 2,
+        "R20: past the stage share a window empty at its base takes its first upload and the frame it needs next"
+    );
+}
