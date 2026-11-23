@@ -60,7 +60,7 @@ public enum AlertMeaning {
         "engine.unidentified": Entry(
             title: "ENGINE SHOW NOT IDENTIFIED",
             meaning: "After a restart, the control plane cannot identify the show the engine is running; it has not touched it, and the picture stays.",
-            action: "Either choice ends what is on air now: load a show to put it in its place, or unload to clear it. Wait for a break if you can."),
+            action: "An admin can adopt it as it runs (show.adopt, force). Loading a show or unloading ends what is on air: wait for a break if you can."),
         "record.failed": Entry(
             title: "RECORDING STOPPED",
             meaning: "The take stopped recording on its own; the file keeps what was written before it stopped.",
