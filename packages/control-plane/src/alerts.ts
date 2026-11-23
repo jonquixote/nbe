@@ -62,6 +62,10 @@ export const ALERT = {
   // believes it is recording. Before the engine reported its take, this was
   // invisible until the operator's record.stop.
   recordFailed: { id: "record.failed", auditEvent: "record.failed" },
+  // Review4 case C: a control plane that cannot identify the show a running
+  // engine holds (restarted with no usable journal, or another package) holds
+  // its resync, which would stop that show, until the operator takes control.
+  engineUnidentified: { id: "engine.unidentified", auditEvent: "engine.unidentified" },
 } as const;
 
 /** How long a ticker change has to land before the engine's count is read
@@ -250,6 +254,30 @@ export class OperatorSignals {
    */
   onTickerChanged(): void {
     this.tickerChangedAt = this.i.now();
+  }
+
+  /**
+   * Review4 case C: raise (`reason`) or clear (`null`, with the `cause`) the
+   * alert for an engine running a show this control plane cannot identify.
+   * The server holds that engine's resync meanwhile; the picture stays.
+   */
+  unidentified(reason: string | null, cause: string | null): void {
+    if (reason === null) {
+      this.i.lane.clear(ALERT.engineUnidentified.id, cause ?? "resolved");
+      return;
+    }
+    const why: Record<string, string> = {
+      noJournal: "this control plane has no journal to identify it by",
+      identity: "it is not the package the journal names",
+      journalNotRunning: "the journal says no show was running",
+      engineHasNoPackage: "the engine reports no package",
+      index: "the package the engine names cannot be read",
+    };
+    this.i.lane.raise(
+      ALERT.engineUnidentified,
+      "critical",
+      `the engine is running a show this control plane cannot identify (${why[reason] ?? reason}). Nothing is resynced and the picture stays; show.load or show.unload takes control`,
+    );
   }
 
   /** An output command (or `show.stop`) was accepted at `version`. */

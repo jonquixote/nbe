@@ -129,10 +129,17 @@ interface Reissue {
   stream: Record<string, unknown> | null;
 }
 
+/** Review4: what a restarted control plane does with the engine's hello. */
+type RecoveryDecision = { kind: "adopt" } | { kind: "resync" } | { kind: "refuse"; reason: string };
+
 interface ClientSession {
   /** Review4 step 7b: a render connection to a restarted control plane,
    * holding its handshake until the engine's hello arrives (or a timeout). */
   awaitingHello?: { handshake: (adopted: boolean) => void; timer: ReturnType<typeof setTimeout> } | null;
+  /** Review4 case C: a handshake refused because the engine runs a show this
+   * control plane cannot identify; completed by the operator's `show.load` or
+   * `show.unload` (the operator taking control). */
+  heldHandshake?: (() => void) | null;
   role: Role;
   tokenId: string;
   telemetryTimer: ReturnType<typeof setInterval> | null;
@@ -212,6 +219,15 @@ export interface ServerOptions {
    * hello arrives.
    */
   restart?: { journal: JournalBody; lockMs?: number; helloWaitMs?: number };
+  /**
+   * Review4 case C without a journal: a control plane with no journal to
+   * restore (a first start, or both journal files lost) waits, bounded, for
+   * the hello on the first render connection it ever sees, and holds the
+   * resync if that engine is running a show (a resync with nothing loaded
+   * would stop it). Production sets it (index.ts); tests that script a render
+   * client without a hello leave it off and get the connect-time resync.
+   */
+  awaitFirstHello?: { helloWaitMs?: number };
   /** Inject a specific bridge (tests use MockRenderBridge); defaults to the production WsRenderBridge fan-out. */
   bridge?: RenderBridge;
   /** SPEC §16.1 graceful window; shortened in tests. Default 2000 ms. */
@@ -373,6 +389,41 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     }
   }
 
+  /** Review4 case C: hold this render connection unregistered (no resync, so
+   * nothing stops the engine's show; the picture stays), raise the alert, and
+   * audit the refusal. The operator's `show.load` or `show.unload` releases it. */
+  function holdUnidentified(session: ClientSession, handshake: () => void, reason: string, hello: EngineHelloFrame): void {
+    session.heldHandshake = handshake;
+    unidentifiedHold = { reason };
+    signals.unidentified(reason, null);
+    try {
+      audit.record({
+        kind: "command",
+        command: "engine:hello",
+        event: "controlPlane.refused",
+        detail: { reason, engineInstanceId: hello.engineInstanceId, package: hello.package, viewItem: hello.viewItem },
+        stateVersionBefore: state.stateVersion,
+        stateVersionAfter: state.stateVersion,
+      });
+    } catch {
+      // A row that cannot be written is R18's alert to announce.
+    }
+  }
+  function releaseHeldHandshakes(command: string): void {
+    // The operator's choice ends the hold even with no engine connected now:
+    // the control plane's state is the one to resync from here on.
+    let released = unidentifiedHold !== null;
+    unidentifiedHold = null;
+    for (const client of clients.values()) {
+      const held = client.heldHandshake;
+      if (!held || client.closed) continue;
+      client.heldHandshake = null;
+      held();
+      released = true;
+    }
+    if (released) signals.unidentified(null, `the operator took control (${command})`);
+  }
+
   function notAdopted(reason: string, detail: Record<string, unknown>): void {
     recovery!.resolved = true;
     recoveryRow("controlPlane.notAdopted", { reason, ...detail }, state.stateVersion);
@@ -389,7 +440,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
    * case D (UNLOADED; a saved file alone never starts a show), anything else
    * case C, whose refusal is a later PR's (7b-ii). Returns whether it adopted.
    */
-  function recover(hello: EngineHelloFrame): boolean {
+  function recover(hello: EngineHelloFrame): RecoveryDecision {
     const j = recovery!.journal;
     const body = j.journal;
     const reason = !hello.showRunning
@@ -408,14 +459,17 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     };
     if (reason !== null) {
       notAdopted(reason, identities);
-      return false;
+      // Case D: the engine runs nothing; today's resync is right. Case C: it
+      // runs a show this control plane cannot identify; a resync would stop
+      // it (a non-RUNNING snapshot stops the engine's clock), so refuse.
+      return reason === "engineNotRunning" ? { kind: "resync" } : { kind: "refuse", reason };
     }
     let pkg: PackageInfo;
     try {
       pkg = indexPackage(hello.package!.path);
     } catch (err) {
       notAdopted("index", { ...identities, error: err instanceof Error ? err.message : String(err) });
-      return false;
+      return { kind: "refuse", reason: "index" };
     }
     const before = state.stateVersion;
     const out = state.adopt(pkg, hello, body, Date.now());
@@ -439,7 +493,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       },
       before,
     );
-    return true;
+    return { kind: "adopt" };
   }
 
   // -- Review4 step 7c: re-issue the outputs after an engine restart -------
@@ -507,6 +561,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   // not. (Adoption, case B, and what a restarted engine is re-issued, are
   // steps 7b and 7c.)
   let lastEngineInstanceId: string | null = null;
+  /** Review4 case C: in force from a refusal until the operator takes
+   * control (show.load or show.unload). While it is, every render connection
+   * waits for its hello, so an engine that reconnects mid-hold is held again
+   * rather than resynced off air. */
+  let unidentifiedHold: { reason: string } | null = null;
+  /** A render connection has been resynced by this process. */
+  let engineResynced = false;
   let engineGoneAt: number | null = null;
   function noteHello(render: NonNullable<ClientSession["render"]>, hello: EngineHelloFrame): void {
     render.hello = hello;
@@ -727,6 +788,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
       rememberOutputStart(command, envelope.payload);
+      if (command === "show.load" || command === "show.unload") releaseHeldHandshakes(command);
       // §5.9.5: a `show.stop` that returns with outputs still active was not
       // acknowledged, and they are held. The lane announces it (v0.4.8 row 8).
       if (command === "show.stop" && state.outputsActive()) signals.held(out.stateVersion);
@@ -1051,6 +1113,10 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const forget = (): void => {
       if (session.awaitingHello) clearTimeout(session.awaitingHello.timer);
       session.awaitingHello = null;
+      if (session.heldHandshake) {
+        session.heldHandshake = null;
+        signals.unidentified(null, "the engine disconnected");
+      }
       if (session.render !== null && session.render.hello !== undefined) engineGoneAt = Date.now();
       session.closed = true;
       stopTelemetry();
@@ -1103,6 +1169,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       try {
         session.render = { registration: wsBridge.register(renderSender), lastApplied: null, acked: [], resyncs: [] };
         if (!sendResync(session, adopted)) throw new Error("the socket did not accept show.resync (a failed or refused send)");
+        engineResynced = true;
         signals.onRegistered();
         if (adopted) broadcastStateChange(state.stateVersion, ["engine:adopted"]);
       } catch (err) {
@@ -1123,7 +1190,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
         ws.close(1011, "show.resync handshake failed");
       }
       };
-      if (recovering()) {
+      const firstEngine =
+        !recovering() && ((opts.awaitFirstHello !== undefined && !engineResynced) || unidentifiedHold !== null);
+      if (recovering() || firstEngine) {
         // Review4 step 7b: a restarted control plane resyncs nothing until
         // the engine says what it holds. The engine holds its output until a
         // resync (§5.9.4 rule 2), and this connection is not registered, so
@@ -1136,7 +1205,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
             session.awaitingHello = null;
             if (recovering()) notAdopted("noHello", {});
             handshake(false);
-          }, opts.restart?.helloWaitMs ?? 2000),
+          }, (firstEngine ? (opts.awaitFirstHello?.helloWaitMs ?? opts.restart?.helloWaitMs) : opts.restart?.helloWaitMs) ?? 2000),
         };
       } else handshake(false);
     }
@@ -1254,7 +1323,17 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           if (waiting) {
             session.awaitingHello = null;
             clearTimeout(waiting.timer);
-            waiting.handshake(recovering() ? recover(frame) : false);
+            // Review4 case C: a restarted control plane that cannot adopt
+            // (recover() says why), or one with no journal at all whose first
+            // engine is running a show it cannot know (awaitFirstHello).
+            const decision: RecoveryDecision = recovering()
+              ? recover(frame)
+              : frame.showRunning && state.showState !== "RUNNING"
+                ? { kind: "refuse", reason: unidentifiedHold?.reason ?? "noJournal" }
+                : { kind: "resync" };
+            if (decision.kind === "resync") unidentifiedHold = null;
+            if (decision.kind === "refuse") holdUnidentified(session, () => waiting.handshake(false), decision.reason, frame);
+            else waiting.handshake(decision.kind === "adopt");
           }
           if (session.render !== null) noteHello(session.render, frame);
         } else if (frame.kind === "resyncRequest") {
