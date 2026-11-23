@@ -22,14 +22,14 @@ import { tempDir } from "./test-tmp.js";
 const ADMIN = "admin-token";
 const RENDER = "render-token";
 
-function makePackage(): string {
+function makePackage(automation?: unknown[]): string {
   const dir = tempDir("nbe-adopt-");
   mkdirSync(join(dir, "media"), { recursive: true });
   for (const f of ["fallback", "A1", "A2", "B1"]) writeFileSync(join(dir, "media", `${f}.png`), "png");
   writeFileSync(
     join(dir, "manifest.json"),
     JSON.stringify({
-      manifestVersion: "0.3",
+      manifestVersion: automation ? "0.4" : "0.3",
       network: { id: "nbe", name: "Test" },
       show: {
         id: "show-1",
@@ -46,6 +46,7 @@ function makePackage(): string {
         items: ["A1", "A2", "B1"].map((id) => ({ id, kind: "sceneRef", sceneRef: `SCN_${id}`, durationFrames: 900 })),
       },
       control: { bindings: [] },
+      ...(automation ? { automation } : {}),
     }),
   );
   return dir;
@@ -115,9 +116,16 @@ interface Rig {
 
 async function rig(
   t: { after: (fn: () => void | Promise<void>) => void },
-  opts: { restart?: boolean; journalOver?: Record<string, unknown>; lockMs?: number; helloWaitMs?: number; awaitFirstHello?: boolean } = {},
+  opts: {
+    restart?: boolean;
+    journalOver?: Record<string, unknown>;
+    lockMs?: number;
+    helloWaitMs?: number;
+    awaitFirstHello?: boolean;
+    automation?: unknown[];
+  } = {},
 ): Promise<Rig> {
-  const pkgPath = makePackage();
+  const pkgPath = makePackage(opts.automation);
   const auditPath = join(tempDir("nbe-adopt-audit-"), "audit.jsonl");
   const state = new ControlPlaneState();
   state.stateVersion = 40; // as restore() leaves it: the journal's version, UNLOADED
@@ -487,4 +495,25 @@ test("show.adopt with no render node held is refused; with no journal, the held 
   assert.ok(await until(() => resyncs(e.directives).length === 1));
   assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "RUNNING", "adopted, not stopped");
   assert.equal(r.state.showState, "RUNNING");
+});
+
+test("show.adopt fires no automation rule: an adoption is not a transition on air", async (t) => {
+  const rule = (id: string, trigger: Record<string, unknown>) => ({ id, trigger, action: { command: "marker.add", payload: { name: `by-${id}` } } });
+  const r = await rig(t, {
+    restart: false,
+    awaitFirstHello: true,
+    automation: [
+      rule("on-air", { kind: "stateChange", params: { field: "showState", to: "RUNNING" } }),
+      rule("on-view", { kind: "stateChange", params: { field: "viewItem" } }),
+    ],
+  });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held");
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.adopt", { force: true })).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1));
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(r.state.showState, "RUNNING");
+  assert.deepEqual(r.rows().filter((x) => x["kind"] === "automation"), [], "no rule heard the adoption");
+  assert.deepEqual(r.state.markers, [], "no rule's action ran");
 });
