@@ -184,7 +184,7 @@ let state: ControlPlaneState;
 // response waits for it, as it does in production.
 let persistence: StatePersistence;
 let journalPath: string;
-const journalWaits: Array<{ command: string; ms: number }> = [];
+const journalWaits: Array<{ command: string; ms: number; atUtc: string }> = [];
 let journalFailures = 0;
 /** The control plane's audit file: step 9 reads its `belief.corrected` row (D6). */
 let auditFile: string;
@@ -402,10 +402,14 @@ before(async () => {
     const committed = persistence.onCommitted.bind(persistence);
     persistence.onCommitted = (command: string) => {
       const t0 = performance.now();
+      // Wall time, UTC to the millisecond, as the engine log's drop lines
+      // read: whether a drop falls inside a journal write is a question the
+      // log can answer.
+      const atUtc = new Date().toISOString().slice(11, 23);
       const wait = committed(command);
       if (wait === undefined) return;
       return wait.then(() => {
-        journalWaits.push({ command, ms: performance.now() - t0 });
+        journalWaits.push({ command, ms: performance.now() - t0, atUtc });
       });
     };
   }
@@ -2260,5 +2264,8 @@ test("[item 4] the production journal: every write landed, the file on disk is t
   console.log(
     `journal: ${ms.length} on-air writes waited on; p50 ${at(0.5).toFixed(1)} ms, p95 ${at(0.95).toFixed(1)} ms, max ${worst.ms.toFixed(1)} ms (${worst.command})`,
   );
+  // Diagnostic: each write's start (UTC) and length, to set beside the drop
+  // lines' times.
+  console.log(`journal writes: ${journalWaits.map((w) => `${w.atUtc}+${w.ms.toFixed(0)}ms ${w.command}`).join(", ")}`);
   assert.ok(worst.ms < 2000, `an on-air response waited ${worst.ms.toFixed(0)} ms for the journal (${worst.command})`);
 });
