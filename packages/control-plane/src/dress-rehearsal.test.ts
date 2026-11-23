@@ -185,6 +185,8 @@ let state: ControlPlaneState;
 let persistence: StatePersistence;
 let journalPath: string;
 const journalWaits: Array<{ command: string; ms: number; atUtc: string }> = [];
+/** Every write, debounced ones included: start (UTC) and length. */
+const journalFlushes: Array<{ atUtc: string; ms: number }> = [];
 let journalFailures = 0;
 /** The control plane's audit file: step 9 reads its `belief.corrected` row (D6). */
 let auditFile: string;
@@ -395,10 +397,14 @@ before(async () => {
   persistence = new StatePersistence(state, journalPath);
   {
     const flush = persistence.flush.bind(persistence);
-    persistence.flush = () =>
-      flush().then(() => {
+    persistence.flush = () => {
+      const t0 = performance.now();
+      const atUtc = new Date().toISOString().slice(11, 23);
+      return flush().then(() => {
+        journalFlushes.push({ atUtc, ms: performance.now() - t0 });
         if (!persistence.writeOk()) journalFailures += 1;
       });
+    };
     const committed = persistence.onCommitted.bind(persistence);
     persistence.onCommitted = (command: string) => {
       const t0 = performance.now();
@@ -2267,5 +2273,6 @@ test("[item 4] the production journal: every write landed, the file on disk is t
   // Diagnostic: each write's start (UTC) and length, to set beside the drop
   // lines' times.
   console.log(`journal writes: ${journalWaits.map((w) => `${w.atUtc}+${w.ms.toFixed(0)}ms ${w.command}`).join(", ")}`);
+  console.log(`journal flushes (every write, debounced included): ${journalFlushes.length}: ${journalFlushes.map((w) => `${w.atUtc}+${w.ms.toFixed(0)}ms`).join(", ")}`);
   assert.ok(worst.ms < 2000, `an on-air response waited ${worst.ms.toFixed(0)} ms for the journal (${worst.command})`);
 });
