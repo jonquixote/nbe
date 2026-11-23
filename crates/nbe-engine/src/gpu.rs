@@ -203,6 +203,53 @@ impl StageSplit {
     }
 }
 
+/// One frame's staging buffer, taken from the pool and mapped.
+pub struct Staging {
+    pub buffer: wgpu::Buffer,
+    pub view: wgpu::BufferViewMut,
+    pub stride: u32,
+    /// Its create and map times (stage (a3)).
+    pub split: StageSplit,
+}
+
+/// Test seam: a delay added to every staging copy ([`copy_rows`]), wherever
+/// it runs, in microseconds (0: none). Production never sets it.
+static FORCED_COPY_DELAY_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test seam: make every staging copy take at least this much longer (`None`
+/// restores it). Stands in for a copy that stalls (CI's VM: one took 55.6 ms).
+#[doc(hidden)]
+pub fn force_copy_delay(delay: Option<std::time::Duration>) {
+    FORCED_COPY_DELAY_US.store(
+        delay.map_or(0, |d| d.as_micros() as u64),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// Copy one tightly packed RGBA frame into a mapped staging view whose rows
+/// are `stride` bytes apart.
+pub fn copy_rows(
+    view: &mut wgpu::BufferViewMut,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+) {
+    let delay = FORCED_COPY_DELAY_US.load(std::sync::atomic::Ordering::SeqCst);
+    if delay > 0 {
+        std::thread::sleep(std::time::Duration::from_micros(delay));
+    }
+    let row = (width * 4) as usize;
+    if stride as usize == row {
+        view.copy_from_slice(&rgba[..row * height as usize]);
+    } else {
+        for (y, src) in rgba.chunks_exact(row).take(height as usize).enumerate() {
+            let at = y * stride as usize;
+            view.slice(at..at + row).copy_from_slice(src);
+        }
+    }
+}
+
 /// Staging buffers for uploads in the frame path (SPEC §12.8.1's read-ahead),
 /// bounded and reused.
 ///
@@ -271,22 +318,13 @@ impl UploadPool {
         }
     }
 
-    /// Record an upload of `rgba` into `tex` on `enc`, through a free buffer.
-    /// `None`, with nothing recorded, when every buffer is in flight; else
-    /// where the stage's time went (read-ahead stage (a3), log-only). The
-    /// copy lands when `enc` is submitted; call [`submitted`](Self::submitted)
-    /// after that.
-    pub fn stage(
-        &mut self,
-        gpu: &Gpu,
-        enc: &mut wgpu::CommandEncoder,
-        tex: &wgpu::Texture,
-        width: u32,
-        height: u32,
-        rgba: &[u8],
-    ) -> Option<StageSplit> {
+    /// Take a free mapped buffer for one `width` x `height` RGBA frame, with
+    /// its mapped view (the copy may happen on another thread: the view is
+    /// `Send`). `None` when every buffer is in flight. The caller copies the
+    /// frame into the view ([`copy_rows`]), drops the view, then calls
+    /// [`finish`](Self::finish), or [`recycle`](Self::recycle) to abandon it.
+    pub fn begin(&mut self, gpu: &Gpu, width: u32, height: u32) -> Option<Staging> {
         let mut split = StageSplit::default();
-        let row = (width * 4) as usize;
         let stride = aligned_bytes_per_row(width * 4);
         let size = stride as u64 * height as u64;
         let buffer = match self.free.iter().position(|b| b.size() >= size) {
@@ -313,27 +351,36 @@ impl UploadPool {
                 b
             }
         };
-        {
-            let mapped = std::time::Instant::now();
-            let mut view = buffer
-                .slice(..size)
-                .get_mapped_range_mut()
-                .expect("a free staging buffer is mapped");
-            split.map = mapped.elapsed();
-            let copied = std::time::Instant::now();
-            if stride as usize == row {
-                view.copy_from_slice(&rgba[..row * height as usize]);
-            } else {
-                for (y, src) in rgba.chunks_exact(row).take(height as usize).enumerate() {
-                    let at = y * stride as usize;
-                    view.slice(at..at + row).copy_from_slice(src);
-                }
-            }
-            split.copy = copied.elapsed();
-        }
+        let mapped = std::time::Instant::now();
+        let view = buffer
+            .slice(..size)
+            .get_mapped_range_mut()
+            .expect("a free staging buffer is mapped");
+        split.map = mapped.elapsed();
+        Some(Staging {
+            buffer,
+            view,
+            stride,
+            split,
+        })
+    }
+
+    /// The frame is in the buffer and its view dropped: unmap it and record
+    /// its copy into `tex` on `enc`. The copy lands when `enc` is submitted;
+    /// call [`submitted`](Self::submitted) after that. Returns the unmap and
+    /// record times.
+    pub fn finish(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        buffer: wgpu::Buffer,
+        tex: &wgpu::Texture,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> (std::time::Duration, std::time::Duration) {
         let unmapped = std::time::Instant::now();
         buffer.unmap();
-        split.unmap = unmapped.elapsed();
+        let unmap = unmapped.elapsed();
         let recorded = std::time::Instant::now();
         enc.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
@@ -356,8 +403,45 @@ impl UploadPool {
                 depth_or_array_layers: 1,
             },
         );
-        split.record = recorded.elapsed();
+        let record = recorded.elapsed();
         self.staged.push(buffer);
+        (unmap, record)
+    }
+
+    /// A buffer whose copy was abandoned (its frame no longer wanted): its
+    /// view dropped, it goes back through the next submission like any staged
+    /// buffer, and is mapped again for reuse.
+    pub fn recycle(&mut self, buffer: wgpu::Buffer) {
+        buffer.unmap();
+        self.staged.push(buffer);
+    }
+
+    /// Record an upload of `rgba` into `tex` on `enc`, through a free buffer,
+    /// on the calling thread (the load boundary's prime). `None`, with nothing
+    /// recorded, when every buffer is in flight; else where the stage's time
+    /// went (read-ahead stage (a3), log-only).
+    pub fn stage(
+        &mut self,
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        tex: &wgpu::Texture,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Option<StageSplit> {
+        let Staging {
+            buffer,
+            mut view,
+            stride,
+            mut split,
+        } = self.begin(gpu, width, height)?;
+        let copied = std::time::Instant::now();
+        copy_rows(&mut view, rgba, width, height, stride);
+        split.copy = copied.elapsed();
+        drop(view);
+        let (unmap, record) = self.finish(enc, buffer, tex, width, height, stride);
+        split.unmap = unmap;
+        split.record = record;
         Some(split)
     }
 

@@ -373,6 +373,11 @@ impl Cadence {
                     ms(report.render_phases.read_ahead_detail.stage_split.record),
                 read_ahead_stage_max_ms = ms(report.render_phases.read_ahead_detail.stage_max),
                 read_ahead_created = report.render_phases.read_ahead_detail.created,
+                // The copies the copy thread finished, recorded this tick,
+                // and their time on that thread (not this one's).
+                read_ahead_copies_done = report.render_phases.read_ahead_detail.copies_done,
+                read_ahead_copied_off_thread_ms =
+                    ms(report.render_phases.read_ahead_detail.copied_off_thread),
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 // Read-ahead stage (a): the Preview's own phases, as the View's.
@@ -1097,6 +1102,8 @@ mod tests {
                         // Read-ahead stage (a): figures unlike every other,
                         // so a field printed from the wrong source fails.
                         read_ahead_detail: crate::render::ReadAheadPhases {
+                            copies_done: 0,
+                            copied_off_thread: Duration::ZERO,
                             reclaim: Duration::from_micros(70),
                             stage: Duration::from_micros(260),
                             submit: Duration::from_micros(40),
@@ -1242,6 +1249,8 @@ mod tests {
                                 ..Default::default()
                             },
                             read_ahead_detail: ReadAheadPhases {
+                                copies_done: 0,
+                                copied_off_thread: Duration::ZERO,
                                 reclaim: Duration::from_micros(if slow { 6_000 } else { 100 }),
                                 stage: Duration::from_micros(if slow { 2_500 } else { 800 }),
                                 submit: Duration::from_micros(100),

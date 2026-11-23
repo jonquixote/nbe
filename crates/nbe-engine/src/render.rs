@@ -113,6 +113,89 @@ fn read_ahead_stage_share() -> f64 {
 /// buffers are all still in flight uploads nothing more, and never waits.
 const READ_AHEAD_STAGING_BUFFERS: usize = READ_AHEAD_UPLOADS_PER_FRAME;
 
+/// One frame's staging copy, for the copy thread.
+struct CopyJob {
+    asset: String,
+    index: u64,
+    slot: usize,
+    staging: crate::gpu::Staging,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// A finished copy: its buffer (view dropped), to record on the render thread.
+struct CopyDone {
+    asset: String,
+    index: u64,
+    slot: usize,
+    buffer: wgpu::Buffer,
+    stride: u32,
+    width: u32,
+    height: u32,
+    copy: Duration,
+}
+
+/// The read-ahead's copy thread: each frame's memcpy into its mapped staging
+/// buffer, off the render thread. On CI's VM a copy cost 4-8 ms and once
+/// stalled 55.6 ms on the render thread (main a438e6e: 22 drops); here a
+/// stalled copy costs that frame's residency (a read-ahead miss at worst, the
+/// picture holding, rule 4), never the View's deadline. It never touches the
+/// device (R42: two pollers panic wgpu); the render thread records each copy
+/// once it is done. In flight it is bounded by the staging pool.
+struct Copier {
+    jobs: std::sync::mpsc::Sender<CopyJob>,
+    done: std::sync::mpsc::Receiver<CopyDone>,
+}
+
+impl Copier {
+    fn spawn() -> Self {
+        let (jobs, job_rx) = std::sync::mpsc::channel::<CopyJob>();
+        let (done_tx, done) = std::sync::mpsc::channel::<CopyDone>();
+        std::thread::Builder::new()
+            .name("nbe-read-ahead-copy".into())
+            .spawn(move || {
+                for job in job_rx {
+                    let CopyJob {
+                        asset,
+                        index,
+                        slot,
+                        staging,
+                        rgba,
+                        width,
+                        height,
+                    } = job;
+                    let crate::gpu::Staging {
+                        buffer,
+                        mut view,
+                        stride,
+                        ..
+                    } = staging;
+                    let copied = Instant::now();
+                    crate::gpu::copy_rows(&mut view, &rgba, width, height, stride);
+                    let copy = copied.elapsed();
+                    drop(view);
+                    drop(rgba);
+                    let done = CopyDone {
+                        asset,
+                        index,
+                        slot,
+                        buffer,
+                        stride,
+                        width,
+                        height,
+                        copy,
+                    };
+                    if done_tx.send(done).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn the read-ahead copy thread");
+        Self { jobs, done }
+    }
+}
+
 /// A plain clip on the GPU (SPEC §12.8.1): its head is `VideoRing::textures`,
 /// resident for the load; frames past it live in a K-slot window that the
 /// read-ahead refills as the clip plays.
@@ -125,6 +208,10 @@ struct ClipRing {
     window: Vec<wgpu::Texture>,
     /// The source index each window slot holds.
     slot_frame: Vec<Option<u64>>,
+    /// The source index each slot's copy, in flight on the copy thread, will
+    /// hold: not drawable until done, but not missing either (the decoder is
+    /// not restarted for it, and it is not asked for again).
+    copying: Vec<Option<u64>>,
     /// The lowest source index the window must hold: the frame the draw path
     /// reads now, or the head's end when the clip is not on a bus.
     base: u64,
@@ -180,9 +267,14 @@ impl ClipRing {
         (self.base + self.window.len() as u64).min(self.length)
     }
 
-    /// The first frame the window must hold and does not.
+    /// Whether frame `j`'s copy is in flight on the copy thread.
+    fn in_flight(&self, j: u64) -> bool {
+        j >= self.head && !self.window.is_empty() && self.copying[self.slot(j)] == Some(j)
+    }
+
+    /// The first frame the window must hold and does not, nor is copying.
     fn first_missing(&self) -> Option<u64> {
-        (self.base..self.window_end()).find(|j| !self.resident(*j))
+        (self.base..self.window_end()).find(|j| !self.resident(*j) && !self.in_flight(*j))
     }
 
     /// Rule 4's hold for source frame `i`, which is not resident: the last
@@ -406,6 +498,10 @@ pub struct RenderPhases {
 /// beyond all seven is the rest, printed as such.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ReadAheadPhases {
+    /// Copies the copy thread finished, recorded this frame, and their copy
+    /// time on that thread (not this one's).
+    pub copies_done: usize,
+    pub copied_off_thread: Duration,
     pub reclaim: Duration,
     pub stage: Duration,
     pub submit: Duration,
@@ -493,6 +589,9 @@ pub struct RenderLoop {
     /// The read-ahead's staging buffers (SPEC §12.8.1): its uploads run in the
     /// frame path, where `write_texture`'s per-call staging costs the deadline.
     uploads: crate::gpu::UploadPool,
+    /// The read-ahead's copy thread (frame path only; the load's prime copies
+    /// in place).
+    copier: Copier,
     /// The house rate, for the show-time to source-time mapping (SPEC §18).
     house_rate: u32,
     pipeline: wgpu::RenderPipeline,
@@ -626,6 +725,7 @@ impl RenderLoop {
             text_refused: std::sync::Mutex::new(std::collections::HashSet::new()),
             loaded_generation: u64::MAX,
             uploads: crate::gpu::UploadPool::new(READ_AHEAD_STAGING_BUFFERS),
+            copier: Copier::spawn(),
             house_rate,
             pipeline,
             pipeline_bgra,
@@ -768,6 +868,7 @@ impl RenderLoop {
                 head,
                 window,
                 slot_frame: vec![None; slots],
+                copying: vec![None; slots],
                 base: head,
                 width: asset.width,
                 height: asset.height,
@@ -932,6 +1033,38 @@ impl RenderLoop {
         let encoder_started = Instant::now();
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         detail.encoder = encoder_started.elapsed();
+        // The copies the copy thread has finished: recorded into this frame's
+        // encoder, which is submitted before the draw, so each frame is
+        // resident from this frame on. A copy whose slot moved on (a re-take,
+        // a reset, a reload) is abandoned and its buffer recycled.
+        while let Ok(done) = self.copier.done.try_recv() {
+            let live = self
+                .video_rings
+                .get_mut(&done.asset)
+                .and_then(|r| r.clip.as_mut())
+                .filter(|c| c.copying.get(done.slot).copied().flatten() == Some(done.index));
+            match live {
+                Some(clip) => {
+                    let finishing = Instant::now();
+                    let (unmap, record) = self.uploads.finish(
+                        &mut enc,
+                        done.buffer,
+                        &clip.window[done.slot],
+                        done.width,
+                        done.height,
+                        done.stride,
+                    );
+                    detail.stage += finishing.elapsed();
+                    clip.copying[done.slot] = None;
+                    clip.slot_frame[done.slot] = Some(done.index);
+                    detail.stage_split.unmap += unmap;
+                    detail.stage_split.record += record;
+                    detail.copies_done += 1;
+                    detail.copied_off_thread += done.copy;
+                }
+                None => self.uploads.recycle(done.buffer),
+            }
+        }
         for id in order {
             let Some(ring) = self.video_rings.get_mut(&id) else {
                 continue;
@@ -1002,7 +1135,7 @@ impl RenderLoop {
                 match delivered {
                     Delivery::Frame(f) => {
                         let j = f.index;
-                        if j < clip.base || clip.resident(j) {
+                        if j < clip.base || clip.resident(j) || clip.in_flight(j) {
                             continue;
                         }
                         if j >= clip.window_end() {
@@ -1024,43 +1157,53 @@ impl RenderLoop {
                             break;
                         }
                         let s = clip.slot(j);
-                        let tex = &clip.window[s];
+                        // A copy still in flight into this slot is for a frame
+                        // the window has moved past (a re-take, a reset): it is
+                        // abandoned, and its done recycles the buffer.
+                        if clip.copying[s].is_some_and(|k| k != j) {
+                            clip.copying[s] = None;
+                        }
                         let stage_started = Instant::now();
-                        let staged = self.uploads.stage(
-                            &self.gpu,
-                            &mut enc,
-                            tex,
-                            clip.width,
-                            clip.height,
-                            &f.rgba,
-                        );
+                        let staging = self.uploads.begin(&self.gpu, clip.width, clip.height);
                         let one_stage = stage_started.elapsed();
                         detail.stage += one_stage;
-                        if let Some(split) = staged {
-                            // Stage (a3): summed, the slowest kept whole.
-                            let sum = &mut detail.stage_split;
-                            sum.create += split.create;
-                            sum.map += split.map;
-                            sum.copy += split.copy;
-                            sum.unmap += split.unmap;
-                            sum.record += split.record;
-                            detail.stage_max = detail.stage_max.max(one_stage);
-                            detail.created += usize::from(split.created);
-                        }
-                        if staged.is_none() {
+                        let Some(staging) = staging else {
                             // Every staging buffer is in flight: the frame
                             // waits for a later tick, held like one past the
                             // window.
                             clip.pending = Some(f);
                             budget = 0;
                             break;
+                        };
+                        // Stage (a3): summed, the slowest kept whole. The
+                        // copy itself is the copy thread's (`copied_off_thread`).
+                        detail.stage_split.create += staging.split.create;
+                        detail.stage_split.map += staging.split.map;
+                        detail.stage_max = detail.stage_max.max(one_stage);
+                        detail.created += usize::from(staging.split.created);
+                        detail.bytes += f.rgba.len() as u64;
+                        // The slot is being rewritten: its old frame (passed by
+                        // the draw, rule 3) leaves residency now, and `j`
+                        // arrives when its copy is done (above, a later frame).
+                        clip.slot_frame[s] = None;
+                        clip.copying[s] = Some(j);
+                        let job = CopyJob {
+                            asset: id.clone(),
+                            index: j,
+                            slot: s,
+                            staging,
+                            rgba: f.rgba,
+                            width: clip.width,
+                            height: clip.height,
+                        };
+                        if self.copier.jobs.send(job).is_err() {
+                            tracing::error!(asset = %id, frame = j, "read-ahead: the copy thread is gone; the frame is not uploaded");
+                            clip.copying[s] = None;
                         }
-                        clip.slot_frame[s] = Some(j);
                         clip.delivered = true;
                         served = true;
                         budget -= 1;
                         uploaded += 1;
-                        detail.bytes += f.rgba.len() as u64;
                     }
                     Delivery::Pending => break,
                     Delivery::Done => {
@@ -1184,6 +1327,7 @@ impl RenderLoop {
                 .all(|c| {
                     c.window.is_empty()
                         || (c.first_missing().is_none()
+                            && c.copying.iter().all(Option::is_none)
                             && (c.worker.is_none() || c.pending.is_some()))
                 });
             if settled {

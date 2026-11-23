@@ -227,7 +227,12 @@ test("[lane] lost stop: a stream.stop that never reaches the engine raises (b); 
 });
 
 // (§2c, row 11: this test's name ended "and (a) raises the contradiction".)
-test("[lane] restart: the engine restarts under a stream believed live; the resync carries no output state, and the belief follows the new engine's report", async (t) => {
+// (§2c, review4 7c, #198: it then ended "the resync carries no output state,
+// and the belief follows the new engine's report". With the re-issue that
+// report races the stream's restart, so the old outcome, the belief corrected
+// to idle, is no longer this test: on CI the re-issue won and the test waited
+// 30 s for an idle that would not come.)
+test("[lane] restart: the engine restarts under a stream believed live; the control plane re-sends the stream (review4 7c), it resumes on the new engine, and the belief is live", async (t) => {
   const s = await stack();
   const sink = await startRtmpSink();
   let second: ReturnType<typeof spawn> | null = null;
@@ -258,20 +263,15 @@ test("[lane] restart: the engine restarts under a stream believed live; the resy
     stdio: "ignore",
   });
   assert.ok(await waitFor(() => s.server.wsBridge.renderNodeCount() === 1, 20_000), "the restarted engine reconnects");
-  // ~~(a) raises the contradiction, and the belief stays live~~ (§2c, row 11):
-  // with no claim live, the new engine's fresh report corrects the belief. (a)
-  // announces the contradiction in the evaluation that sees it, and clears it
-  // on the next as consistent again: a one-evaluation episode, its edges and
-  // `belief.corrected` in the audit.
-  assert.ok(await waitFor(() => s.state.streamState === "idle", 30_000), "the belief follows the new engine's report");
-  assert.ok(await waitFor(() => !ids(s).includes("stream.divergence"), 2_000), "and the contradiction is consistent again");
-  const divergence = auditRows(s)
-    .filter((r) => r["command"] === "alert" && (r["detail"] as Record<string, unknown>)["alert"] === "stream.divergence")
-    .map((r) => r["detail"] as Record<string, unknown>);
-  console.log(`LANE-LEG restart ${JSON.stringify({ alerts: ids(s), believed: s.state.streamState, divergence, corrections: corrections(s) })}`);
-  assert.deepEqual(corrections(s).map((c) => [c["from"], c["to"], c["report"]]), [["live", "idle", "none"]]);
-  assert.deepEqual(divergence.map((d) => d["edge"]), ["raised", "cleared"], "announced, then consistent again");
-  assert.match(String(divergence[0]!["reason"]), /believes the stream live; the engine reports it none/);
+  assert.ok(
+    await waitFor(() => auditRows(s).some((r) => r["event"] === "stream.reissued"), 10_000),
+    "the stream start is re-issued to the new engine",
+  );
+  const before = sink.bytes();
+  assert.ok(await waitFor(() => sink.bytes() > before, 20_000), "the stream resumes: the sink receives the new engine's media");
+  assert.ok(await waitFor(() => s.state.streamState === "live", 10_000), "the belief is live, as the engine is");
+  assert.ok(await waitFor(() => !ids(s).includes("stream.divergence"), 10_000), "and nothing is contradicted once it is");
+  console.log(`LANE-LEG restart ${JSON.stringify({ alerts: ids(s), believed: s.state.streamState, corrections: corrections(s) })}`);
 });
 
 // (§2c, row 11: this test's name ended "and the explicit stops clear it".)
