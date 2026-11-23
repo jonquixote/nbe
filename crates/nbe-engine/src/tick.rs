@@ -373,6 +373,11 @@ impl Cadence {
                     ms(report.render_phases.read_ahead_detail.stage_split.record),
                 read_ahead_stage_max_ms = ms(report.render_phases.read_ahead_detail.stage_max),
                 read_ahead_created = report.render_phases.read_ahead_detail.created,
+                // The copies the copy thread finished, recorded this tick,
+                // and their time on that thread (not this one's).
+                read_ahead_copies_done = report.render_phases.read_ahead_detail.copies_done,
+                read_ahead_copied_off_thread_ms =
+                    ms(report.render_phases.read_ahead_detail.copied_off_thread),
                 preview_ms = ms(report.render_phases.preview.total()),
                 preview_cpu_ms = ms(report.render_phases.cpu.preview),
                 // Read-ahead stage (a): the Preview's own phases, as the View's.
