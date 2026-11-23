@@ -912,6 +912,10 @@ async fn r20_past_the_stage_share_a_clip_uploads_its_first_frame_and_what_it_nee
     );
 }
 
+/// The stalled copy the test forces: longer than CI's 55.6 ms on the render
+/// thread, and longer than any GPU wait the read-ahead phase saw there.
+const STALLED_COPY: Duration = Duration::from_millis(150);
+
 /// Restores the forced copy delay however the test ends.
 struct CopyDelay;
 
@@ -941,7 +945,9 @@ async fn r20_a_stalled_copy_costs_the_render_thread_nothing() {
         "R20: the read-ahead did not settle at {PAST_THE_RING}"
     );
     let before = misses(&render);
-    nbe_engine::gpu::force_copy_delay(Some(Duration::from_millis(60)));
+    // Longer than any GPU wait seen in CI's read-ahead (33-57 ms): a phase at
+    // or over it can only be the render thread waiting for a copy.
+    nbe_engine::gpu::force_copy_delay(Some(STALLED_COPY));
     let _restore = CopyDelay;
     let (mut slowest, mut uploads, mut done) = (Duration::ZERO, 0usize, 0usize);
     for n in PAST_THE_RING..decoded.len() as u64 {
@@ -952,14 +958,14 @@ async fn r20_a_stalled_copy_costs_the_render_thread_nothing() {
         done += r.phases.read_ahead_detail.copies_done;
     }
     let missed = misses(&render) - before;
-    println!("R20 COPY 60 ms: {uploads} copies begun, {done} done while playing; the slowest read-ahead phase {slowest:?}; {missed} missed (held)");
+    println!("R20 COPY {STALLED_COPY:?}: {uploads} copies begun, {done} done while playing; the slowest read-ahead phase {slowest:?}; {missed} missed (held)");
     assert!(
         uploads > 0 && done > 0,
         "R20: the window refilled through the copy thread"
     );
     assert!(
-        slowest < Duration::from_millis(20),
-        "R20: a 60 ms copy must not land on the render thread; its read-ahead phase took {slowest:?}"
+        slowest < STALLED_COPY,
+        "R20: a {STALLED_COPY:?} copy must not land on the render thread; its read-ahead phase took {slowest:?}"
     );
     // Every copy begun completes: the settle waits for none in flight.
     assert!(
