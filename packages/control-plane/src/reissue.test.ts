@@ -69,7 +69,7 @@ const hello = (engineInstanceId: string) => ({
   streamTransportState: "none",
 });
 
-async function rig(t: { after: (fn: () => void | Promise<void>) => void }) {
+async function rig(t: { after: (fn: () => void | Promise<void>) => void }, extra: { reissueWaitMs?: number } = {}) {
   const pkgPath = makePackage();
   const auditPath = join(tempDir("nbe-reissue-audit-"), "audit.jsonl");
   const state = new ControlPlaneState();
@@ -81,6 +81,7 @@ async function rig(t: { after: (fn: () => void | Promise<void>) => void }) {
     audit: new AuditLog(auditPath),
     state,
     persistence: { onDirty: () => {}, flushNow: () => {} },
+    ...extra,
   });
   t.after(() => server.close());
   const open = (
@@ -113,29 +114,90 @@ async function rig(t: { after: (fn: () => void | Promise<void>) => void }) {
     auditText: (): string => (existsSync(auditPath) ? readFileSync(auditPath, "utf8") : ""),
     /** A scripted engine that applies every directive at once. Like the real
      * one it says hello first, on open; `lateHello` sends it only after the
-     * resync was applied (the order a control plane must also survive). */
-    engine: async (instanceId: string, lateHello = false) => {
+     * resync was applied (the order a control plane must also survive).
+     * `holdResync` holds the resync's acknowledgement, for that many ms or
+     * (true) until `releaseResync()`, and every later one behind it: the real
+     * engine applies in arrival order, and a new engine's resync reloads the
+     * show. `reports` sends a report every 50 ms from the open, as the real
+     * engine does whether or not its resync is applied: its stream and take
+     * are what the directives it applied started. */
+    engine: async (instanceId: string, lateHello = false, opts: { holdResync?: number | true; reports?: boolean } = {}) => {
       const directives: Array<Record<string, unknown>> = [];
       let greeted = false;
-      const greet = (sock: WebSocket) => {
+      let held: number[] | null = null;
+      let greetedResync = false;
+      let stream = "none";
+      let take = "none";
+      let sock: WebSocket | null = null;
+      const ack = (v: number) => sock?.send(JSON.stringify({ v: PROTOCOL_VERSION, kind: "appliedStateVersion", stateVersion: v }));
+      const releaseResync = () => {
+        const queue = held ?? [];
+        held = null;
+        for (const v of queue) ack(v);
+      };
+      const greet = (s: WebSocket) => {
         if (greeted) return;
         greeted = true;
-        sock.send(JSON.stringify(hello(instanceId)));
+        s.send(JSON.stringify(hello(instanceId)));
       };
       const ws = await open(
         "render",
         RENDER,
-        (sock, msg) => {
+        (s, msg) => {
           if (msg.kind !== "directive") return;
           directives.push(msg);
-          sock.send(JSON.stringify({ v: PROTOCOL_VERSION, kind: "appliedStateVersion", stateVersion: msg.stateVersion }));
-          if (lateHello && msg.command === "show.resync") setTimeout(() => greet(sock), 50);
+          if (msg.command === "stream.start") stream = "live";
+          if (msg.command === "stream.stop") stream = "none";
+          if (msg.command === "record.start") take = "recording";
+          if (msg.command === "record.stop") take = "none";
+          const v = msg.stateVersion as number;
+          if (msg.command === "show.resync" && opts.holdResync !== undefined && held === null && !greetedResync) {
+            greetedResync = true;
+            held = [v];
+            if (typeof opts.holdResync === "number") setTimeout(releaseResync, opts.holdResync);
+          } else if (held !== null) held.push(v);
+          else ack(v);
+          if (lateHello && msg.command === "show.resync") setTimeout(() => greet(s), 50);
         },
-        (sock) => {
-          if (!lateHello) greet(sock);
+        (s) => {
+          sock = s;
+          if (!lateHello) greet(s);
         },
       );
-      return { ws, directives };
+      let timer: ReturnType<typeof setInterval> | null = null;
+      if (opts.reports) {
+        const report = () =>
+          ws.readyState === WebSocket.OPEN &&
+          ws.send(
+            JSON.stringify({
+              v: PROTOCOL_VERSION,
+              kind: "engineTelemetry",
+              ts: Date.now(),
+              masterClockFrame: 10,
+              droppedFramesTotal: 0,
+              renderGpuTimeMs: 1,
+              decodeSessions: 0,
+              vramUsedMib: 0,
+              textureCacheUsedMib: 0,
+              streamBufferMs: -1,
+              recordSpaceMib: 0,
+              masterClockDriftMs: 0,
+              fallbackActive: false,
+              degradationRung: 0,
+              streamTransportState: stream,
+              recordTake: { state: take, reason: null },
+            }),
+          );
+        report();
+        timer = setInterval(report, 50);
+        t.after(() => {
+          if (timer) clearInterval(timer);
+        });
+      }
+      const stop = () => {
+        if (timer) clearInterval(timer);
+      };
+      return { ws, directives, releaseResync, stop };
     },
     admin: () => open("admin", ADMIN),
   };
@@ -286,4 +348,106 @@ test("case E: a restarted engine is re-sent each connected guest's connect (and 
   assert.ok(resync >= 0 && resync < e2.directives.findIndex((d) => d.command === "guest.connect"), "after the resync");
   assert.equal(r.rows().filter((x) => x.event === "guest.reissued").length, 2, "each guest's re-issue is audited");
   assert.ok(!r.auditText().includes("whip-secret"), "the WHIP URL never reaches the audit log");
+});
+
+/** The audit rows that would show a flicker: a belief correction, or `record.failed` or the stream's divergence raised. */
+const flickerRows = (rows: Array<Record<string, unknown>>) =>
+  rows.filter((x) => {
+    const detail = x.detail as Record<string, unknown> | undefined;
+    const raised = x.command === "alert" && detail?.edge === "raised";
+    return x.event === "belief.corrected" || (raised && (detail?.alert === "record.failed" || detail?.alert === "stream.divergence"));
+  });
+
+test("7c: the restarted engine's reports before its resync is applied correct nothing: the stream stays live and record.failed does not raise", async (t) => {
+  // Seen on the real engine (operator-signals e2e, 2026-11-22): the belief
+  // went live -> idle 144 ms after the restart's connect, then back to live
+  // once the re-issued start landed. The new engine reports from its open;
+  // its resync (which reloads the show) is acknowledged later, and only
+  // then are the starts re-sent, so its first reports read no stream and no
+  // take: outputs not yet re-sent, not outputs that failed.
+  const r = await rig(t);
+  const e1 = await r.engine("engine-1");
+  assert.ok(await until(() => commands(e1.directives).includes("show.resync")));
+  const admin = await r.admin();
+  assert.equal((await send(admin, "record.start", { outputId: "ep1" })).status, "ok");
+  assert.equal((await send(admin, "stream.start", { url: STREAM_URL })).status, "ok");
+
+  await closed(e1.ws);
+  const e2 = await r.engine("engine-2", false, { holdResync: 900, reports: true });
+  const seen = new Set<string>();
+  const sampler = setInterval(() => seen.add(`${r.state.streamState}/${r.state.recordState}`), 5);
+  t.after(() => clearInterval(sampler));
+  assert.ok(
+    await until(() => commands(e2.directives).includes("record.start") && commands(e2.directives).includes("stream.start"), 4000),
+    `the starts are re-sent once the resync is applied: ${JSON.stringify(commands(e2.directives))}`,
+  );
+  await new Promise((res) => setTimeout(res, 600)); // reports after the re-issue, read by the 250 ms evaluation
+  clearInterval(sampler);
+  e2.stop();
+  assert.deepEqual([...seen], ["live/recording"], "the belief never left live and recording");
+  assert.deepEqual(flickerRows(r.rows()), [], "no correction and no record.failed across the restart");
+});
+
+test("7c: a stop accepted while the restarted engine's resync is unapplied is not undone: only what is still believed on is re-sent", async (t) => {
+  const r = await rig(t);
+  const e1 = await r.engine("engine-1");
+  assert.ok(await until(() => commands(e1.directives).includes("show.resync")));
+  const admin = await r.admin();
+  assert.equal((await send(admin, "record.start", { outputId: "ep1" })).status, "ok");
+  assert.equal((await send(admin, "stream.start", { url: STREAM_URL })).status, "ok");
+
+  await closed(e1.ws);
+  const e2 = await r.engine("engine-2", false, { holdResync: true });
+  assert.ok(await until(() => commands(e2.directives).includes("show.resync")));
+  await new Promise((res) => setTimeout(res, 100)); // the hello has landed: the re-issue is owed
+  assert.equal((await send(admin, "stream.stop")).status, "ok");
+  e2.releaseResync();
+  assert.ok(await until(() => commands(e2.directives).includes("record.start")), JSON.stringify(commands(e2.directives)));
+  await new Promise((res) => setTimeout(res, 300));
+  assert.deepEqual(
+    commands(e2.directives),
+    ["show.resync", "stream.stop", "record.start"],
+    "the take is re-sent; the stream the operator stopped is not started again",
+  );
+  assert.equal(r.state.streamState, "idle");
+  assert.ok(!r.rows().some((x) => x.event === "stream.reissued"));
+});
+
+test("7c: a restarted engine whose connection drops before it applied its resync is still owed the starts when it reconnects", async (t) => {
+  const r = await rig(t);
+  const e1 = await r.engine("engine-1");
+  assert.ok(await until(() => commands(e1.directives).includes("show.resync")));
+  const admin = await r.admin();
+  assert.equal((await send(admin, "record.start", { outputId: "ep1" })).status, "ok");
+
+  await closed(e1.ws);
+  const first = await r.engine("engine-2", false, { holdResync: true });
+  assert.ok(await until(() => commands(first.directives).includes("show.resync")));
+  await new Promise((res) => setTimeout(res, 100)); // its hello has landed
+  await closed(first.ws); // gone before it acknowledged the resync
+  const again = await r.engine("engine-2");
+  assert.ok(
+    await until(() => commands(again.directives).includes("record.start")),
+    `the same process, reconnected, is re-sent the take: ${JSON.stringify(commands(again.directives))}`,
+  );
+  assert.deepEqual(commands(again.directives), ["show.resync", "record.start"]);
+});
+
+test("7c: a re-issue still owed after reissueWaitMs ends its claim: the unacknowledged alert raises and a later report corrects the stream", async (t) => {
+  const r = await rig(t, { reissueWaitMs: 500 });
+  const e1 = await r.engine("engine-1");
+  assert.ok(await until(() => commands(e1.directives).includes("show.resync")));
+  const admin = await r.admin();
+  assert.equal((await send(admin, "stream.start", { url: STREAM_URL })).status, "ok");
+
+  await closed(e1.ws);
+  const t0 = Date.now();
+  const e2 = await r.engine("engine-2", false, { holdResync: true, reports: true });
+  const raised = () =>
+    r.rows().find((x) => x.event === "command.unacknowledged" && (x.detail as Record<string, unknown>).edge === "raised");
+  assert.ok(await until(() => raised() !== undefined, 3000), "the owed claim's expiry raises");
+  assert.ok(Date.now() - t0 >= 450, "not before reissueWaitMs");
+  assert.match(String((raised()!.detail as Record<string, unknown>).reason), /has not applied its resync within 500 ms/);
+  assert.ok(await until(() => r.state.streamState === "idle", 2000), "a report after the expiry corrects the belief");
+  e2.stop();
 });

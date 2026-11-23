@@ -126,7 +126,7 @@ export class AlertLane {
   }
 }
 
-type Output = "stream" | "record";
+export type Output = "stream" | "record";
 
 interface Pending {
   command: string;
@@ -186,7 +186,22 @@ export interface SignalInputs {
   journalOk?: () => boolean;
   /** Lands a belief correction (§10.1.4): one bump, one audit row, no frame, no automation. */
   correct: (c: BeliefCorrection) => void;
+  /**
+   * Review4 step 7c: the bound on a re-issue's claim (`onReissueOwed`), from
+   * the restarted engine's hello to the re-issued start's acceptance. Absent:
+   * `REISSUE_WAIT_MS`.
+   */
+  reissueWaitMs?: number;
 }
+
+/**
+ * The default bound on a re-issue's claim. The claim lasts until the
+ * restarted engine applies its resync, which reloads the show (the package,
+ * its decoders): 1586 ms from the hello to the re-issue in the restart e2e on
+ * the reference machine (2026-11-23). Ten seconds leaves room for a slower
+ * load without letting a resync that never lands hold the belief for long.
+ */
+export const REISSUE_WAIT_MS = 10_000;
 
 const OUTPUT_OF: Record<string, Output | undefined> = {
   "stream.start": "stream",
@@ -232,6 +247,18 @@ export class OperatorSignals {
   private lastRegisteredAt: number | null = null;
   /** When the ticker last changed by a command (or a load or unload). */
   private tickerChangedAt: number | null = null;
+  /**
+   * Review4 step 7c: the outputs a restarted engine is owed a re-issue of,
+   * each with its bound's timer. A new engine holds no take and no stream
+   * until the re-issued starts reach it, after its resync is applied, so
+   * until then its reports describe outputs not yet re-sent, not outputs
+   * that failed. An owed output is claimed as a pending command's is: no
+   * report corrects or contradicts its belief, and `record.failed` waits.
+   * The claim passes to the re-issued start at its acceptance, ends with an
+   * operator command on that output, the show's lifecycle or the re-issue's
+   * delivery, and expires after `reissueWaitMs`.
+   */
+  private readonly owed = new Map<Output, ReturnType<typeof setTimeout>>();
   private readonly startedAt: number;
 
   constructor(private readonly i: SignalInputs) {
@@ -301,8 +328,69 @@ export class OperatorSignals {
     this.i.lane.raise(ALERT.controlPlaneRestarted, "info", parts.join("; "));
   }
 
+  /**
+   * Review4 step 7c: a restarted engine is owed a re-issue of `outputs`, sent
+   * once it applies its resync. Each is claimed until then (see `owed`).
+   */
+  onReissueOwed(outputs: Output[]): void {
+    for (const output of outputs) {
+      this.endOwed(output);
+      const timer = setTimeout(() => this.owedElapsed(output), this.i.reissueWaitMs ?? REISSUE_WAIT_MS);
+      timer.unref?.();
+      this.owed.set(output, timer);
+    }
+  }
+
+  /**
+   * Review4 step 7c: the re-issue went out. Its starts' claims took over at
+   * their acceptance; an output not re-sent (no longer believed on) is
+   * claimed no longer, and only a report after this may correct it.
+   */
+  onReissueDelivered(): void {
+    const now = this.i.now();
+    for (const output of [...this.owed.keys()]) {
+      this.endOwed(output);
+      if (output === "stream") this.streamAnchor = Math.max(this.streamAnchor, now);
+      if (output === "record") this.recordAnchor = Math.max(this.recordAnchor, now);
+    }
+  }
+
+  private endOwed(output: Output): void {
+    const timer = this.owed.get(output);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.owed.delete(output);
+  }
+
+  private owedElapsed(output: Output): void {
+    if (!this.owed.has(output)) return;
+    this.owed.delete(output);
+    // As a command's claim expires (§10.1.3): only a report that postdates
+    // the expiry may correct the belief, and the expiry alert says why.
+    const now = this.i.now();
+    if (output === "stream") this.streamAnchor = Math.max(this.streamAnchor, now);
+    if (output === "record") this.recordAnchor = Math.max(this.recordAnchor, now);
+    if (this.i.lane.has(ALERT.engineNotReporting.id)) return; // that alert owns it
+    const command = output === "stream" ? "stream.start" : "record.start";
+    this.i.lane.raise(
+      output === "stream" ? ALERT.streamUnacknowledged : ALERT.recordUnacknowledged,
+      "warning",
+      `${command} is owed to the restarted engine, which has not applied its resync within ${this.i.reissueWaitMs ?? REISSUE_WAIT_MS} ms: the ${output} has not been re-sent`,
+    );
+  }
+
   /** An output command (or `show.stop`) was accepted at `version`. */
   onAccepted(command: string, version: number): void {
+    // Review4 step 7c: an operator's command on an owed output, or the
+    // show's lifecycle, supersedes the re-issue's claim (a re-issued start's
+    // own acceptance takes it over the same way).
+    if (command === "show.stop" || command === "show.load" || command === "show.unload") {
+      this.endOwed("stream");
+      this.endOwed("record");
+    } else {
+      const owedOutput = OUTPUT_OF[command];
+      if (owedOutput) this.endOwed(owedOutput);
+    }
     if (command === "show.stop" || command === "show.load" || command === "show.unload") {
       this.i.lane.clear(ALERT.controlPlaneRestarted.id, `cleared by ${command} (stateVersion ${version})`);
     }
@@ -530,7 +618,7 @@ export class OperatorSignals {
     const fresh = this.freshReport();
     if (fresh === null) return; // the not-reporting alert owns staleness
     const entry = this.pending.get("record");
-    const pending = (entry !== undefined && entry.processedAt === null) || this.showStopPending !== null;
+    const pending = (entry !== undefined && entry.processedAt === null) || this.showStopPending !== null || this.owed.has("record");
     if (state.recordState !== "recording") {
       lane.clear(ALERT.recordFailed.id, "the take was stopped");
       return;
@@ -632,7 +720,8 @@ export class OperatorSignals {
     const { state, lane } = this.i;
     const fresh = this.freshReport();
     const streamEntry = this.pending.get("stream");
-    const streamPending = (streamEntry !== undefined && streamEntry.processedAt === null) || this.showStopPending !== null;
+    const streamPending =
+      (streamEntry !== undefined && streamEntry.processedAt === null) || this.showStopPending !== null || this.owed.has("stream");
     const owned = lane.has(ALERT.streamUnacknowledged.id) || lane.has(ALERT.outputsHeld.id);
     if (fresh === null || streamPending || owned || fresh.receivedAt <= this.streamAnchor) return;
     const transport = fresh.frame.streamTransportState;
@@ -686,7 +775,7 @@ export class OperatorSignals {
   /** Whether a command still holds the stream belief (§10.1.3's first tier). */
   private streamClaimLive(): boolean {
     const e = this.pending.get("stream");
-    return (e !== undefined && e.processedAt === null && e.expiredAt === null) || this.showStopPending !== null;
+    return (e !== undefined && e.processedAt === null && e.expiredAt === null) || this.showStopPending !== null || this.owed.has("stream");
   }
 
   /** `show.stop` returned with outputs still active: it was not acknowledged (SPEC §5.9.5). */
@@ -708,6 +797,7 @@ export class OperatorSignals {
 
   close(): void {
     for (const entry of this.pending.values()) if (entry.timer) clearTimeout(entry.timer);
+    for (const timer of this.owed.values()) clearTimeout(timer);
     if (this.showStopTimer) clearTimeout(this.showStopTimer);
   }
 }

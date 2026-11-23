@@ -23,7 +23,8 @@ and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
 
 | # | Change | Sections | Built by |
 |---|---|---|---|
-| 1 | **The take's start frame is the engine's clock estimated now.** The control plane's `viewItemStartFrame` at a take (and a recall that changes the View) is the engine's last reported master frame advanced at the house rate by the time since, while the clock advances, for at most 2 s; it was the last report alone, up to a telemetry interval (1 s) behind, which a resync of a healthy engine then applied. The finding was preserved from #131. | §5.9.4 rule 1 | this PR |
+| 1 | **The take's start frame is the engine's clock estimated now.** The control plane's `viewItemStartFrame` at a take (and a recall that changes the View) is the engine's last reported master frame advanced at the house rate by the time since, while the clock advances, for at most 2 s; it was the last report alone, up to a telemetry interval (1 s) behind, which a resync of a healthy engine then applied. The finding was preserved from #131. | §5.9.4 rule 1 | #203 (`1246b2f`) |
+| 2 | **A re-issue owed to a restarted engine claims its outputs until it goes out.** From the hello that names a new `engineInstanceId` until the re-issue is sent (the new engine applied its resync), each output owed a re-issue is claimed as a pending command's is (§10.1.3): the new engine's reports, which read no take and no stream because nothing has been re-sent yet, neither correct the belief nor raise `stream.divergence` or `record.failed`. The claim passes to the re-issued start at its acceptance, ends with an operator command on that output or `show.stop`/`show.load`/`show.unload`, and expires after 10 s like a command's window (the expiry alert `command.unacknowledged.<output>`, then a later report may correct). What is re-sent is decided when it goes out, from the belief then, so a stop accepted meanwhile is not undone; and the re-issue is the control plane's, not the connection's, so a restarted engine whose connection drops before its resync is applied is still owed it. Observed before: the stream belief went live → idle → live within about 1 s of an engine restart (the operator-signals e2e); and a `stream.stop` accepted in that gap was followed by the re-sent `stream.start`. | §5.9.4, §10.1.3 | this PR |
 
 v0.4.10 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9: it writes
@@ -1248,6 +1249,13 @@ starts are not re-sent.~~ *(§2c, v0.4.10 row 4.)* Each guest it believes
 connected, whatever the show's state, is re-sent its `guest.connect` as
 accepted, and `guest.mute` if muted, audited `guest.reissued` (the WHIP URL is
 never logged).
+
+*(v0.4.11 row 2.)* From that hello until the re-issue goes out, the re-issue
+is **owed**. It is the control plane's, not the connection's: a restarted
+engine whose connection drops before its resync is applied is still owed it on
+its next connection. What goes out is decided then, from the belief then, so a
+stop accepted while it was owed is not undone. Each output owed is claimed
+meanwhile (§10.1.3's re-issue claim).
 
 **A restarted control plane** (v0.4.9 row 4; one that restored a journal,
 §5.1) sends `show.resync` on a render connection only after that connection's
@@ -2889,6 +2897,21 @@ acknowledgement "exact" and generalizes processing to a later one.*
   clause's trigger never fires. A command superseded inside its window by a
   newer command for the same output gave its claim to the newer one at that
   acceptance.
+
+**A re-issue's claim** (v0.4.11 row 2). An output owed a re-issue to a
+restarted engine (§5.9.4) is claimed from that engine's hello until the
+re-issue goes out, as by a pending command: a restarted engine reports no take
+and no stream until the starts reach it, after its resync, and those reports
+describe outputs not yet re-sent, not outputs that failed. Under the claim no
+report corrects the belief (§10.1.4), (a) compares nothing for the stream, and
+`record.failed` waits. The claim passes to the re-issued start at its
+acceptance (whose own window then runs), ends with an operator command on that
+output or the show's lifecycle (`show.stop`, `show.load`, `show.unload`), and
+expires after 10 s as a command's claim does at its window's end: the expiry
+alert (`command.unacknowledged.<output>`, its reason naming the unapplied
+resync) unless `engine.notReporting` owns the case, and only a report after
+the expiry may correct the belief. The restart e2e measured 1.6 s from the
+hello to the re-issue on the reference machine.
 
 **A late acknowledgement cannot reclaim the belief** (signed off 2026-10-17),
 verbatim:
