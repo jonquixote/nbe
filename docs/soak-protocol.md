@@ -95,7 +95,13 @@ measurement: it produces a number someone will later cite.
 6. **Power** (the user's word of 2026-10-06; why, with the evidence, is §2a).
    - **On AC, awake.** The run goes under `caffeinate -i -s`, and the power log
      for its window is checked (`pmset -g log`). **Any `Sleep`, or any
-     `Using Batt`, voids the run.**
+     `Using Batt`, voids the run.** *(2026-11-23: the log is read after every
+     show, and the first such line stops the run there; the show it fell in is
+     not read, and a finding made by an earlier show stands, a FAIL. On
+     2026-11-22 a lid-closed sleep at show 4 left the run going for sixteen
+     hours of sleep-stretched shows, each printed as a FINDING.)* With no
+     external display, closing the lid sleeps the machine on AC as well, and
+     `caffeinate` cannot hold that off: the pre-flight says whether it does.
    - **Recorded with the run:**
      - the adapter's wattage (`ioreg -rn AppleSmartBattery`,
        `AdapterDetails.Watts`) against the machine's rated 87 W;
