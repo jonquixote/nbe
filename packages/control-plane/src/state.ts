@@ -402,7 +402,7 @@ export class ControlPlaneState {
     }
     this.itemStates.set(itemRef, next);
     this.viewItem = itemRef;
-    this.viewItemStartFrame = this.estimatedMasterFrame();
+    this.viewItemStartFrame = this.lastKnownMasterFrame; // FALSIFY: the last report alone (pre-#203)
     this.viewItemTakenAtMs = Date.now();
     if (this.previewItem === itemRef) this.previewItem = null;
     this.fallbackActive = false;
