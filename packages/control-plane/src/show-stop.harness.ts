@@ -157,6 +157,12 @@ interface Tap {
    * that once failed it on CI happens on every run.
    */
   holdUp: ((msg: Record<string, unknown>) => number) | null;
+  /**
+   * Drops every relayed connection and keeps listening: the engine process
+   * lives on, its clock with it, and reconnects through the tap, as after a
+   * network blip (a resync of a healthy engine).
+   */
+  sever: () => void;
   close: () => void;
 }
 
@@ -168,6 +174,9 @@ async function startTap(cpPort: number): Promise<Tap> {
     frames: [],
     onFrame: null,
     holdUp: null,
+    sever: () => {
+      for (const c of wss.clients) c.terminate();
+    },
     close: () => {
       for (const c of wss.clients) c.terminate();
       wss.close();
