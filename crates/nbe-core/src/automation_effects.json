@@ -23,6 +23,7 @@
     "show.stop": { "stateChange": ["showState", "streamState", "recordState"], "deferred": ["streamHealth"], "note": "streamState and recordState are set idle unconditionally (commands/show.ts); they change when an output was active" },
     "show.load": { "stateChange": ["showState", "viewItem", "previewItem", "fallbackActive", "itemState"] },
     "show.unload": {},
+    "show.adopt": { "note": "v0.4.10 row 6: an adoption is not a transition on air (the show and its item were already running), so no rule hears it, as the automatic adoption, which is no command, fires none (server.ts afterAccepted returns before the diff)" },
     "show.getState": {},
     "show.preflight": {},
     "preview.set": { "stateChange": ["previewItem", "itemState"] },

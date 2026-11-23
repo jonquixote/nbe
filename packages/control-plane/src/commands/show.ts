@@ -202,6 +202,20 @@ export function showHandlers(reg: CommandRegistry, deps: DispatchDeps): void {
     },
   });
 
+  // Review4 case C: the held render node's show, taken over as it runs. The
+  // server adopts it from the node's hello (on-air facts, its package and
+  // load generation; no rundown is known); the release sends the adopting
+  // resync, which keeps the picture.
+  reg.set("show.adopt", {
+    forward: false,
+    handler: (): HandlerOutput => {
+      if (!deps.adoptHeld) throw new CpError("E_FORBIDDEN_STATE", "no render node is held to adopt");
+      const data = deps.adoptHeld();
+      deps.persistence.flushNow();
+      return { data };
+    },
+  });
+
   reg.set("show.unload", {
     forward: true,
     handler: (ctx): HandlerOutput => {

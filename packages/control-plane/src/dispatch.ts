@@ -62,6 +62,12 @@ export const SHOW_STOP_HELD_WARNING =
 
 export interface DispatchDeps {
   state: ControlPlaneState;
+  /**
+   * Review4 case C: adopt the running show of a render node held as
+   * unidentified (`show.adopt`), from its hello. Supplied by the server;
+   * throws `CpError` when nothing is held or the show cannot be read.
+   */
+  adoptHeld?: () => Record<string, unknown>;
   bridge: RenderBridge;
   persistence: PersistHooks;
   /** how long show.stop waits for the engine's quiescence ack (SPEC §5.9.5) */

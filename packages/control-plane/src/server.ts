@@ -141,7 +141,9 @@ interface ClientSession {
   /** Review4 case C: a handshake refused because the engine runs a show this
    * control plane cannot identify; completed by the operator's `show.load` or
    * `show.unload` (the operator taking control). */
-  heldHandshake?: (() => void) | null;
+  heldHandshake?: ((adopted: boolean) => void) | null;
+  /** The held render node's hello: what `show.adopt` takes over. */
+  heldHello?: EngineHelloFrame | null;
   role: Role;
   tokenId: string;
   telemetryTimer: ReturnType<typeof setInterval> | null;
@@ -394,8 +396,14 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   /** Review4 case C: hold this render connection unregistered (no resync, so
    * nothing stops the engine's show; the picture stays), raise the alert, and
    * audit the refusal. The operator's `show.load` or `show.unload` releases it. */
-  function holdUnidentified(session: ClientSession, handshake: () => void, reason: string, hello: EngineHelloFrame): void {
+  function holdUnidentified(
+    session: ClientSession,
+    handshake: (adopted: boolean) => void,
+    reason: string,
+    hello: EngineHelloFrame,
+  ): void {
     session.heldHandshake = handshake;
+    session.heldHello = hello;
     unidentifiedHold = { reason };
     signals.unidentified(reason, null);
     try {
@@ -420,10 +428,61 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       const held = client.heldHandshake;
       if (!held || client.closed) continue;
       client.heldHandshake = null;
-      held();
+      client.heldHello = null;
+      held(command === "show.adopt");
       released = true;
     }
     if (released) signals.unidentified(null, `the operator took control (${command})`);
+  }
+
+  /** Review4 case C, the operator's third choice: `show.adopt {force: true}`
+   * takes over the held render node's show as it runs, from its hello. No
+   * rundown is known (every item IDLE but the one on the View), nothing of a
+   * journal is restored, and preflight is not re-run. */
+  function adoptHeld(): Record<string, unknown> {
+    const held = [...clients.values()].find((c) => !c.closed && c.heldHandshake && c.heldHello);
+    if (!held || !held.heldHello) throw new CpError("E_FORBIDDEN_STATE", "no render node is held to adopt");
+    const hello = held.heldHello;
+    if (!hello.showRunning || hello.package === null) {
+      throw new CpError("E_FORBIDDEN_STATE", "the held render node is running no show to adopt");
+    }
+    let pkg: PackageInfo;
+    try {
+      pkg = indexPackage(hello.package.path);
+    } catch (err) {
+      throw new CpError("E_NOT_FOUND", `the held render node's package cannot be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const before = state.stateVersion;
+    const reason = unidentifiedHold?.reason ?? null;
+    const out = state.adopt(pkg, hello, {}, Date.now());
+    automation.load(pkg);
+    try {
+      audit.record({
+        kind: "command",
+        command: "show.adopt",
+        event: "controlPlane.adopted",
+        detail: {
+          forced: true,
+          heldFor: reason,
+          engineLastApplied: hello.lastAppliedStateVersion,
+          adoptedVersion: state.stateVersion,
+          preflight: "not re-run",
+          package: hello.package,
+        },
+        stateVersionBefore: before,
+        stateVersionAfter: state.stateVersion,
+      });
+    } catch {
+      // A row that cannot be written is R18's alert to announce.
+    }
+    signals.restarted({
+      show: `${pkg.showId} at ${hello.package.path}, by the operator's force (no rundown was known)`,
+      automationDropped: null,
+      correctedToDone: out.correctedToDone,
+      recordMismatch: false,
+      recording: hello.recording,
+    });
+    return { adopted: { packagePath: hello.package.path, viewItem: hello.viewItem } };
   }
 
   function notAdopted(reason: string, detail: Record<string, unknown>): void {
@@ -732,6 +791,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
 
   const deps: DispatchDeps = {
     state,
+    adoptHeld: () => adoptHeld(),
     bridge,
     persistence: opts.persistence,
     rateLimiter,
@@ -845,7 +905,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       broadcastStateChange(out.stateVersion, [command]);
       afterAccepted(command, snapBefore, run.automation?.cause ?? NO_CAUSE);
       rememberOutputStart(command, envelope.payload);
-      if (command === "show.load" || command === "show.unload") releaseHeldHandshakes(command);
+      if (command === "show.load" || command === "show.unload" || command === "show.adopt") releaseHeldHandshakes(command);
       // §5.9.5: a `show.stop` that returns with outputs still active was not
       // acknowledged, and they are held. The lane announces it (v0.4.8 row 8).
       if (command === "show.stop" && state.outputsActive()) signals.held(out.stateVersion);
@@ -914,6 +974,10 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
    * acceptance, so a trigger is observed the moment its condition became true.
    */
   function afterAccepted(command: string, before: Snapshot, cause: Cause): void {
+    // v0.4.10 row 6: an adoption is not a transition on air (the show and its
+    // item were already running), so no rule hears it, as the automatic
+    // adoption, which is no command, fires none. adoptHeld loaded its rules.
+    if (command === "show.adopt") return;
     if (command === "show.load" && state.pkg) automation.load(state.pkg);
     else if (command === "show.unload") automation.unload();
     else if (command === "show.start") automation.showStarted();
@@ -1389,7 +1453,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
                 ? { kind: "refuse", reason: unidentifiedHold?.reason ?? "noJournal" }
                 : { kind: "resync" };
             if (decision.kind === "resync") unidentifiedHold = null;
-            if (decision.kind === "refuse") holdUnidentified(session, () => waiting.handshake(false), decision.reason, frame);
+            if (decision.kind === "refuse") holdUnidentified(session, (adopted) => waiting.handshake(adopted), decision.reason, frame);
             else waiting.handshake(decision.kind === "adopt");
           }
           if (session.render !== null) noteHello(session.render, frame);

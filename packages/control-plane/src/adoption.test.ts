@@ -441,3 +441,50 @@ test("no journal, an engine running nothing: resynced at its hello (case D); no 
   const mute = await r2.engine(null);
   assert.ok(await until(() => resyncs(mute.directives).length === 1), "an engine that never says hello is resynced after the wait");
 });
+
+const code = (r: Record<string, unknown>) => (r.error as { code: string } | undefined)?.code;
+
+test("case C, the operator's third choice: show.adopt {force: true} takes over the held show as it runs (the picture stays)", async (t) => {
+  const r = await rig(t);
+  const e = await r.engine(hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } }));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held");
+  const admin = await r.admin();
+  assert.equal(code(await send(admin, "show.adopt", {})), "E_BAD_PAYLOAD", "force is required: the control plane cannot check what it adopts");
+  const adopted = await send(admin, "show.adopt", { force: true });
+  assert.equal(adopted.status, "ok", JSON.stringify(adopted));
+  assert.ok(await until(() => resyncs(e.directives).length === 1), "the release sends one resync");
+  const p = e.directives[0]!.payload as Record<string, unknown>;
+  assert.deepEqual(
+    { showState: p.showState, packagePath: p.packagePath, packageLoadStateVersion: p.packageLoadStateVersion, viewItem: p.viewItem, viewItemStartFrame: p.viewItemStartFrame, hasEnd: "viewItemEnd" in p },
+    { showState: "RUNNING", packagePath: r.pkgPath, packageLoadStateVersion: 6, viewItem: "A1", viewItemStartFrame: 100, hasEnd: false },
+    "the engine's own show, its own load generation (no reload), no end: the picture stays",
+  );
+  assert.equal(r.state.showState, "RUNNING");
+  assert.ok(!r.state.alerts.some((a) => a.id === "engine.unidentified"), "the hold's alert clears");
+  const note = r.state.alerts.find((a) => a.id === "controlPlane.restarted");
+  assert.ok(note && /by the operator's force \(no rundown was known\)/.test(note.reason), "the restart note says how it was adopted");
+  const row = event(r, "controlPlane.adopted").find((x) => (x["detail"] as Record<string, unknown>)["forced"] === true);
+  assert.ok(row, "the forced adoption is audited");
+  assert.equal((row["detail"] as Record<string, unknown>)["heldFor"], "identity");
+  e.ws.close();
+  const again = await r.engine(hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } }));
+  assert.ok(await until(() => resyncs(again.directives).length === 1), "after the adoption a reconnect is resynced at once (case A)");
+  assert.equal((again.directives[0]!.payload as Record<string, unknown>).showState, "RUNNING");
+});
+
+test("show.adopt with no render node held is refused; with no journal, the held first engine can be adopted", async (t) => {
+  const plain = await rig(t, { restart: false });
+  const e0 = await plain.engine(hello(plain.pkgPath));
+  assert.ok(await until(() => resyncs(e0.directives).length === 1));
+  const a0 = await plain.admin();
+  assert.equal(code(await send(a0, "show.adopt", { force: true })), "E_FORBIDDEN_STATE", "nothing is held");
+
+  const r = await rig(t, { restart: false, awaitFirstHello: true });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held: no journal");
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.adopt", { force: true })).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1));
+  assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "RUNNING", "adopted, not stopped");
+  assert.equal(r.state.showState, "RUNNING");
+});

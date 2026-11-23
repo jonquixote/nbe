@@ -1245,6 +1245,26 @@
       }
     },
     {
+      "name": "show.adopt",
+      "roles": [
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "force": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
       "name": "show.getState",
       "roles": [
         "monitor",

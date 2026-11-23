@@ -166,6 +166,9 @@ export const CommandPayloadSchemas = {
     .strict(),
   "show.stop": z.object({ quiesceOutputs: z.boolean().default(true), force: z.boolean().default(false) }).strict(),
   "show.unload": z.object({}).strict(),
+  // Review4 case C: take over a held render node's running show as it is.
+  // `force` is the operator saying so: the control plane cannot check it.
+  "show.adopt": z.object({ force: z.literal(true) }).strict(),
   // PROPOSAL (operator-shell draft, finding 1; not in SPEC v0.4 §16): the
   // loaded show as an operator surface draws it. Read-only, every role.
   "show.getState": z.object({}).strict(),
