@@ -814,14 +814,22 @@ async fn r20_past_the_stage_share_steady_play_still_never_misses() {
     let _restore = StageShare;
     let mut most = 0usize;
     let mut uploads = 0usize;
-    for n in PAST_THE_RING..decoded.len() as u64 {
+    let mut shortest = 0u64;
+    let length = decoded.len() as u64;
+    for n in PAST_THE_RING..length {
         // Paced near the house rate, as production's tick is.
         tokio::time::sleep(Duration::from_millis(30)).await;
         let r = render.render_frame(n, None);
         most = most.max(r.read_ahead_uploads);
         uploads += r.read_ahead_uploads;
+        // The first upload of each frame keeps the window full as it plays:
+        // without it, the window would drain to the urgent margin first.
+        for w in render.clip_window_report(n) {
+            let end = (w.base + w.window_len as u64).min(length);
+            shortest = shortest.max(w.first_missing.map_or(0, |m| end - m));
+        }
     }
-    println!("R20 STAGE SHARE 0: {uploads} uploads, at most {most} in a frame");
+    println!("R20 STAGE SHARE 0: {uploads} uploads, at most {most} in a frame, the window at most {shortest} short");
     assert_eq!(
         misses(&render),
         before,
@@ -832,4 +840,9 @@ async fn r20_past_the_stage_share_steady_play_still_never_misses() {
         "R20: past the stage share a frame uploads its first frame and those its window needs soon, at most 2 here; saw {most}"
     );
     assert!(uploads > 0, "R20: the window refilled as the clip played");
+    assert!(
+        shortest <= 4,
+        "R20: past the stage share the window must stay full as the clip plays (one upload a frame), \
+         not drain to the urgent margin; it fell {shortest} frames short"
+    );
 }
