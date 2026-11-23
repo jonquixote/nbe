@@ -1180,6 +1180,9 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   // probe that raises nothing is the check.
   await probe("show.getState", {});
   await probe("show.unload", {});
+  // show.adopt (v0.4.10 row 6): its row is empty (an adoption fires no rule);
+  // with no render node held it is refused, and raises nothing either way.
+  await probe("show.adopt", { force: true });
 
   const refused = [...accepted].filter(([, ok]) => !ok).map(([c]) => c);
   // One command per §13.4.1 row (19 rows) must be ACCEPTED, or its row is

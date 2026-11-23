@@ -204,6 +204,8 @@ const REGISTERED_COMMANDS: &[&str] = &[
     "show.start",
     "show.stop",
     "show.unload",
+    // v0.4.10 row 6: review4 case C's third choice, admin-only.
+    "show.adopt",
     // Approved 2026-11-12 (the operator-shell draft, finding 1): read-only.
     "show.getState",
     "preview.set",

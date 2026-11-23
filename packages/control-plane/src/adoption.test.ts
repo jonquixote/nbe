@@ -22,14 +22,14 @@ import { tempDir } from "./test-tmp.js";
 const ADMIN = "admin-token";
 const RENDER = "render-token";
 
-function makePackage(): string {
+function makePackage(automation?: unknown[]): string {
   const dir = tempDir("nbe-adopt-");
   mkdirSync(join(dir, "media"), { recursive: true });
   for (const f of ["fallback", "A1", "A2", "B1"]) writeFileSync(join(dir, "media", `${f}.png`), "png");
   writeFileSync(
     join(dir, "manifest.json"),
     JSON.stringify({
-      manifestVersion: "0.3",
+      manifestVersion: automation ? "0.4" : "0.3",
       network: { id: "nbe", name: "Test" },
       show: {
         id: "show-1",
@@ -46,6 +46,7 @@ function makePackage(): string {
         items: ["A1", "A2", "B1"].map((id) => ({ id, kind: "sceneRef", sceneRef: `SCN_${id}`, durationFrames: 900 })),
       },
       control: { bindings: [] },
+      ...(automation ? { automation } : {}),
     }),
   );
   return dir;
@@ -115,9 +116,16 @@ interface Rig {
 
 async function rig(
   t: { after: (fn: () => void | Promise<void>) => void },
-  opts: { restart?: boolean; journalOver?: Record<string, unknown>; lockMs?: number; helloWaitMs?: number; awaitFirstHello?: boolean } = {},
+  opts: {
+    restart?: boolean;
+    journalOver?: Record<string, unknown>;
+    lockMs?: number;
+    helloWaitMs?: number;
+    awaitFirstHello?: boolean;
+    automation?: unknown[];
+  } = {},
 ): Promise<Rig> {
-  const pkgPath = makePackage();
+  const pkgPath = makePackage(opts.automation);
   const auditPath = join(tempDir("nbe-adopt-audit-"), "audit.jsonl");
   const state = new ControlPlaneState();
   state.stateVersion = 40; // as restore() leaves it: the journal's version, UNLOADED
@@ -257,6 +265,24 @@ test("B: a matching running engine is adopted; its resync changes nothing on air
   // engine's clock: 300 frames in, 600 of 900 left.
   const end = r.state.viewItemEnd();
   assert.ok(end !== undefined && Math.abs(end.remainingFrames - 600) <= 3, `remaining ${JSON.stringify(end)}`);
+
+  // 7b-ii: the operator's banner says what happened at the restart.
+  const banner = r.state.alerts.find((a) => a.id === "controlPlane.restarted");
+  assert.ok(banner, "the restart banner is raised");
+  assert.equal(banner.severity, "info");
+  assert.match(banner.reason, /restarted and adopted the running show .*preflight was not re-run/);
+  assert.match(banner.reason, /2 automation actions queued at the restart were dropped, not fired late/);
+  assert.match(banner.reason, /1 rundown item marked DONE \(A2\)/);
+  assert.doesNotMatch(banner.reason, /disagreed on the recording/, "the engine and the journal agreed");
+  assert.equal(event(r, "controlPlane.restarted").length, 1, "the banner's raise is audited");
+  // The adopted show's end clears it.
+  const admin = await r.admin();
+  const stopping = send(admin, "show.stop");
+  assert.ok(await until(() => e.directives.some((x) => x.command === "show.stop")));
+  const stop = e.directives.find((x) => x.command === "show.stop")!;
+  e.ws.send(JSON.stringify({ v: PROTOCOL_VERSION, kind: "appliedStateVersion", stateVersion: stop.stateVersion }));
+  assert.equal((await stopping).status, "ok");
+  assert.ok(await until(() => !r.state.alerts.some((a) => a.id === "controlPlane.restarted")), "show.stop clears the banner");
 });
 
 test("while the journal says a show was running, commands wait for the hello; reads do not", async (t) => {
@@ -422,4 +448,72 @@ test("no journal, an engine running nothing: resynced at its hello (case D); no 
   const r2 = await rig(t, { restart: false, awaitFirstHello: true, helloWaitMs: 300 });
   const mute = await r2.engine(null);
   assert.ok(await until(() => resyncs(mute.directives).length === 1), "an engine that never says hello is resynced after the wait");
+});
+
+const code = (r: Record<string, unknown>) => (r.error as { code: string } | undefined)?.code;
+
+test("case C, the operator's third choice: show.adopt {force: true} takes over the held show as it runs (the picture stays)", async (t) => {
+  const r = await rig(t);
+  const e = await r.engine(hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } }));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held");
+  const admin = await r.admin();
+  assert.equal(code(await send(admin, "show.adopt", {})), "E_BAD_PAYLOAD", "force is required: the control plane cannot check what it adopts");
+  const adopted = await send(admin, "show.adopt", { force: true });
+  assert.equal(adopted.status, "ok", JSON.stringify(adopted));
+  assert.ok(await until(() => resyncs(e.directives).length === 1), "the release sends one resync");
+  const p = e.directives[0]!.payload as Record<string, unknown>;
+  assert.deepEqual(
+    { showState: p.showState, packagePath: p.packagePath, packageLoadStateVersion: p.packageLoadStateVersion, viewItem: p.viewItem, viewItemStartFrame: p.viewItemStartFrame, hasEnd: "viewItemEnd" in p },
+    { showState: "RUNNING", packagePath: r.pkgPath, packageLoadStateVersion: 6, viewItem: "A1", viewItemStartFrame: 100, hasEnd: false },
+    "the engine's own show, its own load generation (no reload), no end: the picture stays",
+  );
+  assert.equal(r.state.showState, "RUNNING");
+  assert.ok(!r.state.alerts.some((a) => a.id === "engine.unidentified"), "the hold's alert clears");
+  const note = r.state.alerts.find((a) => a.id === "controlPlane.restarted");
+  assert.ok(note && /by the operator's force \(no rundown was known\)/.test(note.reason), "the restart note says how it was adopted");
+  const row = event(r, "controlPlane.adopted").find((x) => (x["detail"] as Record<string, unknown>)["forced"] === true);
+  assert.ok(row, "the forced adoption is audited");
+  assert.equal((row["detail"] as Record<string, unknown>)["heldFor"], "identity");
+  e.ws.close();
+  const again = await r.engine(hello(r.pkgPath, { package: { path: r.pkgPath, loadStateVersion: 6 } }));
+  assert.ok(await until(() => resyncs(again.directives).length === 1), "after the adoption a reconnect is resynced at once (case A)");
+  assert.equal((again.directives[0]!.payload as Record<string, unknown>).showState, "RUNNING");
+});
+
+test("show.adopt with no render node held is refused; with no journal, the held first engine can be adopted", async (t) => {
+  const plain = await rig(t, { restart: false });
+  const e0 = await plain.engine(hello(plain.pkgPath));
+  assert.ok(await until(() => resyncs(e0.directives).length === 1));
+  const a0 = await plain.admin();
+  assert.equal(code(await send(a0, "show.adopt", { force: true })), "E_FORBIDDEN_STATE", "nothing is held");
+
+  const r = await rig(t, { restart: false, awaitFirstHello: true });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held: no journal");
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.adopt", { force: true })).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1));
+  assert.equal((e.directives[0]!.payload as Record<string, unknown>).showState, "RUNNING", "adopted, not stopped");
+  assert.equal(r.state.showState, "RUNNING");
+});
+
+test("show.adopt fires no automation rule: an adoption is not a transition on air", async (t) => {
+  const rule = (id: string, trigger: Record<string, unknown>) => ({ id, trigger, action: { command: "marker.add", payload: { name: `by-${id}` } } });
+  const r = await rig(t, {
+    restart: false,
+    awaitFirstHello: true,
+    automation: [
+      rule("on-air", { kind: "stateChange", params: { field: "showState", to: "RUNNING" } }),
+      rule("on-view", { kind: "stateChange", params: { field: "viewItem" } }),
+    ],
+  });
+  const e = await r.engine(hello(r.pkgPath));
+  assert.ok(await until(() => r.state.alerts.some((a) => a.id === "engine.unidentified")), "held");
+  const admin = await r.admin();
+  assert.equal((await send(admin, "show.adopt", { force: true })).status, "ok");
+  assert.ok(await until(() => resyncs(e.directives).length === 1));
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(r.state.showState, "RUNNING");
+  assert.deepEqual(r.rows().filter((x) => x["kind"] === "automation"), [], "no rule heard the adoption");
+  assert.deepEqual(r.state.markers, [], "no rule's action ran");
 });

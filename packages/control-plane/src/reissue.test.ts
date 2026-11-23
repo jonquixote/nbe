@@ -251,3 +251,39 @@ test("7c: a hello that arrives after the resync was applied still gets the start
   );
   assert.deepEqual(commands(e2.directives), ["show.resync", "record.start"]);
 });
+
+test("case E: a restarted engine is re-sent each connected guest's connect (and its mute); a guest that left is not; the WHIP URL never reaches the audit log", async (t) => {
+  const r = await rig(t);
+  const e1 = await r.engine("engine-1");
+  assert.ok(await until(() => commands(e1.directives).includes("show.resync")));
+  const admin = await r.admin();
+  const whip = (g: string) => `https://media.example.test/whip/${g}?token=whip-secret-${g}`;
+  for (const g of ["g1", "g2", "g3"]) {
+    assert.equal((await send(admin, "guest.connect", { guestId: g, whipUrl: whip(g) })).status, "ok", `connect ${g}`);
+  }
+  assert.equal((await send(admin, "guest.mute", { guestId: "g2", muted: true })).status, "ok");
+  assert.equal((await send(admin, "guest.disconnect", { guestId: "g3" })).status, "ok");
+
+  await closed(e1.ws);
+  const e2 = await r.engine("engine-2");
+  assert.ok(
+    await until(() => e2.directives.filter((d) => d.command === "guest.connect").length === 2 && commands(e2.directives).includes("guest.mute")),
+    `the restarted engine is re-sent the guests: ${JSON.stringify(commands(e2.directives))}`,
+  );
+  await new Promise((res) => setTimeout(res, 200));
+  const connects = e2.directives.filter((d) => d.command === "guest.connect").map((d) => d.payload);
+  assert.deepEqual(
+    connects,
+    [
+      { guestId: "g1", whipUrl: whip("g1") },
+      { guestId: "g2", whipUrl: whip("g2") },
+    ],
+    "each connected guest, as it was connected; the guest that left is not",
+  );
+  const mutes = e2.directives.filter((d) => d.command === "guest.mute").map((d) => d.payload);
+  assert.deepEqual(mutes, [{ guestId: "g2", muted: true }], "a muted guest is muted again");
+  const resync = e2.directives.findIndex((d) => d.command === "show.resync");
+  assert.ok(resync >= 0 && resync < e2.directives.findIndex((d) => d.command === "guest.connect"), "after the resync");
+  assert.equal(r.rows().filter((x) => x.event === "guest.reissued").length, 2, "each guest's re-issue is audited");
+  assert.ok(!r.auditText().includes("whip-secret"), "the WHIP URL never reaches the audit log");
+});
