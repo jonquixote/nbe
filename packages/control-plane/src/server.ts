@@ -166,9 +166,6 @@ interface ClientSession {
     resyncs: number[];
     /** Review4 step 7a: this connection's `engineHello`, once it arrives. */
     hello?: EngineHelloFrame;
-    /** Review4 step 7c: the starts to re-issue once this (restarted) engine
-     * acknowledges its resync. */
-    reissue?: Reissue;
   } | null;
   /** Deprecation warnings this subscriber has not yet been shown. */
   pendingDeprecations: DeprecationRecord[];
@@ -236,6 +233,8 @@ export interface ServerOptions {
   bridge?: RenderBridge;
   /** SPEC §16.1 graceful window; shortened in tests. Default 2000 ms. */
   showStopGraceMs?: number;
+  /** Review4 step 7c: the bound on a re-issue's claim; shortened in tests. Default `REISSUE_WAIT_MS`. */
+  reissueWaitMs?: number;
   /**
    * The house rate the render node runs at (SPEC §7.15).
    *
@@ -292,6 +291,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     // §5.9.5's window: the same one `show.stop` waits for its acknowledgement.
     windowMs: opts.showStopGraceMs ?? 2000,
     ttlMs: ENGINE_TELEMETRY_TTL_MS,
+    ...(opts.reissueWaitMs === undefined ? {} : { reissueWaitMs: opts.reissueWaitMs }),
     engineReport: () => world.last,
     auditSinkOk: () => audit.sinkOk,
     journalOk: () => opts.persistence.writeOk?.() ?? true,
@@ -574,7 +574,16 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
   // served to clients. A re-issue is the same intent sent again, not a new
   // command: the belief does not change, and it goes out as a detection
   // transaction (a version, an audit row, the command's own window), as the
-  // ticker's TTL expiry does. Guest starts are not re-issued here.
+  // ticker's TTL expiry does. Guests are re-issued too (case E).
+  //
+  // From the hello to the delivery the re-issue is owed (`reissueOwed`): kept
+  // here, not on the render session, so a restarted engine whose connection
+  // drops before it applied its resync is still owed it when it reconnects.
+  // What goes out is decided at the delivery, from the belief then, so a stop
+  // accepted meanwhile is not undone. The signal lane claims each owed
+  // output until then (`onReissueOwed`): the new engine's first reports read
+  // no take and no stream, outputs not yet re-sent, and must neither correct
+  // the belief nor raise `record.failed`.
   const lastStart: {
     record: Record<string, unknown> | null;
     stream: Record<string, unknown> | null;
@@ -597,6 +606,24 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       lastStart.record = null;
       lastStart.stream = null;
     }
+  }
+  let reissueOwed = false;
+  /** What a restarted engine is owed now: the outputs believed on, as started. */
+  function owedReissue(): Reissue {
+    const running = state.showState === "RUNNING";
+    return {
+      record: running && state.recordState === "recording" ? lastStart.record : null,
+      stream: running && state.streamState === "live" ? lastStart.stream : null,
+      // Guests are owed whatever the show's state: one may be connected before air.
+      guests: [...state.guests.keys()]
+        .map((id) => lastStart.guests.get(id))
+        .filter((p): p is Record<string, unknown> => p !== undefined),
+    };
+  }
+  function deliverReissue(): void {
+    reissueOwed = false;
+    reissueOutputs(owedReissue());
+    signals.onReissueDelivered();
   }
   function reissueOutputs(r: Reissue): void {
     const starts: Array<["record.start" | "stream.start", Record<string, unknown> | null]> = [
@@ -684,24 +711,21 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const previous = lastEngineInstanceId;
     lastEngineInstanceId = hello.engineInstanceId;
     if (previous === null || previous === hello.engineInstanceId) return;
-    // Step 7c: a restarted engine mid-show is owed the outputs believed on.
-    // Guests are owed whatever the show's state: one may be connected before
-    // air.
+    // Step 7c: a restarted engine is owed the outputs believed on.
     {
-      const running = state.showState === "RUNNING";
-      const record = running && state.recordState === "recording" ? lastStart.record : null;
-      const stream = running && state.streamState === "live" ? lastStart.stream : null;
-      const guests = [...state.guests.keys()]
-        .map((id) => lastStart.guests.get(id))
-        .filter((p): p is Record<string, unknown> => p !== undefined);
-      if (record !== null || stream !== null || guests.length > 0) {
+      const owed = owedReissue();
+      if (owed.record !== null || owed.stream !== null || owed.guests.length > 0) {
+        reissueOwed = true;
+        signals.onReissueOwed([
+          ...(owed.record !== null ? (["record"] as const) : []),
+          ...(owed.stream !== null ? (["stream"] as const) : []),
+        ]);
         // The engine says hello first on every connection, so its resync is
         // normally acknowledged after this, and the re-issue waits for that
         // (`noteApplied`). If the resync was already applied, send them now.
         const lastResync = render.resyncs[render.resyncs.length - 1];
         const applied = lastResync !== undefined && render.lastApplied !== null && render.lastApplied >= lastResync;
-        if (applied) reissueOutputs({ record, stream, guests });
-        else render.reissue = { record, stream, guests };
+        if (applied) deliverReissue();
       }
     }
     try {
@@ -749,11 +773,7 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const ownAck = !session.render.resyncs.includes(version);
     signals.onApplied(version, !ownAck);
     // Step 7c: the restarted engine applied its resync; send it the starts.
-    if (!ownAck && session.render.reissue !== undefined) {
-      const reissue = session.render.reissue;
-      delete session.render.reissue;
-      reissueOutputs(reissue);
-    }
+    if (!ownAck && reissueOwed) deliverReissue();
     if (ownAck) {
       session.render.acked.push(version);
       if (session.render.acked.length > 64) session.render.acked.shift();

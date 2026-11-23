@@ -11,9 +11,12 @@
 //!   engine still reads the stream live while the control plane believes it
 //!   idle. Needs the encoder.
 //! - **restart**: the engine is killed and restarted under a stream the control
-//!   plane believes live. The reconnect's resync carries no output state, the
-//!   new engine reports `none`, and (a) raises the standing contradiction.
-//!   Needs the encoder.
+//!   plane believes live. ~~The reconnect's resync carries no output state, the
+//!   new engine reports `none`, and (a) raises the standing contradiction.~~
+//!   (Review4 7c, #198: the control plane re-sends the stream once the new
+//!   engine applied its resync; until then the stream is owed, claimed, and
+//!   the new engine's `none` contradicts and corrects nothing.) Needs the
+//!   encoder.
 //! - **held**: a real finalize failure (the record directory made read-only)
 //!   withholds `show.stop`'s acknowledgement; `outputs.held` raises, and the
 //!   explicit stops clear it. Needs the encoder.
@@ -22,8 +25,9 @@
 //! **Row 11 (SPEC §10.1.3–§10.1.4, R17 spine part B), §2c.** The belief now
 //! follows the truth, so each leg also reads the belief. The refused start
 //! corrects `live → idle` after its window. The lost stop corrects
-//! `idle → live`: the engine is still on air. The restart corrects
-//! `live → idle`, and (a)'s contradiction lasts one evaluation. The held
+//! `idle → live`: the engine is still on air. ~~The restart corrects
+//! `live → idle`, and (a)'s contradiction lasts one evaluation.~~ The restart
+//! corrects nothing and raises no contradiction (7c's owed claim). The held
 //! leg's belief goes `held`, then is corrected; no real acknowledgement can
 //! come (the engine idled its record and closed its stream), so the held
 //! alert stands until `show.unload` clears it (§10.1.2's clearing rule for
@@ -270,8 +274,18 @@ test("[lane] restart: the engine restarts under a stream believed live; the cont
   const before = sink.bytes();
   assert.ok(await waitFor(() => sink.bytes() > before, 20_000), "the stream resumes: the sink receives the new engine's media");
   assert.ok(await waitFor(() => s.state.streamState === "live", 10_000), "the belief is live, as the engine is");
-  assert.ok(await waitFor(() => !ids(s).includes("stream.divergence"), 10_000), "and nothing is contradicted once it is");
-  console.log(`LANE-LEG restart ${JSON.stringify({ alerts: ids(s), believed: s.state.streamState, corrections: corrections(s) })}`);
+  await sleep(1_000); // reports after the resumed stream, read by the 250 ms evaluation
+  // (#198 to this change: the belief went live -> idle -> live here, 144 ms
+  // after the connect, and the contradiction raised for one evaluation: the
+  // new engine reported before its resync was applied and the re-issue sent.)
+  const rows = auditRows(s);
+  const at = (event: string) => rows.find((r) => r["event"] === event)?.["ts"] as number | undefined;
+  const raised = rows.filter((r) => r["command"] === "alert" && (r["detail"] as Record<string, unknown>)["edge"] === "raised").map((r) => (r["detail"] as Record<string, unknown>)["alert"]);
+  console.log(
+    `LANE-LEG restart ${JSON.stringify({ alerts: ids(s), raised, believed: s.state.streamState, corrections: corrections(s), helloToReissueMs: (at("stream.reissued") ?? NaN) - (at("engine.restarted") ?? NaN) })}`,
+  );
+  assert.deepEqual(corrections(s), [], "the belief never left live: the new engine's first reports are an owed stream, not a lost one");
+  assert.ok(!raised.includes("stream.divergence"), `no contradiction raised across the restart: ${JSON.stringify(raised)}`);
 });
 
 // (§2c, row 11: this test's name ended "and the explicit stops clear it".)
