@@ -1097,6 +1097,8 @@ mod tests {
                         // Read-ahead stage (a): figures unlike every other,
                         // so a field printed from the wrong source fails.
                         read_ahead_detail: crate::render::ReadAheadPhases {
+                            copies_done: 0,
+                            copied_off_thread: Duration::ZERO,
                             reclaim: Duration::from_micros(70),
                             stage: Duration::from_micros(260),
                             submit: Duration::from_micros(40),
@@ -1242,6 +1244,8 @@ mod tests {
                                 ..Default::default()
                             },
                             read_ahead_detail: ReadAheadPhases {
+                                copies_done: 0,
+                                copied_off_thread: Duration::ZERO,
                                 reclaim: Duration::from_micros(if slow { 6_000 } else { 100 }),
                                 stage: Duration::from_micros(if slow { 2_500 } else { 800 }),
                                 submit: Duration::from_micros(100),

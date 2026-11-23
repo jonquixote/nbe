@@ -346,7 +346,7 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
     let dir = tempfile::tempdir().unwrap();
     write_clip_package(dir.path(), &source, 150);
     let mut render = on_air(dir.path()).await;
-    let (mut uploads, mut bytes) = (0usize, 0u64);
+    let (mut uploads, mut bytes, mut done) = (0usize, 0u64, 0usize);
     // Paced near the house rate: the load primes frames 0-89, and the
     // worker that streams 90 on only delivers in time if the frames do not
     // race ahead of it.
@@ -366,18 +366,25 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
             "frame {f}: the split, the fourth phase included, fits inside the read-ahead phase: {d:?} against {:?}",
             r.phases.read_ahead
         );
-        // Stage (a3): the stage's split fits inside it, and a tick that
-        // uploaded copied bytes, so its copy time is never zero.
+        // Stage (a3): the stage's split fits inside it. The copy itself is
+        // the copy thread's: the render thread copies nothing, and a copy
+        // done carries its time from that thread.
         assert!(
             d.stage_split.total() <= d.stage,
             "frame {f}: the stage split fits inside the stage: {d:?}"
         );
-        if d.uploads > 0 {
+        assert_eq!(
+            d.stage_split.copy,
+            std::time::Duration::ZERO,
+            "frame {f}: the render thread copies no frame: {d:?}"
+        );
+        if d.copies_done > 0 {
             assert!(
-                d.stage_split.copy > std::time::Duration::ZERO,
-                "frame {f}: an upload copied bytes, so its copy time is above zero: {d:?}"
+                d.copied_off_thread > std::time::Duration::ZERO,
+                "frame {f}: a copy done copied bytes on the copy thread: {d:?}"
             );
         }
+        done += d.copies_done;
         // Stage (a2): the encoder is created every tick, so its time is never
         // zero: a pump that stopped timing it would read zero here.
         assert!(
@@ -387,8 +394,14 @@ async fn the_read_ahead_reports_its_uploads_bytes_and_split() {
         uploads += d.uploads;
         bytes += d.bytes;
     }
-    println!("read-ahead stage (a): 150 frames, {uploads} uploads, {bytes} bytes");
+    println!(
+        "read-ahead stage (a): 150 frames, {uploads} uploads, {bytes} bytes, {done} copies done"
+    );
     assert!(uploads > 0, "the read-ahead uploaded past the head");
+    assert!(
+        done <= uploads && uploads - done <= 4,
+        "every copy begun is done within the staging pool's bound: {uploads} begun, {done} done"
+    );
 }
 
 /// R47: rounds of the settle, a count, never a deadline (R39; R48's form).
@@ -896,5 +909,58 @@ async fn r20_past_the_stage_share_a_clip_uploads_its_first_frame_and_what_it_nee
     assert_eq!(
         jump.read_ahead_uploads, 2,
         "R20: past the stage share a window empty at its base takes its first upload and the frame it needs next"
+    );
+}
+
+/// Restores the forced copy delay however the test ends.
+struct CopyDelay;
+
+impl Drop for CopyDelay {
+    fn drop(&mut self) {
+        nbe_engine::gpu::force_copy_delay(None);
+    }
+}
+
+/// A staging copy that stalls costs the View nothing. On CI's VM one copy took
+/// 55.6 ms on the render thread (main a438e6e: 22 drops in a second). The copy
+/// now runs on the copy thread: with every copy forced to take 60 ms, a clip
+/// played from frame 45 to its end at the house rate keeps the render thread's
+/// read-ahead phase small, and its window absorbs the delay (nothing missed).
+#[tokio::test]
+async fn r20_a_stalled_copy_costs_the_render_thread_nothing() {
+    let _lane = LANE.write().await;
+    let source = dress_media("counter_150.mp4");
+    let decoded = decoded("counter_150.mp4");
+    let dir = tempfile::tempdir().unwrap();
+    write_clip_package(dir.path(), &source, decoded.len() as u64);
+    let mut render = on_air(dir.path()).await;
+    assert!(
+        render.settle_read_ahead(PAST_THE_RING, SETTLE),
+        "R20: the read-ahead did not settle at {PAST_THE_RING}"
+    );
+    let before = misses(&render);
+    nbe_engine::gpu::force_copy_delay(Some(Duration::from_millis(60)));
+    let _restore = CopyDelay;
+    let (mut slowest, mut uploads, mut done) = (Duration::ZERO, 0usize, 0usize);
+    for n in PAST_THE_RING..decoded.len() as u64 {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let r = render.render_frame(n, None);
+        slowest = slowest.max(r.phases.read_ahead);
+        uploads += r.read_ahead_uploads;
+        done += r.phases.read_ahead_detail.copies_done;
+    }
+    println!("R20 COPY 60 ms: {uploads} copies begun, {done} done; the slowest read-ahead phase {slowest:?}");
+    assert!(
+        uploads > 0 && done > 0,
+        "R20: the window refilled through the copy thread"
+    );
+    assert!(
+        slowest < Duration::from_millis(20),
+        "R20: a 60 ms copy must not land on the render thread; its read-ahead phase took {slowest:?}"
+    );
+    assert_eq!(
+        misses(&render),
+        before,
+        "R20: the window absorbs a 60 ms copy as the clip plays"
     );
 }
