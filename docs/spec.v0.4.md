@@ -18,6 +18,20 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.10 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9: it writes
+down behaviour merged on main, each row naming the PR that built it.
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **A decoder starved at `show.load` is retried once.** A video asset whose decode at load fails with a transient VideoToolbox status (the class preflight already retries, -12911 among it) is decoded again once, 500 ms later; a second failure fails the asset as before. | §12.8.1 rule 1 | #197 (`5f21dac`) |
+| 2 | **Case C: a show the control plane cannot identify is held, never resynced off air.** A restarted control plane that cannot adopt a running show (another package or load generation, a journal not `RUNNING`, no package, an unreadable package), or one with no journal whose first render node reports `showRunning`, sends that connection no resync: it stays unregistered and the picture stays. `engine.unidentified` (critical) says why, audited `controlPlane.refused`. The hold lasts until the operator's `show.load` or `show.unload`, which sends the resync from the control plane's state; while it lasts, a render node that reconnects still running a show is held again. A render node running nothing is resynced (case D). | §5.9.4, §10.1.2 | #199 (`08ddd97`) |
+| 3 | **The restart note.** An adoption raises `controlPlane.restarted` (info): the show adopted and preflight not re-run, the automation actions dropped, the rundown items marked `DONE`, and a recording disagreement (the render node's kept). The adopted show's end clears it. | §5.9.4, §10.1.2 | this PR |
+| 4 | **A restarted engine is re-sent its guests.** Each guest the control plane believes connected is re-sent its `guest.connect` as accepted, and `guest.mute` if muted, whatever the show's state, audited `guest.reissued`; the WHIP URL is never logged. | §5.9.4 | this PR |
+| 5 | **The read-ahead's uploads are bounded by time, not only by count.** Beyond each on-air clip's first upload of a frame, the staging copies may spend a quarter of the frame period; past it a clip uploads only a frame its window needs within 2 frames. The render thread still never blocks (rule 4). | §12.8.1 | #201 |
+
+No wire, schema or error-code change. Rows 2 and 3 add two alert ids.
+
 v0.4.9 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28 ("decide, implement, validate and merge without
 asking, and don't create approval checkpoints"); ratified by its merge.** It
@@ -31,7 +45,7 @@ sprint record), applied as drafted unless the row says otherwise.
 | 1 | **Ticker limits and expiry.** At most 30 items of at most 120 characters; an override over either limit, or a `prepend`/`append` whose result would pass 30, is refused `E_BAD_PAYLOAD` naming the limit, nothing truncated. `ttlSec` counts from acceptance; the control plane removes an expired item within a second and sends the render node the resolved queue, and an expiry restarts `ticker.notOnAir`'s settle window as a ticker command does. | §16.7 | #128 (`07ce622`) |
 | 2 | **Disk-full does not stop control.** An on-air command whose audit row cannot be written takes effect with its normal reply and raises `audit.sinkFailed`; a state journal that cannot be written raises the same alert with its own reason; a new connection whose auth row cannot be written is refused HTTP 503 `E_DISK`. | §10.1.2, §16 | #129 (`76abcf3`) |
 | 3 | **`engineHello`.** The render node's first frame on every connection says what it holds; a new `engineInstanceId` is audited `engine.restarted`. | §5.9.3 | #130 (`962c7e5`) |
-| 4 | **Adoption after a control-plane restart.** A control plane that restored a journal waits (at most 2 s) for the connection's `engineHello`, and adopts a running show when the render node reports `showRunning`, the journal's `showState` was `RUNNING`, and the package path and load generation match: on-air facts from the hello, the rundown from the journal, `stateVersion` = max(journal, hello's `lastAppliedStateVersion`) + 1; otherwise it resyncs as for any connection and audits `controlPlane.notAdopted`. A saved journal alone never starts a show. The journal also carries the load generation and the count of queued or timed automation actions, which an adoption reports as dropped (never fired late). Audit events `controlPlane.adopted` and `controlPlane.notAdopted`. **Not applied from the draft:** a new `E_RECOVERING` code. Commands refused while waiting for the hello carry `E_FORBIDDEN_STATE` with `details.reason: "recovering"`, as built. **Not built (the recovery cases left open):** case C's refusal and the operator's banner (review4 7b-ii), and case E's re-issue of guest starts. The re-issue of record and stream starts after an engine restart (7c) is row 10. | §5.9.4, §5.1, §10.7 | #131 (`137b7fc`) |
+| 4 | **Adoption after a control-plane restart.** A control plane that restored a journal waits (at most 2 s) for the connection's `engineHello`, and adopts a running show when the render node reports `showRunning`, the journal's `showState` was `RUNNING`, and the package path and load generation match: on-air facts from the hello, the rundown from the journal, `stateVersion` = max(journal, hello's `lastAppliedStateVersion`) + 1; otherwise it resyncs as for any connection and audits `controlPlane.notAdopted`. A saved journal alone never starts a show. The journal also carries the load generation and the count of queued or timed automation actions, which an adoption reports as dropped (never fired late). Audit events `controlPlane.adopted` and `controlPlane.notAdopted`. **Not applied from the draft:** a new `E_RECOVERING` code. Commands refused while waiting for the hello carry `E_FORBIDDEN_STATE` with `details.reason: "recovering"`, as built. ~~**Not built (the recovery cases left open):** case C's refusal and the operator's banner (review4 7b-ii), and case E's re-issue of guest starts.~~ *(§2c: built, v0.4.10 rows 2–4.)* The re-issue of record and stream starts after an engine restart (7c) is row 10. | §5.9.4, §5.1, §10.7 | #131 (`137b7fc`) |
 | 5 | **`ticker.notOnAir`** (critical): 2 s after the ticker last changed (a `ticker.*` command, `show.load`, `show.unload`, or a TTL expiry) and after the render node registered, a fresh report's `overlayState.tickerOverrideItems` differs from the control plane's count. | §10.1.2 | #133 (`3199aa9`), #128 |
 | 6 | **The render node reports its take, and a take that is not running while believed is an alert.** `recordTake { state, reason }` on every tick: `"recording"`, `"failed"` (the take's record thread ended without a stop, `reason` saying why) or the `"none"` stub. `record.failed` (critical): believed recording, no record command or `show.stop` pending, and a fresh report after the record anchor reads `"failed"` or `"none"` (an engine restart ends a take). Replaces "the render node reports no record state". | §10.1, §10.1.2 | #191 (`7040e9a`), #195 |
 | 7 | **`E_DISK`'s meaning** covers every failed disk write the control plane or the render node reports: a recording or media file, the control plane's audit log or state journal (row 2's 503). | §16 | #129 |
@@ -1221,8 +1235,11 @@ and its stream are gone, and a resync carries no output state) while the show
 is RUNNING with a take or a stream believed on, the control plane re-sends the
 `record.start` and `stream.start` it accepted once that engine has applied its
 resync, each at a new version under the command's own window, audited
-`record.reissued` / `stream.reissued`. The belief does not change. Guest
-starts are not re-sent.
+`record.reissued` / `stream.reissued`. The belief does not change. ~~Guest
+starts are not re-sent.~~ *(§2c, v0.4.10 row 4.)* Each guest it believes
+connected, whatever the show's state, is re-sent its `guest.connect` as
+accepted, and `guest.mute` if muted, audited `guest.reissued` (the WHIP URL is
+never logged).
 
 **A restarted control plane** (v0.4.9 row 4; one that restored a journal,
 §5.1) sends `show.resync` on a render connection only after that connection's
@@ -1233,9 +1250,21 @@ and the package path and load generation equal the journal's: what is on air
 comes from the hello, the rundown from the journal; a `PLAYING` item not on
 the View becomes `DONE`; `stateVersion` = max(the journal's, the hello's
 `lastAppliedStateVersion`) + 1; the show is `RUNNING`; and its resync carries
-the hello's facts and no `viewItemEnd`. Otherwise it resyncs as it would any
-connection, and audits `controlPlane.notAdopted` with the reason. A saved
-journal alone never starts a show. While it waits (at most 15 s), a command
+the hello's facts and no `viewItemEnd`; and it raises `controlPlane.restarted`
+(info, v0.4.10 row 3), saying what was kept, dropped and corrected. ~~Otherwise
+it resyncs as it would any connection, and audits `controlPlane.notAdopted`
+with the reason.~~ *(§2c, v0.4.10 row 2: a resync with the control plane's own
+state stops a running show.)* Otherwise it audits `controlPlane.notAdopted`
+with the reason, and: if the render node runs nothing (case D), resyncs as it
+would any connection; if it runs a show this control plane cannot identify
+(case C), sends no resync, holds the connection unregistered (the picture
+stays), raises `engine.unidentified` and audits `controlPlane.refused`. The
+hold lasts until the operator's `show.load` or `show.unload`, which completes
+the connection's handshake with the control plane's state; while it lasts,
+every render connection waits for its hello, and one still running a show is
+held again. A control plane with no journal to restore waits the same way for
+the hello of the first render node it serves, and holds one that reports
+`showRunning`. A saved journal alone never starts a show. While it waits (at most 15 s), a command
 other than `system.status`, `show.getState` and a telemetry subscription is
 refused `E_FORBIDDEN_STATE` with `details.reason: "recovering"`.
 
@@ -2731,6 +2760,8 @@ The control plane holds beliefs about its outputs (`streamState`, `recordState`)
 | `item.failed` | The item on the View failed mid-play after the render node's retries, and the View holds its last frame: an `itemEvent decodeError` whose `detail` begins `held:`. Cleared when a take or a cut moves the View on, or the item is reset. | `critical` | `item.failed` |
 | `ticker.notOnAir` | 2 s after the ticker last changed (a `ticker.*` command, `show.load`, `show.unload` or a TTL expiry) and after the render node registered, a fresh engine report's `overlayState.tickerOverrideItems` differs from the control plane's ticker count: a ticker change the render node did not apply. The reason names both counts. Cleared when they agree, or when the engine stops reporting (v0.4.9 row 5) | `critical` | `ticker.notOnAir` |
 | `record.failed` | Believed `recording`, no record command or `show.stop` pending, and a fresh report received after the record anchor (the record command's acknowledgement or expiry, a resync's acknowledgement, the registration, `show.stop`'s acknowledgement or hold) reads `recordTake.state` `failed` (the take's record thread ended without a stop; the reason quotes the render node's) or `none` (no take at all: an engine restart). Nothing more is being recorded. Cleared when the take is stopped, or a fresh report reads the take recording (v0.4.9 row 6) | `critical` | `record.failed` |
+| `engine.unidentified` | The render node runs a show this control plane cannot identify, and its resync is held (§5.9.4, case C; v0.4.10 row 2): the reason says why (another package or load generation, the journal not `RUNNING`, no package, an unreadable package, no journal). Cleared by the operator's `show.load` or `show.unload`, or the render node's disconnect | `critical` | `engine.unidentified` |
+| `controlPlane.restarted` | The control plane restarted and adopted the running show (§5.9.4; v0.4.10 row 3): the reason names the show, the automation actions dropped, the rundown items marked `DONE`, and any recording disagreement. Cleared by the adopted show's end (`show.stop`, `show.load`, `show.unload`) | `info` | `controlPlane.restarted` |
 
 **Two mechanisms, one question each.** Both are needed:
 - **(b) Command confirmation.** `stream.start`, `stream.stop`, `record.start` and `record.stop`, when given no exact acknowledgement within §5.9.5's window (2000 ms), raise `command.unacknowledged`. A refused or skipped directive is never acknowledged: the render node acknowledges only a directive it applied. So the absence is the signal. `show.stop` is excluded, because it has its own exact wait and `outputs.held` is its surface.
