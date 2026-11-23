@@ -30,7 +30,16 @@
 # exist for the check's cases and are read only with --stub: SOAK_STUB_PS, a
 # file in `ps -Ao pcpu=,comm=` form that the indexer check reads in place of
 # ps, and SOAK_STUB_LOADS, a comma list of 1-minute loads handed out one per
-# reading, the last one repeated.
+# reading, the last one repeated. SOAK_STUB_POWER names a file the power check
+# reads in place of the power log's new lines, from show SOAK_STUB_POWER_FROM
+# (default 1) on.
+#
+# Power (2026-11-23, after segment 1 of 11-22 ran sixteen hours of shows across
+# a lid-closed sleep, each printed as a FINDING): the power log is read after
+# every show. A Sleep or a line on battery stops the run there; the show it
+# fell in is not read (a show that slept measured the sleep), and the run is a
+# VOID unless an earlier show made a finding, which stands (a FAIL), as a
+# finding does before an admission timeout.
 set -uo pipefail
 
 STUB_RUN=0
@@ -128,6 +137,12 @@ say "spotlight: $(mdutil -s / 2>&1 | tr '\n' ' ')"
 pmset -g batt | grep -q "AC Power" || void "not on AC power"
 say "adapter: $(ioreg -rn AppleSmartBattery | awk -F'= ' '/"AdapterDetails"/ {print $2}' | grep -o '"Watts"=[0-9]*')"
 say "low power mode: $(pmset -g | awk '/lowpowermode/ {print $2}')"
+# The lid: with no external display, closing it sleeps the machine (on AC as
+# well; caffeinate cannot hold that off), and a sleep stops the run.
+case "$(ioreg -r -k AppleClamshellCausesSleep -d 4 | awk -F'= ' '/"AppleClamshellCausesSleep"/ {print $2; exit}')" in
+  Yes) say "lid: closing it sleeps this machine and stops the run (keep it open)" ;;
+  *) say "lid: closing it does not sleep this machine" ;;
+esac
 # ffprobe, for the outputs' durations.
 command -v ffprobe >/dev/null || [ -x /opt/homebrew/bin/ffprobe ] || [ -x /usr/local/bin/ffprobe ] || void "no ffprobe"
 say "binaries: nbe-engine $(shasum -a 256 "$BIN" | cut -c1-16), nbe-preflight $(shasum -a 256 "$PREFLIGHT_BIN" | cut -c1-16)"
@@ -224,10 +239,27 @@ strays() { # tag
   stray=1
 }
 PM_START="$(pmset -g log | wc -l | tr -d ' ')"
+# The power log's lines since the first show: a Sleep, or a line on battery.
+power_events() { # show number
+  if [ "$STUB_RUN" = 1 ]; then
+    [ -n "${SOAK_STUB_POWER:-}" ] && [ "$1" -ge "${SOAK_STUB_POWER_FROM:-1}" ] && cat "$SOAK_STUB_POWER"
+    return 0
+  fi
+  pmset -g log | tail -n +"$((PM_START + 1))" | awk '$4 == "Sleep" || tolower($0) ~ /using batt/'
+}
 caffeinate -i -s -w $$ &
+POWER=""
 for i in $(seq 1 "$SHOWS"); do
   run_show "show-$i"; r=$?; strays "show-$i"
-  if [ "$r" = 2 ] && [ "$stray" = 0 ]; then run_show "show-$i-again"; r=$?; strays "show-$i-again"; fi
+  if [ "$r" = 2 ] && [ "$stray" = 0 ] && [ -z "$(power_events "$i")" ]; then run_show "show-$i-again"; r=$?; strays "show-$i-again"; fi
+  # A sleep or a line on battery in this show's window: it measured the
+  # sleep, not the engine. Its result is not read and the run stops here.
+  if [ -n "$(power_events "$i")" ]; then
+    POWER="show $i"
+    say "show $i: a sleep or battery event in the window: the run stops here, and show $i is not read"
+    power_events "$i" | head -5 | tee -a "$LOG"
+    break
+  fi
   case "$r" in
     0) kept=$((kept + 1)) ;;
     1) kept=$((kept + 1)); findings=$((findings + 1)); say "FINDING at show $i: never rerun" ;;
@@ -238,12 +270,12 @@ for i in $(seq 1 "$SHOWS"); do
   [ "$stray" = 1 ] && break
   [ -n "$NOT_ADMITTED" ] && break
 done
-# The power log's lines since the first show: a Sleep, or a line on battery.
-pmset -g log | tail -n +"$((PM_START + 1))" | awk '$4 == "Sleep" || tolower($0) ~ /using batt/' > "$OUT/power-events.txt" || true
-say "power events in the window: $(wc -l < "$OUT/power-events.txt" | tr -d ' ') (any Sleep or Using Batt voids the run)"
+power_events "$SHOWS" > "$OUT/power-events.txt" || true
+say "power events in the window: $(wc -l < "$OUT/power-events.txt" | tr -d ' ') (any Sleep or Using Batt stops the run; a finding before it stands)"
 say "=== kept $kept of $SHOWS shows, $((kept * MINUTES)) show-minutes; findings $findings"
-[ -s "$OUT/power-events.txt" ] && void "a sleep or battery event in the window"
+# A finding made before a sleep stands: the shows before it were measured.
 [ "$findings" -gt 0 ] && { say "FAIL"; exit 1; }
+[ -s "$OUT/power-events.txt" ] && void "a sleep or battery event in the window${POWER:+ (in $POWER)}"
 [ -n "$NOT_ADMITTED" ] && void "$NOT_ADMITTED"
 [ "$stray" = 1 ] && void "an nbe-engine outlived a show"
 [ $((kept * MINUTES)) -ge 600 ] || void "only $((kept * MINUTES)) show-minutes kept"

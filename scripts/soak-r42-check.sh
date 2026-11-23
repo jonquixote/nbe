@@ -74,6 +74,12 @@ check escape   escape   "SOAK_SHOWS=20"                    2 "STUB VOID: an nbe-
 check admit    pass     "SOAK_SHOWS=1 SOAK_ADMIT=0 SOAK_ADMIT_WAIT_S=15" 2 "STUB VOID: show-1 was not admitted within 15 s" "STUB PASS"
 # #97's review: an admission timeout after a finding is a FAIL, not a VOID.
 check admit-after-finding short "SOAK_SHOWS=2 SOAK_ADMIT_WAIT_S=15 SOAK_STUB_LOADS=0,0,5000" 1 "STUB FAIL" "STUB VOID"
+# Power (2026-11-23): a sleep or battery event stops the run at the show it
+# falls in, which is not read: a show that slept is a VOID, never a FINDING
+# (11-22's segment printed six). A finding made before the event stands.
+printf '%s\n' "2026-11-22 04:36:50 -0800 Sleep               	Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:91%) 1 secs" > "$WORK/power-sleep"
+check power-first short "SOAK_SHOWS=3 SOAK_STUB_POWER=$WORK/power-sleep" 2 "STUB VOID: a sleep or battery event in the window (in show 1)" "FINDING"
+check power-after-finding short "SOAK_SHOWS=3 SOAK_STUB_POWER=$WORK/power-sleep SOAK_STUB_POWER_FROM=2" 1 "FINDING at show 1: never rerun" "show-3"
 # #97's review: SOAK_HARNESS without --stub voids before anything runs.
 check harness-env pass  "SOAK_SHOWS=1"                     2 "VOID: SOAK_HARNESS is set" "STUB" ""
 # The indexer check (the user's ruling of 2026-11-10, 18:20): each knowledge
