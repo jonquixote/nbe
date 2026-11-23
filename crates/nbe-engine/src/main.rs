@@ -64,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
     // the probe is warmed; announced, never silent.
     if std::env::var("NBE_FORCE_NO_ENCODER").as_deref() == Ok("1") {
         nbe_engine::record::set_force_no_encoder(true);
-        tracing::warn!("NBE_FORCE_NO_ENCODER=1: the hardware encoder is reported absent (a test seam)");
+        tracing::warn!(
+            "NBE_FORCE_NO_ENCODER=1: the hardware encoder is reported absent (a test seam)"
+        );
     }
     // Warm the hardware-encoder probe off the directive path: the first
     // answer opens a real VideoToolbox session (~190 ms), and a positive one
