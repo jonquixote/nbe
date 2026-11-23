@@ -1719,6 +1719,30 @@ jobs:
           if [ "$ran" -lt 1 ]; then echo "FAIL adoption e2e: expected at least 1 test to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL adoption e2e: expected at least 1 test to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the case C end-to-end actually ran (review4 case C, no journal; show.adopt)"
+        if: ${{ !cancelled() }}
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
+        # failures. 1 test, on the real engine built above: a show on air; a
+        # control plane restarted with no journal holds the engine
+        # unregistered (no resync) while its clock keeps advancing;
+        # show.adopt {force: true} takes the show over; a third control plane
+        # restoring that journal adopts it at the same View item and start
+        # frame; the next take applies. A missing binary fails its `before`.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/case-c.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )|CASE-C" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL case-c.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "case C e2e: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=1 exercised>=1)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL case C e2e: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 1 ]; then echo "FAIL case C e2e: expected at least 1 test to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 1 ]; then echo "FAIL case C e2e: expected at least 1 test to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
         if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
