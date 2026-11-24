@@ -18,6 +18,17 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.12 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **`E_RECOVERING`.** The refusal a restarted control plane gives while its journal says a show was running and it waits (at most 15 s) for the render node's hello has its own code, so a client can retry it instead of reporting a state error. It was `E_FORBIDDEN_STATE` with `details.reason: "recovering"`; the reason is kept. Review4's §16 draft for #131 (`sprint/review4/spec-drafts.md`), left out of v0.4.9. | §5.9.4, §16 | this version's PR |
+
+Row 1 adds an error code, mirrored by `nbe-protocol`'s `ErrorCode` and the
+control plane's `ErrorCodeSchema`; `nbe-protocol`'s mirror tests pin all three
+to §16. No schema or command change.
+
 v0.4.11 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
 
@@ -1283,9 +1294,14 @@ from its hello and keeps it; while it lasts,
 every render connection waits for its hello, and one still running a show is
 held again. A control plane with no journal to restore waits the same way for
 the hello of the first render node it serves, and holds one that reports
-`showRunning`. A saved journal alone never starts a show. While it waits (at most 15 s), a command
+`showRunning`. A saved journal alone never starts a show. ~~While it waits (at most 15 s), a command
 other than `system.status`, `show.getState` and a telemetry subscription is
-refused `E_FORBIDDEN_STATE` with `details.reason: "recovering"`.
+refused `E_FORBIDDEN_STATE` with `details.reason: "recovering"`.~~ (v0.4.12
+row 1.) While a control plane whose journal says a show was running waits for
+the hello (at most 15 s), a command other than `system.status`,
+`show.getState` and a telemetry subscription is refused `E_RECOVERING` (§16),
+with `details.reason: "recovering"` as before. The wait without a journal
+refuses no command with this code.
 
 ### 5.9.5 Quiescence acknowledgement
 
@@ -4091,6 +4107,7 @@ Error code registry (normative):
 | `E_ICE` | WebRTC ICE failure. |
 | `E_RATE_LIMITED` | The caller exceeded a rate limit (Section 10.7 flood protection). New in v0.3.2. |
 | `E_NO_ZEROCOPY` | No zero-copy frame chain on this machine. New in v0.4.5. |
+| `E_RECOVERING` | A restarted control plane whose journal says a show was running is waiting (at most 15 s) for the render node's hello to adopt it (§5.9.4). Every command other than `system.status`, `show.getState` and a telemetry subscription is refused with this code; `details.reason` is `"recovering"`. Retry after the hello. New in v0.4.12. |
 
 `E_NO_ZEROCOPY` is **reused, not invented**: the token already exists in the
 tree as the frame tap's refusal (`crates/nbe-decode/src/zerocopy.rs`) and

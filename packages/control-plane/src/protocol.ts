@@ -39,6 +39,7 @@ export const ErrorCodeSchema = z.enum([
   "E_ICE",
   "E_RATE_LIMITED",
   "E_NO_ZEROCOPY",
+  "E_RECOVERING",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 

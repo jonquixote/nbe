@@ -100,6 +100,12 @@ pub enum ErrorCode {
     /// chain absent.
     #[serde(rename = "E_NO_ZEROCOPY")]
     NoZeroCopy,
+    /// A restarted control plane whose journal says a show was running is
+    /// waiting (at most 15 s) for the render node's hello to adopt it; every
+    /// command but the reads is refused until then. Retry after the hello.
+    /// New in v0.4.12 (review4's §16 draft for #131's lock).
+    #[serde(rename = "E_RECOVERING")]
+    Recovering,
 }
 
 impl ErrorCode {
@@ -125,6 +131,7 @@ impl ErrorCode {
         ErrorCode::Ice,
         ErrorCode::RateLimited,
         ErrorCode::NoZeroCopy,
+        ErrorCode::Recovering,
     ];
 
     /// The wire string, e.g. `"E_BAD_PAYLOAD"`.
@@ -150,6 +157,7 @@ impl ErrorCode {
             ErrorCode::Ice => "E_ICE",
             ErrorCode::RateLimited => "E_RATE_LIMITED",
             ErrorCode::NoZeroCopy => "E_NO_ZEROCOPY",
+            ErrorCode::Recovering => "E_RECOVERING",
         }
     }
 }

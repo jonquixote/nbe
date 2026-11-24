@@ -291,7 +291,7 @@ test("while the journal says a show was running, commands wait for the hello; re
   const refused = await send(admin, "automation.hold", { hold: false });
   assert.equal(refused.status, "error");
   const err = refused.error as { code: string; message: string; details?: Record<string, unknown> };
-  assert.equal(err.code, "E_FORBIDDEN_STATE");
+  assert.equal(err.code, "E_RECOVERING");
   assert.equal(err.details?.["reason"], "recovering", err.message);
   assert.equal((await send(admin, "system.status")).status, "ok", "a read is answered");
   await r.engine(hello(r.pkgPath));
