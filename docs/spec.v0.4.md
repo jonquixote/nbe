@@ -18,6 +18,16 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.19 — **drafted by engineering under the user's direction of 2026-11-24
+item 3 (the user's lean: "state that overlays are linear-only now and warn in
+preflight on other easings"); ratified by its merge.**
+
+| # | Change | Sections | Decision |
+|---|---|---|---|
+| 1 | **Overlays animate linearly, with no delay.** Another easing or a `delayFrames` on an overlay animation is a preflight warning (`overlayEasing`, `overlayDelay`). | §7.10, §19 | The honest middle: the schema keeps the six easings, and preflight says what will be drawn |
+
+Row 1 adds two preflight warnings and changes no schema or wire. A package that declares them still loads; under §16.1's warnings policy, `show.start` then needs `allowWarnings`.
+
 v0.4.18 — **drafted by engineering under the user's direction of 2026-11-24
 item 3 (the user's lean: "overlay.hide takes an optional exit animation");
 ratified by its merge.**
@@ -1818,6 +1828,13 @@ View = overlay(transition(sceneA, sceneB))
 Overlay elements (ticker, logo bug, breaking banner, clock) live on the overlay level, composited after the transition. They persist across scene transitions.
 
 Overlays have independent `overlay.show` / `overlay.hide` commands with their own enter/exit animations.
+
+**Overlays animate linearly, with no delay** (normative, v0.4.19 row 1).
+- An overlay's enter and exit are linear alpha ramps over the animation's `durationFrames` (one frame when none is declared). The render node reads nothing else.
+- The schema's `Animation` still permits `easeIn`, `easeOut`, `easeInOut`, `cubicBezier` and `spring`, and `delayFrames`, for when they are drawn.
+- Until then, an overlay animation that declares another easing, or a nonzero `delayFrames`, is a preflight **warning** (`overlayEasing`, `overlayDelay`): it will be drawn linear and undelayed.
+- Why: the schema and the implementation disagreed silently (the v0.5 outline's §1 item 5). Narrowing the schema would break packages that may yet be drawn as written, and implementing six easings is feature work. Stating it, and warning, is the honest middle.
+- Scene transitions are unaffected: AC-23's move honours its declared easing.
 
 **Overlays composite on the View only** (normative, v0.4.17 row 1).
 - The overlay level is drawn on the View bus.

@@ -134,3 +134,64 @@ fn overlay_element_with_missing_template_reference_fails() {
         report_errors(&report)
     );
 }
+
+fn report_warnings(report: &serde_json::Value) -> Vec<String> {
+    report["warnings"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn an_overlay_easing_other_than_linear_or_a_delay_warns_that_it_is_drawn_linear() {
+    // SPEC §7.10, v0.4.19 row 1: overlays animate linearly, with no delay. The
+    // schema still permits six easings; preflight says what will be drawn.
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        serde_json::json!([
+            { "id": "bug", "elements": [
+                { "id": "b1", "kind": "graphic", "z": 1, "templateId": "tpl",
+                  "enterAnimation": { "durationFrames": 10, "easing": "easeIn" },
+                  "exitAnimation": { "durationFrames": 10, "easing": "linear", "delayFrames": 5 } } ] }
+        ]),
+    );
+    let (code, report) = run(tmp.path());
+    assert_eq!(
+        code, 1,
+        "warnings only: not air-ready without --allow-warnings: {report}"
+    );
+    let warnings = report_warnings(&report);
+    assert!(
+        warnings.iter().any(|w| w.starts_with("overlayEasing:")
+            && w.contains("\"easeIn\"")
+            && w.contains("enter")),
+        "the easing is named: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("overlayDelay:") && w.contains("exit")),
+        "the delay is named: {warnings:?}"
+    );
+    assert!(report_errors(&report).is_empty(), "a warning, not an error");
+}
+
+#[test]
+fn a_linear_overlay_animation_passes_clean() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        serde_json::json!([
+            { "id": "bug", "elements": [
+                { "id": "b1", "kind": "graphic", "z": 1, "templateId": "tpl",
+                  "enterAnimation": { "durationFrames": 10, "easing": "linear" } } ] }
+        ]),
+    );
+    let (code, report) = run(tmp.path());
+    assert_eq!(code, 0, "linear and undelayed is what is drawn: {report}");
+}
