@@ -24,6 +24,8 @@
     "watchdogTripsTotal": 0,
     "watchdogClearsTotal": 0,
     "readAheadMissesTotal": 0,
+    "decodeFailuresTotal": 0,
+    "unattributableDecodeFailuresTotal": 0,
     "automationHold": false,
     "audioUnderrunsTotal": 0,
     "audioDriftMs": 0.4,

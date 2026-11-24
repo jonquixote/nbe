@@ -21,6 +21,9 @@ final class FrameTests: XCTestCase {
         XCTAssertEqual(t.data.busPeakDbfs?["master"] ?? nil, -12.3)
         XCTAssertEqual(t.data.audioDevice?.state, "open")
         XCTAssertEqual(t.data.alerts, [])
+        // SPEC §10.1 (v0.4.14 row 1): the decode-failure counters.
+        XCTAssertEqual(t.data.decodeFailuresTotal, 0)
+        XCTAssertEqual(t.data.unattributableDecodeFailuresTotal, 0)
     }
 
     func testAStateChangeFoldsIntoTheSnapshot() throws {

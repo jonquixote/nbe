@@ -735,6 +735,16 @@ pub struct EngineTelemetry {
     /// Additive and defaulted, `watchdogTripsTotal`'s shape.
     #[serde(default)]
     pub read_ahead_misses_total: u64,
+    /// Video assets that failed to decode at `show.load`, since the engine
+    /// started (SPEC §10.1, v0.4.14 row 1). A failure a rundown Item uses is
+    /// also an `itemEvent: decodeError`. Additive and defaulted,
+    /// `readAheadMissesTotal`'s shape.
+    #[serde(default)]
+    pub decode_failures_total: u64,
+    /// The subset no rundown Item uses: no Item will ever go ERROR for
+    /// these, so this count is the only evidence they happened.
+    #[serde(default)]
+    pub unattributable_decode_failures_total: u64,
     /// The **effective** profile from the startup probe, capped by the
     /// manifest's requested profile (SPEC §10.1.1, §10.5). `None` before the
     /// probe has run — the control plane then reports the requested profile.

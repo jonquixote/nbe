@@ -18,6 +18,19 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.14 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
+Housekeeping from the v0.5 outline's refresh (§1a item 2).
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **Decode failures reach the tick.** `decodeFailuresTotal` and its subset `unattributableDecodeFailuresTotal` count the video assets that failed to decode at `show.load`. The engine has counted both since Prompt 07's F1/F2 round, but nothing published them (the v0.5 outline's §1 item 2) | §10.1 | this version's PR |
+
+Row 1 adds two engine telemetry fields, additive and defaulted
+(`readAheadMissesTotal`'s shape), with their audit trio: the mirror's
+telemetry fixture samples them, and `protocol.ts` and the control plane's tick
+mirror them. No frame kind, directive or manifest schema changes.
+
 v0.4.13 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9. Both rows
 are housekeeping from the v0.5 outline's refresh at `0a14f0e` (§1a items 1 and
@@ -2641,6 +2654,8 @@ Telemetry fields:
   "watchdogTripsTotal": 0,
   "watchdogClearsTotal": 0,
   "readAheadMissesTotal": 0,
+  "decodeFailuresTotal": 0,
+  "unattributableDecodeFailuresTotal": 0,
   "automationHold": false,
   "audioUnderrunsTotal": 0,
   "audioDriftMs": 0.4,
@@ -2690,6 +2705,21 @@ drawn. A Preview miss is held and not counted (§10.2).
 It is engine-owned, with §10.1.1's stub of `0` when no fresh report is held,
 and it rides the tick beside the watchdog's counters. A run with misses is a
 degraded run, and a miss is never silent.
+
+**`decodeFailuresTotal` and `unattributableDecodeFailuresTotal` (normative, new
+in v0.4.14 row 1).** These count the video assets that failed to decode at
+`show.load` since the engine started.
+- `decodeFailuresTotal` counts every one, after §12.8.1 rule 1's load-time
+  retry.
+- `unattributableDecodeFailuresTotal` counts the subset that no rundown Item
+  uses.
+- A failure an Item uses is also that Item's `itemEvent: decodeError`
+  (§5.9.3), which turns it `ERROR` (§17.3).
+- A failure no Item uses has no Item to turn `ERROR`, so its count is the only
+  evidence it happened.
+
+Both are engine-owned, with §10.1.1's stub of `0` when no fresh report is held,
+and both ride the tick beside `readAheadMissesTotal`.
 
 **`streamBufferMs` and its NO-SESSION sentinel (normative, new in v0.4.6).**
 While a stream session exists, `streamBufferMs` is the stream transport's
@@ -2783,7 +2813,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded), `alerts` and `health` (§10.1.2, v0.4.8 row 8) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7), `readAheadMissesTotal` (new in v0.4.8) |
+| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7), `readAheadMissesTotal`, `decodeFailuresTotal`, `unattributableDecodeFailuresTotal` (new in v0.4.8) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 

@@ -484,6 +484,10 @@ export const EngineTelemetryFrameSchema = z
     watchdogClearsTotal: z.number().int().nonnegative().default(0),
     // SPEC §12.8.1 rule 4, §10.1 (v0.4.8 row 12): the clip read-ahead's misses.
     readAheadMissesTotal: z.number().int().nonnegative().default(0),
+    // SPEC §10.1 (v0.4.14 row 1): video assets that failed to decode at
+    // show.load, and the subset no rundown Item uses.
+    decodeFailuresTotal: z.number().int().nonnegative().default(0),
+    unattributableDecodeFailuresTotal: z.number().int().nonnegative().default(0),
     /**
      * The effective profile from the engine's startup probe (SPEC §10.5),
      * capped by the manifest's requested profile (§10.1.1). Optional: absent

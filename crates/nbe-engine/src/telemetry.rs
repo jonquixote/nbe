@@ -252,6 +252,15 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
         read_ahead_misses_total: state
             .read_ahead_misses_total
             .load(std::sync::atomic::Ordering::SeqCst),
+        // SPEC §10.1 (v0.4.14 row 1): video assets that failed to decode at
+        // `show.load`, and the subset no rundown Item uses (F1/F2: counted
+        // since Prompt 07, published from v0.4.14).
+        decode_failures_total: state
+            .decode_failures_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        unattributable_decode_failures_total: state
+            .unattributable_decode_failures_total
+            .load(std::sync::atomic::Ordering::Relaxed),
         // Effective probe result from GPU init, capped by the manifest's
         // requested profile. The engine is the engine — it is authoritative.
         quality_profile: *state.quality_profile.lock().unwrap(),

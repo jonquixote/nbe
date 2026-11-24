@@ -45,6 +45,10 @@ public struct Telemetry: Decodable, Equatable, Sendable {
     public var watchdogTripsTotal: Int?
     public var watchdogClearsTotal: Int?
     public var readAheadMissesTotal: Int?
+    /// SPEC §10.1 (v0.4.14 row 1): video assets that failed to decode at
+    /// `show.load`, and the subset no rundown Item uses.
+    public var decodeFailuresTotal: Int?
+    public var unattributableDecodeFailuresTotal: Int?
     public var automationHold: Bool?
     public var audioUnderrunsTotal: Int?
     public var audioDriftMs: Double?
