@@ -28,7 +28,7 @@ mod capture;
 use nbe_engine::decode::DecodeSession;
 use nbe_engine::directive::DirectiveHandler;
 use nbe_engine::gpu::Gpu;
-use nbe_engine::render::{RenderLoop, VIEW_H, VIEW_W};
+use nbe_engine::render::{FrameReport, RenderLoop, VIEW_H, VIEW_W};
 use nbe_engine::state::{EngineState, OutgoingQueue};
 use nbe_protocol::{DirectiveFrame, DirectiveKind, PROTOCOL_VERSION};
 use std::collections::HashSet;
@@ -137,8 +137,33 @@ fn centre(bytes: &[u8], width: u32, height: u32) -> [u8; 3] {
 }
 
 async fn rendered_centre(render: &mut RenderLoop, frame: u64) -> [u8; 3] {
-    render.render_frame(frame, None);
-    centre(&render.readback_view().await, VIEW_W, VIEW_H)
+    rendered_centre_reported(render, frame).await.0
+}
+
+/// As `rendered_centre`, keeping what the frame did.
+async fn rendered_centre_reported(render: &mut RenderLoop, frame: u64) -> ([u8; 3], FrameReport) {
+    let report = render.render_frame(frame, None);
+    (
+        centre(&render.readback_view().await, VIEW_W, VIEW_H),
+        report,
+    )
+}
+
+/// A control failed: what the draw did, and which of three failures it was.
+/// Seen once on CI on merged code (main `6f8cba5`, 2026-11-24 00:50Z): frame
+/// 15 read black although the head, frames 0 to 29, is uploaded at the
+/// package sync before the first draw. Reading the View again without a draw
+/// tells a readback that ran before the draw landed (it reads the picture
+/// now) from a draw that put nothing on the View (it still reads black).
+/// Drawing the frame again tells a first-draw-only failure from one that
+/// repeats. Runs only after a control has already failed.
+async fn control_diagnosis(render: &mut RenderLoop, frame: u64, report: &FrameReport) -> String {
+    let reread = centre(&render.readback_view().await, VIEW_W, VIEW_H);
+    let redrawn = rendered_centre(render, frame).await;
+    format!(
+        "the same View read again without a draw: {reread:?}; frame {frame} drawn again: \
+         {redrawn:?}; the first draw's report: {report:?}"
+    )
 }
 
 /// One source frame, kept small: its centre pixel and a hash of all its
@@ -197,11 +222,14 @@ async fn r20_weaker_form_a_clip_still_draws_past_its_first_second() {
     write_clip_package(dir.path(), &dress_media("A1.mp4"), 150);
     let mut render = on_air(dir.path()).await;
 
-    let inside = rendered_centre(&mut render, INSIDE_THE_RING).await;
-    assert!(
-        inside != [0, 0, 0],
-        "control: frame {INSIDE_THE_RING} is inside the preload and must draw A1, got {inside:?}"
-    );
+    let (inside, report) = rendered_centre_reported(&mut render, INSIDE_THE_RING).await;
+    if inside == [0, 0, 0] {
+        let why = control_diagnosis(&mut render, INSIDE_THE_RING, &report).await;
+        panic!(
+            "control: frame {INSIDE_THE_RING} is inside the preload and must draw A1, got \
+             {inside:?}; {why}"
+        );
+    }
     let past = rendered_centre(&mut render, PAST_THE_RING).await;
     assert!(
         past != [0, 0, 0] && close(past, inside),
@@ -221,13 +249,15 @@ async fn r20_stronger_form_rendered_frame_45_is_the_sources_own_frame_45() {
     write_clip_package(dir.path(), &source, decoded.len() as u64);
     let mut render = on_air(dir.path()).await;
 
-    let inside = rendered_centre(&mut render, INSIDE_THE_RING).await;
-    assert!(
-        close(inside, truth(INSIDE_THE_RING)),
-        "control: rendered frame {INSIDE_THE_RING} must be the source's frame {INSIDE_THE_RING} \
-         {:?}, got {inside:?}",
-        truth(INSIDE_THE_RING)
-    );
+    let (inside, report) = rendered_centre_reported(&mut render, INSIDE_THE_RING).await;
+    if !close(inside, truth(INSIDE_THE_RING)) {
+        let why = control_diagnosis(&mut render, INSIDE_THE_RING, &report).await;
+        panic!(
+            "control: rendered frame {INSIDE_THE_RING} must be the source's frame \
+             {INSIDE_THE_RING} {:?}, got {inside:?}; {why}",
+            truth(INSIDE_THE_RING)
+        );
+    }
     let past = rendered_centre(&mut render, PAST_THE_RING).await;
     assert!(
         close(past, truth(PAST_THE_RING)),
