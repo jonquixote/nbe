@@ -882,13 +882,13 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     try {
       // Review4 step 7b: while a restarted control plane waits for the
       // engine's hello, a command could disturb the show it is about to
-      // adopt. The code is E_RECOVERING's once SPEC §16 names it (drafted for
-      // the user); until then E_FORBIDDEN_STATE, with the reason.
+      // adopt. E_RECOVERING (SPEC §16, v0.4.12 row 1): retry after the hello.
+      // `details.reason` stays "recovering", as it was under E_FORBIDDEN_STATE.
       const name = resolveCommand(envelope.command)?.command ?? envelope.command;
       if (commandsLocked() && !RECOVERY_EXEMPT.has(name)) {
         const leftS = Math.ceil((recovery!.lockedUntil - Date.now()) / 1000);
         throw new CpError(
-          "E_FORBIDDEN_STATE",
+          "E_RECOVERING",
           `the control plane restarted and is waiting for the engine's hello to adopt its show (up to ${leftS} s more)`,
           { reason: "recovering" },
         );
