@@ -707,10 +707,26 @@ pub struct LiveInputLine {
 }
 
 /// The Section 10.1 fields the render node owns (SPEC 10.1.1).
+/// The master clock's state as the engine reports it (SPEC §11.4; on the
+/// tick from v0.4.15 row 1). v1 implements STOPPED and RUNNING.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MasterClockState {
+    Stopped,
+    Running,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineTelemetry {
+    /// `0` while the clock is STOPPED: `master_clock_state` tells the two
+    /// apart (SPEC §10.1, v0.4.15 row 1).
     pub master_clock_frame: u64,
+    /// The engine's own clock state (§11.4). Optional on read: an engine
+    /// older than v0.4.15 sends none, and the control plane then falls back
+    /// to its `showState`. This engine always sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_clock_state: Option<MasterClockState>,
     pub dropped_frames_total: u64,
     pub render_gpu_time_ms: f64,
     pub decode_sessions: u32,

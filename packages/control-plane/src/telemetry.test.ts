@@ -23,6 +23,7 @@ import {
   ingestEngineFrame,
   newWorldTelemetry,
   ENGINE_TELEMETRY_TTL_MS,
+  masterClockState,
   STREAM_BUFFER_NO_SESSION_MS,
 } from "./telemetry.js";
 import { ControlPlaneState } from "./state.js";
@@ -280,4 +281,33 @@ test("decode failures reach the tick, absent reads 0, and a stale report stubs t
   const stale = newWorldTelemetry();
   ingestEngineFrame(stale, frame, Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000);
   assert.deepEqual(read(stale), [0, 0], "a stale report is not forwarded");
+});
+
+test("the master clock state is the render node's own, UNKNOWN without a fresh report, and showState for an engine without the field (SPEC §10.4 item 2, §11.4, v0.4.15 row 1)", () => {
+  const state = new ControlPlaneState();
+  state.showState = "RUNNING";
+  const now = Date.now();
+
+  assert.equal(masterClockState(state, newWorldTelemetry(), now), "UNKNOWN", "no report: unknown");
+
+  // Finding R5's case: the control plane believes RUNNING, and the engine's
+  // clock has not started. Before v0.4.15 the wire said RUNNING here.
+  const stopped = newWorldTelemetry();
+  ingestEngineFrame(stopped, EngineTelemetryFrameSchema.parse({ ...engineFrame(-1), masterClockState: "STOPPED" }), now);
+  assert.equal(masterClockState(state, stopped, now), "STOPPED", "the engine's clock, not the control plane's belief");
+  assert.equal(buildTick(state, stopped, now).masterClockState, "STOPPED", "and the tick carries the same reading");
+
+  const running = newWorldTelemetry();
+  ingestEngineFrame(running, EngineTelemetryFrameSchema.parse({ ...engineFrame(-1), masterClockState: "RUNNING" }), now);
+  assert.equal(masterClockState(state, running, now), "RUNNING");
+
+  const stale = newWorldTelemetry();
+  ingestEngineFrame(stale, EngineTelemetryFrameSchema.parse({ ...engineFrame(-1), masterClockState: "RUNNING" }), now - ENGINE_TELEMETRY_TTL_MS - 1000);
+  assert.equal(masterClockState(state, stale, now), "UNKNOWN", "a stale report says nothing about the clock now");
+
+  const older = newWorldTelemetry();
+  ingestEngineFrame(older, EngineTelemetryFrameSchema.parse(engineFrame(-1)), now);
+  assert.equal(masterClockState(state, older, now), "RUNNING", "an engine older than the field: showState, as before");
+  state.showState = "STOPPED";
+  assert.equal(masterClockState(state, older, now), "STOPPED");
 });

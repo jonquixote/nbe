@@ -226,6 +226,13 @@ pub fn build_tick_for_dir(state: &EngineState, record_dir: Option<&Path>) -> Eng
     let record_take = record_take_line(state);
     let frame = EngineTelemetry {
         master_clock_frame: state.master_frame().unwrap_or(0),
+        // SPEC §11.4, §10.1 (v0.4.15 row 1): the clock's own state, so a
+        // STOPPED clock is not read as frame 0 of a running one.
+        master_clock_state: Some(if state.is_running() {
+            nbe_protocol::MasterClockState::Running
+        } else {
+            nbe_protocol::MasterClockState::Stopped
+        }),
         dropped_frames_total: state
             .dropped_frames_total
             .load(std::sync::atomic::Ordering::SeqCst),

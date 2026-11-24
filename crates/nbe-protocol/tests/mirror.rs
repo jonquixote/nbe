@@ -192,6 +192,7 @@ fn render_channel_frames_round_trip() {
         ts: 1768000000000.0,
         fields: Box::new(EngineTelemetry {
             master_clock_frame: 54000,
+            master_clock_state: Some(MasterClockState::Running),
             dropped_frames_total: 0,
             render_gpu_time_ms: 4.7,
             decode_sessions: 4,
@@ -402,6 +403,7 @@ fn rust_and_typescript_agree_on_the_engine_telemetry_fields() {
     // fields), so audit its key set directly.
     let sample = EngineTelemetry {
         master_clock_frame: 0,
+        master_clock_state: Some(MasterClockState::Stopped),
         dropped_frames_total: 0,
         render_gpu_time_ms: 0.0,
         decode_sessions: 0,

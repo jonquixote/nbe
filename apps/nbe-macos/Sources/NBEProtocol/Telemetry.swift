@@ -45,6 +45,9 @@ public struct Telemetry: Decodable, Equatable, Sendable {
     public var watchdogTripsTotal: Int?
     public var watchdogClearsTotal: Int?
     public var readAheadMissesTotal: Int?
+    /// SPEC §11.4, §10.1 (v0.4.15 row 1): the render node's own clock state,
+    /// "RUNNING", "STOPPED" or "UNKNOWN" (no fresh engine report).
+    public var masterClockState: String?
     /// SPEC §10.1 (v0.4.14 row 1): video assets that failed to decode at
     /// `show.load`, and the subset no rundown Item uses.
     public var decodeFailuresTotal: Int?

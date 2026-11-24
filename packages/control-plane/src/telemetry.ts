@@ -15,6 +15,8 @@ export interface TelemetryTick {
   /** SPEC §10.1 (v0.4): control-plane owned. */
   showState: ShowState;
   masterClockFrame: number;
+  /** SPEC §11.4, §10.1 (v0.4.15 row 1): see `masterClockState()`. */
+  masterClockState: MasterClockStateReading;
   droppedFramesTotal: number;
   renderGpuTimeMs: number;
   decodeSessions: number;
@@ -109,6 +111,26 @@ export interface EngineReport {
   receivedAt: number;
 }
 
+export type MasterClockStateReading = "RUNNING" | "STOPPED" | "UNKNOWN";
+
+/**
+ * The master clock's state for the status endpoint (SPEC §10.4 item 2), for
+ * `renderNode.clockState`, and for the tick (v0.4.15 row 1).
+ * - With a fresh report, it is the render node's own clock state.
+ * - With no fresh report, it is `UNKNOWN`.
+ * - From an engine older than the field, it is the control plane's
+ *   `showState`, as it was before v0.4.15.
+ *
+ * Until v0.4.15 it was always that last case: the wire said RUNNING while
+ * the engine's clock was still STOPPED (the v0.5 outline's §1 item 9, which
+ * made finding R5 read as a clock defect).
+ */
+export function masterClockState(state: ControlPlaneState, engine: WorldTelemetry, now: number): MasterClockStateReading {
+  const last = engine.last;
+  if (last === null || now - last.receivedAt > ENGINE_TELEMETRY_TTL_MS) return "UNKNOWN";
+  return last.frame.masterClockState ?? (state.showState === "RUNNING" ? "RUNNING" : "STOPPED");
+}
+
 export function buildTick(
   state: ControlPlaneState,
   engine: WorldTelemetry,
@@ -120,6 +142,7 @@ export function buildTick(
     ts: now,
     showState: state.showState,
     masterClockFrame: f?.masterClockFrame ?? 0,
+    masterClockState: masterClockState(state, engine, now),
     droppedFramesTotal: f?.droppedFramesTotal ?? 0,
     renderGpuTimeMs: f?.renderGpuTimeMs ?? 0,
     decodeSessions: f?.decodeSessions ?? 0,

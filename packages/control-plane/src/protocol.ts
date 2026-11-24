@@ -469,6 +469,10 @@ export const EngineTelemetryFrameSchema = z
     kind: z.literal("engineTelemetry"),
     ts: z.number(),
     masterClockFrame: z.number().int(),
+    // SPEC §11.4, §10.1 (v0.4.15 row 1): the engine's own clock state. Optional:
+    // an engine older than v0.4.15 sends none (the control plane then falls back
+    // to its showState).
+    masterClockState: z.enum(["RUNNING", "STOPPED"]).optional(),
     droppedFramesTotal: z.number().int(),
     renderGpuTimeMs: z.number(),
     decodeSessions: z.number().int(),

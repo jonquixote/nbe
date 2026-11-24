@@ -5,6 +5,7 @@
     "ts": 1768000000000,
     "showState": "RUNNING",
     "masterClockFrame": 54000,
+    "masterClockState": "RUNNING",
     "viewItem": "B2",
     "previewItem": "B3",
     "droppedFramesTotal": 0,

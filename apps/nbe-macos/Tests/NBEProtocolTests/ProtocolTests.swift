@@ -24,6 +24,8 @@ final class FrameTests: XCTestCase {
         // SPEC §10.1 (v0.4.14 row 1): the decode-failure counters.
         XCTAssertEqual(t.data.decodeFailuresTotal, 0)
         XCTAssertEqual(t.data.unattributableDecodeFailuresTotal, 0)
+        // SPEC §10.1 (v0.4.15 row 1): the render node's own clock state.
+        XCTAssertEqual(t.data.masterClockState, "RUNNING")
     }
 
     func testAStateChangeFoldsIntoTheSnapshot() throws {

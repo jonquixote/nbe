@@ -46,7 +46,7 @@ import {
 } from "./automation.js";
 import type { JournalBody, PersistenceHooks } from "./persistence.js";
 import { indexPackage } from "./package.js";
-import { buildTick, ENGINE_TELEMETRY_TTL_MS, ingestEngineFrame, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
+import { buildTick, ENGINE_TELEMETRY_TTL_MS, ingestEngineFrame, masterClockState, newWorldTelemetry, type WorldTelemetry } from "./telemetry.js";
 import { AlertLane, OperatorSignals } from "./alerts.js";
 import { expireTickerItems, tickerDirectiveItems } from "./commands/ticker.js";
 
@@ -1071,7 +1071,8 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
     const fresh = world.last !== null && Date.now() - world.last.receivedAt <= 2000;
     return {
       connected: nodes.length > 0 && fresh,
-      clockState: fresh ? (state.showState === "RUNNING" ? "RUNNING" : "STOPPED") : "UNKNOWN",
+      // SPEC §10.4 item 2, §11.4 (v0.4.15 row 1): the render node's own clock.
+      clockState: masterClockState(state, world, Date.now()),
       lastAppliedStateVersion: nodes.length ? (nodes[0]!.render!.lastApplied ?? null) : null,
     };
   }
