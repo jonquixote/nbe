@@ -142,6 +142,18 @@ jobs:
           grep "^test result" /tmp/rust-test.log \
             | awk '{p+=$4; f+=$6; i+=$8} END {printf "TOTAL: %d passed, %d failed, %d ignored\n", p, f, i}'
           echo "::endgroup::"
+          # Floors (the v0.5 outline's §4, refreshed at 0a14f0e: "the workspace
+          # test total is echoed, not gated"). A red test already fails the step.
+          # What did not was a suite or a test silently leaving the run: a
+          # renamed target, an added #[ignore], a dropped file. These lower the
+          # total while CI stays green. 86 suites and 726 passed held on every
+          # run from d63646f to 0a14f0e. Adding tests needs no change here;
+          # removing one means lowering a floor in the same PR, on purpose.
+          suites=$(grep -c "^test result" /tmp/rust-test.log)
+          passed=$(grep "^test result" /tmp/rust-test.log | awk '{p+=$4} END {print p+0}')
+          echo "workspace floors: suites=$suites (floor 86), passed=$passed (floor 726)"
+          [ "$suites" -ge 86 ] || { echo "::error::a test suite left the workspace run: $suites suites, floor 86"; exit 1; }
+          [ "$passed" -ge 726 ] || { echo "::error::tests left the workspace run: $passed passed, floor 726"; exit 1; }
         timeout-minutes: 28
       - name: "R10 load capture: after the workspace tests, every sample"
         if: always()
