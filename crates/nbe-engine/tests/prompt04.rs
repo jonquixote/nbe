@@ -704,10 +704,37 @@ async fn the_v0_3_fixture_produces_a_renderable_first_frame() {
     let report = render.render_frame(0, Some(Duration::from_secs(5)));
     assert!(report.view_late_by.is_none());
     let px = centre_px(&render.readback_view().await);
-    assert!(
-        px[0].abs_diff(0x10) <= 2 && px[1].abs_diff(0x20) <= 2 && px[2].abs_diff(0x30) <= 2,
-        "the fixture's video element must render its decoded frame, got {px:?}"
-    );
+    let drawn = |px: [u8; 4]| {
+        px[0].abs_diff(0x10) <= 2 && px[1].abs_diff(0x20) <= 2 && px[2].abs_diff(0x30) <= 2
+    };
+    if !drawn(px) {
+        // Seen black on CI (main 5e65d66, 2026-11-24), the class of r20_clip's
+        // control. Which of three: the clip never reached the video library;
+        // it did but has no ring; or it has a ring and drew nothing.
+        let (assets, failures) = {
+            let library = state.video.lock().unwrap();
+            let mut assets: Vec<String> = library.assets.keys().cloned().collect();
+            assets.sort();
+            let mut failures: Vec<String> = library
+                .failures
+                .iter()
+                .map(|(id, e)| format!("{id}: {e}"))
+                .collect();
+            failures.sort();
+            (assets, failures)
+        };
+        let rings = render.resident_video_assets();
+        let reread = centre_px(&render.readback_view().await);
+        render.render_frame(0, Some(Duration::from_secs(5)));
+        let redrawn = centre_px(&render.readback_view().await);
+        panic!(
+            "the fixture's video element must render its decoded frame, got {px:?}; read again \
+             {reread:?}; drawn again {redrawn:?}; the video library holds {assets:?}; decode \
+             failures at the load: {} {failures:?}; rings resident: {rings:?}; the first draw's \
+             report: {report:?}",
+            state.decode_failures_total.load(Ordering::Relaxed)
+        );
+    }
     assert_eq!(
         state.dropped_frames_total.load(Ordering::SeqCst),
         0,

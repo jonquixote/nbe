@@ -1670,6 +1670,18 @@ impl RenderLoop {
     ///
     /// One answer to "what is the View", used by the draw, the readback and
     /// every layout calculation that asks the View its size, so those cannot disagree.
+    /// Test seam: the video assets with a ring resident on the GPU, sorted.
+    /// A loaded clip that draws nothing is either absent from the video
+    /// library, or in it with no ring here, or ringed and still undrawn; the
+    /// tests' diagnoses read this to tell which (the loaded-clip-black
+    /// sightings, 2026-11-23/24). Production never calls it.
+    #[doc(hidden)]
+    pub fn resident_video_assets(&self) -> Vec<String> {
+        let mut assets: Vec<String> = self.video_rings.keys().cloned().collect();
+        assets.sort();
+        assets
+    }
+
     pub fn view_target(&self) -> &wgpu::Texture {
         match &self.view_surface {
             Some(s) => s.texture(),

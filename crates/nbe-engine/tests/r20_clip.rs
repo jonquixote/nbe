@@ -180,11 +180,12 @@ async fn control_diagnosis(render: &mut RenderLoop, frame: u64, report: &FrameRe
         .decode_failures_total
         .load(std::sync::atomic::Ordering::Relaxed);
     let view_item = render.state.view_item.lock().unwrap().clone();
+    let rings = render.resident_video_assets();
     format!(
         "the same View read again without a draw: {reread:?}; frame {frame} drawn again: \
          {redrawn:?}; the View item {view_item:?}; the video library holds {assets:?}; \
-         decode failures at the load: {failed_at_load} {failures:?}; the first draw's \
-         report: {report:?}"
+         decode failures at the load: {failed_at_load} {failures:?}; rings resident: \
+         {rings:?}; the first draw's report: {report:?}"
     )
 }
 
