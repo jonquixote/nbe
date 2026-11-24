@@ -1755,6 +1755,32 @@ jobs:
           if [ "$ran" -lt 1 ]; then echo "FAIL case C e2e: expected at least 1 test to run, got $ran"; exit 1; fi
           if [ "$exercised" -lt 1 ]; then echo "FAIL case C e2e: expected at least 1 test to execute, got $exercised"; exit 1; fi
         timeout-minutes: 5
+      - name: "the engine-restart failover drill actually ran (v0.5 outline §3a)"
+        if: ${{ !cancelled() }}
+        # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
+        # failures. 1 test, on the real engine built above, under the show's
+        # supervisor: the dress package on air with a recording and an RTMP
+        # stream, the engine SIGKILLed, the supervisor restarts it at once, and
+        # the View and both outputs come back on the new engine with no belief
+        # correction and no alert; the take before the kill is playable (AC-6).
+        # N = 5 s is asserted on the reference machine only; here the drill
+        # logs its times (the DRILL line) and claims none (R9). A missing
+        # binary or ffprobe fails the test; no hardware encoder skips it loudly.
+        run: |
+          set -u
+          out=$(node --import tsx --test src/failover.e2e.ts 2>&1) && rc=0 || rc=$?
+          echo "$out" | grep -E "^(ok|not ok|# )|DRILL" || true
+          if [ "$rc" -ne 0 ]; then echo "$out"; echo "FAIL failover.e2e.ts: node exited $rc (the full output is above)"; exit "$rc"; fi
+          ran=$(echo "$out" | grep -E "^# tests " | awk '{print $3}')
+          exercised=$(echo "$out" | grep -E "^# pass " | awk '{print $3}')
+          failed=$(echo "$out" | grep -E "^# fail " | awk '{print $3}')
+          case "$ran" in ''|*[!0-9]*) ran=0 ;; esac
+          case "$exercised" in ''|*[!0-9]*) exercised=0 ;; esac
+          echo "failover drill: ran=$ran exercised=$exercised failed=${failed:-?} (floors ran>=1 exercised>=1)"
+          if [ "${failed:-1}" -ne 0 ]; then echo "$out"; echo "FAIL failover drill: expected 0 failures"; exit 1; fi
+          if [ "$ran" -lt 1 ]; then echo "FAIL failover drill: expected at least 1 test to run, got $ran"; exit 1; fi
+          if [ "$exercised" -lt 1 ]; then echo "FAIL failover drill: expected at least 1 test to execute, got $exercised"; exit 1; fi
+        timeout-minutes: 5
       - name: "the package-reconcile end-to-end actually ran (SPEC v0.4.8 row 5)"
         if: ${{ !cancelled() }}
         # Two floors, rule 8: ran = `# tests`, exercised = `# pass`, zero
