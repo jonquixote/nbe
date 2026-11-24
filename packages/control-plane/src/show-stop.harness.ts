@@ -144,7 +144,7 @@ export interface TapFrame {
   msg: Record<string, unknown>;
 }
 
-interface Tap {
+export interface Tap {
   port: number;
   frames: TapFrame[];
   /** Called as a frame is relayed, after it is recorded. */
@@ -166,7 +166,7 @@ interface Tap {
   close: () => void;
 }
 
-async function startTap(cpPort: number): Promise<Tap> {
+export async function startTap(cpPort: number): Promise<Tap> {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   await new Promise<void>((r) => wss.once("listening", () => r()));
   const tap: Tap = {
