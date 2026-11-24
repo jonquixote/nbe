@@ -233,6 +233,27 @@ export class ControlPlaneState {
     if (elapsed < 0 || elapsed > START_FRAME_EXTRAPOLATION_MS) return this.lastKnownMasterFrame;
     return this.lastKnownMasterFrame + Math.floor((elapsed * this.pkg.houseRate) / 1000);
   }
+
+  /**
+   * The frame the show's clock reads now if it kept running: the engine's
+   * last report, advanced at the house rate by ALL the wall time since (SPEC
+   * §5.9.4, v0.4.16 row 1). `null` unless the show is RUNNING and that clock
+   * was advancing.
+   *
+   * Uncapped, unlike `estimatedMasterFrame()`. That cap (two seconds, the
+   * telemetry's freshness window) keeps a take from extrapolating a clock that
+   * may have stopped. A restart does not stop the show's clock: the engine's
+   * clock is wall time since its epoch, and the dead engine's last report
+   * still names where that epoch was. The failover drill's outage (1.7–2.7 s
+   * to the resync, on a report up to 1 s old) runs past the window, so a
+   * capped estimate would put the resumed clock up to about 50 frames behind.
+   */
+  continuedMasterFrame(nowMs: number = Date.now()): number | null {
+    const at = this.lastKnownMasterFrameAtMs;
+    if (this.showState !== "RUNNING" || !this.masterClockAdvancing || at === null || this.pkg === null) return null;
+    const elapsed = Math.max(0, nowMs - at);
+    return this.lastKnownMasterFrame + Math.floor((elapsed * this.pkg.houseRate) / 1000);
+  }
   previewItem: string | null = null;
   fallbackActive = false;
 
@@ -509,6 +530,9 @@ export class ControlPlaneState {
     });
     return {
       showState: this.showState,
+      // SPEC §5.9.4 (v0.4.16 row 1): where the show's clock is now. A render
+      // node whose clock is stopped (a restarted engine) starts it here.
+      masterFrame: this.continuedMasterFrame(nowMs),
       packagePath: pkg.packagePath,
       packageLoadStateVersion: pkg.packageLoadStateVersion,
       viewItem: this.viewItem,

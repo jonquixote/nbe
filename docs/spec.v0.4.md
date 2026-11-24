@@ -18,6 +18,16 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.16 — **drafted by engineering under the user's mandate of 2026-11-21,
+ruling of 2026-11-22 01:28 and direction of 2026-11-24 item 2 ("decide the
+master-clock restart fix yourself"); ratified by its merge.** As v0.4.9.
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **The show's clock continues across a render node restart.** The resync snapshot carries `masterFrame`: the frame the show's clock reads at the send, uncapped (the last report advanced at the house rate by all the time since). A render node whose clock is stopped starts it so that it read that frame at the resync's receipt, taken before the package load. A render node whose clock runs keeps its own. **The decision and why:** the clock continues, rather than the control plane re-basing `t0` on a new clock. Continuing keeps every master-frame reckoning whole (the View item, the take's start estimate, timed ends, automation), not the View item alone. Uncapped, because the drill's outage (1.7–2.7 s to the resync, on a report up to 1 s old) runs past #203's two-second window, and a capped estimate would trail by up to about 50 frames. Anchored to the receipt, because the resync loads the package before it starts the clock (about 1.8 s), and a clock started "at the frame, now" came back 55 frames behind (measured) | §5.9.4 | this version's PR |
+
+Row 1 adds one field to the `show.resync` snapshot. It is `null` from a show that is not running, and an engine that ignores it starts at 0, as before. The failover drill now asserts the View item's position does not jump (within 6 frames). No frame kind, schema or error code changes.
+
 v0.4.15 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
 Housekeeping from the v0.5 outline's refresh (§1a item 9).
@@ -1269,7 +1279,14 @@ A `decodeError` whose `detail` begins `held:` reports a clip that stopped decodi
 
 A bounded, fire-and-forget channel plus a reconnecting engine means directives issued during an outage are gone. Guessing is not acceptable on air. Therefore:
 
-1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, **`packagePath`** and **`packageLoadStateVersion`** *(v0.4.8 row 5)*, `viewItem`, **`viewItemStartFrame`**, **`viewItemEnd`** *(v0.4.8 row 3)*, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
+1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, **`masterFrame`** *(v0.4.16 row 1)*, **`packagePath`** and **`packageLoadStateVersion`** *(v0.4.8 row 5)*, `viewItem`, **`viewItemStartFrame`**, **`viewItemEnd`** *(v0.4.8 row 3)*, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
+
+   **`masterFrame`** (v0.4.16 row 1) is the frame the show's clock reads when the snapshot is sent.
+   - **Its value.** While `showState` is `RUNNING` and the render node's reports have shown the clock advancing, it is the last reported master frame, advanced at the house rate by all the wall time since that report. It is `null` otherwise.
+   - **Not capped.** Unlike `viewItemStartFrame`'s estimate below, it has no freshness window. The show's clock is wall time since its epoch, and a render node's death does not stop it. The window exists to keep a take from extrapolating a clock that may have stopped.
+   - **A render node whose clock is `STOPPED`** (a restarted engine) starts it so that it read `masterFrame` at the instant the resync was received. That instant is taken before the resync's package load, which can take seconds.
+   - **A render node whose clock is already running** (a reconnect, an adoption) keeps its own clock.
+   - **Why.** The show's clock continues across a render node restart, so `viewItemStartFrame`, which the control plane holds in that clock, still names the same moment, and the View item's position does not jump. Until v0.4.16 a restarted engine began its clock at 0, while `viewItemStartFrame` named a frame in the old run. The failover drill measured the jump at about −170 frames: the item sat on air before its own start. That is the clip-jumps-back failure this section was written to prevent, reopened for restarts.
 
    `viewItemStartFrame` is the master frame at which the current View item went on air — §12.1's `t0` — and is REQUIRED whenever `viewItem` is non-null. Without it the snapshot says *what* is on air but not *since when*, so a reconnecting engine restarts a timed item from its first frame: a clip forty seconds in jumps back to zero, on air. It MUST be `null` when `viewItem` is `null`. The control plane does not see the engine's clock directly: its value is the engine's last reported master frame advanced at the house rate by the time since the report, while the clock advances, for at most the telemetry's freshness window, taken at the take (v0.4.11 row 1). The last report alone trailed the engine by up to a telemetry interval, and a render node sets its item's start from the resync, so a reconnect moved the item on air forward by that much.
 

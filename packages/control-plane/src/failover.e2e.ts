@@ -24,9 +24,16 @@
 //!   noise (R9). N was measured by `failover.measure.ts`: 2.61–2.85 s to the
 //!   outputs, reference machine, 5 samples.
 //!
+//! - **The View item's position does not jump** (SPEC §5.9.4, v0.4.16 row 1).
+//!   The new engine's first running frame is within 6 frames (200 ms, the
+//!   start-frame e2e's tolerance) of where the old clock would be by then.
+//!   Before v0.4.16 the restarted clock began at 0, a jump of about −170
+//!   frames, and the item's `t0`, held in the old clock, put it on air before
+//!   its own start.
+//!
 //! Recorded, not asserted: the output gap (kill to the sink's first new
-//! byte), and the master clock across the restart (the old engine's last
-//! frame against the new engine's first).
+//! byte). ~~and the master clock across the restart (the old engine's last
+//! frame against the new engine's first).~~ (now asserted, above)
 //!
 //! Not in `npm test`: it needs the engine binary. Run locally:
 //!   node --import tsx --test src/failover.e2e.ts
@@ -255,6 +262,11 @@ test("[drill] engine restart: killed mid-show under the supervisor, the View and
   );
 
   assert.ok(reached, `every point is reached within ${REACH_MS} ms of the kill: ${JSON.stringify(at)}`);
+  const jump = expectedFrame !== null && firstNew ? (firstNew["masterClockFrame"] as number) - expectedFrame : null;
+  assert.ok(
+    jump !== null && Math.abs(jump) <= 6,
+    `the show's clock continues across the restart, so the View item's position does not jump: the new engine's first running frame ${String(firstNew?.["masterClockFrame"])} against ${expectedFrame === null ? "?" : expectedFrame.toFixed(1)} continued from the old engine's last (${String(lastOld?.["masterClockFrame"])}): ${jump === null ? "no reading" : `${jump.toFixed(1)} frames`}`,
+  );
   assert.deepEqual(corrections, [], "no belief correction across the restart (#205: the outputs are owed, not lost)");
   assert.ok(!raised.includes("stream.divergence"), `no stream.divergence raised: ${JSON.stringify(raised)}`);
   assert.ok(!raised.some((a) => a.startsWith("command.unacknowledged")), `no unacknowledged command raised: ${JSON.stringify(raised)}`);

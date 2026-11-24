@@ -1564,6 +1564,10 @@ impl DirectiveHandler {
     }
 
     async fn on_resync(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // The instant the snapshot's `masterFrame` was true (it is the frame
+        // at the send, and the wire is milliseconds): taken before the package
+        // load below, which can take seconds (v0.4.16 row 1).
+        let received = std::time::Instant::now();
         // R32 (c): the resync's arrival, so a log shows where an unapplied one
         // stopped (the apply's own line is "show.resync applied").
         info!(sv = d.state_version, "show.resync received");
@@ -1612,8 +1616,20 @@ impl DirectiveHandler {
             .get("showState")
             .and_then(|v| v.as_str())
             .unwrap_or("STOPPED");
+        // SPEC §5.9.4 (v0.4.16 row 1): a running show's clock continues. The
+        // snapshot's `masterFrame` is the frame the show's clock reads now by
+        // the control plane's reckoning. A render node whose clock is stopped
+        // (a restarted engine) starts it there, so the View item's `t0`, which
+        // the control plane holds in that clock, still means the same moment,
+        // and nothing on air jumps. A node whose clock already runs (a
+        // reconnect, an adoption) keeps its own: its epoch beats any estimate.
+        // Without it the restarted clock began at 0 and the item sat about 170
+        // frames before its own start (the failover drill, 2026-11-23).
         match show_state {
-            "RUNNING" => self.state.start_clock(),
+            "RUNNING" => match snapshot.get("masterFrame").and_then(|v| v.as_u64()) {
+                Some(frame) => self.state.start_clock_at(frame, received),
+                None => self.state.start_clock(),
+            },
             _ => self.state.clock.lock().unwrap().stop(),
         }
         // The snapshot is the control plane's state, so it reconciles the flag
