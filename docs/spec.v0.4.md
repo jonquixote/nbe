@@ -18,6 +18,21 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.17 — **drafted by engineering under the user's direction of 2026-11-24
+item 3 ("the outline's (b) rulings are yours now", with the user's leans);
+ratified by its merge.** Each row records a decision and its reason. The
+v0.5 outline's §1b lists them beside the items they close.
+
+| # | Change | Sections | Decision |
+|---|---|---|---|
+| 1 | **Overlays composite on the View only.** | §7.10 | As built since Prompt 07: the overlay level is the program's downstream keyer, and the Preview checks the next scene |
+| 2 | **§16.7 rule 1 struck.** "Breaking override items appear first" named a category the payload cannot express. | §16.7 | The smallest honest option: a sender gives a first-place item the top priority, which rule 2 orders |
+| 3 | **Preflight's time bound is implementation-defined.** A timeout refuses `E_PREFLIGHT_FAILED`, and its details are informative. | §19.4 | The smallest honest statement: the defect was fixed in code, and a normative number would bind one machine |
+| 4 | **AC-11 is the whole benchmark contract.** | §22 (AC-11) | No second benchmark section |
+| 5 | **Build, release and packaging are out of this specification by design** (not out of v1). | §23 | Engineering process, not the show's contract |
+
+The other two of the outline's (b) rulings change code and ride their own PRs: `overlay.hide`'s optional exit animation, and linear-only easing with a preflight warning. No wire, schema or code change in this version.
+
 v0.4.16 — **drafted by engineering under the user's mandate of 2026-11-21,
 ruling of 2026-11-22 01:28 and direction of 2026-11-24 item 2 ("decide the
 master-clock restart fix yourself"); ratified by its merge.** As v0.4.9.
@@ -1792,6 +1807,16 @@ View = overlay(transition(sceneA, sceneB))
 Overlay elements (ticker, logo bug, breaking banner, clock) live on the overlay level, composited after the transition. They persist across scene transitions.
 
 Overlays have independent `overlay.show` / `overlay.hide` commands with their own enter/exit animations.
+
+**Overlays composite on the View only** (normative, v0.4.17 row 1).
+- The overlay level is drawn on the View bus.
+- The Preview bus shows its scene and no overlay.
+- An overlay on air is on air on the View, whatever the Preview holds.
+
+Why:
+- The overlay level is the program's downstream keyer. The Preview is where the next scene is checked, not a second program.
+- An overlay drawn on both buses would show the operator the same graphic twice and hide nothing they need to see.
+- It is what the tree has done since Prompt 07 (`render.rs`'s overlay pass runs for `Bus::View` alone). Until v0.4.17 the spec was silent, and the silence was load-bearing (the v0.5 outline's §1 item 3).
 
 **A take never disturbs an overlay (normative, new in v0.4.3).** "Persist across
 scene transitions" above is stated for the scene change; this makes the stronger
@@ -4462,10 +4487,12 @@ node never receives a TTL.
 
 Ticker ordering rules:
 
-1. Breaking override items appear first.
+1. ~~Breaking override items appear first.~~ (v0.4.17 row 2, struck: nothing in an override item marks it as breaking.)
 2. Higher `priority` appears before lower `priority`.
 3. For equal priority, insertion order is preserved.
 4. `language` is metadata only in v1.
+
+Rule 1 named a category the payload cannot express: an override item is `{ text, language?, priority?, ttlSec? }`, and nothing in it says "breaking". Rules 2 and 3 are built and tested; rule 1 never was (the v0.5 outline's §1 item 8). The smallest honest change is to strike it. A sender that wants an item first gives it the highest `priority` (up to 100000), which rule 2 already orders first. Adding a field or redefining a priority would make law of a distinction nothing needs today.
 
 ## 16.8 Soundboard/audio commands
 
@@ -4977,6 +5004,12 @@ The preflight test suite MUST include:
 17. Plugin failing sandbox validation.
 18. Unresolvable `sceneRef`, `pluginId`, or group `children` entry.
 
+## 19.4 Preflight's time bound (v0.4.17 row 3)
+
+How long the control plane waits for preflight's verdict is **implementation-defined**; this document sets no bound. A `show.load` whose preflight gave no verdict in that time is refused `E_PREFLIGHT_FAILED`. The refusal's `error.details` carries the numbers behind the bound, and those keys are informative (§5.4).
+
+Why the smallest statement: the v0.5 outline (§4) asked whether the spec should say anything about preflight's own cost. The defect that raised the question, a fixed bound that killed valid packages, was fixed in code on 2026-09-10: the bound is now derived from the package, and a valid package's preflight takes 2.2–2.4 s against 60 s on the reference machine. A normative number would only bind a measurement to one machine.
+
 ---
 
 # 20. MVP scope hard ceiling
@@ -5186,6 +5219,13 @@ NBE MUST be no worse than OBS baseline for dropped frames, CPU utilization, and 
 
 The comparison MUST also run on the floor device (Section 21), with results published separately.
 
+**AC-11 is the whole benchmark contract** (v0.4.17 row 4).
+- No other section defines benchmark metrics, a reference manifest, or a publication rule, and none will be added.
+- A prompt or document that cites a "benchmark section" cites AC-11.
+- §12 is deterministic loops, and always was.
+
+Why: the six measurements above, against the same package through OBS, are what a benchmark of this product has to show. A second contract would only let the two disagree (the v0.5 outline's §1 item 6).
+
 ## AC-12 — Companion command path
 
 A Bitfocus Companion button mapped to `view.take` MUST cause a successful take via the WebSocket command bus with no custom Stream Deck plugin.
@@ -5381,6 +5421,11 @@ The following are explicitly out of scope for v1:
 16. Compute-shader plugins (fragment shaders only, Section 14.2).
 
 The manifest schema MUST NOT preclude future Channel scheduling, but v1 MUST NOT implement it.
+
+**Out of this specification by design, not out of v1** (v0.4.17 row 5): build, release, packaging, notarization and distribution.
+- The product is built and released; this document does not say how.
+- That is engineering process, governed by the repository's prompts and CI, and it changes with the toolchain, not with the show's contract.
+- A prompt that cites a spec section for it (the old "§22 build/release requirements") cites nothing: §22 is acceptance criteria (the v0.5 outline's §1 item 7).
 
 ---
 
