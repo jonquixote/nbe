@@ -11,6 +11,12 @@ on:
 # engine's own default is `device`.
 env:
   NBE_AUDIO_SINK: "null"
+  # The vendored wgpu-core's lock probe (lock/vanilla.rs, 2026-11-24): any
+  # wgpu-core lock acquire that waits 10 ms or more logs NBE-LOCK, naming the
+  # lock, the waiting thread and the last holder. It answers which thread held
+  # the lock during CI's slow GPU polls (UploadPool::reclaim's non-blocking
+  # poll took 20.6 and 38.8 ms). It is read in the dress's engine log below.
+  NBE_LOCK_TIMING: "1"
 
 # Every job and step carries timeout-minutes (the user's ruling of
 # 2026-11-04, item 2, after a test hung for 21.5 h on the reference
@@ -2298,6 +2304,16 @@ jobs:
           if [ "$exercised" -lt 18 ]; then
             echo "FAIL: expected at least 18 tests exercised (ran minus skips), got $exercised"; exit 1
           fi
+        timeout-minutes: 5
+      - name: "lock waits in the dress (NBE-LOCK, diagnostic, non-failing)"
+        if: always()
+        continue-on-error: true
+        run: |
+          f=target/dress-rehearsal/engine.log
+          if [ ! -f "$f" ]; then echo "no engine log"; exit 0; fi
+          n=$(sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -c 'NBE-LOCK' || true)
+          echo "NBE-LOCK lines: $n (waits of 10 ms or more on a wgpu-core lock)"
+          sed 's/\x1b\[[0-9;]*m//g' "$f" | grep 'NBE-LOCK' | sed 's/^.*NBE-LOCK //' | head -40 || true
         timeout-minutes: 5
       - name: failure artifacts
         if: always()
