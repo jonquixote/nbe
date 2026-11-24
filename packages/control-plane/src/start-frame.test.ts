@@ -62,3 +62,20 @@ test("a take's start frame is the estimate, and the resync carries it", () => {
   assert.ok(start >= 144 && start <= 147, `the start is the engine's frame now (about 145), not its last report (130): ${start}`);
   assert.equal(s.resyncSnapshot(Date.now()).viewItemStartFrame, start);
 });
+
+test("the resync carries the show's clock, continued past the freshness window, for a restarted engine to resume (SPEC §5.9.4, v0.4.16 row 1)", () => {
+  const s = state30();
+  s.noteMasterFrame(100, 10_000);
+  s.noteMasterFrame(130, 11_000);
+  assert.equal(s.continuedMasterFrame(12_000), null, "a show not RUNNING has no clock to continue");
+  s.showState = "RUNNING";
+  assert.equal(s.continuedMasterFrame(12_000), 160, "one second at 30 fps past frame 130");
+  // The failover drill's case: the old engine's last report is 1 s old at the
+  // kill, and the resync goes out 1.7–2.7 s later. Past the two-second window
+  // the take's estimate stops at the report, and this does not.
+  assert.equal(s.estimatedMasterFrame(14_700), 130, "the take's estimate is capped");
+  assert.equal(s.continuedMasterFrame(14_700), 241, "the continued clock is not: 3.7 s past frame 130");
+  assert.equal(s.resyncSnapshot(14_700)["masterFrame"], 241, "and the resync carries it");
+  s.noteMasterFrame(130, 15_000);
+  assert.equal(s.continuedMasterFrame(16_000), null, "a clock that did not advance is not continued");
+});

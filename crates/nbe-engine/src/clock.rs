@@ -45,6 +45,32 @@ impl MasterClock {
         }
     }
 
+    /// Start a stopped clock so that it read `frame` at the instant `at`, as
+    /// if it had been running all along: its epoch is set `frame / rate`
+    /// before `at`. SPEC §5.9.4, v0.4.16 row 1: a restarted render node
+    /// resumes the show's clock where the last one would be.
+    ///
+    /// `at` is when the frame was true (the resync's receipt), not when the
+    /// clock starts. The resync loads the package first, which took about
+    /// 1.8 s in the failover drill, and a clock started "at `frame`, now"
+    /// came back 55 frames behind.
+    ///
+    /// A running clock is left alone: its own epoch is better than any
+    /// estimate. An epoch that would fall before this process's monotonic
+    /// origin starts the clock at `at`.
+    pub fn start_at(&mut self, frame: u64, at: Instant) {
+        if self.state != ClockState::Stopped {
+            return;
+        }
+        let rate = u128::from(self.house_rate.max(1));
+        let nanos = u64::try_from(u128::from(frame) * 1_000_000_000 / rate).unwrap_or(u64::MAX);
+        self.epoch = Some(
+            at.checked_sub(std::time::Duration::from_nanos(nanos))
+                .unwrap_or(at),
+        );
+        self.state = ClockState::Running;
+    }
+
     pub fn stop(&mut self) {
         if let (ClockState::Running, Some(epoch)) = (self.state, self.epoch) {
             self.last_run = self.frame_at(Instant::now()).map(|f| (epoch, f));
@@ -137,6 +163,40 @@ impl MasterClock {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_clock_started_at_a_frame_reads_that_frame_and_runs_on_from_it() {
+        // SPEC §5.9.4, v0.4.16 row 1: a restarted render node resumes the
+        // show's clock. `start` would read 0 here: the jump the failover drill
+        // measured (-170 frames).
+        let mut clock = MasterClock::new(30);
+        let received = Instant::now();
+        clock.start_at(5_400, received);
+        assert_eq!(
+            clock.frame_at(received),
+            Some(5_400),
+            "reads the frame at the instant it named"
+        );
+        assert_eq!(
+            clock.frame_at(received + Duration::from_secs(1)),
+            Some(5_430),
+            "and runs on at the house rate"
+        );
+        // Started late (the package load in between), it still reads where the
+        // show is, not 1.8 s behind.
+        let mut late = MasterClock::new(30);
+        late.start_at(5_400, Instant::now() - Duration::from_millis(1_800));
+        let f = late.frame().unwrap();
+        assert!(
+            (5_454..=5_455).contains(&f),
+            "1.8 s after the frame was true: got {f}"
+        );
+
+        // A running clock keeps its own epoch.
+        let epoch = clock.epoch().unwrap();
+        clock.start_at(10, Instant::now());
+        assert_eq!(clock.epoch(), Some(epoch), "a running clock is not moved");
+    }
 
     #[test]
     fn the_signed_frame_reads_before_the_epoch_and_agrees_with_frame_at_after_it() {

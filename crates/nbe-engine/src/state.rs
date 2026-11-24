@@ -586,6 +586,14 @@ impl EngineState {
         self.clock_started.notify_one();
     }
 
+    /// Start a stopped clock so that it read `frame` at `at`, as if it had
+    /// been running (SPEC §5.9.4, v0.4.16 row 1); a running clock is left as
+    /// it is.
+    pub fn start_clock_at(&self, frame: u64, at: std::time::Instant) {
+        self.clock.lock().unwrap().start_at(frame, at);
+        self.clock_started.notify_one();
+    }
+
     /// The running clock's epoch and current master frame, read under one
     /// lock so they belong to the same run; None while STOPPED (R33).
     pub fn clock_reading(&self) -> Option<(std::time::Instant, u64)> {
