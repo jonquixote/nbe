@@ -31,6 +31,9 @@ export interface TelemetryTick {
   watchdogClearsTotal: number;
   /** SPEC §12.8.1 rule 4 (v0.4.8 row 12): the View's clip frames held, not yet resident. */
   readAheadMissesTotal: number;
+  /** SPEC §10.1 (v0.4.14 row 1): assets failed to decode at show.load, and the subset no Item uses. */
+  decodeFailuresTotal: number;
+  unattributableDecodeFailuresTotal: number;
   // control-plane-owned
   viewItem: string | null;
   previewItem: string | null;
@@ -138,6 +141,8 @@ export function buildTick(
     watchdogTripsTotal: f?.watchdogTripsTotal ?? 0,
     watchdogClearsTotal: f?.watchdogClearsTotal ?? 0,
     readAheadMissesTotal: f?.readAheadMissesTotal ?? 0,
+    decodeFailuresTotal: f?.decodeFailuresTotal ?? 0,
+    unattributableDecodeFailuresTotal: f?.unattributableDecodeFailuresTotal ?? 0,
     // ZERO-COPY: always forwarded, stubbed when the engine has not reported
     // one — no stale engine report, or an engine build older than the stub.
     // Still no `?? "cpuReadback"`: `TAP_NONE` is not a path, so a machine that

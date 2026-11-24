@@ -426,4 +426,16 @@ async fn an_unattributable_decode_failure_is_counted_not_only_logged() {
             .any(|f| matches!(f, EngineFrame::ItemEvent { .. })),
         "an unattributable failure must not invent an Item to blame"
     );
+    // SPEC §10.1 (v0.4.14 row 1): both counts reach the tick under their wire
+    // names. Until then the count was only in the engine's memory, and
+    // nothing outside a test read it (the v0.5 outline's §1 item 2).
+    let tick = serde_json::to_value(nbe_engine::telemetry::build_tick(&state)).unwrap();
+    assert_eq!(
+        tick["decodeFailuresTotal"], 1,
+        "the tick carries the decode failure"
+    );
+    assert_eq!(
+        tick["unattributableDecodeFailuresTotal"], 1,
+        "and that no rundown Item uses it"
+    );
 }

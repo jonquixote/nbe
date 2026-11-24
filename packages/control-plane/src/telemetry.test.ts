@@ -256,3 +256,28 @@ test("the clip read-ahead's misses reach the tick, absent reads 0, and a stale r
   ingestEngineFrame(stale, frame, Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000);
   assert.equal(buildTick(state, stale, Date.now()).readAheadMissesTotal, 0, "a stale report is not forwarded");
 });
+
+test("decode failures reach the tick, absent reads 0, and a stale report stubs them to 0 (SPEC §10.1, v0.4.14 row 1)", () => {
+  const state = new ControlPlaneState();
+  const frame = EngineTelemetryFrameSchema.parse({
+    ...engineFrame(-1),
+    decodeFailuresTotal: 3,
+    unattributableDecodeFailuresTotal: 1,
+  });
+  const read = (w: ReturnType<typeof newWorldTelemetry>): [number, number] => {
+    const t = buildTick(state, w, Date.now());
+    return [t.decodeFailuresTotal, t.unattributableDecodeFailuresTotal];
+  };
+
+  const fresh = newWorldTelemetry();
+  ingestEngineFrame(fresh, frame, Date.now());
+  assert.deepEqual(read(fresh), [3, 1], "forwarded as the engine counted");
+
+  const older = newWorldTelemetry();
+  ingestEngineFrame(older, EngineTelemetryFrameSchema.parse(engineFrame(-1)), Date.now());
+  assert.deepEqual(read(older), [0, 0], "an engine without the fields reads 0");
+
+  const stale = newWorldTelemetry();
+  ingestEngineFrame(stale, frame, Date.now() - ENGINE_TELEMETRY_TTL_MS - 1000);
+  assert.deepEqual(read(stale), [0, 0], "a stale report is not forwarded");
+});
