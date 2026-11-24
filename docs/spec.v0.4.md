@@ -18,6 +18,20 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.15 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
+Housekeeping from the v0.5 outline's refresh (§1a item 9).
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **The master clock state is the render node's.** The tick carries the engine's own `masterClockState` (§11.4: `RUNNING` or `STOPPED`). The control plane reports it on the tick, in §10.4's status and in `renderNode.clockState`: `UNKNOWN` without a fresh report, and `showState` from an engine older than the field. Until now `renderNode.clockState` was always the control plane's `showState`, so the wire said `RUNNING` while the engine's clock was still `STOPPED`, which made finding R5 read as a clock defect for a month. `engineHello` (v0.4.9 row 3) already carried the clock at connect; the tick now carries it after connect | §10.1, §10.4, §11.4 | this version's PR |
+
+Row 1 adds one engine telemetry field, `masterClockState`, with its audit
+trio: the mirror's telemetry fixture samples it, and `protocol.ts` and the
+control plane's tick mirror it. It is optional on read so that an older engine
+stays readable. `masterClockFrame` is unchanged. No frame kind, directive or
+manifest schema changes.
+
 v0.4.14 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
 Housekeeping from the v0.5 outline's refresh (§1a item 2).
@@ -2635,6 +2649,7 @@ Telemetry fields:
   "ts": 1768000000000,
   "showState": "RUNNING",
   "masterClockFrame": 54000,
+  "masterClockState": "RUNNING",
   "viewItem": "B2",
   "previewItem": "B3",
   "droppedFramesTotal": 0,
@@ -2705,6 +2720,18 @@ drawn. A Preview miss is held and not counted (§10.2).
 It is engine-owned, with §10.1.1's stub of `0` when no fresh report is held,
 and it rides the tick beside the watchdog's counters. A run with misses is a
 degraded run, and a miss is never silent.
+
+**`masterClockState` (normative, new in v0.4.15 row 1).** This is the master
+clock's state as the render node reports it (§11.4): `RUNNING` or `STOPPED` in
+v1.
+- `masterClockFrame` reads `0` while the clock is `STOPPED`, so only this field
+  tells a stopped clock from a running clock's first frame.
+- On the tick, in §10.4's status (item 2, `masterClockState`) and in
+  `renderNode.clockState`, the control plane reports the render node's own
+  clock from a fresh report, and `UNKNOWN` without one.
+- From an engine older than this field, it reports its own `showState`, as
+  every version before v0.4.15 did. That is the control plane's belief, not
+  the clock.
 
 **`decodeFailuresTotal` and `unattributableDecodeFailuresTotal` (normative, new
 in v0.4.14 row 1).** These count the video assets that failed to decode at
@@ -2813,7 +2840,7 @@ Two processes hold the truth for different fields, and the control plane is the 
 | Owner | Fields |
 |---|---|
 | Control plane | `showState`, `viewItem`, `previewItem`, `automationHold`, `streamState`, `recordState` (as commanded), `alerts` and `health` (§10.1.2, v0.4.8 row 8) |
-| Render node | `masterClockFrame`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7), `readAheadMissesTotal`, `decodeFailuresTotal`, `unattributableDecodeFailuresTotal` (new in v0.4.8) |
+| Render node | `masterClockFrame`, `masterClockState`, `droppedFramesTotal`, `renderGpuTimeMs`, `decodeSessions`, `vramUsedMib`, `textureCacheUsedMib`, `streamBufferMs`, `recordSpaceMib`, `masterClockDriftMs`, `fallbackActive`, `degradationRung`, `qualityProfile` (effective), `audioUnderrunsTotal`, `audioDriftMs`, `busPeakDbfs`, `recordTapPath`, `recordTapReason`, `streamTransportState` (new in v0.4.6), `watchdogTripsTotal`, `watchdogClearsTotal` (new in v0.4.7), `readAheadMissesTotal`, `decodeFailuresTotal`, `unattributableDecodeFailuresTotal` (new in v0.4.8) |
 
 **`qualityProfile` has two sources and one winner (clarified in v0.3.2).** The manifest declares a profile and Section 10.5 has the engine probe the hardware. These are different statements:
 
@@ -3137,7 +3164,7 @@ GET /nbe/v0.3/status
 Response MUST include:
 
 1. show load state,
-2. master clock state,
+2. master clock state (`masterClockState`: the render node's own, §10.1, v0.4.15 row 1),
 3. render node health,
 4. stream health,
 5. recording health,
