@@ -18,6 +18,15 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.20 — **drafted by engineering under the user's direction of 2026-11-24
+item 4 (`view.ftb` first of the three features); ratified by its merge.**
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **`view.ftb`: fade the whole View to black, or back.** The View's last stage, above the scene, overlays, graphics and the fallback slate, ramped linearly over `durationFrames` (30 by default) of the master clock, from the current level. A take does not lift it; `on: false`, a load or an unload does. The control plane holds `ftbActive` in the resync and the journal; a resync lands at once | §7.16, §16.2, §5.9.4 | this version's PR |
+
+Row 1 adds a command (operator and admin) and one resync field, mirrored by `nbe-protocol`'s command list and the operator shell's catalog. No frame kind, schema or error code changes.
+
 v0.4.19 — **drafted by engineering under the user's direction of 2026-11-24
 item 3 (the user's lean: "state that overlays are linear-only now and warn in
 preflight on other easings"); ratified by its merge.**
@@ -1315,7 +1324,7 @@ A `decodeError` whose `detail` begins `held:` reports a clip that stopped decodi
 
 A bounded, fire-and-forget channel plus a reconnecting engine means directives issued during an outage are gone. Guessing is not acceptable on air. Therefore:
 
-1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, **`masterFrame`** *(v0.4.16 row 1)*, **`packagePath`** and **`packageLoadStateVersion`** *(v0.4.8 row 5)*, `viewItem`, **`viewItemStartFrame`**, **`viewItemEnd`** *(v0.4.8 row 3)*, `previewItem`, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
+1. On **every** render-role connection — initial connect and every reconnect — the control plane MUST send a `show.resync` directive before any other directive on that connection. Its payload is the full authoritative snapshot: `showState`, **`masterFrame`** *(v0.4.16 row 1)*, **`packagePath`** and **`packageLoadStateVersion`** *(v0.4.8 row 5)*, `viewItem`, **`viewItemStartFrame`**, **`viewItemEnd`** *(v0.4.8 row 3)*, `previewItem`, **`ftbActive`** *(v0.4.20 row 1, §7.16)*, item states, scene states, visible overlays, `automationHold`, and the `stateVersion` it was taken at.
 
    **`masterFrame`** (v0.4.16 row 1) is the frame the show's clock reads when the snapshot is sent.
    - **Its value.** While `showState` is `RUNNING` and the render node's reports have shown the clock advancing, it is the last reported master frame, advanced at the house rate by all the wall time since that report. It is `null` otherwise.
@@ -1976,6 +1985,25 @@ it should occupy, not the position it held when it was interrupted.
 Guarded by `fallback_covers_overlays` (`crates/nbe-engine/tests/prompt07_overlay.rs`);
 `render.rs`'s `show_fallback` gates the entire scene-plus-overlay branch, and
 forcing that gate to `false` fails the test.
+
+## 7.16 Fade to black (normative, new in v0.4.20)
+
+`view.ftb { on, durationFrames? }` fades the whole View to black (`on: true`), or back (`on: false`), mirroring a hardware fade-to-black.
+
+**The View's last stage.** The black composites above the scene, the transition, the overlay level, the graphics and the fallback slate (§7.14). A View faded to black shows black whatever is under it, the slate included, because the operator's intent to go black is the latest stage of the program. The Preview is untouched.
+
+**The ramp.**
+- The black's level ramps linearly over `durationFrames` master frames (30 when absent; 1 to 600), from the level the View shows when the command applies.
+- So a fade reversed midway turns back from where it was, with no jump.
+- At the end the View is fully black, or fully clear.
+
+**What lifts it.** Only `view.ftb { on: false }`, or a load or unload of the show. A take does not: the item changes underneath and stays black.
+
+**Across a resync.** The control plane holds `ftbActive`. The resync snapshot carries it (§5.9.4), and the journal keeps it. A resynced render node lands at the faded state at once, with no ramp.
+
+**Outputs.** The recording and the stream are the View's, so they fade with it.
+
+Why: the fallback slate already composites above the overlay level (§7.14). A fade to black is the same topology with a ramp, and its absence beside a built fallback was conspicuous (the v0.5 outline's §3a).
 
 ---
 
@@ -4057,6 +4085,7 @@ does. The trigger readings the cells assume:
 | `scene.arm`, `scene.apply` | ~~yes~~ — scene `ARMED`, or applied to its target bus; ~~fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those)~~. *Amended in Prompt 11 WU5 (§2c); that amendment struck in PR #34's fix round:* **`scene.arm`: `previewItem`, only when the preview is empty** (`state.ts` `armScene`: `if (this.previewItem == null) this.previewItem = sceneId`). A conditional write is still an edge, because cycle detection asks what a command CAN cause. `scene.apply` changes scene states only, which no rule can name. *The two-key pass of 2026-09-29 found the WU5 wording wrong: WU5's probe ran with the preview already set* | no — a scene is not a timed item, and the engine does not route either command | no | — | §16.3 cells; `state.ts` `armScene` (~~scene states only~~ scene states, and an empty preview), `applyScene` (scene states only) |
 | `snapshot.recall` | yes — view state, item states, overlays and `automationHold` restored wholesale | **no under B3** — it is not a take; but it can set `viewItem` without one, so an evaluator that keys `mediaStart` on `viewItem` would put it in this column. *(Unchanged by v0.4.8 row 1: the engine now airs the recalled item, but B3 keys `mediaStart` on the take, and a recall is not one)* | ~~no~~ **can, deferred** *(v0.4.8 row 1, §2c)* — the engine applies a recall through the take's own application, so the take's end scheduling runs: the outgoing item's pending end is cancelled, and an end is scheduled when the payload carries ~~`durationFrames`~~ `itemDurationFrames` *(§2c, v0.4.8 row 2: the old field was the transition's length)*. ~~A recall's resolved cut carries none in this tree, so the cell over-approximates;~~ *(§2c, v0.4.8 row 2: a recall of a timed item now carries the recalled item's own duration, so the edge is real. It over-approximates in ~~two ways only~~ three ways: a recall of an untimed item schedules no end, a recall to an empty View schedules none either (`clear_view`; §2c, PR #37's two-key pass), and)* no item is named in the payload (a snapshot is runtime state), so any item's end counts | ~~—~~ `audioLevel`, **deferred** *(v0.4.8 row 1)* — the recall swaps the clip bus's source, as a take does | §16.11 cell; `state.ts` `recallSnapshot`; ~~`directive.rs` routing (not routed)~~ *(§2c, v0.4.8 row 1: the engine did not route the command, so a recall moved the control plane's View while the old View stayed on air)* `commands/state.ts` (the resolved directive: `target.itemRef` only when the View changes, `resolveTransition`'s cut, `visibleOverlays`); `directive.rs` `on_recall` → `apply_take` **without** the release of `Held` — a recall does not clear `fallbackActive`, so release parity (§10.3) puts no release here — plus `replace_overlays` and `clear_view` |
 | `view.fallback` | yes — `fallbackActive` | no — the fallback slate is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_fallback` |
+| `view.ftb` | no — `ftbActive` is not a field a rule can name (§13.4.1); the change reaches clients in the state frame *(v0.4.20 row 1)* | no — a fade is not an item | no | — | §16.2 cell; `commands/view.ts`; `directive.rs` `on_ftb` |
 | `stream.start`, `stream.stop` | yes — `streamState`, as commanded | no | no | `streamHealth`, **deferred** — start takes `streamTransportState` to `reconnecting` and then `live`; stop takes it to `closed`; each is observed on a later §10.1 tick (design note §5). *Amended in WU5 (§2c): the cell read* ~~"`streamHealth` — start takes `streamTransportState` to `reconnecting` and then, deferred, `live`"~~ *— `reconnecting` is no more same-dispatch than `live`* | §16.14 cells; `commands/output.ts`; `directive.rs` `on_stream_start`, `on_stream_stop`; §10.1 (v0.4.6) |
 | `record.start`, `record.stop` | yes — `recordState` | no | no | — | §16.14 cells; `commands/output.ts` |
 | `soundboard.play`, `soundboard.stop`, `soundboard.stopAll`, `audio.bus.set`, `audio.duck`, `guest.mute` | ~~yes~~ — the playback, bus, duck and mute changes their cells name; fires no `stateChange` rule: none of the fields it changes is one a rule can name (§13.2's params table; `STATE_FIELDS`, `nbe-core` `automation.rs`; the control plane's `stateChanges()` diffs only those). *Amended in Prompt 11 WU5 (§2c)* | no — a soundboard clip is not a rundown item; `itemEvent` is rundown-only | no | `audioLevel`, **deferred** — each moves a bus's level, up or down, and the crossing arrives on a later engine frame. *Amended in WU5 (§2c): the cell did not say deferred* | §16.8, §16.9 cells; `commands/audio.ts`; `directive.rs` routing to `on_audio` |
@@ -4369,6 +4398,7 @@ A warnings-only package is loadable — warnings exist to be seen and judged —
 | `view.take` | see below | preview armed | preview item becomes LIVE or PLAYING; previous live becomes READY; audio transition executes | `E_FORBIDDEN_STATE`, `E_AUDIO`, `E_ENGINE` |
 | `view.cut` | `{ itemRef: string }` | item exists | immediate view switch to item | `E_NOT_FOUND`, `E_FORBIDDEN_STATE` |
 | `view.fallback` | `{ reason?: string }` | always allowed | VIEW switches to fallback slate | `E_ENGINE` |
+| `view.ftb` | `{ on: boolean, durationFrames?: integer 1..600 }` *(v0.4.20 row 1)* | always allowed | the View fades to black (`on`) or back over `durationFrames` (default 30); `ftbActive` follows `on` (§7.16) | `E_BAD_PAYLOAD` |
 
 `view.take` payload schema:
 

@@ -256,6 +256,8 @@ export class ControlPlaneState {
   }
   previewItem: string | null = null;
   fallbackActive = false;
+  /** SPEC §7.16 (v0.4.20 row 1): the View faded to black (`view.ftb`). */
+  ftbActive = false;
 
   itemStates = new Map<string, ItemState>();
   /** itemRef → the engine's words for a clip that failed on air, held. */
@@ -387,6 +389,7 @@ export class ControlPlaneState {
       templates: pkg ? [...(pkg.templateKinds ?? new Map<string, string>())].map(([id, kind]) => ({ id, kind })) : null,
       graphics: [...this.graphics].map(([elementId, g]) => ({ elementId, templateId: g.templateId })),
       breakingVisible: this.breakingVisible,
+      ftbActive: this.ftbActive,
       overlays: pkg ? [...pkg.overlays] : null,
       visibleOverlays: Array.from(this.visibleOverlays),
     };
@@ -549,6 +552,9 @@ export class ControlPlaneState {
       })),
       automationHold: this.automationHold,
       fallbackActive: this.fallbackActive,
+      // SPEC §5.9.4, §7.16 (v0.4.20 row 1): a resynced render node lands at
+      // the faded state at once, with no ramp.
+      ftbActive: this.ftbActive,
       stateVersion: this.stateVersion,
     };
   }
@@ -624,6 +630,7 @@ export class ControlPlaneState {
     this.itemStates.clear();
     this.sceneStates.clear();
     this.fallbackActive = false;
+    this.ftbActive = false;
     this.qualityProfile = pkg.qualityProfile ?? null;
     this.unrecoverableItems.clear();
     // `enabled` is honoured (Prompt 11 WU1). It used to be ignored: every
@@ -687,6 +694,7 @@ export class ControlPlaneState {
     const map = <V>(v: unknown): Map<string, V> => new Map(Object.entries((v ?? {}) as Record<string, V>));
     this.graphics = map(j.graphics);
     this.breakingVisible = j.breakingVisible === true;
+    this.ftbActive = j.ftbActive === true;
     this.breakingFields = (j.breakingFields ?? null) as typeof this.breakingFields;
     if (j.tickerSource === "manual" || j.tickerSource === "rss" || j.tickerSource === "mixed") this.tickerSource = j.tickerSource;
     if (Array.isArray(j.tickerItems)) this.tickerItems = j.tickerItems as typeof this.tickerItems;
@@ -723,6 +731,7 @@ export class ControlPlaneState {
     this.overlayAnimation.clear();
     this.automationRules.clear();
     this.fallbackActive = false;
+    this.ftbActive = false;
   }
 
   // -- status / snapshots for persistence and the health endpoint ---------------

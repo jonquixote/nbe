@@ -93,6 +93,7 @@ export function journalOf(state: ControlPlaneState): Record<string, unknown> {
     viewItemStartFrame: state.viewItemStartFrame,
     previewItem: state.previewItem,
     fallbackActive: state.fallbackActive,
+    ftbActive: state.ftbActive,
     itemStates: obj(state.itemStates),
     visibleOverlays: [...state.visibleOverlays],
     graphics: obj(state.graphics),

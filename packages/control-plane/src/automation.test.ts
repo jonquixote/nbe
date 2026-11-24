@@ -1099,6 +1099,9 @@ test("§13.4.1, row by row: every command raises only the same-dispatch triggers
   await probe("item.reset", { itemId: "AT" });
   await setup("view.cut", { itemRef: "A1" });
   await probe("view.fallback", {});
+  // v0.4.20 row 1: a fade writes ftbActive, which no rule can name.
+  await probe("view.ftb", { on: true });
+  await probe("view.ftb", { on: false });
   await probe("automation.hold", { hold: true });
   await probe("automation.hold", { hold: false });
   // A held snapshot with A2 on air and A1 in preview, recalled over A1 on air.

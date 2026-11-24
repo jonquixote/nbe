@@ -130,6 +130,7 @@ const OPERATOR_COMMANDS = new Set([
   "view.take",
   "view.cut",
   "view.fallback",
+  "view.ftb",
   "scene.arm",
   "scene.apply",
   "item.arm",

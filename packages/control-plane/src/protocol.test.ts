@@ -67,6 +67,7 @@ const SAMPLE_PAYLOADS: Record<string, unknown> = {
   "view.take": { transition: "mix", durationFrames: 15, audio: { transition: "follow" } },
   "view.cut": { itemRef: "A1" },
   "view.fallback": {},
+  "view.ftb": { on: true, durationFrames: 30 },
   "scene.arm": { sceneId: "SCN_A1" },
   "scene.apply": { sceneId: "SCN_A1", target: "preview" },
   "item.arm": { itemId: "A1" },

@@ -212,6 +212,7 @@ const REGISTERED_COMMANDS: &[&str] = &[
     "view.take",
     "view.cut",
     "view.fallback",
+    "view.ftb",
     "scene.arm",
     "scene.apply",
     "item.arm",

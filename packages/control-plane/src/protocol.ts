@@ -204,6 +204,8 @@ export const CommandPayloadSchemas = {
     .strict(),
   "view.cut": z.object({ itemRef: id }).strict(),
   "view.fallback": z.object({ reason: z.string().optional() }).strict(),
+  // SPEC §16.2, §7.16 (v0.4.20 row 1): fade the whole View to black, or back.
+  "view.ftb": z.object({ on: z.boolean(), durationFrames: z.number().int().min(1).max(600).optional() }).strict(),
 
   // 16.3 scene
   "scene.arm": z.object({ sceneId: id }).strict(),

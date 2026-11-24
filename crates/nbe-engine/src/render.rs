@@ -1817,11 +1817,27 @@ impl RenderLoop {
             }
             // §7.10: `View = overlay(transition(A, B))`. Overlay elements
             // composite after the transition output, every frame, and only on
-            // the View bus (Preview semantics are left to a future revision —
-            // the spec is silent and no rule is invented).
+            // the View bus (v0.4.17 row 1: overlays composite on the View
+            // only).
             if bus == Bus::View {
                 self.overlay_draws(frame, &mut draws);
                 self.graphic_draws(frame, &mut draws);
+            }
+        }
+        // SPEC §7.16 (v0.4.20 row 1): the View's last stage, above the scene,
+        // the overlays, the graphics and the fallback slate. A black quad at
+        // the fade's level; nothing is drawn while the View is clear.
+        if bus == Bus::View {
+            let level = self.state.ftb_level(frame);
+            if level > 0.0 {
+                draws.push((
+                    self.white.clone(),
+                    LayerUniform {
+                        color: [0.0, 0.0, 0.0, level],
+                        rect: crate::scene::FULL_RECT,
+                        uv: UV_FULL,
+                    },
+                ));
             }
         }
 

@@ -96,6 +96,10 @@ impl PlaybackTracker {
     }
 }
 
+/// `view.ftb`'s ramp when its payload names none: one second at 30 fps
+/// (SPEC §16.2, v0.4.20 row 1).
+pub const FTB_DEFAULT_FRAMES: u64 = 30;
+
 #[derive(Clone)]
 pub struct DirectiveHandler {
     state: SharedEngineState,
@@ -136,6 +140,7 @@ impl DirectiveHandler {
             "show.stop" => self.on_show_stop(d).await?,
             "view.take" | "view.cut" => self.on_take(d)?,
             "view.fallback" => self.on_fallback(d)?,
+            "view.ftb" => self.on_ftb(d),
             "overlay.show" | "overlay.hide" => self.on_overlay(d)?,
             "soundboard.play" | "soundboard.stop" | "soundboard.stopAll" | "audio.bus.set"
             | "audio.duck" | "guest.mute" => self.on_audio(d)?,
@@ -468,6 +473,8 @@ impl DirectiveHandler {
         // show's slate. Never the watchdog's: its release is its recovery.
         self.state
             .release_fallback(crate::state::FallbackSource::Held);
+        // SPEC §7.16: a new show does not open in the old show's black.
+        self.state.set_ftb(false);
         info!(path, "show.load: package indexed, fallback resident");
         Ok(())
     }
@@ -1482,6 +1489,27 @@ impl DirectiveHandler {
     /// state only. The animation keys off the master clock at the frame *after*
     /// the command lands — the same boundary discipline as a take — and a take
     /// never touches these timelines.
+    /// SPEC §16.2, §7.16 (v0.4.20 row 1): fade the whole View to black, or
+    /// back, over `durationFrames` (30 when absent) of the master clock, from
+    /// the level it shows now. The View's last stage: above the scene, the
+    /// overlays, the graphics and the fallback slate. The Preview is
+    /// untouched.
+    fn on_ftb(&self, d: &DirectiveFrame) {
+        let on = d
+            .payload
+            .get("on")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let frames = d
+            .payload
+            .get("durationFrames")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(FTB_DEFAULT_FRAMES);
+        let now = self.state.master_frame().unwrap_or(0);
+        self.state.fade_to_black(on, frames, now);
+        info!(on, frames, now, "view.ftb");
+    }
+
     fn on_overlay(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
         let Some(overlay_id) = d
             .target
@@ -1636,6 +1664,11 @@ impl DirectiveHandler {
         // both ways (PR #34's fix round): `true` engages the operator's slate,
         // `false` releases it — a take or a load the engine missed during an
         // outage is replayed here. Never the watchdog's slate.
+        // SPEC §5.9.4, §7.16 (v0.4.20 row 1): the View's fade to black, at
+        // once and with no ramp.
+        if let Some(on) = snapshot.get("ftbActive").and_then(|v| v.as_bool()) {
+            self.state.set_ftb(on);
+        }
         match snapshot.get("fallbackActive").and_then(|v| v.as_bool()) {
             Some(true) => self
                 .state

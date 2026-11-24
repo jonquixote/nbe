@@ -85,6 +85,19 @@ export function viewHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
       return { data: { fallbackActive: true } };
     },
   });
+
+  // SPEC §16.2, §7.16 (v0.4.20 row 1): the View's last stage. Forwarded as
+  // sent; the render node ramps the black over `durationFrames` on the master
+  // clock. A take does not lift it: only `view.ftb { on: false }`, a load or
+  // an unload does.
+  reg.set("view.ftb", {
+    forward: true,
+    handler: (ctx, payload): HandlerOutput => {
+      const on = payload.on === true;
+      ctx.state.ftbActive = on;
+      return { data: { ftbActive: on } };
+    },
+  });
 }
 
 /**
