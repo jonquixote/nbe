@@ -48,6 +48,8 @@ cpal = "0.18.2"
 nbe-decode = { path = "../nbe-decode", features = ["gpu-tap", "device-audio", "capture"] }
 
 [dev-dependencies]
+# tests/lock_timing_probe.rs captures the vendored wgpu-core's `nbe_lock` records.
+log = "0.4"
 pollster = "0.4"
 tempfile = "3"
 # A paused clock: tests/null_sink_catch_up.rs drives `audio_driver::run` on it.

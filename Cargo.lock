@@ -1573,6 +1573,7 @@ dependencies = [
  "fs4",
  "futures-util",
  "image",
+ "log",
  "nbe-core",
  "nbe-decode",
  "nbe-protocol",
