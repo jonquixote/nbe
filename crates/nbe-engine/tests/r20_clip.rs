@@ -160,9 +160,31 @@ async fn rendered_centre_reported(render: &mut RenderLoop, frame: u64) -> ([u8; 
 async fn control_diagnosis(render: &mut RenderLoop, frame: u64, report: &FrameReport) -> String {
     let reread = centre(&render.readback_view().await, VIEW_W, VIEW_H);
     let redrawn = rendered_centre(render, frame).await;
+    // Second sighting (main 78a1880, 2026-11-24 06:4xZ): both draws drew no
+    // layer (uniforms, binds and draws 0 ns), so the View's item had nothing
+    // to draw. Did its clip reach the video library at the load?
+    let (assets, failures) = {
+        let library = render.state.video.lock().unwrap();
+        let mut assets: Vec<String> = library.assets.keys().cloned().collect();
+        assets.sort();
+        let mut failures: Vec<String> = library
+            .failures
+            .iter()
+            .map(|(id, e)| format!("{id}: {e}"))
+            .collect();
+        failures.sort();
+        (assets, failures)
+    };
+    let failed_at_load = render
+        .state
+        .decode_failures_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let view_item = render.state.view_item.lock().unwrap().clone();
     format!(
         "the same View read again without a draw: {reread:?}; frame {frame} drawn again: \
-         {redrawn:?}; the first draw's report: {report:?}"
+         {redrawn:?}; the View item {view_item:?}; the video library holds {assets:?}; \
+         decode failures at the load: {failed_at_load} {failures:?}; the first draw's \
+         report: {report:?}"
     )
 }
 
