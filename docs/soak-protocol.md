@@ -490,3 +490,58 @@ The raw files: `.git/nbe-staged/nsx/soak/rehearsal-0db1f60/` and
 `.git/nbe-staged/nsx/soak/full-0db1f60/` (the console, pre-flight read 6,
 the launch script, and a copy of `target/soak-r42.noindex/20261111T050753Z/`,
 identical by `diff -rq`), on one disk.
+
+**The second full run, on `1cd7076`** (the user's word of 2026-11-23,
+"Soak when ready"; the user asked that all twenty shows run on one settled
+commit, so the run of 2026-11-22 on `15ea35c` counts only as early evidence:
+its shows 1 to 3 were kept, and its shows 4 to 9 ran across a clamshell sleep
+and are void by the Sleep rule). Twenty 30-minute shows on merged main
+`1cd7076` (#204), 2026-11-23 06:20:46 to 16:25:05 PST, with the lid open on
+AC. Release build at 01:17 PST of that commit; the binaries `nbe-engine`
+`21c0c42be56d1608` and `nbe-preflight` `03d19f70504d0fe5`. Pre-flight read
+16 GiB free, the indexers at 0% CPU, a 45 W adapter, and Low Power Mode off.
+Exit 0, **PASS**: 20 of 20 shows kept, 600 show-minutes, findings 0, power
+events 0 (`power-events.txt` is empty, and the power log has no `Sleep` or
+battery line between the first show and the last; the battery read 100%,
+charged, every 300 s). The soak's condition read zero panics and zero drops:
+- No engine log has a `panicked` line, and `panicLines` is empty in every
+  show's `result.json`.
+- `droppedFramesTotal` is 0 in every show. Every run line reads repeats,
+  skips and drops 0, over 54,043 to 54,051 ticks a show (1,080,968 in all).
+- Never-drawn lines, lost chains, errors, watchdog trips and underruns are 0.
+  The degradation rung and the read-ahead misses are 0, and the tap is
+  `zeroCopy`. `recordStopError` and `streamParseError` are null.
+- Each output ended within 0.28 s of its span, against the 1 s finding
+  bound. The recordings' video was 0.06 to 0.18 s short, their audio 0.04 to
+  0.17 s, and the streams' video 0.14 to 0.28 s. Show 4 was the furthest
+  short on all three.
+- This run was not recounted by a second key. The figures above are one
+  read of each show's `result.json` and of `table.tsv` (sha256
+  `742762e3a612…`).
+
+Readings, not judgments:
+- **The loads:** shows were admitted at 1.52 to 2.59 and ended at 1.52 to
+  2.90. Show 8 ended at 2.90 and was kept. Shows 5, 9 and 17 waited for
+  admission (show 5 for 45 s, the others for 15 s).
+  - Inside the shows, the 1-minute load rose above 3.0 in twelve shows (1, 4,
+    5, 6, 8, 11, 13, 14, 16, 17, 19 and 20). Show 20 reached 13.60 and
+    show 8 reached 7.28.
+  - The shows' mean loads were 1.83 to 2.48.
+  - `result.json` keeps no time for a show's peak load, so the cause of show
+    20's peak is not seen. Show 20 dropped nothing, and its wake maximum was
+    8.94 ms.
+- **The wake maxima:** 3.92 to 12.47 ms a show, with show 6 the highest.
+  Five shows went over 5 ms (5, 6, 8, 18 and 20). The wake means were 2,188
+  to 2,678 µs.
+- **The audio drift telemetry:** `audioDriftMs` at the last take read
+  4,133.33 to 4,600 ms (null sink), against 4,333.33 to 4,766.67 ms on
+  `0db1f60`.
+- **The display** turned off at 09:16:47 PST, during show 6, which dropped
+  nothing.
+- **R44's tail:** each recording's video ended 0.003 to 0.021 s before its
+  audio, against 0.08 to 0.18 s on `0db1f60`. This note does not establish
+  which change moved it.
+
+The raw files: `.git/nbe-staged/nsx/soak/full-1cd7076/` (the console, the
+battery log, and a copy of `target/soak-r42.noindex/20261123T142046Z/`,
+identical by `diff -rq`), on one disk.
