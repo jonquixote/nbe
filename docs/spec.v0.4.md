@@ -18,6 +18,21 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.13 — **drafted by engineering under the user's mandate of 2026-11-21
+and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9. Both rows
+are housekeeping from the v0.5 outline's refresh at `0a14f0e` (§1a items 1 and
+10; the user's word of 2026-11-23, "go ahead with (a)").
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **`error.details`.** An error response may carry `error.details`, an object of facts about the refusal. A key a section names is normative for that refusal (today, §5.9.4's `reason`); the others are informative. The control plane has sent it since 2026-09-08 (a deviation recorded in `docs/prompt-map-07-13.md`), and v0.4.9 and v0.4.12 cite `details.reason` although §5.4 never defined it | §5.4 | the preflight bound (2026-09-08); #131 (`137b7fc`) |
+| 2 | **§15's heading** drops "v0.3": its body is the v0.4 manifest schema. Editorial | §15 | — |
+
+No schema, wire or code change. The control plane's `ErrorResponse`
+(`protocol.ts`) already types `details` as optional. `nbe-protocol`'s
+`ErrorBody` mirrors `{code, message}` and, without `deny_unknown_fields`,
+reads past `details`.
+
 v0.4.12 — **drafted by engineering under the user's mandate of 2026-11-21
 and ruling of 2026-11-22 01:28; ratified by its merge.** As v0.4.9.
 
@@ -1015,6 +1030,19 @@ Error response:
   }
 }
 ```
+
+**`error.details`** (v0.4.13 row 1). An error response MAY also carry
+`error.details`, an object of facts about the refusal: the item, element,
+guest or asset it names, or the numbers behind it. Its keys depend on the
+refusal.
+- A key that a section names is normative for that refusal. Today that is
+  §5.9.4's `reason: "recovering"`, with `E_RECOVERING`.
+- Every other key is informative. For example, a `show.load` that the control
+  plane's preflight time bound killed (`E_PREFLIGHT_FAILED`) carries the
+  numbers behind the bound: `derivedMs`, `ceilingMs`, `basis`,
+  `refusalBypassed` and `remedy`. Whether that bound belongs in the SPEC is an
+  open question (v0.5 outline §4).
+- A response without `details` is complete.
 
 ## 5.4.1 Server-push frames (normative, new in v0.3.2)
 
@@ -4058,7 +4086,10 @@ The plugin API is versioned. Plugins declare the API version they were built aga
 
 ---
 
-# 15. Manifest JSON Schema v0.3
+# 15. Manifest JSON Schema
+
+*§2c (v0.4.13 row 2): this heading read "Manifest JSON Schema v0.3". The body
+has pointed at `schemas/manifest.v0.4.json` since v0.4.*
 
 The normative manifest schema lives at `schemas/manifest.v0.4.json` in the repository. That file is the byte-exact normative artifact; nothing embedded in this document overrides it.
 
