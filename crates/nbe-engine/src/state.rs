@@ -22,6 +22,70 @@ pub struct LoadedPackage {
 
 /// The engine's shared mutable state. All writes go through handlers; readers
 /// (telemetry, watchdog) see a coherent snapshot via atomics.
+/// The View's fade to black (SPEC §7.16, v0.4.20 row 1): the black's level
+/// ramps linearly from `from` to `to` over `frames` master frames from
+/// `start`. 0 is clear and 1 is black. A ramp starts at the level the last one
+/// had reached, so reversing a fade midway is continuous.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FtbRamp {
+    pub from: f32,
+    pub to: f32,
+    pub start: u64,
+    pub frames: u64,
+}
+
+impl FtbRamp {
+    pub const CLEAR: Self = FtbRamp {
+        from: 0.0,
+        to: 0.0,
+        start: 0,
+        frames: 1,
+    };
+
+    /// The black's level at master `frame`: `from` until `start`, `to` from
+    /// `start + frames` on, linear between.
+    pub fn level(&self, frame: u64) -> f32 {
+        if frame <= self.start {
+            return self.from;
+        }
+        let t = ((frame - self.start) as f32 / self.frames.max(1) as f32).min(1.0);
+        self.from + (self.to - self.from) * t
+    }
+}
+
+#[cfg(test)]
+mod ftb_tests {
+    use super::FtbRamp;
+
+    #[test]
+    fn a_fade_ramps_linearly_and_a_reversal_starts_where_it_was() {
+        let down = FtbRamp {
+            from: 0.0,
+            to: 1.0,
+            start: 100,
+            frames: 30,
+        };
+        assert_eq!(down.level(100), 0.0);
+        assert!((down.level(115) - 0.5).abs() < 1e-6);
+        assert_eq!(down.level(130), 1.0);
+        assert_eq!(down.level(500), 1.0);
+        // Reversed at frame 115: back up from the half it had reached, not
+        // from black.
+        let from = down.level(115);
+        let up = FtbRamp {
+            from,
+            to: 0.0,
+            start: 115,
+            frames: 10,
+        };
+        assert!(
+            (up.level(115) - 0.5).abs() < 1e-6,
+            "no jump at the reversal"
+        );
+        assert_eq!(up.level(125), 0.0);
+    }
+}
+
 pub struct EngineState {
     /// The clock is locked because Rust's ownership doesn't allow &mut behind
     /// Arc; lock order is: clock before everything else.
@@ -213,6 +277,8 @@ pub struct EngineState {
     /// holds that item's picture as it was at that frame — a stopped clip
     /// freezes, it does not vanish — until a take or cut puts another item up.
     pub view_hold: Mutex<Option<(String, u64)>>,
+    /// SPEC §7.16 (v0.4.20 row 1): the View's fade to black, `view.ftb`.
+    pub ftb: Mutex<FtbRamp>,
     /// Running live sources (cameras), started at `show.load` for the
     /// package's `cameraId`s; see [`crate::live`].
     pub live: crate::live::LiveInputs,
@@ -402,6 +468,7 @@ impl EngineState {
             overlays: Mutex::new(std::collections::BTreeMap::new()),
             graphics: Mutex::new(crate::graphics::GraphicsRuntime::new()),
             view_hold: Mutex::new(None),
+            ftb: Mutex::new(FtbRamp::CLEAR),
             live: crate::live::LiveInputs::default(),
             text_prep: Mutex::new(None),
             record_state: Mutex::new(RecordState::Idle),
@@ -581,6 +648,35 @@ impl EngineState {
     /// stopped grid (R41). `Notify::notify_one` stores one permit: a start that
     /// lands outside that sleep costs one early stopped tick, which counts
     /// nothing.
+    /// SPEC §7.16: the View's black level at `frame` (0 clear, 1 black).
+    pub fn ftb_level(&self, frame: u64) -> f32 {
+        self.ftb.lock().unwrap().level(frame)
+    }
+
+    /// `view.ftb`: ramp to black (`on`) or back over `frames`, from the level
+    /// the View shows at `now`.
+    pub fn fade_to_black(&self, on: bool, frames: u64, now: u64) {
+        let mut ftb = self.ftb.lock().unwrap();
+        let from = ftb.level(now);
+        *ftb = FtbRamp {
+            from,
+            to: if on { 1.0 } else { 0.0 },
+            start: now,
+            frames: frames.max(1),
+        };
+    }
+
+    /// A resync's `ftbActive`, or a load: the level at once, with no ramp.
+    pub fn set_ftb(&self, on: bool) {
+        let level = if on { 1.0 } else { 0.0 };
+        *self.ftb.lock().unwrap() = FtbRamp {
+            from: level,
+            to: level,
+            start: 0,
+            frames: 1,
+        };
+    }
+
     pub fn start_clock(&self) {
         self.clock.lock().unwrap().start();
         self.clock_started.notify_one();

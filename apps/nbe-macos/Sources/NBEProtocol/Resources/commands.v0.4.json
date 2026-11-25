@@ -1833,6 +1833,38 @@
       }
     },
     {
+      "name": "view.ftb",
+      "roles": [
+        "operator",
+        "admin"
+      ],
+      "payload": {
+        "type": "object",
+        "keys": {
+          "on": {
+            "required": true,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "durationFrames": {
+            "required": false,
+            "hasDefault": false,
+            "nullable": false,
+            "value": {
+              "type": "number",
+              "integer": true,
+              "min": 1,
+              "max": 600
+            }
+          }
+        },
+        "strict": true
+      }
+    },
+    {
       "name": "view.take",
       "roles": [
         "operator",

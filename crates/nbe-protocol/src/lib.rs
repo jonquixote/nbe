@@ -190,6 +190,7 @@ pub mod command {
         "view.take",
         "view.cut",
         "view.fallback",
+        "view.ftb",
         // 16.3 scene
         "scene.arm",
         "scene.apply",

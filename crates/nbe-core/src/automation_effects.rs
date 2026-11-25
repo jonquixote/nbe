@@ -225,8 +225,8 @@ mod tests {
         let e = command_effects();
         assert_eq!(
             e.len(),
-            57,
-            "§16's 56 commands (show.adopt: v0.4.10 row 6) and show.getState (approved 2026-11-12), each once"
+            58,
+            "§16's 57 commands (show.adopt: v0.4.10 row 6; view.ftb: v0.4.20 row 1) and show.getState (approved 2026-11-12), each once"
         );
         for (cmd, eff) in e {
             for f in &eff.state_change {
