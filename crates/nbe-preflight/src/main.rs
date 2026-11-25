@@ -838,6 +838,34 @@ fn run(package_path: &Path, house_rate: Option<u32>) -> Result<(PreflightReport,
                 .into_iter()
                 .flatten()
             {
+                // SPEC §7.10 (v0.4.19 row 1): overlays animate linearly, with
+                // no delay. The render node reads an animation's
+                // `durationFrames` and nothing else, so another easing, or a
+                // delay, is declared and not drawn: say so, rather than let
+                // the show air with a motion its author did not get.
+                let eid = el.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                for (which, key) in [("enter", "enterAnimation"), ("exit", "exitAnimation")] {
+                    let Some(anim) = el.get(key) else { continue };
+                    if let Some(easing) = anim.get("easing").and_then(|v| v.as_str()) {
+                        if easing != "linear" {
+                            report.push_warning(format!(
+                                "overlayEasing: overlay \"{id}\" element \"{eid}\" declares {which} easing \"{easing}\"; \
+                                 overlays animate linearly (SPEC §7.10), so it will be drawn linear"
+                            ));
+                        }
+                    }
+                    if anim
+                        .get("delayFrames")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        > 0
+                    {
+                        report.push_warning(format!(
+                            "overlayDelay: overlay \"{id}\" element \"{eid}\" declares an {which} delayFrames; \
+                             overlays animate with no delay (SPEC §7.10), so it will start at once"
+                        ));
+                    }
+                }
                 if let Some(aid) = el.get("assetId").and_then(|v| v.as_str()) {
                     if !asset_ids.contains(aid) {
                         had_errors = true;
