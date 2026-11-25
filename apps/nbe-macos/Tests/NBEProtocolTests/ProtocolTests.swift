@@ -56,6 +56,12 @@ final class FrameTests: XCTestCase {
         XCTAssertEqual(err.error?.code, "E_FORBIDDEN_STATE")
     }
 
+    func testAnItemStatusFrameDecodesWithNullEnds() throws {
+        let frame = try InboundFrame.decode(Data(
+            #"{"v":"0.3","kind":"itemStatus","itemRef":"C1","from":null,"to":"ARMED","stateVersion":9}"#.utf8))
+        XCTAssertEqual(frame, .itemStatus(ItemStatusFrame(v: "0.3", itemRef: "C1", from: nil, to: "ARMED", stateVersion: 9)))
+    }
+
     func testAnUnknownPushKindIsKeptNotFatal() throws {
         let frame = try InboundFrame.decode(Data(#"{"v":"0.3","kind":"somethingNew","x":1}"#.utf8))
         XCTAssertEqual(frame, .unknown(kind: "somethingNew"))

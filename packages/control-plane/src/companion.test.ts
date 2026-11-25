@@ -80,7 +80,7 @@ function send(ws: WebSocket, msg: unknown): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const onMsg = (buf: Buffer) => {
       const m = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
-      if (m.kind !== "telemetry" && m.kind !== "stateChange") {
+      if (m.kind === undefined) { // a response carries no `kind` (§5.4.1 rule 4)
         ws.off("message", onMsg);
         resolve(m);
       }

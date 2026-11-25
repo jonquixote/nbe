@@ -328,6 +328,18 @@ pub enum PushFrame {
     },
     #[serde(rename = "telemetry")]
     Telemetry { v: String, data: serde_json::Value },
+    /// SPEC §5.4.1, v0.4.21 row 1: a rundown item's state changed (`from`
+    /// null: new to the rundown; `to` null: left it).
+    #[serde(rename = "itemStatus")]
+    ItemStatus {
+        v: String,
+        #[serde(rename = "itemRef")]
+        item_ref: String,
+        from: Option<String>,
+        to: Option<String>,
+        #[serde(rename = "stateVersion")]
+        state_version: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------

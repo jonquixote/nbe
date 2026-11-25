@@ -18,6 +18,15 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.21 — **drafted by engineering under the user's direction of 2026-11-24
+item 4 (`itemStatus`, second of the three features); ratified by its merge.**
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **The `itemStatus` push frame.** One frame per rundown item whose state changed, to every observer, after the change's `stateVersion` bump: `itemRef`, `from`, `to` (§17.3 states; `from` null for an item new to the rundown, `to` null for one that left it) and `stateVersion`. Whatever changed the item sends it: an operator or automation command (after that command's `stateChange`), or the render node's own `itemEvent` (an item ending, MISSING or in ERROR). That last path sent no frame before this, so a client learned of it only from its next poll. The operator shell refreshes its rundown on the frame. | §5.4.1 | `server.ts` `emitItemStatus`; `protocol.ts` `ItemStatusFrame`; `nbe-protocol` `PushFrame::ItemStatus`; `Frames.swift` `ItemStatusFrame`; `item-status.test.ts`, `mirror.rs`, `ProtocolTests.swift` |
+
+Row 1 adds a push frame kind, mirrored in Rust and Swift. A client that does not read it ignores the kind (§5.4.1 rule 5); no command, schema field or error code changes.
+
 v0.4.20 — **drafted by engineering under the user's direction of 2026-11-24
 item 4 (`view.ftb` first of the three features); ratified by its merge.**
 
@@ -1154,6 +1163,7 @@ Every server-initiated frame carries a `kind` discriminator:
 |---|---|---|
 | `stateChange` | Once per accepted command, after the `stateVersion` bump, to every connected client whose role may observe the affected state. | `stateVersion`, `changed` (array of changed top-level keys), `state` (the changed subset, or the full snapshot when `changed` is absent). |
 | `telemetry` | On the subscriber's interval, to clients that ran `system.telemetry.subscribe`. | `data`: the Section 10.1 field shape. |
+| `itemStatus` *(v0.4.21 row 1)* | Once per rundown item whose state changed, after the change's `stateVersion` bump, to every client that may observe the rundown; after the `stateChange` when a command changed it. | `itemRef`, `from`, `to` (§17.3 states; `from` null: new to the rundown; `to` null: left it), `stateVersion`. |
 
 Rules:
 
@@ -1161,6 +1171,7 @@ Rules:
 2. A `stateChange` frame MUST carry the same `stateVersion` that the command's success response carried, and MUST be observable no later than that response.
 3. Push frames are droppable under backpressure; command responses are not. A client that cannot keep up MAY have `telemetry` frames coalesced or skipped, and MUST be disconnected rather than buffered without bound. A client that missed a `stateChange` recovers with `system.status`.
 4. `kind` is reserved on server-initiated frames only. Client-to-server command envelopes MUST NOT carry `kind`; the render channel frames of Section 5.9 are the one exception and are accepted only from `render`-role sessions.
+5. *(v0.4.21 row 1)* An `itemStatus` frame is sent for every rundown item whose §17.3 state differs from the state last sent, whatever changed it, and for no other item. It is droppable as rule 3 says; a client that missed one recovers from `show.getState`. A client MUST ignore a push `kind` it does not read.
 
 ## 5.5 State versioning
 

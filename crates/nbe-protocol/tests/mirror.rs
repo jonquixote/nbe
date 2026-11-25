@@ -258,6 +258,37 @@ fn render_channel_frames_round_trip() {
         changed: vec!["viewItem".into()],
         state: serde_json::json!({}),
     });
+    round_trip(&PushFrame::ItemStatus {
+        v: PROTOCOL_VERSION.into(),
+        item_ref: "C1".into(),
+        from: Some("PLAYING".into()),
+        to: Some("DONE".into()),
+        state_version: 414,
+    });
+    round_trip(&PushFrame::ItemStatus {
+        v: PROTOCOL_VERSION.into(),
+        item_ref: "C2".into(),
+        from: Some("READY".into()),
+        to: None,
+        state_version: 415,
+    });
+}
+
+#[test]
+fn item_status_wire_names_match_the_control_plane() {
+    // SPEC §5.4.1, v0.4.21 row 1: the control plane's frame, verbatim.
+    let wire = r#"{"v":"0.3","kind":"itemStatus","itemRef":"C1","from":null,"to":"ARMED","stateVersion":9}"#;
+    let frame: PushFrame = serde_json::from_str(wire).unwrap();
+    assert_eq!(
+        frame,
+        PushFrame::ItemStatus {
+            v: "0.3".into(),
+            item_ref: "C1".into(),
+            from: None,
+            to: Some("ARMED".into()),
+            state_version: 9,
+        }
+    );
 }
 
 #[test]
