@@ -84,43 +84,129 @@ pub trait AwaitDraw {
     fn wait(&self, timeout: Duration) -> bool;
 }
 
-/// The View draw's submission on the engine's device. `Device` and
-/// `SubmissionIndex` are both `Send + Sync`, so the record thread waits on the
-/// exact submission itself, and the render thread never does.
+/// Set when the GPU has finished a View submission. `queue.on_submitted_work_done`
+/// sets it, and that callback runs inside a device poll: the render thread's
+/// own, at the start of every frame (`render_frame`).
+#[derive(Debug, Default)]
+pub struct DrawDoneFlag {
+    done: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl DrawDoneFlag {
+    /// The GPU finished the submission: wake every waiter.
+    pub fn set(&self) {
+        *self.done.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    /// Wait for [`set`](Self::set), at most `timeout`; whether it was set.
+    pub fn wait_for(&self, timeout: Duration) -> bool {
+        let done = self.done.lock().unwrap();
+        let (done, _) = self.cv.wait_timeout_while(done, timeout, |d| !*d).unwrap();
+        *done
+    }
+}
+
+/// How long the render thread may go without polling before a waiter takes it
+/// to be not drawing (a test's last frame, a show's end, a stalled loop) and
+/// checks the fence itself, so that the frame is still encoded. The render
+/// thread polls once a frame. 500 ms is 15 frames at 30 fps: a loop silent that
+/// long is a watchdog matter, and the window covers CI's VM freezes (266 ms
+/// seen on 11-24's starved runner).
+/// ~~A fixed 100 ms wait on the flag~~ fell back on CI, where a slow GPU
+/// finished later than that while the render thread polled throughout.
+/// ~~250 ms~~ was too close to a starved CI runner's frame interval.
+pub const RENDER_POLL_STALE: Duration = Duration::from_millis(500);
+
+/// How often a waiter re-reads the render thread's poll count while it waits.
+const FLAG_SLICE: Duration = Duration::from_millis(25);
+
+/// The View draw's submission on the engine's device, and the flag its
+/// completion sets.
 ///
-/// **It never blocks inside wgpu.** A blocking `poll(Wait)` holds the device's
-/// snatch lock for reading while it waits on the GPU (wgpu-core 30
-/// `Device::poll_and_return_closures` → `maintain`), and the render thread's
-/// own `poll(Poll)` on the frame path (`gpu.rs` `reclaim`) takes that lock for
-/// writing whenever a dropped resource awaits destruction. A late GPU would
-/// then hold the View behind the record thread's wait. So the wait is a
-/// zero-timeout `poll(Wait)` (a fence check: `WaitSucceeded`, or `Timeout`
-/// without blocking) repeated every [`DRAW_POLL`] until [`DRAW_WAIT`]: the lock
-/// is held for microseconds, and a late GPU delays the encode only.
+/// **One poller** (the user's direction of 2026-11-24, item 1).
+/// - **The defect.** The record and stream threads used to find the draw done
+///   by polling the device every [`DRAW_POLL`] (500 µs). Each poll takes
+///   wgpu-core's device and queue locks (`Device::command_indices`,
+///   `Queue::life_tracker`).
+/// - **The evidence.** On CI's 3-vCPU VMs a poller descheduled while holding
+///   them blocked the render thread, as the lock probe (NBE_LOCK_TIMING)
+///   measured: the render thread waited 13.0 and 20.4 ms on
+///   `Queue::life_tracker` behind `nbe-record`. Frame 80 was submitted late
+///   3 ms after one such wait.
+/// - **The fix.** A waiter waits on the [`DrawDoneFlag`], which the render
+///   thread's own once-a-frame poll sets, and touches no wgpu lock while that
+///   thread keeps polling. Only when it has not polled for
+///   [`RENDER_POLL_STALE`] (it is not drawing) does the waiter fall back to
+///   its old zero-timeout fence check, so that a last frame is still encoded.
+///
+/// ~~The lock is held for microseconds.~~ (Measured: 8 ms and more on CI.)
+/// It still never blocks inside wgpu, for the reason that rule exists:
+/// a blocking `poll(Wait)` holds the snatch lock for its whole wait.
 #[derive(Debug, Clone)]
 pub struct DrawDone {
     device: wgpu::Device,
     submission: wgpu::SubmissionIndex,
+    done: std::sync::Arc<DrawDoneFlag>,
+    render_polls: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DrawDone {
-    pub fn new(device: wgpu::Device, submission: wgpu::SubmissionIndex) -> Self {
-        Self { device, submission }
+    pub fn new(
+        device: wgpu::Device,
+        submission: wgpu::SubmissionIndex,
+        done: std::sync::Arc<DrawDoneFlag>,
+        render_polls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        Self {
+            device,
+            submission,
+            done,
+            render_polls,
+        }
     }
 
     /// This frame's View draw, to wait on before an encoder reads the surface
     /// it drew into: `None` when the View did not draw this frame. The record
     /// loan (R31) and the stream handoff (R35) both take it from here.
     pub fn of_view(render: &crate::render::RenderLoop) -> Option<Self> {
-        render
-            .view_submission()
-            .map(|s| Self::new(render.gpu.device.clone(), s))
+        let submission = render.view_submission()?;
+        let done = render.view_done()?;
+        Some(Self::new(
+            render.gpu.device.clone(),
+            submission,
+            done,
+            render.render_polls(),
+        ))
     }
 }
 
 impl AwaitDraw for DrawDone {
     fn wait(&self, timeout: Duration) -> bool {
+        use std::sync::atomic::Ordering;
         let deadline = Instant::now() + timeout;
+        // The render thread's poll fires the flag: no wgpu lock taken here,
+        // for as long as that thread keeps polling.
+        let mut polls = self.render_polls.load(Ordering::Acquire);
+        let mut polled_at = Instant::now();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return self.done.wait_for(Duration::ZERO);
+            }
+            if self.done.wait_for(FLAG_SLICE.min(deadline - now)) {
+                return true;
+            }
+            let p = self.render_polls.load(Ordering::Acquire);
+            if p != polls {
+                polls = p;
+                polled_at = Instant::now();
+            } else if polled_at.elapsed() >= RENDER_POLL_STALE {
+                break;
+            }
+        }
+        // The render thread has stopped polling: check the fence ourselves.
         loop {
             match self.device.poll(wgpu::PollType::Wait {
                 submission_index: Some(self.submission.clone()),
