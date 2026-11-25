@@ -215,6 +215,10 @@ test("[drill] engine restart: killed mid-show under the supervisor, the View and
     const f = wire().find((x) => x.dir === "up" && x.msg["kind"] === "engineTelemetry" && pred((x.msg["data"] ?? x.msg) as Record<string, unknown>));
     return f ? f.t - killWire : null;
   };
+  const sent = (name: string): number | null => {
+    const d = directive(name);
+    return d ? Math.round(d.t - killWire) : null;
+  };
   const points = () => ({
     resyncApplied: applied("show.resync"),
     recordStartApplied: applied("record.start"),
@@ -248,6 +252,20 @@ test("[drill] engine restart: killed mid-show under the supervisor, the View and
   console.log(
     `DRILL ${JSON.stringify({
       ci: ON_CI,
+      // The late acks' split (2026-11-24): when each re-sent start went down,
+      // and the restarted engine's own times for it.
+      recordStartSent: sent("record.start"),
+      streamStartSent: sent("stream.start"),
+      engineStartLines: engineLog()
+        // The restarted engine's resync, then its two starts: their own
+        // timestamps say whether the engine handled a start late or acked it
+        // late (PR #231's first run: handled in 7.9 ms, acked 1987 ms after
+        // it went down).
+        .filter((l) =>
+          ["show.resync received", "show.resync applied", "record.start: frame path selected", "stream.start: frame path selected"].some((k) => l.includes(k)),
+        )
+        .slice(-4)
+        .map((l) => l.replace(/\u001b\[[0-9;]*m/g, "").slice(0, 400)),
       ...Object.fromEntries(Object.entries(at).map(([k, v]) => [k, round(v)])),
       outputGapMs: round(at.sinkBytes),
       clock: {
