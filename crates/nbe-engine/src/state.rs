@@ -314,6 +314,9 @@ pub struct EngineState {
     /// `None` until a take has selected one — which is what the telemetry
     /// field's absence means on the wire, rather than a defaulted guess.
     pub record_tap_selection: Mutex<Option<crate::record::tap_path::Selection>>,
+    /// SPEC §9.6 (v0.4.22 row 1): the take records the clean feed
+    /// (`outputs.record.source: "clean"`), read at `record.start`.
+    pub record_clean: std::sync::atomic::AtomicBool,
     /// Record frames skipped over budget or on a saturated handoff
     /// (loop-updated, observable to tests). `Arc` so the record thread can
     /// count its own sheds into the same counter — no skip is invisible.
@@ -477,6 +480,7 @@ impl EngineState {
             stream_tap: Mutex::new(None),
             record_tap_ms: Mutex::new(0.0),
             record_tap_selection: Mutex::new(None),
+            record_clean: std::sync::atomic::AtomicBool::new(false),
             skipped_record_frames: Arc::default(),
             record_dir: Mutex::new(None),
             stream_state: Mutex::new(StreamState::Idle),

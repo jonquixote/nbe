@@ -199,6 +199,18 @@ pub struct RecordOutput {
     /// is the product decision.
     #[serde(default)]
     pub tap_path: TapPathPreference,
+    /// What the take records (SPEC §9.6, v0.4.22 row 1): the program, or the
+    /// clean feed (the View without its overlays and graphics).
+    #[serde(default)]
+    pub source: RecordSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordSource {
+    #[default]
+    Program,
+    Clean,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

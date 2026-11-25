@@ -51,6 +51,9 @@ esac
 
 SHOWS="${SOAK_SHOWS:-20}"
 MINUTES="${SOAK_MINUTES:-30}"
+# What each show's take records (SPEC §9.3.1): program, or the clean feed.
+RECORD_SOURCE="${SOAK_RECORD_SOURCE:-program}"
+case "$RECORD_SOURCE" in program|clean) ;; *) echo "VOID: SOAK_RECORD_SOURCE is program or clean, not $RECORD_SOURCE" >&2; exit 2 ;; esac
 ADMIT="${SOAK_ADMIT:-2.6}"
 KEEP="${SOAK_KEEP:-3.0}"
 ADMIT_WAIT_S="${SOAK_ADMIT_WAIT_S:-1800}" # the admission wait's bound; then VOID, with the load's history
@@ -99,7 +102,7 @@ quiet_check() {
 engines() { pgrep -x nbe-engine | paste -sd, -; }
 
 HEAD="$(git rev-parse HEAD)"
-say "=== R42 soak $(date -u +%Y-%m-%dT%H:%M:%SZ): $SHOWS shows x $MINUTES min; head $HEAD"
+say "=== R42 soak $(date -u +%Y-%m-%dT%H:%M:%SZ): $SHOWS shows x $MINUTES min; record source $RECORD_SOURCE; head $HEAD"
 say "=== artifacts: $OUT"
 
 # --- Pre-flight (section 8's checklist; each failure is a VOID) ---------------
@@ -193,7 +196,7 @@ run_show() { # tag
     run_group "$ALARM_S" "$HARNESS" --out "$o" --minutes "$MINUTES" > "$o/run.out" 2>&1
   else
     (cd packages/control-plane && export NBE_ENGINE_BIN="$BIN" NBE_PREFLIGHT_BIN="$PREFLIGHT_BIN" &&
-      run_group "$ALARM_S" node --import tsx src/r42-soak.measure.ts --out "$o" --minutes "$MINUTES" > "$o/run.out" 2>&1)
+      run_group "$ALARM_S" node --import tsx src/r42-soak.measure.ts --out "$o" --minutes "$MINUTES" --record-source "$RECORD_SOURCE" > "$o/run.out" 2>&1)
   fi
   local rc=$? e; e="$(load1)"
   local v=KEPT; awk -v a="$a" -v e="$e" -v c="$ADMIT" -v k="$KEEP" 'BEGIN {exit !(a < c && e < k)}' || v=VOID

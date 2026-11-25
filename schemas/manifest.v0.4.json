@@ -296,6 +296,14 @@
                 "cpuReadback"
               ],
               "default": "auto"
+            },
+            "source": {
+              "enum": [
+                "program",
+                "clean"
+              ],
+              "default": "program",
+              "description": "SPEC §9.6 (v0.4.22 row 1): what the take records. `clean` is the View without its overlays and graphics."
             }
           }
         },

@@ -1107,6 +1107,11 @@ impl DirectiveHandler {
         // operator asking "what did that take do?" needs. `"none"` stays the
         // answer only for a machine that has never recorded.
         *self.state.record_tap_selection.lock().unwrap() = Some(selection);
+        // SPEC §9.6 (v0.4.22 row 1): program or clean, for this take.
+        let clean = record_source(&self.state) == nbe_core::manifest::RecordSource::Clean;
+        self.state
+            .record_clean
+            .store(clean, std::sync::atomic::Ordering::SeqCst);
 
         // Fresh counters per take: the loop accumulates into these for the
         // take's lifetime, so a new take starts from zero (set before the
@@ -2548,6 +2553,21 @@ fn record_tap_override(state: &SharedEngineState) -> Option<crate::record::tap_p
         }
         nbe_core::manifest::TapPathPreference::Auto => None,
     }
+}
+
+/// SPEC §9.6 (v0.4.22 row 1): the loaded package's `outputs.record.source`,
+/// read once per `record.start` as `tapPath` is. Program when no package or
+/// no record output declares it.
+fn record_source(state: &SharedEngineState) -> nbe_core::manifest::RecordSource {
+    let read = || -> Option<nbe_core::manifest::RecordSource> {
+        let path = state.package_path.lock().unwrap().clone()?;
+        let bytes = std::fs::read(std::path::Path::new(&path).join("manifest.json")).ok()?;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let outputs: nbe_core::manifest::OutputDefaults =
+            serde_json::from_value(manifest.get("show")?.get("outputs")?.clone()).ok()?;
+        Some(outputs.record?.source)
+    };
+    read().unwrap_or_default()
 }
 
 /// WU4 — the loaded package's stream output (`show.outputs.stream`), read

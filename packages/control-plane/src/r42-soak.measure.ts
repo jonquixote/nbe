@@ -33,6 +33,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const arg = (n: string, d: string): string => (process.argv.includes(`--${n}`) ? (process.argv[process.argv.indexOf(`--${n}`) + 1] ?? d) : d);
 const out = resolve(arg("out", "ac5-out"));
 const MINUTES = Number(arg("minutes", "30"));
+/** SPEC §9.3.1 (v0.4.22 row 1): what the take records, program or the clean feed. */
+const RECORD_SOURCE = arg("record-source", "program");
+if (RECORD_SOURCE !== "program" && RECORD_SOURCE !== "clean") throw new Error(`--record-source is program or clean, not ${RECORD_SOURCE}`);
 const TAKE_EVERY_MS = 20_000;
 
 /** ffprobe on PATH first (R49's follow-up), then Homebrew's two prefixes. */
@@ -62,7 +65,7 @@ mkdirSync(join(out, "stream"), { recursive: true });
 const pkgDir = join(out, "package");
 cpSync(DRESS, pkgDir, { recursive: true });
 const manifest = JSON.parse(readFileSync(join(pkgDir, "manifest.json"), "utf8")) as Record<string, unknown>;
-(manifest["show"] as Record<string, unknown>)["outputs"] = { record: { directory: join(out, "record") } };
+(manifest["show"] as Record<string, unknown>)["outputs"] = { record: { directory: join(out, "record"), source: RECORD_SOURCE } };
 manifest["overlays"] = [
   { id: "ol_ticker", elements: [{ id: "ticker", kind: "graphic", z: 5, templateId: "TPL_GENERIC", fields: { color: "#c0392b" }, transform: { x: 0, y: 0.89, w: 1, h: 0.08 } }] },
   { id: "ol_bug", elements: [{ id: "bug", kind: "graphic", z: 6, templateId: "TPL_GENERIC", fields: { color: "#f1c40f" }, transform: { x: 0.88, y: 0.04, w: 0.08, h: 0.08 } }] },
@@ -225,6 +228,7 @@ try {
       video: probe(flv, "v:0"),
     } : null,
     tapPath: atStop["recordTapPath"],
+    recordSource: RECORD_SOURCE,
     load: { max: Math.max(...loads), mean: loads.reduce((a, b) => a + b, 0) / loads.length },
   };
   writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2));
