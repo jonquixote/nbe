@@ -643,6 +643,15 @@ pub struct RenderLoop {
     /// View's submit and cleared at the start of every frame, so a View that
     /// failed to draw hands on no index from an earlier frame.
     view_submission: Option<wgpu::SubmissionIndex>,
+    /// Set when the GPU finished `view_submission` (`queue.on_submitted_work_done`,
+    /// fired inside this thread's own poll): what the record and stream
+    /// threads wait on instead of polling the device (one poller, 2026-11-24).
+    view_done: Option<std::sync::Arc<crate::record::DrawDoneFlag>>,
+    /// One poller (2026-11-24): how many times this thread has polled the
+    /// device at a frame's start. A waiter reads it to tell "the render
+    /// thread is polling, the GPU is slow" from "the render thread is not
+    /// drawing", and polls itself only in the second case.
+    render_polls: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// One upload thread per live source in the package (`live.rs`), keyed
     /// by source id; started and stopped at the package boundary.
     live_uploaders: HashMap<String, crate::live::LiveUploader>,
@@ -743,6 +752,8 @@ impl RenderLoop {
             view_failing: false,
             view_surface: None,
             view_submission: None,
+            view_done: None,
+            render_polls: Default::default(),
             live_uploaders: HashMap::new(),
             live_fresh_since: None,
             live_sync: HashMap::new(),
@@ -1439,7 +1450,19 @@ impl RenderLoop {
     /// STOPPED, where the engine still owes the operator a picture.
     pub fn render_frame(&mut self, frame: u64, deadline: Option<Duration>) -> FrameReport {
         let mut phases = RenderPhases::default();
+        // One poller (2026-11-24): the device's one poll a frame, here, on
+        // this thread. It fires the completion flags of finished View draws
+        // (`queue.on_submitted_work_done`) that the record and stream threads
+        // wait on. Non-blocking. `reclaim` skips its own poll with no upload
+        // in flight, so without this a static scene's flags fired only when a
+        // later submit happened to triage the finished work: on CI's slow GPU,
+        // too late for the waiters, which then polled the device themselves
+        // (#225's first CI run: 116 lock acquires by `nbe-record`).
+        let _ = self.gpu.device.poll(wgpu::PollType::Poll);
+        self.render_polls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         self.view_submission = None;
+        self.view_done = None;
         let sync_started = Instant::now();
         self.sync_package();
         phases.sync = sync_started.elapsed();
@@ -1499,6 +1522,13 @@ impl RenderLoop {
         match view {
             Ok(submission) => {
                 self.view_submission = Some(submission);
+                // One poller: the completion is signalled by this thread's
+                // own poll, at the next frame's `reclaim`, so the record and
+                // stream threads need not poll the device (2026-11-24).
+                let done = std::sync::Arc::new(crate::record::DrawDoneFlag::default());
+                let signal = done.clone();
+                self.gpu.queue.on_submitted_work_done(move || signal.set());
+                self.view_done = Some(done);
                 // Recovery is worth exactly one line too.
                 if self.view_failing {
                     tracing::info!(frame, "view render recovered");
@@ -1695,6 +1725,16 @@ impl RenderLoop {
     /// reads first records the picture the surface held before.
     pub fn view_submission(&self) -> Option<wgpu::SubmissionIndex> {
         self.view_submission.clone()
+    }
+
+    /// The flag `view_submission`'s completion sets (one poller, 2026-11-24).
+    pub fn view_done(&self) -> Option<std::sync::Arc<crate::record::DrawDoneFlag>> {
+        self.view_done.clone()
+    }
+
+    /// The render thread's poll count (one poller, 2026-11-24).
+    pub fn render_polls(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.render_polls.clone()
     }
 
     /// Point the View at a shared surface for the next frame, or back at the
