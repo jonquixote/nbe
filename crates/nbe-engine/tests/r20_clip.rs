@@ -163,6 +163,19 @@ async fn control_diagnosis(render: &mut RenderLoop, frame: u64, report: &FrameRe
     // Second sighting (main 78a1880, 2026-11-24 06:4xZ): both draws drew no
     // layer (uniforms, binds and draws 0 ns), so the View's item had nothing
     // to draw. Did its clip reach the video library at the load?
+    format!(
+        "the same View read again without a draw: {reread:?}; frame {frame} drawn again: \
+         {redrawn:?}; {}; the first draw's report: {report:?}",
+        library_facts(render)
+    )
+}
+
+/// Where the View's clip got to at the load: the View item, the video
+/// library's assets, the load's decode failures (with each one's error, so a
+/// VideoToolbox status names itself) and the rings resident on the GPU. A clip
+/// absent from the library failed its load decode; one in it without a ring
+/// was never uploaded (#221).
+fn library_facts(render: &RenderLoop) -> String {
     let (assets, failures) = {
         let library = render.state.video.lock().unwrap();
         let mut assets: Vec<String> = library.assets.keys().cloned().collect();
@@ -182,10 +195,8 @@ async fn control_diagnosis(render: &mut RenderLoop, frame: u64, report: &FrameRe
     let view_item = render.state.view_item.lock().unwrap().clone();
     let rings = render.resident_video_assets();
     format!(
-        "the same View read again without a draw: {reread:?}; frame {frame} drawn again: \
-         {redrawn:?}; the View item {view_item:?}; the video library holds {assets:?}; \
-         decode failures at the load: {failed_at_load} {failures:?}; rings resident: \
-         {rings:?}; the first draw's report: {report:?}"
+        "the View item {view_item:?}; the video library holds {assets:?}; \
+         decode failures at the load: {failed_at_load} {failures:?}; rings resident: {rings:?}"
     )
 }
 
@@ -644,8 +655,13 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     let truth = |n: u64| decoded[n as usize].centre;
     let dir = tempfile::tempdir().unwrap();
     write_clip_package(dir.path(), &source, decoded.len() as u64);
+    // The load's facts, read before any draw, so a missing ring line below
+    // names where the clip went (PR #227's sighting, 2026-11-25 04:02Z: no
+    // ring line, and this assert printed no word of why).
+    let facts = std::sync::Mutex::new(String::new());
     let (outcome, log) = capture::captured(async {
         let mut render = on_air(dir.path()).await;
+        *facts.lock().unwrap() = library_facts(&render);
         drawn_centre(&mut render, INSIDE_THE_RING)?;
         drawn_centre(&mut render, PAST_THE_RING)?;
         if settle_by_count(&mut render, PAST_THE_RING).is_none() {
@@ -674,7 +690,12 @@ async fn r20_the_window_never_overwrites_a_frame_the_draw_still_needs() {
     assert!(
         log.contains("clip ring resident"),
         "R47: the capture saw nothing of the load (no \"clip ring resident\" line), so the log \
-         below proves nothing: {log}"
+         below proves nothing. At the load: {}. The control: {}. The log: {log}",
+        facts.lock().unwrap(),
+        match &outcome {
+            Ok(()) => "passed".to_string(),
+            Err(e) => e.clone(),
+        }
     );
     if let Err(e) = outcome {
         panic!("{e}\nthe engine's log on this thread:\n{log}");
