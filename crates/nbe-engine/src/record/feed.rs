@@ -352,6 +352,10 @@ pub struct TapLoan {
     drawn: Option<DrawDone>,
     /// The master frame the View drew (the record trace's join).
     frame: Option<u64>,
+    /// SPEC §9.6 (v0.4.22 row 1): the take records the clean feed, so
+    /// `surface` holds the clean pass, not the View, and is not the stream's
+    /// to share.
+    clean: bool,
 }
 
 impl TapLoan {
@@ -360,6 +364,10 @@ impl TapLoan {
     }
     pub fn has_surface(&self) -> bool {
         self.surface.is_some()
+    }
+    /// The take records the clean feed (v0.4.22 row 1).
+    pub fn is_clean(&self) -> bool {
+        self.clean
     }
     /// **After the draw**: record which submission drew this frame's View, and
     /// the master frame it drew. The record thread waits on that submission
@@ -405,17 +413,27 @@ pub fn begin_tap_frame(
                  the chain was available at record.start and is not now"
             );
         }
-        return Ok(TapLoan::default());
+        return Ok(TapLoan {
+            clean: render.clean_feed(),
+            ..TapLoan::default()
+        });
     };
     let surface = acquire_record_surface(pool, skipped);
+    // A clean take's surface takes the clean pass; the View draws where it
+    // would without a take (v0.4.22 row 1).
+    let clean = render.clean_feed();
     if let Some(s) = &surface {
-        render.set_view_surface(Some(s.clone()))?;
+        match clean {
+            true => render.set_clean_feed(true, Some(s.clone()))?,
+            false => render.set_view_surface(Some(s.clone()))?,
+        }
     }
     Ok(TapLoan {
         surface,
         zero_copy_take: true,
         drawn: None,
         frame: None,
+        clean,
     })
 }
 
@@ -430,6 +448,9 @@ pub fn restore_view(render: &mut crate::render::RenderLoop, loan: &TapLoan) {
     if loan.zero_copy_take {
         // Infallible: clearing the retarget has no geometry to check.
         let _ = render.set_view_surface(None);
+        if loan.clean {
+            let _ = render.set_clean_feed(true, None);
+        }
     }
 }
 

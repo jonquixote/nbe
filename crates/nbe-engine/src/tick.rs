@@ -550,6 +550,11 @@ pub async fn run_tick(
         *state.record_tap_selection.lock().unwrap(),
         Some(sel) if sel.path == crate::record::tap_path::TapPath::ZeroCopy
     ) && endpoint.is_some();
+    // SPEC §9.6 (v0.4.22 row 1): a clean take's frame also draws the clean
+    // feed, and the loan below goes to it. Set every frame, so a take that
+    // ended draws no clean pass on the next.
+    let clean_take = endpoint.is_some() && state.record_clean.load(Ordering::SeqCst);
+    let _ = render.set_clean_feed(clean_take, None);
     let mut loan = match crate::record::begin_tap_frame(
         render,
         pool.as_deref(),
@@ -579,7 +584,9 @@ pub async fn run_tick(
         false => (None, None, None),
     };
     let mut own_surface = None;
-    if stream_tx.is_some() && loan.surface().is_none() {
+    // A clean take's surface holds the clean feed: the stream is the program,
+    // so it draws into its own (v0.4.22 row 1).
+    if stream_tx.is_some() && (loan.surface().is_none() || loan.is_clean()) {
         // No record surface to share (stream-only, a CPU take, or a take that
         // skipped pre-draw): the stream's own pool. A busy pool (every
         // surface queued or still held by VideoToolbox) is a stream drop,
@@ -636,7 +643,8 @@ pub async fn run_tick(
     }
     // Both-live share: clone the record loan's surface BEFORE the record
     // branch moves the loan (read-only; record's path is untouched).
-    let shared_surface = loan.surface();
+    let shared_surface = loan.surface().filter(|_| !loan.is_clean());
+    let clean_readback = loan.is_clean();
 
     if recording {
         let record_started = Instant::now();
@@ -651,7 +659,10 @@ pub async fn run_tick(
                     // Timed readback (the only await, and only on the CPU
                     // path): its cost belongs to the record counter.
                     let started = Instant::now();
-                    let rgba = render.readback_view().await;
+                    let rgba = match clean_readback {
+                        true => render.readback_clean().await,
+                        false => render.readback_view().await,
+                    };
                     (rgba, started.elapsed())
                 },
             )

@@ -139,6 +139,10 @@ export interface OutputDefaults {
       [k: string]: unknown;
     };
     tapPath?: "auto" | "cpuReadback";
+    /**
+     * SPEC §9.6 (v0.4.22 row 1): what the take records. `clean` is the View without its overlays and graphics.
+     */
+    source?: "program" | "clean";
   };
   stream?: {
     protocol?: "rtmp";

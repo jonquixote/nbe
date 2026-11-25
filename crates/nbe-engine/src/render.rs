@@ -337,6 +337,10 @@ pub struct ClipWindowReport {
 pub struct RenderTargets {
     pub view: wgpu::Texture,
     pub preview: wgpu::Texture,
+    /// The clean feed's built-in target (SPEC §9.6, v0.4.22 row 1): the View
+    /// without its overlays and graphics, drawn only while a clean take runs.
+    /// A zero-copy clean take draws into its pool surface instead.
+    pub clean: wgpu::Texture,
 }
 
 /// Which bus a render call is for. Preview may be skipped or fail without
@@ -600,6 +604,8 @@ pub struct RenderLoop {
     pipeline_bgra: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The clean pass's uniform slots (v0.4.22 row 1).
+    uniforms_clean: wgpu::Buffer,
     sampler: wgpu::Sampler,
     /// Test seam: extra work per View frame, to drive the deadline path.
     pub injected_view_delay: Option<Duration>,
@@ -639,6 +645,13 @@ pub struct RenderLoop {
     /// starts N+1. The pool supersedes that phrasing, so the retarget is per
     /// frame and this field is set and cleared around each one.
     view_surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
+    /// SPEC §9.6 (v0.4.22 row 1): whether this frame also draws the clean
+    /// feed, the View without its overlays and graphics, set around each
+    /// frame by the tick while a clean take runs; and the pool surface it
+    /// draws into on a zero-copy take (the built-in `targets.clean` on a CPU
+    /// take).
+    clean_feed: bool,
+    clean_surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
     /// R31: this frame's View draw, as the GPU will report it done. Set by the
     /// View's submit and cleared at the start of every frame, so a View that
     /// failed to draw hands on no index from an earlier frame.
@@ -685,6 +698,7 @@ impl RenderLoop {
         let targets = RenderTargets {
             view: gpu.make_texture(VIEW_W, VIEW_H, "view"),
             preview: gpu.make_texture(PREVIEW_W, PREVIEW_H, "preview"),
+            clean: gpu.make_texture(VIEW_W, VIEW_H, "clean"),
         };
         let white = gpu.make_texture(1, 1, "white");
         gpu.upload_rgba(&white, 1, 1, &[255, 255, 255, 255]);
@@ -697,6 +711,15 @@ impl RenderLoop {
         let (pipeline_bgra, _) = build_pipeline(&gpu, wgpu::TextureFormat::Bgra8Unorm);
         let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer-uniforms"),
+            size: UNIFORM_STRIDE * MAX_LAYERS,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // The clean pass's own slots: it is encoded in the View's submission,
+        // after the View's pass, so it cannot share the View's buffer (one
+        // write per buffer per submission lands before both passes).
+        let uniforms_clean = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("layer-uniforms-clean"),
             size: UNIFORM_STRIDE * MAX_LAYERS,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -740,6 +763,7 @@ impl RenderLoop {
             pipeline_bgra,
             bind_layout,
             uniforms,
+            uniforms_clean,
             sampler,
             injected_view_delay: None,
             injected_resync_delay: None,
@@ -751,6 +775,8 @@ impl RenderLoop {
             late_at_rung1: 0,
             view_failing: false,
             view_surface: None,
+            clean_feed: false,
+            clean_surface: None,
             view_submission: None,
             view_done: None,
             render_polls: Default::default(),
@@ -1764,6 +1790,57 @@ impl RenderLoop {
         Ok(())
     }
 
+    /// SPEC §9.6 (v0.4.22 row 1): draw the clean feed this frame, into
+    /// `surface` (a zero-copy clean take's pool loan) or, with none, into the
+    /// built-in `targets.clean`. Off draws nothing beyond the View.
+    pub fn set_clean_feed(
+        &mut self,
+        on: bool,
+        surface: Option<Arc<nbe_decode::zerocopy::SharedSurface>>,
+    ) -> anyhow::Result<()> {
+        if let Some(s) = &surface {
+            let (w, h) = s.dimensions();
+            let (vw, vh) = (self.targets.view.width(), self.targets.view.height());
+            if (w, h) != (vw, vh) {
+                anyhow::bail!(
+                    "E_NO_ZEROCOPY: clean surface is {w}x{h} but the View is {vw}x{vh}; \
+                     refusing to retarget"
+                );
+            }
+        }
+        self.clean_feed = on;
+        self.clean_surface = if on { surface } else { None };
+        Ok(())
+    }
+
+    /// Whether this frame draws the clean feed.
+    pub fn clean_feed(&self) -> bool {
+        self.clean_feed
+    }
+
+    /// The clean feed's target this frame (the loaned surface, else the
+    /// built-in one).
+    pub fn clean_target(&self) -> &wgpu::Texture {
+        match &self.clean_surface {
+            Some(s) => s.texture(),
+            None => &self.targets.clean,
+        }
+    }
+
+    /// The clean feed's pixels, as `readback_view` reads the View's: a CPU
+    /// clean take's record frame.
+    pub async fn readback_clean(&self) -> Vec<u8> {
+        let target = self.clean_target();
+        let bgra = target.format() == wgpu::TextureFormat::Bgra8Unorm;
+        let mut px = self.gpu.readback_rgba(target).await;
+        if bgra {
+            for p in px.as_chunks_mut::<4>().0 {
+                p.swap(0, 2);
+            }
+        }
+        px
+    }
+
     fn render_bus(
         &self,
         bus: Bus,
@@ -1793,6 +1870,7 @@ impl RenderLoop {
         let show_fallback = bus == Bus::View && self.state.fallback_active();
 
         let mut draws: Vec<(wgpu::Texture, LayerUniform)> = Vec::new();
+        let mut clean_len = 0usize;
         if show_fallback {
             draws.push((
                 self.fallback_tex.clone(),
@@ -1820,27 +1898,47 @@ impl RenderLoop {
             // the View bus (v0.4.17 row 1: overlays composite on the View
             // only).
             if bus == Bus::View {
+                // SPEC §9.6 (v0.4.22 row 1): the clean feed is everything
+                // drawn before this point.
+                clean_len = draws.len();
                 self.overlay_draws(frame, &mut draws);
                 self.graphic_draws(frame, &mut draws);
             }
         }
+        // The slate's frame has no overlay stage: the clean feed is all of it.
+        if show_fallback {
+            clean_len = draws.len();
+        }
         // SPEC §7.16 (v0.4.20 row 1): the View's last stage, above the scene,
         // the overlays, the graphics and the fallback slate. A black quad at
         // the fade's level; nothing is drawn while the View is clear.
+        let mut ftb_draw = None;
         if bus == Bus::View {
             let level = self.state.ftb_level(frame);
             if level > 0.0 {
-                draws.push((
+                let quad = (
                     self.white.clone(),
                     LayerUniform {
                         color: [0.0, 0.0, 0.0, level],
                         rect: crate::scene::FULL_RECT,
                         uv: UV_FULL,
                     },
-                ));
+                );
+                ftb_draw = Some(quad.clone());
+                draws.push(quad);
             }
         }
 
+        // The clean feed (SPEC §9.6, v0.4.22 row 1): the scene stage (or the
+        // slate) and the fade, without the overlays and graphics between
+        // them. The fade is the program's, not a graphic: a faded View
+        // records black on the clean feed too.
+        let clean_draws: Option<Vec<(wgpu::Texture, LayerUniform)>> =
+            (bus == Bus::View && self.clean_feed).then(|| {
+                let mut c: Vec<_> = draws[..clean_len].to_vec();
+                c.extend(ftb_draw);
+                c
+            });
         phases.build = build_started.elapsed();
         let encode_started = Instant::now();
         // Step 11 (log-only): each call timed into the split.
@@ -1853,6 +1951,38 @@ impl RenderLoop {
                 label: Some("frame"),
             });
         split.encoder = t.elapsed();
+        self.encode_composite(&mut enc, target, &draws, &self.uniforms, split);
+        // The clean feed, in the same submission: the View's `DrawDone`
+        // covers it, so the record thread waits on nothing new (one poller).
+        if let Some(clean) = &clean_draws {
+            self.encode_composite(
+                &mut enc,
+                self.clean_target(),
+                clean,
+                &self.uniforms_clean,
+                split,
+            );
+        }
+        phases.encode = encode_started.elapsed();
+        let finish_started = Instant::now();
+        let commands = enc.finish();
+        phases.finish = finish_started.elapsed();
+        let submit_started = Instant::now();
+        let submission = self.gpu.queue.submit([commands]);
+        phases.submit = submit_started.elapsed();
+        Ok(submission)
+    }
+
+    /// One composite pass of `draws` into `target`, its layer uniforms
+    /// written to `uniforms` in one `write_buffer` first.
+    fn encode_composite(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        target: &wgpu::Texture,
+        draws: &[(wgpu::Texture, LayerUniform)],
+        uniforms: &wgpu::Buffer,
+        split: &mut EncodeSplit,
+    ) {
         let t = Instant::now();
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         split.views += t.elapsed();
@@ -1875,9 +2005,7 @@ impl RenderLoop {
                 scratch[i * stride..i * stride + bytes.len()].copy_from_slice(bytes);
             }
             let used = (layers - 1) * stride + std::mem::size_of::<LayerUniform>();
-            self.gpu
-                .queue
-                .write_buffer(&self.uniforms, 0, &scratch[..used]);
+            self.gpu.queue.write_buffer(uniforms, 0, &scratch[..used]);
             split.uniforms += t.elapsed();
         }
         {
@@ -1920,7 +2048,7 @@ impl RenderLoop {
                             wgpu::BindGroupEntry {
                                 binding: 0,
                                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: &self.uniforms,
+                                    buffer: uniforms,
                                     offset,
                                     size: std::num::NonZeroU64::new(
                                         std::mem::size_of::<LayerUniform>() as u64,
@@ -1947,14 +2075,6 @@ impl RenderLoop {
             drop(pass);
             split.end = t.elapsed();
         }
-        phases.encode = encode_started.elapsed();
-        let finish_started = Instant::now();
-        let commands = enc.finish();
-        phases.finish = finish_started.elapsed();
-        let submit_started = Instant::now();
-        let submission = self.gpu.queue.submit([commands]);
-        phases.submit = submit_started.elapsed();
-        Ok(submission)
     }
 
     /// A layer's draws, appended in order. A text layer with a backing draws

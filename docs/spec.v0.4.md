@@ -18,6 +18,16 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.22 — **drafted by engineering under the user's direction of 2026-11-24
+item 4 (clean feed, third of the three features; "treat clean feed as
+touching the recording path"); ratified by its merge.**
+
+| # | Change | Sections | Built by |
+|---|---|---|---|
+| 1 | **Clean feed: `outputs.record.source: "program" \| "clean"`** (default `program`). A clean take records the View without its overlays and graphics. The scene stage, the fallback slate and the fade to black stay in it: they are the program's state, not burned-in graphics. The View, the stream and preview still carry the program. The engine draws the clean feed as a second composite pass of the scene-stage layers, in the View's own submission, into the take's pool surface (zero-copy) or a built-in target (readback). The stream, which otherwise shares a record surface, takes its own while a clean take runs. Read at `record.start`, like `tapPath`. | §9.3, §9.3.1 (new), §9.7 | `render.rs` `set_clean_feed`, `encode_composite`; `record/feed.rs` `begin_tap_frame`; `tick.rs`; `directive.rs` `record_source`; `nbe-core` `RecordSource`; `schemas/manifest.v0.4.json`; `tests/clean_feed.rs` |
+
+Row 1 adds one manifest field with a default, so every existing package keeps its meaning. No command, frame kind, telemetry field or error code changes.
+
 v0.4.21 — **drafted by engineering under the user's direction of 2026-11-24
 item 4 (`itemStatus`, second of the three features); ratified by its merge.**
 
@@ -2501,7 +2511,8 @@ Fragment policy:
 
 Recording MUST include:
 
-1. program video,
+1. ~~program video,~~ program video, or the clean feed when the take's
+   `outputs.record.source` is `clean` (§9.3.1, v0.4.22 row 1),
 2. master audio,
 3. timecode metadata if available.
 
@@ -2515,6 +2526,26 @@ take's audio is cut to `[first video frame, last video frame + 1)` in master
 audio frames, padded with silence where the tap fell short; the tap stays
 attached through the stop's finish. A file's audio is then its video's length
 plus the AAC encoder's rounding to whole packets.
+
+### 9.3.1 Clean feed (normative, new in v0.4.22)
+
+`show.outputs.record.source` is `"program"` (the default) or `"clean"`, read at
+each `record.start`.
+
+1. A clean take records the View **without** its overlay elements (§7.10) and
+   graphics. Everything else on the View is on the clean feed: the scene stage
+   (the transition output), the fallback slate when it is up (§10.3), and the
+   fade to black (§7.16). The slate and the fade are the program's state, not
+   graphics laid over it: an archive of a faded or failed View is black or the
+   slate, as the View was.
+2. The View, the stream and preview carry the program throughout a clean take.
+3. The clean feed is a second composite pass of the scene-stage layers, encoded
+   in the View's own submission, so its completion is the View's (the record
+   thread waits on nothing new). It reuses the View's uploaded textures and
+   re-decodes nothing. Its added cost is one pass's encoding on the render
+   thread; it is not yet measured against §10.2's budget.
+4. A take with no `source` records the program, so every package written before
+   v0.4.22 keeps its meaning.
 
 ## 9.4 Streaming
 
@@ -2741,7 +2772,7 @@ This is the remote-operator path (Section 5.8): the producer sees what the audie
 
 One composite produces one GPU frame. Display, recording, streaming, and preview outputs are hardware-encoder sessions sharing those rendered frames via GPU texture sharing (Metal `IOSurface`, Vulkan external memory).
 
-Running record + stream concurrently MUST NOT add CPU load beyond encoder-session overhead, and MUST NOT recomposite.
+Running record + stream concurrently MUST NOT add CPU load beyond encoder-session overhead, and MUST NOT recomposite. *(v0.4.22 row 1)* The one exception is a clean take (§9.3.1): it composites the scene stage a second time, in the same submission. The stream then draws into its own surface, because the record surface holds the clean feed rather than the program.
 
 ---
 
