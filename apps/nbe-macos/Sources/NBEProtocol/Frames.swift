@@ -69,6 +69,17 @@ public struct StateChange: Decodable, Equatable, Sendable {
     public let state: [String: JSONValue]
 }
 
+/// A server-push `itemStatus` frame (SPEC §5.4.1, v0.4.21 row 1): one rundown
+/// item's state changed. `from` is nil for an item new to the rundown, `to`
+/// nil for one that left it.
+public struct ItemStatusFrame: Decodable, Equatable, Sendable {
+    public let v: String
+    public let itemRef: String
+    public let from: String?
+    public let to: String?
+    public let stateVersion: Int
+}
+
 /// A server-push `telemetry` frame (SPEC §5.4.1): `data` is the §10.1 shape.
 public struct TelemetryFrame: Decodable, Equatable, Sendable {
     public let v: String
@@ -81,6 +92,7 @@ public enum InboundFrame: Equatable, Sendable {
     case response(CommandResponse)
     case stateChange(StateChange)
     case telemetry(TelemetryFrame)
+    case itemStatus(ItemStatusFrame)
     /// A server-initiated frame of a kind this shell does not read yet.
     case unknown(kind: String)
 
@@ -92,6 +104,7 @@ public enum InboundFrame: Equatable, Sendable {
         switch any["kind"]?.string {
         case "stateChange"?: return .stateChange(try JSONDecoder().decode(StateChange.self, from: data))
         case "telemetry"?: return .telemetry(try JSONDecoder().decode(TelemetryFrame.self, from: data))
+        case "itemStatus"?: return .itemStatus(try JSONDecoder().decode(ItemStatusFrame.self, from: data))
         case let kind?: return .unknown(kind: kind)
         case nil:
             throw DecodingError.dataCorrupted(

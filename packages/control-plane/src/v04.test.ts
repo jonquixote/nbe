@@ -251,7 +251,7 @@ test("§7.15: the rejection is reachable through the SERVER, not only the dispat
     const resp = await new Promise<Record<string, unknown>>((resolve) => {
       const onMsg = (buf: Buffer) => {
         const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
-        if (msg.kind !== "telemetry" && msg.kind !== "stateChange") {
+        if (msg.kind === undefined) { // a response carries no `kind` (§5.4.1 rule 4)
           ws.off("message", onMsg);
           resolve(msg);
         }
@@ -356,7 +356,7 @@ test("a wedged preflight fails show.load by name instead of never answering", as
       const timer = setTimeout(() => reject(new Error("show.load never answered")), 20_000);
       const onMsg = (buf: Buffer) => {
         const msg = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
-        if (msg.kind !== "telemetry" && msg.kind !== "stateChange") {
+        if (msg.kind === undefined) { // a response carries no `kind` (§5.4.1 rule 4)
           clearTimeout(timer);
           ws.off("message", onMsg);
           resolve(msg);

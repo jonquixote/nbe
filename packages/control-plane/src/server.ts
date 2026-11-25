@@ -1064,6 +1064,37 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
       if (client.closed || client.render !== null) continue; // render nodes get directives, not state frames
       client.push(frame);
     }
+    emitItemStatus();
+  }
+
+  /**
+   * SPEC §5.4.1, v0.4.21 row 1: one `itemStatus` frame per rundown item whose
+   * state changed since the last frames went out, whatever changed it: a
+   * command, automation, or the render node's own `itemEvent` (an item ending,
+   * going MISSING or ERROR). The engine's item transitions sent no frame
+   * before this. The loop back to whoever authored the item was missing (the
+   * v0.5 outline's §3a). `to: null` is an item that left the rundown (a load
+   * or an unload).
+   */
+  const currentItemStates = (): Map<string, string> =>
+    new Map([...(state.pkg?.items.keys() ?? [])].map((id) => [id, state.itemStateOf(id)]));
+  let sentItemStates = currentItemStates();
+  function emitItemStatus(): void {
+    const now = currentItemStates();
+    const frames: Array<Record<string, unknown>> = [];
+    for (const [itemRef, to] of now) {
+      const from = sentItemStates.get(itemRef) ?? null;
+      if (from !== to) frames.push({ v: PROTOCOL_VERSION, kind: "itemStatus", itemRef, from, to, stateVersion: state.stateVersion });
+    }
+    for (const [itemRef, from] of sentItemStates) {
+      if (!now.has(itemRef)) frames.push({ v: PROTOCOL_VERSION, kind: "itemStatus", itemRef, from, to: null, stateVersion: state.stateVersion });
+    }
+    sentItemStates = now;
+    if (frames.length === 0) return;
+    for (const client of clients.values()) {
+      if (client.closed || client.render !== null) continue;
+      for (const f of frames) client.push(f);
+    }
   }
 
   function renderNodeStatus(): { connected: boolean; clockState: string; lastAppliedStateVersion: number | null } {
@@ -1515,6 +1546,9 @@ export async function createControlPlaneServer(opts: ServerOptions): Promise<Con
           } else state.markError(frame.itemRef);
           state.bump();
           opts.persistence.onDirty();
+          // v0.4.21 row 1: the render node's own item transitions reach
+          // observers too.
+          emitItemStatus();
           // Review4 step 5: a failed row must not skip what follows (the
           // item's automation, autoFollow's advance).
           audit.tryRecord({

@@ -228,6 +228,11 @@ public final class ShellModel: ObservableObject {
         case .telemetry(let t):
             contact.received(tickTs: t.data.ts, at: Date())
             telemetry = t.data
+        case .itemStatus:
+            // v0.4.21 row 1: an item the render node ended, or found MISSING
+            // or in ERROR, sends no stateChange; this frame is the only word.
+            contact.received(at: Date())
+            Task { await refreshShow() }
         case .response, .unknown: break
         }
     }

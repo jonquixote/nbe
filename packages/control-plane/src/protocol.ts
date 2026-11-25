@@ -780,6 +780,20 @@ export interface StateChangeFrame {
 }
 
 /**
+ * SPEC §5.4.1, v0.4.21 row 1: a rundown item's state changed. One frame per
+ * item, after the change's `stateVersion` bump; `from` is null for an item
+ * new to the rundown, `to` null for one that left it.
+ */
+export interface ItemStatusFrame {
+  v: typeof PROTOCOL_VERSION;
+  kind: "itemStatus";
+  itemRef: string;
+  from: string | null;
+  to: string | null;
+  stateVersion: number;
+}
+
+/**
  * SPEC §5.9.4: the directive-only command name that carries the full
  * snapshot. Deliberately absent from `CommandPayloadSchemas` — no client may
  * issue it.
