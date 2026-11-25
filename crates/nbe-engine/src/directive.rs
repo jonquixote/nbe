@@ -7,7 +7,7 @@ use crate::state::{FallbackSlate, RecordState, SharedEngineState, SharedOutgoing
 use nbe_protocol::{DirectiveFrame, EngineFrame, ItemEvent, ResyncViewItemEnd, TakePayload};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{debug, info};
@@ -985,6 +985,10 @@ impl DirectiveHandler {
     /// the thread, zeroes `record_tap_ms` + `skipped_record_frames`, and flips
     /// to Recording.
     fn on_record_start(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        // The drill's late acks (2026-11-24): a re-sent record.start acked 2.0
+        // to 2.7 s after the restarted engine's resync on CI. These times say
+        // which step holds it.
+        let started = Instant::now();
         if !self.state.is_running() {
             return Err(DirectiveError::ForbiddenState(
                 "record.start requires a running show".into(),
@@ -1034,6 +1038,7 @@ impl DirectiveHandler {
         // The shared tap: published here, attached to the live graph by the
         // audio driver, drained by the record thread.
         let tap = Arc::new(crate::record::AudioTap::new());
+        let open_started = Instant::now();
         let session = crate::record::RecordSession::open(
             &dir,
             &show,
@@ -1071,8 +1076,10 @@ impl DirectiveHandler {
         // the surfaces serve rather than saving them. `None` here is exactly
         // `select`'s behavior, so takes without the field are bit-identical
         // to before.
+        let open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
         let override_path = record_tap_override(&self.state);
         let device = self.state.render_device();
+        let pool_started = Instant::now();
         let pool = if override_path == Some(crate::record::tap_path::TapPath::CpuReadback) {
             None
         } else {
@@ -1100,6 +1107,9 @@ impl DirectiveHandler {
         info!(
             path = selection.path.as_str(),
             reason = ?selection.reason,
+            open_ms,
+            pool_ms = pool_started.elapsed().as_secs_f64() * 1000.0,
+            total_ms = started.elapsed().as_secs_f64() * 1000.0,
             "record.start: frame path selected"
         );
         // Published for the §10.1 tick. Not cleared at stop: the field is per
@@ -1269,6 +1279,7 @@ impl DirectiveHandler {
     /// the B2 stream side, record-WU2 shape), and flips to Live. The transport
     /// dials in WU5; WU4 owns the bookkeeping the ack waits for.
     fn on_stream_start(&self, d: &DirectiveFrame) -> Result<(), DirectiveError> {
+        let started = Instant::now();
         if !self.state.is_running() {
             return Err(DirectiveError::ForbiddenState(
                 "stream.start requires a running show".into(),
@@ -1350,6 +1361,7 @@ impl DirectiveHandler {
         info!(
             path = selection.path.as_str(),
             reason = ?selection.reason,
+            total_ms = started.elapsed().as_secs_f64() * 1000.0,
             "stream.start: frame path selected"
         );
         // Published for the §10.1 tick's stream side (WU5 wires the field; the
