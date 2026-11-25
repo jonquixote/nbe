@@ -158,6 +158,17 @@ const chromaKeyPatchSchema = z
 export const TICKER_MAX_ITEMS = 30;
 export const TICKER_MAX_CHARS = 120;
 
+/** An overlay's entry or exit animation (SPEC §16.6). The render node reads
+ *  `durationFrames`; overlays animate linearly (SPEC §7.10), so `easing`
+ *  and `delayFrames` are carried and not yet drawn. */
+const OverlayAnimationSchema = z
+  .object({
+    durationFrames: z.number().int().min(1).optional(),
+    delayFrames: z.number().int().min(0).optional(),
+    easing: z.string().optional(),
+  })
+  .passthrough();
+
 export const CommandPayloadSchemas = {
   // 16.1 show
   "show.load": z.object({ packagePath: z.string().min(1), mode: z.enum(["load", "reload"]).optional() }).strict(),
@@ -235,8 +246,11 @@ export const CommandPayloadSchemas = {
   // 16.6 overlay — animation is the schema's Animation object
   // (manifest $defs/Animation: durationFrames + optional easing etc.),
   // forwarded verbatim; the engine reads durationFrames and ignores easing.
-  "overlay.show": z.object({ overlayId: id, animation: z.object({ durationFrames: z.number().int().min(1).optional(), delayFrames: z.number().int().min(0).optional(), easing: z.string().optional() }).passthrough().optional() }).strict(),
-  "overlay.hide": z.object({ overlayId: id }).strict(),
+  "overlay.show": z.object({ overlayId: id, animation: OverlayAnimationSchema.optional() }).strict(),
+  // SPEC §16.6, v0.4.18 row 1: the exit's animation, as `overlay.show`'s
+  // entry. The engine honoured `animation.durationFrames` on a hide all along;
+  // the wire could not reach it (the v0.5 outline's §1 item 4).
+  "overlay.hide": z.object({ overlayId: id, animation: OverlayAnimationSchema.optional() }).strict(),
 
   // 16.7 ticker
   "ticker.setSource": z.object({ source: z.enum(["manual", "rss", "mixed"]) }).strict(),

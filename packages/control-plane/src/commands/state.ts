@@ -41,8 +41,12 @@ export function stateHandlers(reg: CommandRegistry, _deps: DispatchDeps): void {
       }
       ctx.state.visibleOverlays.delete(overlayId);
       ctx.state.overlayAnimation.delete(overlayId);
+      // SPEC §16.6, v0.4.18 row 1: an optional exit animation rides the
+      // directive's payload, as show's entry does.
+      const directive: Record<string, unknown> = {};
+      if (payload.animation !== undefined) directive.animation = payload.animation;
       return {
-        extraDirectives: [{ command: "overlay.hide", target: { overlayId }, payload: {} }],
+        extraDirectives: [{ command: "overlay.hide", target: { overlayId }, payload: directive }],
       };
     },
   });

@@ -18,6 +18,17 @@ Schema impact: `schemas/manifest.v0.4.json` removes the `sequenceRef` hook and a
 
 *Amended 2026-09-22 (§2c). The sentence read:* ~~"A v0.3 manifest that does not use `sequenceRef` is a valid v0.4 manifest."~~ *v0.4.5 narrowed `outputs.stream.protocol` to `["rtmp"]`, which made that false for a manifest declaring `srt` or `whip` — and the exception was stated only in v0.4.5's changelog entry and in §9.4, so a reader of this preamble learned a rule the tree no longer keeps. PR #29's two-key pass proved it against the v0.3 fixture: adding `protocol: "srt"` to a `sequenceRef`-free v0.3 manifest yields* `manifest declares stream protocol "srt", which this build does not implement`. *The first half stands unchanged: `url` and `tapPath` are optional, so v0.4.5 still adds no new required fields.*
 
+v0.4.18 — **drafted by engineering under the user's direction of 2026-11-24
+item 3 (the user's lean: "overlay.hide takes an optional exit animation");
+ratified by its merge.**
+
+| # | Change | Sections | Decision |
+|---|---|---|---|
+| 1 | **`overlay.hide` takes an optional `animation`**, the same shape as `overlay.show`'s; its `durationFrames` is the exit's length. | §16.6 | The render node honoured `animation.durationFrames` on a hide all along, but the wire's strict `{ overlayId }` could not reach it (the v0.5 outline's §1 item 4). Optional, so a hide without it uses the package's own exit, as before |
+| 2 | **`overlay.show`'s payload row matches the tree.** `animation` is an object, `{ durationFrames?, delayFrames?, easing? }`, not a string. | §16.6 | The control plane has accepted the object, and only the object, since Prompt 07. The row was wrong |
+
+Row 1 is a wire addition: one optional field on a command payload, mirrored by the operator shell's command catalog. No frame kind, schema or error code changes.
+
 v0.4.17 — **drafted by engineering under the user's direction of 2026-11-24
 item 3 ("the outline's (b) rulings are yours now", with the user's leans);
 ratified by its merge.** Each row records a decision and its reason. The
@@ -4424,8 +4435,8 @@ Deleting a reserved hook is cheaper than maintaining a fiction. If nested rundow
 
 | Command | Payload schema | Preconditions | State transitions | Failure modes |
 |---|---|---|---|---|
-| `overlay.show` | `{ overlayId: string, animation?: string }` | overlay exists | overlay visible with its enter animation | `E_NOT_FOUND` |
-| `overlay.hide` | `{ overlayId: string }` | overlay exists | overlay hidden with its exit animation | `E_NOT_FOUND` |
+| `overlay.show` | ~~`{ overlayId: string, animation?: string }`~~ `{ overlayId: string, animation?: { durationFrames?, delayFrames?, easing? } }` *(v0.4.18 row 2)* | overlay exists | overlay visible with its enter animation | `E_NOT_FOUND` |
+| `overlay.hide` | ~~`{ overlayId: string }`~~ `{ overlayId: string, animation?: { durationFrames?, delayFrames?, easing? } }` *(v0.4.18 row 1)* | overlay exists | overlay hidden with its exit animation; `animation.durationFrames`, when given, is that exit's length | `E_NOT_FOUND` |
 
 **Repeating an overlay command is an idempotent success, not a refusal
 (normative, new in v0.4.3).** `overlay.show` on an overlay already on air, and

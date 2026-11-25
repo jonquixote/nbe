@@ -117,6 +117,24 @@ test("overlay.hide removes the overlay; hide on hidden is a noop", async () => {
   assert.deepEqual(r.data, { noop: true }, "hide on a hidden overlay is idempotent");
 });
 
+test("overlay.hide carries an optional exit animation to the render node, as show does (SPEC §16.6, v0.4.18 row 1)", async () => {
+  const { deps, bridge } = makeDeps();
+  await run(deps, "overlay.show", { overlayId: "bug" });
+  bridge.drain();
+  await run(deps, "overlay.hide", { overlayId: "bug", animation: { durationFrames: 12 } });
+  const sent = bridge.drain();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.command, "overlay.hide");
+  assert.deepEqual(sent[0]!.target, { overlayId: "bug" });
+  assert.deepEqual(sent[0]!.payload, { animation: { durationFrames: 12 } }, "the exit's duration reaches the render node verbatim");
+
+  // Without one, the package's own exit animation applies, as before.
+  await run(deps, "overlay.show", { overlayId: "bug" });
+  bridge.drain();
+  await run(deps, "overlay.hide", { overlayId: "bug" });
+  assert.deepEqual(bridge.drain()[0]!.payload, {}, "no animation: an empty payload");
+});
+
 test("unknown overlay refuses with ENOTFOUND; monitor is denied with E_AUTH", async () => {
   const { deps, state } = makeDeps();
   const before = state.stateVersion;
