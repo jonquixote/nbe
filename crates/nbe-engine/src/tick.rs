@@ -340,6 +340,7 @@ impl Cadence {
                 // the wall time, whole and per phase (log-only; additive).
                 render_cpu_ms = ms(report.render_cpu),
                 // Step F: where render_ms went (log-only; additive fields).
+                frame_poll_ms = ms(report.render_phases.poll),
                 sync_ms = ms(report.render_phases.sync),
                 read_ahead_ms = ms(report.render_phases.read_ahead),
                 read_ahead_cpu_ms = ms(report.render_phases.cpu.read_ahead),
@@ -721,6 +722,7 @@ fn first_draw_line(report: &TickReport, previous_tick: Duration) {
         render_cpu_ms = ms(report.render_cpu),
         previous_tick_ms = ms(previous_tick),
         woke_late_ms = ms(report.woke_late),
+        frame_poll_ms = ms(p.poll),
         sync_ms = ms(p.sync),
         reacquire_ms = ms(p.reacquire),
         read_ahead_ms = ms(p.read_ahead),
@@ -1098,6 +1100,8 @@ mod tests {
                     // so a line that printed a wall time in a CPU field fails.
                     render_cpu: Duration::from_micros(1_250),
                     render_phases: RenderPhases {
+                        // The frame-start poll: a figure unlike every other.
+                        poll: Duration::from_micros(2_900),
                         read_ahead: Duration::from_micros(400),
                         // Read-ahead stage (a): figures unlike every other,
                         // so a field printed from the wrong source fails.
@@ -1183,6 +1187,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} unreadable: {line}"))
         };
         for (name, want) in [
+            ("frame_poll_ms", 2.9),
             ("read_ahead_ms", 0.4),
             ("view_build_ms", 0.3),
             ("view_encode_ms", 0.5),

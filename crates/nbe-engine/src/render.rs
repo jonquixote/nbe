@@ -464,6 +464,12 @@ impl BusPhases {
 /// is about; the rest runs before it inside the same call.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RenderPhases {
+    /// The frame-start device poll (one poller, #225): the render thread's
+    /// one poll a frame, before `sync`. Timed so that a late frame whose time
+    /// lies outside every other phase says whether it was this poll (PR
+    /// #234's step 5, 2026-11-25: render 41.3 ms, 1.2 ms CPU, no phase over
+    /// 2 ms). Log-only.
+    pub poll: Duration,
     pub sync: Duration,
     pub reacquire: Duration,
     pub read_ahead: Duration,
@@ -1458,7 +1464,9 @@ impl RenderLoop {
         // later submit happened to triage the finished work: on CI's slow GPU,
         // too late for the waiters, which then polled the device themselves
         // (#225's first CI run: 116 lock acquires by `nbe-record`).
+        let poll_started = Instant::now();
         let _ = self.gpu.device.poll(wgpu::PollType::Poll);
+        phases.poll = poll_started.elapsed();
         self.render_polls
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         self.view_submission = None;
