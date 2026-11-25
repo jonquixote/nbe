@@ -78,9 +78,26 @@ fn consumer_lock_reports(render: &mut RenderLoop, cadence: Duration) -> (Vec<Str
             std::thread::sleep(rest);
         }
     }
-    start(&mut longest);
-    render.render_frame(60, None);
+    // The production loop never stops drawing, so neither does this one
+    // until the consumer has seen every draw done. A render thread that went
+    // silent here made the consumer's last wait fall back to its own fence
+    // check, by design: one poll, 17 acquires (#231's run at 33 ms, 2026-11-25
+    // 05:19Z, a slow GPU still on frame 59 at frame 60's poll).
     tx.send(None).unwrap();
+    let mut frame = 60u64;
+    while !consumer.is_finished() {
+        assert!(
+            frame < 600,
+            "the consumer did not finish within 540 more frames"
+        );
+        start(&mut longest);
+        render.render_frame(frame, None);
+        frame += 1;
+        next += cadence;
+        if let Some(rest) = next.checked_duration_since(std::time::Instant::now()) {
+            std::thread::sleep(rest);
+        }
+    }
     assert_eq!(
         consumer.join().unwrap(),
         60,
