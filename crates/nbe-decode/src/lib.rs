@@ -77,12 +77,23 @@ pub fn describe_ns_error(e: &NSError) -> String {
 /// Determinism item 12, step 2: the underlying codes a platform decoder
 /// returns when it was starved (memory, a reset, an interruption), not when
 /// the file is bad. A decode that failed with one of these is worth one retry.
-pub const TRANSIENT_DECODE_CODES: [i64; 5] = [
+pub const TRANSIENT_DECODE_CODES: [i64; 6] = [
     -12904, // kVTAllocationFailedErr
     -12911, // kVTVideoDecoderMalfunctionErr
     -11819, // AVErrorMediaServicesWereReset
     -11847, // AVErrorOperationInterrupted
     -11839, // AVErrorDecoderTemporarilyUnavailable
+    // Undocumented (no public definition found, 2026-11-24). It is the
+    // black-clip class's cause on CI [CI-read, PR #225's run 45543686890]:
+    // prompt04's fixture A1.mp4 failed its load decode with "Cannot Decode
+    // (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain
+    // -12137)", the clip left the video library, and the View drew black.
+    // The same file decodes in nearly every run, and other clips decoded in
+    // the same job, so the decoder failed, not the file: the class this list
+    // is for. PR #223's a1 job saw it for a whole job (15 times, preflight's
+    // separate process included), which one retry does not cover; that
+    // failure stays loud.
+    -12137,
 ];
 
 impl DecodeError {
@@ -934,6 +945,38 @@ mod tests {
         assert!(starved.is_transient());
         assert!(!failed("Cannot Decode (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12909)").is_transient());
         assert!(!failed("Cannot Decode (AVFoundationErrorDomain -11821)").is_transient());
+    }
+
+    /// The black-clip class (2026-11-24): CI's VideoToolbox failed a valid
+    /// fixture's load decode with this reason, verbatim, and the clip was
+    /// dropped without a retry. It is the decoder's failure, so it is retried.
+    #[test]
+    fn the_ci_black_clip_decode_failure_is_transient_and_retried() {
+        let ci = || {
+            failed(
+                "decode failed for ../../tests/fixtures/valid_show_v0.3/media/A1.mp4: Cannot Decode \
+                 (AVFoundationErrorDomain -11821; underlying NSOSStatusErrorDomain -12137)",
+            )
+        };
+        assert_eq!(ci().codes(), vec![-11821, -12137]);
+        assert!(ci().is_transient());
+        let mut n = 0;
+        let r = retry_transient(
+            || {
+                n += 1;
+                if n == 1 {
+                    Err(ci())
+                } else {
+                    Ok(())
+                }
+            },
+            std::time::Duration::from_millis(1),
+        );
+        assert_eq!(
+            (r.is_ok(), n),
+            (true, 2),
+            "retried once, and the second decode loads"
+        );
     }
 
     /// R2-R4: one retry for a transient failure, none for any other.
